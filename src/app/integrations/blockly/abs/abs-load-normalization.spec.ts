@@ -57,6 +57,17 @@ describe('trusted ABS load normalization preparation', () => {
     expect(Object.isFrozen(result.input!.expected.disk)).toBeTrue(); expect(host.writes).toEqual([]);
   });
 
+  it('prepares a legacy load without an ABI-only write before its first program publication', async () => {
+    for (const key of [...host.files.keys()]) if (key !== 'project.abi') host.files.delete(key);
+    const result = await prepareAbsLoadNormalization(project, receipt, host, assertCurrent);
+    expect(result.input).toBeDefined(); expect(result.outcome).toBeUndefined();
+    expect(result.input!.expected.pointerHash).toBeNull();
+    expect((await verifyAbsLoadNormalization(store, result.input!, scope))!.baseline).toBeNull();
+    expect(host.files.get('project.abi')).toBe(original); expect(host.writes).toEqual([]);
+    host.files.set('project.abs', 'unapplied initial source');
+    expect(await verifyAbsLoadNormalization(store, result.input!, scope)).toBeNull();
+  });
+
   it('rejects a copied domain receipt and a copied host plan instead of accepting wire authority', async () => {
     const copy = JSON.parse(JSON.stringify(receipt));
     expect((await prepareAbsLoadNormalization(project, copy, host, assertCurrent)).input).toBeUndefined();

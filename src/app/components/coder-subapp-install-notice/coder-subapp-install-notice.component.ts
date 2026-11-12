@@ -85,7 +85,7 @@ export class CoderSubappInstallNoticeComponent implements OnInit, OnDestroy {
       await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
     } catch (error) {
       console.warn(
-        '[Subapp] Default Aily Coder Editor installation failed:',
+        '[Subapp] Default aily Coder Editor installation failed:',
         error,
       );
     } finally {

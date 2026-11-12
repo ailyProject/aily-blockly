@@ -1,5 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const resolutionArchives = directory => fs.readdirSync(directory, { withFileTypes: true }).filter(entry => {
+  if (!entry.isDirectory()) return true;
+  assert.match(entry.name, /^environment-[0-9a-f]{64}$/);
+  return false;
+}).map(entry => entry.name);
 const fs = require('node:fs');
 const path = require('node:path');
 const { LibraryDependencies, runDependencyWorker } = require('../../electron/library-dependencies');
@@ -83,7 +88,7 @@ test('one normal save reconciles once and preserves the exact three-way evidence
   await f.resolve('staged', offered); assert.equal(f.calls.length, 0);
   await f.api.save(f.root); assert.deepEqual(f.calls.map(request => request.save === true), [false, true]);
   assert.equal(f.api.status(f.root).dirty, false); assert.equal(JSON.parse(f.read('package.json')).dependencies[name], '2.0.0');
-  const directory = path.join(f.root, '.aily/dependency-recovery'), files = fs.readdirSync(directory);
+  const directory = path.join(f.root, '.aily/dependency-recovery'), files = resolutionArchives(directory);
   assert.deepEqual(files, [offered.requestId + '.json']);
   const archive = JSON.parse(fs.readFileSync(path.join(directory, files[0]), 'utf8'));
   assert.deepEqual(archive.base, f.base); assert.deepEqual(archive.staged, f.staged); assert.deepEqual(archive.disk, before);
@@ -99,7 +104,7 @@ test('known reconcile failure retains staged state/flag and reuses the same arch
   let status = f.api.status(f.root); assert.equal(status.treeNeedsReconcile, true); assert.equal(status.reconcileFailure.phase, 'reconcile');
   assert.equal(status.manifest.dependencies[name], '2.0.0'); assert.equal(JSON.parse(f.read('package.json')).dependencies[name], '3.0.0');
   f.setEffect(null); await f.api.save(f.root); status = f.api.status(f.root);
-  assert.equal(status.dirty, false); assert.equal(fs.readdirSync(path.join(f.root, '.aily/dependency-recovery')).length, 1);
+  assert.equal(status.dirty, false); assert.equal(resolutionArchives(path.join(f.root, '.aily/dependency-recovery')).length, 1);
 });
 test('external writes during reconciliation keep the new disk version and require fresh conflict inspection', async t => {
   const f = fixture(t); await f.resolve();

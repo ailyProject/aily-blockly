@@ -1,6 +1,6 @@
 ---
 name: chronicle
-description: Analyze indexed Aily chat session history for prior decisions, tool executions, project summaries, usage tips, and session-store reindexing.
+description: Analyze indexed aily chat session history for prior decisions, tool executions, project summaries, usage tips, and session-store reindexing.
 ---
 
 # Chronicle

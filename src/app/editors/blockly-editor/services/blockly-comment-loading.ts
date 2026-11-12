@@ -15,13 +15,17 @@ export class BlocklyCommentLoading {
     const restore: Array<() => void> = [];
     const loading = this;
     try {
-      for (const name of ['setBubbleVisible', 'updateEditable'] as const) {
+      for (const name of ['setBubbleVisible', 'updateEditable', 'loadState'] as const) {
         const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
         const original = prototype[name];
         Object.defineProperty(prototype, name, { configurable: true, writable: true, value: function(...args: unknown[]) {
           const result = Reflect.apply(original, this, args);
-          if (this.sourceBlock.workspace === loading.workspace && result && typeof result.then === 'function') {
-            const promise = Promise.resolve(result);
+          if (this.sourceBlock.workspace === loading.workspace) {
+            // loadState returns void, but restores explicit coordinates after
+            // this same native render promise, even for a closed comment.
+            const pending = name === 'loadState' ? loading.native.renderManagement.finishQueuedRenders() : result;
+            if (!pending || typeof pending.then !== 'function') return result;
+            const promise = Promise.resolve(pending);
             loading.pending.add(promise);
             promise.then(() => loading.pending.delete(promise), error => {
               loading.pending.delete(promise);
@@ -40,7 +44,7 @@ export class BlocklyCommentLoading {
     for (let turn = 0; this.pending.size && turn < 64; turn++) {
       assertCurrent();
       if (this.failure) throw this.failure;
-      this.native.renderManagement.triggerQueuedRenders(this.workspace as Blockly.WorkspaceSvg);
+      if (this.workspace.rendered) this.native.renderManagement.triggerQueuedRenders(this.workspace as Blockly.WorkspaceSvg);
       await Promise.resolve();
     }
     assertCurrent();

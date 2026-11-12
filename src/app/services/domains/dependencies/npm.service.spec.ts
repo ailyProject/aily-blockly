@@ -23,7 +23,7 @@ describe('NpmService shared dependency operations', () => {
     oldFsp = window['fsp']; oldIpc = window['ipcRenderer'];
     oldEnv = window['env'];
     window['env'] = { get: jasmine.createSpy('envGet').and.resolveTo(undefined) } as any;
-    window['path'] = { getAppDataPath: () => '/app', isExists: () => true,
+    window['path'] = { getAppDataPath: () => '/app', getAilyChildPath: () => '/child', isExists: () => true,
       join: (...parts: string[]) => parts.join('/'), basename: (s: string) => s.split('/').pop(),
       resolve: (s: string) => s, relative: (root: string, target: string) => target.slice(root.length + 1),
       isAbsolute: (s: string) => s.startsWith('/') };
@@ -32,6 +32,7 @@ describe('NpmService shared dependency operations', () => {
     service = Object.create(NpmService.prototype);
     service.cmdService = { runAsyncChecked: jasmine.createSpy('cmd').and.resolveTo() };
     service.application = { updateNotice: jasmine.createSpy('notice'), startInstall() {}, finishInstall() {} };
+    service.logService = { update: jasmine.createSpy('log').and.callFake(log => service.handleBoardDependencyProgressLog(log)) };
     service.translate = { instant: (s: string) => s };
     service.configService = { isCoderProduct: () => false, withBoardNpmRegistry: (cmd: string) => cmd, getNpmRegistryForProject: () => '' };
     service.traceToAppLog = () => {};
@@ -62,7 +63,7 @@ describe('NpmService shared dependency operations', () => {
   it('repairs a missing extracted SDK without reinstalling its package', async () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     service.isPlatformPackageOnDisk = jasmine.createSpy('ready').and.returnValues(false, true);
-    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true);
+    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '~1.0.0' } }, false, true);
     expect(service.cmdService.runAsyncChecked.calls.first().args[0]).toBe('npm run postinstall');
     expect(window['npm'].run).not.toHaveBeenCalled();
   });
@@ -82,8 +83,8 @@ describe('NpmService shared dependency operations', () => {
       AILY_TOOLS_PATH: '/parent/tools', AILY_REPAIR_READONLY_NPM_PREFIX: '/parent/managed-tools' };
     window['env'].get.and.callFake(async key => roots[key]);
     service.isPlatformPackageOnDisk = jasmine.createSpy('existingResource').and.returnValue(true);
-    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false);
-    expect(service.isPlatformPackageOnDisk).toHaveBeenCalledOnceWith('@aily-project/sdk-test', '1.0.0',
+    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '~1.0.0' } }, false);
+    expect(service.isPlatformPackageOnDisk).toHaveBeenCalledOnceWith('@aily-project/sdk-test', '~1.0.0',
       { sdkBase: roots.AILY_SDK_PATH, compilersBase: roots.AILY_COMPILERS_PATH, toolsBase: roots.AILY_TOOLS_PATH });
     expect(window['npm'].run).not.toHaveBeenCalled(); expect(service.cmdService.runAsyncChecked).not.toHaveBeenCalled();
   });
@@ -92,7 +93,7 @@ describe('NpmService shared dependency operations', () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     service.isPlatformPackageOnDisk = jasmine.createSpy('ready').and.returnValues(true, false, true);
     await service.installBoardDependencies({ boardDependencies: {
-      '@aily-project/sdk-ready': '1.0.0', '@aily-project/sdk-missing': '1.0.0',
+      '@aily-project/sdk-ready': '~1.0.0', '@aily-project/sdk-missing': '~1.0.0',
     } }, false, true);
     expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
       'npm run postinstall', '/app/node_modules/@aily-project/sdk-missing', true, false, undefined,
@@ -112,7 +113,7 @@ describe('NpmService shared dependency operations', () => {
       postinstallStarted();
     }));
     const install = service.installBoardDependencies({ boardDependencies: {
-      '@aily-project/sdk-first': '1.0.0', '@aily-project/sdk-next': '1.0.0',
+      '@aily-project/sdk-first': '~1.0.0', '@aily-project/sdk-next': '~1.0.0',
     } }, false, true, session);
     await started;
     expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
@@ -131,13 +132,95 @@ describe('NpmService shared dependency operations', () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     window['npm'].run.and.callFake(async () => { lifecycle.cancel(session.projectPath); });
     await expectAsync(service.installBoardDependencies({ boardDependencies: {
-      '@aily-project/sdk-first': '1.0.0', '@aily-project/sdk-next': '1.0.0',
+      '@aily-project/sdk-first': '~1.0.0', '@aily-project/sdk-next': '~1.0.0',
     } }, false, true, session)).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
     expect(window['npm'].run).toHaveBeenCalledOnceWith({
-      cmd: 'npm install @aily-project/sdk-first@1.0.0 --save-exact --prefix "/app"',
+      cmd: 'npm install @aily-project/sdk-first@~1.0.0 --save-exact --prefix "/app"',
       projectPath: session.projectPath, projectSessionId: session.projectSessionId,
     });
     expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
+  });
+
+  it('stages a missing Blockly board tool and accepts both versions without reading the shared wrapper', async () => {
+    const name = '@aily-project/tool-esptool_py';
+    const old = '/tools/esptool_py@5.3.1';
+    const next = '/tools/esptool_py@5.3.0';
+    const executable = window['platform']?.isWindows === true ? 'esptool.exe' : 'esptool';
+    const files = new Set(['/tools', old, `${old}/${executable}`, `/app/node_modules/${name}/package.json`]);
+    service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
+    window['path'].isExists = (path: string) => files.has(path);
+    window['fs'].readDirSync = () => [];
+    window['fs'].statSync = () => ({ _isFile: true, size: 1 });
+    window['fs'].readFileSync = jasmine.createSpy('sharedWrapper').and.returnValue('{"version":"5.3.1"}');
+    const board = (version: string) => ({
+      boardDependencies: { [name]: version },
+      dependencies: { '@aily-project/lib-user-choice': '2.0.0' },
+    });
+
+    expect(await service.getMissingBoardDependencies(board('5.3.0'))).toEqual([`${name}@5.3.0`]);
+    expect(await service.getMissingBoardDependencies(board('5.3.1'))).toEqual([]);
+    service.cmdService.runAsyncChecked.and.callFake(async (_cmd: string, _cwd: string, _queue: boolean, _silent: boolean, options: any) => {
+      expect(service.application.updateNotice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ state: 'doing', progress: 1 }));
+      const emit = (type: string, data: string) => options.onOutput({ type, data, streamId: 'platform' });
+      emit('stdout', '\u001b[32mDownload pro');
+      expect(service.application.updateNotice.calls.count()).toBe(1);
+      emit('stdout', 'gress: 20%\u001b[0m\rDownload progress: 40%\r');
+      emit('stderr', 'Extraction pro');
+      emit('stderr', 'gress: 20%\n解压进度: 80%');
+      options.onOutput({ type: 'close', code: 0, streamId: 'platform' });
+      expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.progress)).toEqual([1, 10, 20, 60, 90]);
+      expect(service.logService.update.calls.allArgs().map(([log]: any[]) => [log.title, log.detail])).toEqual([
+        [`${name}@5.3.0`, 'Download progress: 20%'], [`${name}@5.3.0`, 'Download progress: 40%'],
+        [`${name}@5.3.0`, 'Extraction progress: 20%'], [`${name}@5.3.0`, '解压进度: 80%'],
+      ]);
+      const logs = service.logService.update.calls.allArgs().map(([log]: any[]) => log);
+      expect(logs[0].mergeKey).toBe(logs[1].mergeKey);
+      expect(logs[0].mergeKey).not.toBe(logs[2].mergeKey);
+      service.handleBoardDependencyProgressLog({ detail: 'Download progress: 100%' });
+      expect(service.application.updateNotice.calls.count()).toBe(5);
+      files.add(next);
+      files.add(`${next}/${executable}`);
+    });
+    await service.installBoardDependencies(board('5.3.0'), false);
+    await service.installBoardDependencies(board('5.3.1'), false);
+    expect(await service.getMissingBoardDependencies(board('5.3.0'))).toEqual([]);
+    expect(await service.getMissingBoardDependencies(board('5.3.1'))).toEqual([]);
+    expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      `node "/child/scripts/install-versioned-platform-resource.js" "${name}" "5.3.0"`, '/app', true, false,
+      jasmine.objectContaining({ onOutput: jasmine.any(Function) }));
+    expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.state))
+      .toEqual(['doing', 'doing', 'doing', 'doing', 'doing', 'doing', 'done']);
+    expect(window['npm'].run).not.toHaveBeenCalled();
+    expect(window['fs'].readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('ignores progress from settled, superseded or cancelled platform installations', () => {
+    const { lifecycle, session } = attachProjectDependencies(service);
+    const first = service.startBoardDependencyProgress(session, 2, 0, 'first');
+    const output = service.boardDependencyCommandOutput(first);
+    service.startBoardDependencyProgress(session, 2, 1, 'next');
+    service.application.updateNotice.calls.reset();
+    output({ type: 'stdout', data: 'Download progress: 99%\r' });
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    const current = service.boardDependencyCommandOutput(service.boardDependencyInstallProgress);
+    lifecycle.cancel(session.projectPath);
+    current({ type: 'stdout', data: 'Extraction progress: 99%\r' });
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    service.boardDependencyInstallProgress = undefined;
+    current({ type: 'close', code: 0 });
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    expect(service.logService.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps each dependency and version in separate progress log rows', () => {
+    for (const [name, version] of [['@aily-project/sdk-esp32', '3.3.1'], ['@aily-project/sdk-esp32', '3.3.10'],
+      ['@aily-project/tool-esptool_py', '5.3.0']]) {
+      const progress = service.startBoardDependencyProgress(undefined, 3, 0, name, version);
+      service.boardDependencyCommandOutput(progress)({ type: 'stdout', data: 'Download progress: 25%\r' });
+    }
+    const logs = service.logService.update.calls.allArgs().map(([log]: any[]) => log);
+    expect(new Set(logs.map(log => log.mergeKey)).size).toBe(3);
+    expect(logs.every(log => log.detail === 'Download progress: 25%')).toBeTrue();
   });
 
   it('reports an already installed package as complete without reinstalling it', async () => {
@@ -237,7 +320,8 @@ describe('NpmService Coder dependency sources', () => {
   let previousLibraries: any;
   beforeEach(() => {
     previousLibraries = window['libraryDependencies'];
-    window['libraryDependencies'] = { prepare: jasmine.createSpy('prepare').and.resolveTo() };
+    window['libraryDependencies'] = { environmentVersion: 2,
+      reconcile: jasmine.createSpy('reconcile').and.resolveTo(), prepare: jasmine.createSpy('prepare').and.resolveTo() };
   });
   afterEach(() => { window['libraryDependencies'] = previousLibraries; });
   function createService(coder = true, alreadyInstalled = false) {
@@ -247,7 +331,8 @@ describe('NpmService Coder dependency sources', () => {
     );
     service.isAilyCodeProjectRoot = jasmine.createSpy('isAilyCodeProjectRoot').and.returnValue(coder);
     service.cmdService = { runAsync: jasmine.createSpy('runAsync').and.resolveTo({ code: 0 }) };
-    service.configService = { isCoderProduct: () => coder, withProjectNpmRegistry: (command: string) => command };
+    service.configService = { isCoderProduct: () => coder, withProjectNpmRegistry: (command: string) => command,
+      getNpmRegistryForProject: () => '' };
     service.translate = { instant: (key: string) => key };
     service.application = {
       materializeCoderProjectLibraries: jasmine.createSpy('materializeCoderProjectLibraries').and.resolveTo(),
@@ -279,6 +364,14 @@ describe('NpmService Coder dependency sources', () => {
     expect(service.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
   }));
 
+  it('keeps Blockly project installation doing when the caller still has platform preparation to finish', async () => {
+    const service = createService(false);
+    service.ensureCoderDependencyLibrarySources = async () => true;
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template', { deferSuccessNotice: true })).toBeTrue();
+    expect(window['libraryDependencies'].reconcile).toHaveBeenCalled();
+    expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.state)).toEqual(['doing']);
+  });
+
   it('repairs npm-only Coder projects without rerunning npm', async () => {
     const service = createService(true, true);
     expect(await service.ensureProjectDependenciesInstalled('/tmp/coder-template')).toBeTrue();
@@ -302,7 +395,8 @@ describe('NpmService Coder dependency sources', () => {
   it('does not invoke the Coder runtime for Blockly dependency installs', async () => {
     const service = createService(false);
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
-    expect(service.cmdService.runAsync).toHaveBeenCalled();
+    expect(service.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(window['libraryDependencies'].reconcile).toHaveBeenCalledOnceWith('/tmp/blockly-template', { options: {} });
     expect(service.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
     expect(window['libraryDependencies'].prepare).toHaveBeenCalledOnceWith('/tmp/blockly-template');
   });
@@ -317,15 +411,14 @@ describe('NpmService Coder dependency sources', () => {
     }));
   });
 
-  it('preserves Blockly installation notices at the existing 0 and 100 ms delays', async () => {
+  it('settles standalone Blockly installation without a delayed notice overwriting the next stage', async () => {
     const service = createService(false);
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
     (window.setTimeout as unknown as jasmine.Spy).and.callFake((callback: () => void, delay: number) => {
       scheduled.push({ callback, delay }); return 0;
     });
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
-    expect(service.application.updateNotice).not.toHaveBeenCalled();
-    expect(scheduled.map(item => item.delay)).toEqual([0, 100]);
+    expect(scheduled).toEqual([]);
     scheduled.forEach(item => item.callback());
     expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.state)).toEqual(['doing', 'done']);
   });
@@ -333,15 +426,15 @@ describe('NpmService Coder dependency sources', () => {
   it('preserves the delayed Blockly failure notice and its existing retry callback', async () => {
     const service = createService(false);
     service.installedOk.and.resolveTo(false);
-    service.cmdService.runAsync.and.resolveTo({ code: 1, stderr: 'install failed' });
+    window['libraryDependencies'].reconcile.and.rejectWith(new Error('install failed'));
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
     (window.setTimeout as unknown as jasmine.Spy).and.callFake((callback: () => void, delay: number) => {
       scheduled.push({ callback, delay }); return 0;
     });
     const retry = jasmine.createSpy('retry');
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template', { onRetryInstall: retry })).toBeFalse();
-    expect(service.application.updateNotice).not.toHaveBeenCalled();
-    expect(scheduled.map(item => item.delay)).toEqual([0, 1000]);
+    expect(service.application.updateNotice.calls.mostRecent().args[0].state).toBe('doing');
+    expect(scheduled.map(item => item.delay)).toEqual([1000]);
     scheduled.forEach(item => item.callback());
     const notice = service.application.updateNotice.calls.mostRecent().args[0];
     expect(notice).toEqual(jasmine.objectContaining({ state: 'error', detail: 'install failed', sendToLog: false }));
@@ -489,11 +582,15 @@ describe('NpmService installBoardDeps', () => {
     expect(lifecycle.isBusy(session.projectPath)).toBeTrue();
     expect(ready).toBeFalse();
     expect(settled).not.toHaveBeenCalled();
+    expect(service.ensureProjectDependenciesInstalled).toHaveBeenCalledWith(session.projectPath,
+      jasmine.objectContaining({ deferSuccessNotice: true }), session);
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
     finishPlatform();
     flushMicrotasks();
     expect(ready).toBeTrue();
     expect(settled).toHaveBeenCalledTimes(1);
     expect(lifecycle.isBusy(session.projectPath)).toBeFalse();
+    expect(service.application.updateNotice).toHaveBeenCalledOnceWith(jasmine.objectContaining({ state: 'done', progress: 100 }));
   }));
 
   it('does not let an old installation finally clear the next session', fakeAsync(() => {

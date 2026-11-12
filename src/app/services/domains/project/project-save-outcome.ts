@@ -33,6 +33,7 @@ export interface NativeRepairPrimaryProof {
 export interface ProjectSaveOutcome {
   projectSaved: boolean;
   generatedCodePublished: boolean;
+  derivedOutputs?: { target?: 'preview' | 'disk'; previewPublished?: boolean; diskPublished?: boolean };
   partial: boolean;
   code?: string;
   error?: string;

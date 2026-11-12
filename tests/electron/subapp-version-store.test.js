@@ -11,7 +11,7 @@ const DIST = { tarball: 'https://registry.example.test/subapp-aily-chat.tgz', in
 function fixture(t) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-version-store-'));
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
-  return { temporary, root: path.join(temporary, 'Aily 用户', 'npm-global', 'app') };
+  return { temporary, root: path.join(temporary, 'aily 用户', 'npm-global', 'app') };
 }
 
 function writePackage(source, entry, marker = entry.version) {
@@ -179,6 +179,20 @@ test('uninstall marker survives version deletion and is cleared only after clean
   assert.equal(store.isUninstalling(root, ENTRY), true);
   store.finishUninstall(root, ENTRY);
   assert.equal(store.isUninstalling(root, ENTRY), false);
+});
+
+test('manual uninstall decisions survive package cleanup and updates, then clear on activation', async t => {
+  const { root } = fixture(t);
+  assert.equal(store.isManuallyUninstalled(root, ENTRY), false);
+  store.markManuallyUninstalled(root, ENTRY);
+  store.removeAllVersions(root, ENTRY);
+  assert.equal(store.isManuallyUninstalled(root, { ...ENTRY, version: '0.2.0' }), true);
+  assert.equal(store.isManuallyUninstalled(root, { ...ENTRY, package: '@aily-project/new-chat' }), true);
+  assert.equal(store.isManuallyUninstalled(root, { ...ENTRY, id: 'other-app' }), false);
+  const prepared = await prepare(root);
+  assert.equal(store.isManuallyUninstalled(root, ENTRY), true);
+  store.activate(root, ENTRY, prepared);
+  assert.equal(store.isManuallyUninstalled(root, ENTRY), false);
 });
 
 test('rejects unsafe package keys, non-canonical versions and forged candidates', async (t) => {

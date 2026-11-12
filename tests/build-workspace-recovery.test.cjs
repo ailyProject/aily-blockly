@@ -271,7 +271,8 @@ test('a legacy orphan is observed once and recovered only after a different kern
   const beforeRestart = patchedModule({}, BOOT_A);
   assert.throws(() => beforeRestart.acquireBuildWorkspace(f.root, 'publish'), error => {
     assert.equal(error.code, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
-    assert.match(error.message, /project_recover\(action='fork'\)/);
+    assert.match(error.message, /isolated build execution/);
+    assert.doesNotMatch(error.message, /project_recover|action='fork'/);
     assert.doesNotMatch(error.message, /Restart the computer/);
     return true;
   });
@@ -312,7 +313,8 @@ test('unavailable boot identity and wall-clock changes cannot retire a granted o
   for (const bootId of [null, BOOT_A]) {
     assert.throws(() => patchedModule({}, bootId).acquireBuildWorkspace(f.root, 'publish'), error => {
       assert.equal(error.code, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
-      assert.match(error.message, /project_recover\(action='fork'\)/);
+      assert.match(error.message, /isolated build execution/);
+      assert.doesNotMatch(error.message, /project_recover|action='fork'/);
       return true;
     });
     assert.equal(fs.readFileSync(f.marker, 'utf8'), JSON.stringify(record));

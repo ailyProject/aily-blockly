@@ -57,7 +57,7 @@ function fixture(t, { pending = false } = {}) {
   const subject = () => new rxjs.Subject();
   const ports = {
     projectService: { currentProjectPath$: subject(), coderWorkspace$: subject() },
-    blocklyService: { selectedBlockIdsSubject: subject(), blockCodeMapSubject: subject(), aiWriting$: subject(), aiWaitWriting$: subject() },
+    blocklyService: { selectedBlockIdsSubject: subject(), blockCodeMapSubject: subject(), aiWriting$: subject(), aiWaitWriting$: subject(), workspaceRecoveryRequired$: subject() },
     authService: { isLoggedIn$: subject(), authChanged$: subject() },
     configService: { getCurrentApiServer: () => '', configReloaded$: subject() },
     themeService: { themeChanged$: theme }, translate, toolI18n: loader,

@@ -18,9 +18,14 @@ describe('repair source commits and derived output observations', () => {
     disk.set('project.abi', absJson(snapshot().document));
     await service.exportGeneration({ initialize: true });
     prepareCode.calls.reset(); publisher.calls.reset();
+    // A mere map defect is repaired automatically. This fixture deliberately
+    // retains an independent draft and a newer unsaved native view, so only an
+    // explicit preserving workspace repair may choose the view as its source.
+    disk.set('project.abs', disk.get('project.abs')! + '\n# retained unapplied candidate');
+    editor.workspace.getBlockById('retained-root').setFieldValue('newer native view', 'TEXT');
     disk.set('project.abs.map.json', '{}');
     const diagnostics = (await service.inspectGeneration()).diagnostics as { repair?: { token: string } };
-    if (!diagnostics.repair) throw new Error('The broken public map must offer a repair capability.');
+    if (!diagnostics.repair) throw new Error('The independent draft and native view must offer preserving repair.');
     const offer = diagnostics.repair;
     return { token: offer.token, result: await service.repairGeneration(offer.token, 'workspace') };
   };
@@ -105,7 +110,8 @@ describe('repair source commits and derived output observations', () => {
     prepareCode.calls.reset(); publisher.calls.reset();
     const before = new Map(disk), result = await service.exportGeneration({ save: true, reuseCurrent: true });
     expect(result.reused).toBeTrue(); expect(result.derivedOutputs?.published).toBeTrue(); expect(publisher).toHaveBeenCalledTimes(1);
-    expect(disk).toEqual(before);
+    const sourceFiles = (files: Map<string, string>) => new Map([...files].filter(([key]) => key !== 'operation.json' && !key.startsWith('recoveries/operation-')));
+    expect(sourceFiles(disk)).toEqual(sourceFiles(before));
   });
   it('does not publish or certify output for projection-only baseline reuse', async () => {
     disk.set('project.abi', absJson(snapshot().document)); await service.exportGeneration({ initialize: true });

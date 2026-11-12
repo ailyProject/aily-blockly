@@ -1,13 +1,11 @@
-import { Injectable, Injector } from '@angular/core';
+import { Injectable } from '@angular/core';
 import { ActionService } from '@core/app-shell/public-api';
 import { ProjectService } from '@domain/project/public-api';
-import type { BlocklyBuildInput, BlocklyBuildOutcome, BlocklyBuildPort, BuildCheckpoint } from '@domain/build/public-api';
-import { _BuilderService } from '../../editors/blockly-editor/services/builder.service';
+import type { BlocklyBuildInput, BlocklyBuildOutcome, BlocklyBuildPort } from '@domain/build/public-api';
 
 @Injectable({ providedIn: 'root' })
 export class BlocklyBuildAdapter implements BlocklyBuildPort {
-  constructor(private readonly actions: ActionService, private readonly project: ProjectService,
-    private readonly injector: Injector) {}
+  constructor(private readonly actions: ActionService, private readonly project: ProjectService) {}
 
   isAvailable(): boolean {
     return this.actions.hasListener('builder-compile-begin');
@@ -17,15 +15,13 @@ export class BlocklyBuildAdapter implements BlocklyBuildPort {
     if (!this.isAvailable() || input.projectPath !== this.project.currentProjectPath) {
       throw new Error('The requested Blockly build editor is no longer active.');
     }
-    // Resolve lazily: Coder/disk builds must not instantiate the Blockly editor.
-    const editor = this.injector.get(_BuilderService);
-    const checkpoint: BuildCheckpoint = {};
-    try {
-      const result = await editor.build(input.graphSemanticRevision, input.requestId, checkpoint);
-      return { success: true, result, checkpoint };
-    } catch (error) {
-      const result = error as BlocklyBuildOutcome['result'];
-      return { success: false, result: result && typeof result === 'object' ? result : { text: String(error) }, checkpoint };
-    }
+    // The mounted editor owns both compile-begin and compile-cancel. Wait for
+    // its actual task feedback; the request observer manages its own deadline.
+    return new Promise<BlocklyBuildOutcome>((resolve, reject) => {
+      this.actions.dispatch('compile-begin', input, feedback => {
+        if (feedback.success && feedback.data) resolve(feedback.data);
+        else reject(new Error(feedback.error || 'The Blockly build editor did not accept the request.'));
+      }, 0, { requireHandler: true });
+    });
   }
 }

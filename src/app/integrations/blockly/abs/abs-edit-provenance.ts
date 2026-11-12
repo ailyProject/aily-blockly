@@ -5,11 +5,10 @@ import { indexAbsSyntax } from './abs-identity-map';
 export interface AbsSourceEdit { start: number; end: number; text: string }
 export type AbsSourceEdits = AbsSourceEdit[][];
 
-export function assertAbsSourceEdits(value: unknown): asserts value is AbsSourceEdits | undefined {
+function assertAbsSourceEditRanges(value: unknown): asserts value is AbsSourceEdits | undefined {
   if (value === undefined) return;
-  const invalid = () => { throw new AbsSyncError('ABS_SOURCE_EDITS_INVALID', 'Invalid or excessive ABS edit history.'); };
-  if (!Array.isArray(value) || !value.length || value.length > 128) return invalid();
-  let count = 0, bytes = 0;
+  const invalid = () => { throw new AbsSyncError('ABS_SOURCE_EDITS_INVALID', 'Invalid ABS edit relationship.'); };
+  if (!Array.isArray(value) || !value.length) return invalid();
   for (const batch of value) {
     if (!Array.isArray(batch) || !batch.length) return invalid();
     let previousEnd = -1;
@@ -17,9 +16,21 @@ export function assertAbsSourceEdits(value: unknown): asserts value is AbsSource
       if (!edit || !Number.isSafeInteger(edit.start) || !Number.isSafeInteger(edit.end)
         || edit.start < 0 || edit.end < edit.start || edit.start <= previousEnd || typeof edit.text !== 'string') return invalid();
       previousEnd = edit.end;
-      bytes += new TextEncoder().encode(edit.text).byteLength;
-      if (++count > 1024 || bytes > 512 * 1024) return invalid();
     }
+  }
+}
+
+/** Legacy transport admission, before any candidate/file/runtime work. These
+ * payload limits are not identity rules for a verified immutable History chain. */
+export function assertAbsSourceEdits(value: unknown): asserts value is AbsSourceEdits | undefined {
+  assertAbsSourceEditRanges(value);
+  if (value === undefined) return;
+  const invalid = () => { throw new AbsSyncError('ABS_SOURCE_EDITS_INVALID', 'Invalid or excessive ABS edit history.'); };
+  if (value.length > 128) return invalid();
+  let count = 0, bytes = 0;
+  for (const batch of value) for (const edit of batch) {
+    bytes += new TextEncoder().encode(edit.text).byteLength;
+    if (++count > 1024 || bytes > 512 * 1024) return invalid();
   }
 }
 
@@ -27,7 +38,10 @@ export function assertAbsSourceEdits(value: unknown): asserts value is AbsSource
  * exact replay used for matching, not a second heuristic. */
 export function inspectAbsSourceEdits(before: string, after: string, original: AbsSyntaxNode[], edited: AbsSyntaxNode[],
   batches?: AbsSourceEdits) {
-  assertAbsSourceEdits(batches);
+  // Fixed CandidateRefs are checksum/byte-bound and replayed by the Host reader;
+  // old external proofs already passed bounded wire admission. Both use these
+  // same range, token-identity and complete replay checks.
+  assertAbsSourceEditRanges(batches);
   const matches = new Map<AbsSyntaxNode, AbsSyntaxNode>();
   const replaced = new Set<AbsSyntaxNode>();
   if (!batches) return { matches, replaced };

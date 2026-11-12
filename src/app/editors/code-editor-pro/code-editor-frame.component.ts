@@ -19,7 +19,7 @@ import {
   type CmdOutput,
   type RendererLifecycleEvent,
 } from '@core/platform/public-api';
-import { ConfigService, ThemeService } from '@core/preferences/public-api';
+import { ConfigService, ThemeService, ToolI18nService } from '@core/preferences/public-api';
 import {
   CodeEditorProProjectService,
   type CodeEditorProPersistenceBridge,
@@ -174,6 +174,7 @@ function boundedCoderNativeSearchInteger(
 })
 export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewInit, OnChanges {
   private readonly coderLayout = inject(CoderEditorLayoutService);
+  private readonly toolI18n = inject(ToolI18nService);
   @ViewChild('coderEmbedFrame') coderEmbedFrame?: ElementRef<HTMLIFrameElement>;
 
   @Input({ required: true }) projectPath = '';
@@ -241,7 +242,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     hasUnsavedChanges: async () => {
       const result = await this.requestCoderLifecycle('status');
       if (!result.ok) {
-        throw new Error(result.message || '无法检查 Aily Coder 未保存状态');
+        throw new Error(result.message || '无法检查 aily Coder 未保存状态');
       }
       return result.dirtyAfter > 0;
     },
@@ -601,7 +602,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         ok: false,
         dirtyBefore: 0,
         dirtyAfter: 0,
-        message: 'Aily Coder 编辑器尚未就绪',
+        message: 'aily Coder 编辑器尚未就绪',
       });
     }
 
@@ -647,7 +648,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         ok: false,
         dirtyBefore: 0,
         dirtyAfter: 0,
-        message: '等待 Aily Coder 保存确认超时',
+        message: '等待 aily Coder 保存确认超时',
       }), timeoutMs);
 
       window.addEventListener('message', listener);
@@ -945,6 +946,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private async updateAndRestartCoderEditor(): Promise<void> {
+    // APP_STORE.* 文案随应用商店按需加载，未打开应用商店时需在此补载。
+    await this.toolI18n.load('app-store');
     if (this.childToolProcess.getRuntimeSnapshot(AILY_CODER_EDITOR_SUBAPP_ID).running) {
       const confirmed = await this.confirmCoderEditorUpdateRestart(
         this.coderEditorUpdateState.state === 'restart-required',
@@ -957,7 +960,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       if (updated) {
         this.message.success(this.translate.instant(
           restartOnly ? 'APP_STORE.RESTART_SUCCESS' : 'APP_STORE.UPDATE_SUCCESS',
-          { name: 'Aily Coder Editor' },
+          { name: 'aily Coder Editor' },
         ));
       }
     } catch (error) {
@@ -967,7 +970,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private confirmCoderEditorUpdateRestart(restartFlow: boolean): Promise<boolean> {
-    const name = 'Aily Coder Editor';
+    const name = 'aily Coder Editor';
     return new Promise((resolve) => {
       this.modal.confirm({
         nzClassName: 'subapp-service-confirm-modal',
@@ -1039,7 +1042,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       await this.initCoderEmbed(root, false);
     } catch (error: any) {
       if (!this.isCurrentCoderWorkspace(root)) return;
-      console.error('Aily Coder Editor reinstallation failed', error);
+      console.error('aily Coder Editor reinstallation failed', error);
       this.detachCoderEmbedFrame();
       this.clearCoderEmbedLoadingTimers();
       this.coderEmbedLoading = false;
@@ -1556,6 +1559,17 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         /* 全局缓存目录 watch 失败时仍依赖 buildFinished */
       }
     }
+  }
+
+  /** 依赖恢复归档归主进程私有，一次库操作可写入数千文件，不转发给 Coder。 */
+  private isCoderDependencyRecoveryPath(watchRoot: string, filename?: string): boolean {
+    if (!filename) return false;
+    const pathApi = window['path'];
+    const relative = pathApi.relative(
+      pathApi.join(this.projectPath, '.aily', 'dependency-recovery'),
+      pathApi.resolve(watchRoot, filename),
+    );
+    return relative === '' || (!relative.startsWith('..') && !pathApi.isAbsolute(relative));
   }
 
   /** 将宿主 fs.watch 事件推送给内嵌 Coder iframe */
@@ -2463,6 +2477,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                       eventType: String(eventTypeOrEvent ?? ''),
                       filename: filenameArg ?? undefined,
                     };
+                if (this.isCoderDependencyRecoveryPath(abs, event.filename)) return;
                 this.pushCoderNativeFsWatchEvent(watchId, event);
                 this.scheduleSettledCoderNativeFsWatchEvent(watchId, event);
                 if (event.eventType === 'error') {

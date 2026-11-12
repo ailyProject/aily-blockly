@@ -5,8 +5,8 @@ import { ProjectLifecycleGate } from './project-lifecycle-gate';
 import { sha256Hex } from '../../../utils/crypto.utils';
 
 describe('ProjectService save as mode isolation', () => {
-  const source = '/Aily Projects/source';
-  const target = '/Aily Projects/My Copy';
+  const source = '/aily Projects/source';
+  const target = '/aily Projects/My Copy';
   let service: any;
   let files: Map<string, string>;
   let directories: Set<string>;
@@ -31,8 +31,18 @@ describe('ProjectService save as mode isolation', () => {
       [`${source}/sketch/src/main.cpp`, 'old code'],
       [`${source}/sketch/libraries/Local/Local.h`, 'local library'],
     ]);
-    directories = new Set(['/Aily Projects', source]);
+    directories = new Set(['/aily Projects', source]);
     fs = {
+      projectSyncStorageVersion: 2,
+      openProjectSyncStorage: async (root: string, guard: () => void) => {
+        const read = async (key: string) => { guard(); return files.get(`${root}/.aily/abs-sync/${key}`) ?? null; };
+        return { read, withLock: operation => new Promise((resolve, reject) => operation({ read,
+          replace: async (key: string, expected: string | null, text: string) => {
+            guard(); const path = `${root}/.aily/abs-sync/${key}`;
+            if ((files.has(path) ? `sha256:${await sha256Hex(files.get(path)!)}` : null) !== expected) return false;
+            files.set(path, text); return true;
+          } }, result => result.ok ? resolve(result.value) : reject(new Error(result.error.message)))) };
+      },
       existsSync: (path: string) => files.has(path) || directories.has(path),
       realpathAsync: jasmine.createSpy('realpath').and.callFake(async (path: string) => path),
       readFileSync: jasmine.createSpy('read').and.callFake((path: string) => {
@@ -308,7 +318,7 @@ describe('ProjectService save as mode isolation', () => {
     expect(validate).not.toHaveBeenCalled();
     expect(configure).not.toHaveBeenCalled();
     expect(files.get('/blockly-copy/project.abi')).toBe('{"blocks":{}}');
-    expect(service.projectOpen).toHaveBeenCalledOnceWith('/blockly-copy');
+    expect(service.projectOpen).toHaveBeenCalledOnceWith('/blockly-copy', {});
     expect(service.currentProjectPath).toBe('/blockly-copy');
   });
 
@@ -952,7 +962,7 @@ describe('ProjectService save as mode isolation', () => {
   it('reopens only an independently saved target after installed dependencies, preserving its latest partial view first', async () => {
     const f = await failedRecoveryTarget();
     f.application.captureBlocklyRecoveryFragment.and.resolveTo({ documentText: '{"partial":"latest target view"}' });
-    const priorArchiveCount = [...files.keys()].filter(path => path.startsWith(`${target}/recovery-source-`)).length;
+    const priorArchiveCount = [...files.keys()].filter(path => path.startsWith(`${target}/.aily/abs-sync/recoveries/source-`)).length;
     service.projectOpen.calls.reset();
     service.projectOpen.and.callFake(async (project: string, options: any) => {
       expect(project).toBe(target); expect(options.reason).toBe('reload'); expect(options.saveBeforeReload).toBeFalse();
@@ -964,7 +974,7 @@ describe('ProjectService save as mode isolation', () => {
     expect(result.ok).toBeTrue(); expect(result.ready).toBeTrue();
     expect(result.recoveryReload).toEqual(jasmine.objectContaining({ version: 1, project: target, source: 'saved-document', ready: true }));
     expect(result.recoveryReload.beforeAbiHash).toBe(result.recoveryReload.afterAbiHash);
-    expect([...files.keys()].filter(path => path.startsWith(`${target}/recovery-source-`)).length).toBe(priorArchiveCount + 1);
+    expect([...files.keys()].filter(path => path.startsWith(`${target}/.aily/abs-sync/recoveries/source-`)).length).toBe(priorArchiveCount + 1);
     expect(JSON.parse(files.get(result.recoveryArchive)! ).partialCanvas.document).toEqual({ partial: 'latest target view' });
     expect(files.get(`${target}/project.abi`)).toBe(f.original); expect(files.get(`${source}/project.abi`)).toBe(f.original);
     expect(service.save).not.toHaveBeenCalled();

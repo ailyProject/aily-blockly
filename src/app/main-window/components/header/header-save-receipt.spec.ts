@@ -52,12 +52,61 @@ describe('Header original save completion', () => {
     expect(header.projectSavingFromUi).toBeFalse();
   });
 
+  it('automatically restores the same runtime before saving without a picker or dialog', async () => {
+    let blocked = true;
+    header.projectService.hasBlocklyRuntimeRecovery = () => blocked;
+    header.projectService.recoverBlocklyRuntimeInPlace = jasmine.createSpy('restore').and.callFake(async (path: string) => {
+      expect(path).toBe('/isolated/project');
+      blocked = false;
+      return { ready: true };
+    });
+    header.projectService.save.and.callFake(async () => {
+      expect(blocked).toBeFalse();
+      return { success: true };
+    });
+    header.modal = { create: jasmine.createSpy('modal') };
+    header.selectSaveAsFolder = jasmine.createSpy('picker');
+    expect(await header.saveProjectFromUi()).toBeTrue();
+    expect(header.projectService.recoverBlocklyRuntimeInPlace).toHaveBeenCalledTimes(1);
+    expect(header.projectService.save).toHaveBeenCalledTimes(1);
+    expect(header.modal.create).not.toHaveBeenCalled();
+    expect(header.selectSaveAsFolder).not.toHaveBeenCalled();
+  });
+
+  it('does not save or offer a recovery copy after recovery cancellation', async () => {
+    header.projectService.hasBlocklyRuntimeRecovery = () => true;
+    header.projectService.recoverBlocklyRuntimeInPlace = jasmine.createSpy('restore').and.resolveTo({ ready: false, cancelled: true });
+    header.modal = { create: jasmine.createSpy('modal') };
+    expect(await header.saveProjectFromUi()).toBeFalse();
+    expect(header.projectService.save).not.toHaveBeenCalled();
+    expect(header.projectService.recoverBlocklyRuntimeInPlace).toHaveBeenCalledTimes(1);
+    expect(header.modal.create).not.toHaveBeenCalled();
+    expect(header.message.error).not.toHaveBeenCalled();
+  });
+
+  it('ignores an old runtime recovery after the current project is replaced', async () => {
+    header.projectService.hasBlocklyRuntimeRecovery = () => true;
+    header.projectService.recoverBlocklyRuntimeInPlace = jasmine.createSpy('restore').and.callFake(async () => {
+      header.projectService.currentProjectPath = '/isolated/newer-project';
+      return { ready: true };
+    });
+    expect(await header.saveProjectFromUi()).toBeFalse();
+    expect(header.projectService.save).not.toHaveBeenCalled();
+    expect(header.message.error).not.toHaveBeenCalled();
+  });
+
   it('accepts a committed document while its generated code waits for the active build', async () => {
+    header.autoSaveState = 'error';
+    header.autoSaveError = 'previous failure';
+    header.cd = { markForCheck: jasmine.createSpy('markForCheck') };
     header.projectService.save.and.resolveTo({ success: false, projectSaved: true,
       generatedCodePublished: false, partial: true, code: 'BUILD_WORKSPACE_BUSY', error: 'BUILD_WORKSPACE_BUSY: busy' });
     expect(await header.saveProjectFromUi()).toBeTrue();
     expect(header.message.error).not.toHaveBeenCalled();
     expect(header.projectService.save).toHaveBeenCalledTimes(1);
+    expect(header.autoSaveState).toBe('saved');
+    expect(header.autoSaveError).toBe('');
+    expect(header.cd.markForCheck).toHaveBeenCalledTimes(1);
   });
 
   it('still reports contention before any confirmed document commit', async () => {

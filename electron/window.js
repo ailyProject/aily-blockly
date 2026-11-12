@@ -1,5 +1,6 @@
 // 管理主窗口和子窗口的创建、状态同步及窗口控制操作。
 const { ipcMain, BrowserWindow, app, screen, webContents, safeStorage } = require("electron");
+const { createWindowStateController } = require('./window-state');
 const { requestWindowAttention } = require('./window-attention');
 const {
     getActiveCmdProcesses,
@@ -17,7 +18,7 @@ const {
 const {
     acquireOwner: acquireChildToolOwner,
     authorizeMessagePortSend: authorizeChildToolMessagePortSend,
-    authorizeExclusiveRestart: authorizeChildToolExclusiveRestart,
+    authorizeRestart: authorizeChildToolRestart,
     classifyRegistration: classifyChildToolSessionRegistration,
     electMessageControllerOwner: electChildToolMessageControllerOwner,
     ownerCount: childToolOwnerCount,
@@ -485,17 +486,26 @@ async function restartChildToolSession(toolIdOrPayload, ownerId) {
     if (!session) {
         return { success: false, reason: 'not-found' };
     }
-    const authorization = authorizeChildToolExclusiveRestart(session, ownerId, payload);
+    const authorization = authorizeChildToolRestart(session, ownerId, payload);
     if (!authorization.success) return authorization;
+    if (session.restartPromise) return session.restartPromise;
 
-    cancelChildToolRelease(session);
-    const stopped = await stopChildToolSessionProcess(session);
-    if (!stopped) {
-        return { success: false, reason: 'process-still-running' };
+    const task = (async () => {
+        cancelChildToolRelease(session);
+        const stopped = await stopChildToolSessionProcess(session);
+        if (!stopped) {
+            return { success: false, reason: 'process-still-running' };
+        }
+        pendingChildToolProcessMessages.delete(session.streamId);
+        if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
+        return { success: true };
+    })();
+    session.restartPromise = task;
+    try {
+        return await task;
+    } finally {
+        session.restartPromise = null;
     }
-    pendingChildToolProcessMessages.delete(session.streamId);
-    if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
-    return { success: true };
 }
 
 function resolveChildToolIdsForCatalogId(catalogId, includeDependencies = false) {
@@ -515,7 +525,7 @@ function resolveChildToolIdsForCatalogId(catalogId, includeDependencies = false)
 function getRunningSubappConfig(catalogId) {
     for (const toolId of resolveChildToolIdsForCatalogId(catalogId)) {
         const session = childToolSessions.get(toolId);
-        if (session?.hostInfo?.runtimeConfig) return session.hostInfo.runtimeConfig;
+        if (session?.hostInfo?.runtimeConfig && isChildToolSessionAlive(session)) return session.hostInfo.runtimeConfig;
     }
     return null;
 }
@@ -871,6 +881,7 @@ function terminateAilyProcess() {
 }
 
 function registerWindowHandlers(mainWindow, options = {}) {
+    const stateController = options.windowStateController || createWindowStateController({ screen });
     registerSubappOwnerSupervisor(ipcMain, subappOwnerSupervisor);
     const authRelay = new AilyHostAuthRelay({
         sendToRenderer: payload => mainWindow.webContents.send('child-tool-host-auth-request', payload),
@@ -2065,10 +2076,26 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     ipcMain.on("window-maximize", (event) => {
-        const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        if (senderWindow && !senderWindow.isMaximized()) {
-            senderWindow.maximize();
-        }
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (win) void stateController.change(win, 'maximize');
+    });
+    ipcMain.handle('window-toggle-maximize', (event) => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        return win ? stateController.change(win) : { success: false, error: 'window-not-found' };
+    });
+    ipcMain.on('window-get-state', event => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (win) stateController.attach(win);
+        event.returnValue = win ? stateController.snapshot(win) : null;
+    });
+    ipcMain.handle('window-get-diagnostics', event => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        return {
+            ...stateController.diagnostics(mainWindow),
+            currentWindow: win ? (stateController.attach(win), stateController.snapshot(win)) : null,
+            system: { platform: process.platform, osRelease: require('os').release(), osVersion: require('os').version(),
+                electron: process.versions.electron, chromium: process.versions.chrome },
+        };
     });
 
     ipcMain.handle("window-set-size", (event, data = {}) => {
@@ -2103,10 +2130,8 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     // 添加 unmaximize 处理程序
     ipcMain.on("window-unmaximize", (event) => {
-        const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        if (senderWindow && senderWindow.isMaximized()) {
-            senderWindow.unmaximize();
-        }
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (win) void stateController.change(win, 'restore');
     });
 
     // 监听获取全屏状态的请求

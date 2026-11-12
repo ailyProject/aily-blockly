@@ -71,7 +71,7 @@ test('Coder changes retain SHA, title, body and bounded diff for the existing bi
   const input = commit([coderFile], 'Fix project upload', diffFor(coderFile, 'retry upload in active Coder project'));
   const result = await generate(t, [input]);
   assert.deepEqual(promptEvidence(result.prompts[0])[0], { ...input, excludedFiles: [] });
-  assert.match(result.prompts[0], /Target product: Aily Coder/);
+  assert.match(result.prompts[0], /Target product: aily Coder/);
   assert.match(result.en, /Improved Coder upload reliability/);
   assert.ok(result.prompts[1].includes(result.en));
   assert.match(result.zh, /改善 Coder 上传可靠性/);
@@ -119,6 +119,6 @@ test('AI failure, missing AI config and malformed evidence never fall back to ra
 test('existing Blockly callers keep their plain commit input and product-neutral prompt', async t => {
   const result = await generate(t, 'Improve Blockly toolbox search', { product: '', bullet: 'Improved toolbox search.' });
   assert.match(result.prompts[0], /Raw commit records:\nImprove Blockly toolbox search/);
-  assert.doesNotMatch(result.prompts[0], /Target product: Aily Coder/);
+  assert.doesNotMatch(result.prompts[0], /Target product: aily Coder/);
   assert.match(result.en, /Improved toolbox search/);
 });

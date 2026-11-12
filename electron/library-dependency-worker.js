@@ -1,13 +1,47 @@
 // Executed by the bundled Node, with npm's own config and dependency resolver.
-// The request/result travel over pipes; no project draft files are created.
+// The request/result travel over pipes; the main dependency manager owns archives.
+let checkpointDisconnect;
 async function run(request) {
   const path = require('node:path');
+  const checkpoint = async (locations, writes) => {
+    if (!request.environmentCheckpoint) return;
+    const token = require('node:crypto').randomUUID();
+    await new Promise((resolve, reject) => {
+      const receive = value => {
+        if (value?.type !== 'environment-checkpoint-ack' || value.token !== token) return;
+        process.removeListener('message', receive);
+        value.ok ? resolve() : reject(new Error(value.error || 'Environment preservation failed'));
+      };
+      process.on('message', receive);
+      process.send({ type: 'environment-before-reify', token, locations, ...(writes ? { writes } : {}) });
+    });
+  };
+  if (request.environmentCheckpoint) {
+    checkpointDisconnect = () => process.exit(1);
+    process.once('disconnect', checkpointDisconnect);
+    // npm destructures this builtin before constructing its actual writers.
+    // Preserve their exact original input-write intent before delegating; no
+    // package/body text is emitted to diagnostics or returned to the model.
+    const promises = require('node:fs/promises'), write = promises.writeFile;
+    promises.writeFile = async (file, bytes, ...args) => {
+      const relative = typeof file === 'string' ? path.relative(process.cwd(), path.resolve(file)).replace(/\\/g, '/') : '';
+      if (['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'node_modules/.package-lock.json'].includes(relative)) {
+        const content = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : typeof bytes === 'string' ? bytes : null;
+        if (content === null) throw new Error('Unsupported managed dependency input encoding');
+        await checkpoint([], { [relative]: content });
+      }
+      return write.call(promises, file, bytes, ...args);
+    };
+  }
   if (request.materializeSources) {
     const fs = require('node:fs');
     const { collectLibraryPackages, extractLibrarySourceArchive, createLibrarySourceFingerprint } = require(request.preprocessPath);
     const manifest = request.manifest;
     const dependencies = Object.assign({}, ...['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].map(field => manifest[field]));
-    for (const library of collectLibraryPackages(dependencies, process.cwd())) {
+    const libraries = collectLibraryPackages(dependencies, process.cwd());
+    const expansions = libraries.filter(library => !fs.existsSync(path.join(library.packagePath, 'src')) && fs.existsSync(path.join(library.packagePath, 'src.7z')));
+    if (expansions.length) await checkpoint(expansions.map(library => path.posix.join('node_modules', library.packageName)));
+    for (const library of libraries) {
       const source = path.join(library.packagePath, 'src');
       const archive = path.join(library.packagePath, 'src.7z');
       if (!fs.existsSync(source) && fs.existsSync(archive)) {
@@ -42,8 +76,36 @@ async function run(request) {
       global: false, workspaces: false, audit: false, fund: false,
       ...(request.reconcileOnly ? { forceActual: true } : {}),
       add: [...additions.values()], rm: (request.remove || []).filter(name => !additions.has(name)), save: request.save === true,
-      savePrefix: '', packageLockOnly: request.save === true, foregroundScripts: true };
+      savePrefix: '', packageLockOnly: request.save === true, foregroundScripts: true,
+      // Managed changes promise a bounded filesystem mutation set. Arbitrary
+      // lifecycle scripts cannot participate in that promise; source expansion
+      // remains the explicit, checkpointed materializeSources operation above.
+      ...(request.environmentCheckpoint ? { ignoreScripts: true } : {}) };
     const arb = new Arborist(options);
+    if (request.environmentCheckpoint) {
+      const actual = await arb.loadActual({ forceActual: true });
+      const ideal = await arb.buildIdealTree(options);
+      const identity = node => JSON.stringify([node.version, node.resolved, node.integrity,
+        node.isLink, node.realpath, node.package?.dependencies, node.package?.optionalDependencies]);
+      const locations = new Set();
+      const retainBins = node => {
+        const bins = typeof node?.package?.bin === 'string' ? [node.name.split('/').pop()] : Object.keys(node?.package?.bin || {});
+        for (const name of bins) for (const suffix of process.platform === 'win32' ? ['', '.cmd', '.ps1'] : ['']) {
+          locations.add(`node_modules/.bin/${name}${suffix}`);
+        }
+      };
+      for (const [location, node] of actual.inventory) {
+        if (!location || !location.startsWith('node_modules/')) continue;
+        const target = ideal.inventory.get(location);
+        if (request.reconcileOnly && node.extraneous || !target || identity(node) !== identity(target)
+          || additions.has(node.name)) { locations.add(location); retainBins(node); retainBins(target); }
+      }
+      for (const [location, node] of ideal.inventory) {
+        // Inventory.has() takes a Node; a location string always misses.
+        if (location?.startsWith('node_modules/') && !actual.inventory.get(location)) { locations.add(location); retainBins(node); }
+      }
+      await checkpoint([...locations].sort());
+    }
     // Without a root lockfile, plain reify can retain packages recorded by the
     // hidden lockfile after an interrupted edit. A clean reopen must prune them.
     if (request.reconcileOnly) await arb.prune(options);
@@ -110,7 +172,14 @@ if (require.main === module || process.env.AILY_LIBRARY_WORKER === '1') {
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', value => { input += value; });
   process.stdin.on('end', () => run(JSON.parse(input)).then(
-    result => { process.send({ ok: true, ...result }); process.disconnect(); },
-    error => { process.send({ ok: false, error: error.message }); process.disconnect(); process.exitCode = 1; },
+    result => {
+      if (checkpointDisconnect) process.removeListener('disconnect', checkpointDisconnect);
+      process.send({ ok: true, ...result }, () => process.disconnect());
+    },
+    error => {
+      if (checkpointDisconnect) process.removeListener('disconnect', checkpointDisconnect);
+      process.exitCode = 1;
+      process.send({ ok: false, error: error.message }, () => process.disconnect());
+    },
   ));
 }

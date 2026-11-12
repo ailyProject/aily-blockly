@@ -13,7 +13,7 @@ const { values } = parseArgs({ options: {
   'reuse-angular': { type: 'boolean' }, help: { type: 'boolean' },
 } });
 if (values.help) {
-  console.log('npm --prefix e2e run test:message-popups -- --lex-root <Aily Lex 仓库> --appdata <已登录主软件 AppData> [--reuse-angular] [--output <证据目录>]');
+  console.log('npm --prefix e2e run test:message-popups -- --lex-root <aily Lex 仓库> --appdata <已登录主软件 AppData> [--reuse-angular] [--output <证据目录>]');
   process.exit(0);
 }
 const lex = values['lex-root'] || process.env.AILY_E2E_LEX_ROOT;

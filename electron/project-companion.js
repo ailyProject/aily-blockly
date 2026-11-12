@@ -6,8 +6,8 @@ const { promisify } = require('node:util');
 
 const runFile = promisify(execFile);
 const APPLICATIONS = {
-  blockly: { name: 'Aily Blockly', bundleId: 'blockly.aily.pro', names: ['aily blockly', 'aily-blockly'] },
-  coder: { name: 'Aily Coder', bundleId: 'coder.aily.pro', names: ['Aily Coder', 'aily-coder'] },
+  blockly: { name: 'aily Blockly', bundleId: 'blockly.aily.pro', names: ['aily blockly', 'aily-blockly'] },
+  coder: { name: 'aily Coder', bundleId: 'coder.aily.pro', names: ['aily Coder', 'Aily Coder', 'aily-coder'] },
 };
 
 function applicationForMode(mode) {

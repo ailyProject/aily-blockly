@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.111",
+  "version": "0.9.112",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -28,7 +28,7 @@
     ],
     "protocols": [
       {
-        "name": "Aily Blockly OAuth",
+        "name": "aily Blockly OAuth",
         "schemes": [
           "abis",
           "ailyblockly"
@@ -96,8 +96,8 @@
       "fileAssociations": [
         {
           "ext": "abi",
-          "name": "Aily Blockly Project",
-          "description": "Aily Blockly Project File",
+          "name": "aily Blockly Project",
+          "description": "aily Blockly Project File",
           "icon": "public/icon.ico",
           "role": "Editor"
         }
@@ -109,8 +109,8 @@
       "fileAssociations": [
         {
           "ext": "abi",
-          "name": "Aily Blockly Project",
-          "description": "Aily Blockly Project File",
+          "name": "aily Blockly Project",
+          "description": "aily Blockly Project File",
           "role": "Editor"
         }
       ]
@@ -120,8 +120,8 @@
       "fileAssociations": [
         {
           "ext": "abi",
-          "name": "Aily Blockly Project",
-          "description": "Aily Blockly Project File",
+          "name": "aily Blockly Project",
+          "description": "aily Blockly Project File",
           "mimeType": "application/x-aily-blockly-project"
         }
       ]

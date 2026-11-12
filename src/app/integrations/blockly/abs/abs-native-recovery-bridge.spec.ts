@@ -3,15 +3,31 @@ import { AbsGenerationToolsService } from './abs-generation-tools.service';
 import { AbsNativeCandidateFailures } from './abs-native-candidate-failures';
 import type { AbsGenerationCandidateRequest } from './abs-generation-protocol';
 import { AbsSyncError } from './abs-state';
+import { hashAbsText } from './abs-identity-map';
 
 /** Protocol composition only; real runtime reconstruction belongs to the isolated native suite. */
 describe('native recovery admission, tools and bridge receipt binding', () => {
   const oldFingerprint = 'a'.repeat(64), newFingerprint = 'b'.repeat(64), hash = `sha256:${oldFingerprint}`;
+  let previousFs: any;
+  beforeEach(() => {
+    previousFs = window['fs']; const files = new Map<string, string>();
+    window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async (_project, guard) => {
+      const read = async key => { guard(); return files.get(key) ?? null; };
+      return { read, withLock: operation => new Promise((resolve, reject) => operation({ read,
+        replace: async (key, expected, text) => {
+          guard(); const before = await read(key);
+          if ((before === null ? null : await hashAbsText(before)) !== expected) return false;
+          files.set(key, text); return true;
+        } }, result => result.ok ? resolve(result.value) : reject(new Error(result.error.message)))) };
+    } } as any;
+  });
+  afterEach(() => window['fs'] = previousFs);
   async function fixture() {
     const failures = new AbsNativeCandidateFailures();
+    const source = 'arduino_setup() {}';
     const request: AbsGenerationCandidateRequest = { version: 2, requestId: crypto.randomUUID(),
       base: { generation: 'base', scope: { projectKey: '/isolated/project', pageId: 'main' }, abiHash: hash, absHash: hash, mapHash: hash },
-      candidate: { hash, bytes: 24 } };
+      candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } };
     const description = (await failures.remember({ key: 'exact-native-failure', source: 'arduino_setup() {}', base: request.base,
       candidate: request.candidate, request, error: new AbsSyncError('ABS_NATIVE_TIMEOUT', 'native timed out') }))!;
     const params = { version: 2, action: 'prepare_native', ...description.recovery };

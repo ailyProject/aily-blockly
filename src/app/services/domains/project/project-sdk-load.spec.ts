@@ -10,7 +10,8 @@ describe('board configuration menu SDK readiness', () => {
   beforeEach(() => {
     oldPath = window['path']; oldFs = window['fs']; oldEnv = window['env'];
     existingPaths = new Set([sdkPath, boardsPath]);
-    window['path'] = { getAppDataPath: () => '/app' };
+    window['path'] = { getAppDataPath: () => '/app', join: (...parts: string[]) => parts.join('/'),
+      isExists: (path: string) => existingPaths.has(path) };
     window['env'] = { get: async () => '/app/sdk' };
     window['fs'] = {
       existsSync: (path: string) => existingPaths.has(path),
@@ -102,6 +103,15 @@ describe('board configuration menu SDK readiness', () => {
     expectUnavailableMenu(await service.getBoardConfigMenu(), service, manifest);
     expect(errorLog).not.toHaveBeenCalled();
     expect(window['fs'].readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('loads board options from the exact alternate SDK directory', async () => {
+    const { service } = fixture();
+    existingPaths = new Set(['/app/sdk/esp32@3.3.10', '/app/sdk/esp32@3.3.10/boards.txt', '/app/sdk/esp32_3.3.9']);
+
+    const menu = await service.getBoardConfigMenu();
+    expect(menu.find((item: any) => item.key === 'CDCOnBoot').disabled).toBeFalsy();
+    expect(window['fs'].readFileSync).toHaveBeenCalledWith('/app/sdk/esp32@3.3.10/boards.txt', 'utf8');
   });
 
   it('reads ready SDK options and keeps normal default persistence and pin synchronization', async () => {

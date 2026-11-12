@@ -34,6 +34,8 @@ export interface CmdOptions {
   projectPath?: string;
   projectSessionId?: string;
   signal?: AbortSignal;
+  /** Renderer-only observer scoped to this command; never serialized over IPC. */
+  onOutput?: (output: CmdOutput) => void;
 }
 
 interface QueuedTask {
@@ -65,7 +67,7 @@ export class CmdService {
    * @returns Observable<CmdOutput>
    */
   spawn(command: string, args?: string[], options?: Partial<CmdOptions>, silent: boolean = false): Observable<CmdOutput> {
-    const { signal, ...processOptions } = options || {};
+    const { signal, onOutput, ...processOptions } = options || {};
     if (signal?.aborted) return new Observable(observer => observer.error(cancelledCommandError()));
     const requestedStreamId = typeof options?.streamId === 'string' ? options.streamId.trim() : '';
     const streamId = requestedStreamId || `cmd_${Date.now()}_${Math.random()}`;
@@ -128,6 +130,8 @@ export class CmdService {
         }
       }
 
+      try { onOutput?.(data); }
+      catch (error) { console.warn('Command output observer failed:', error); }
       subject.next(data);
 
       // 如果是关闭或错误事件，完成Observable

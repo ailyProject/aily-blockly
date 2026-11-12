@@ -85,7 +85,8 @@
 <ng-template #contentTpl>
   <div class="child-tool-host">
     @if (isAilyChat) {
-    <app-subapp-activity-dock [sessionId]="ailyChatSessionId"></app-subapp-activity-dock>
+    <app-subapp-activity-dock [sessionId]="ailyChatSessionId"
+      (widthChange)="dockWidthChange.emit($event)"></app-subapp-activity-dock>
     }
     <div class="iframe-shell">
       @if (isNativeObserver) {

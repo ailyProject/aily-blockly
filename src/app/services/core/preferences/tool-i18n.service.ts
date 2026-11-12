@@ -64,7 +64,7 @@ export class ToolI18nService {
       .then(() => this.isCurrent(key, entry) ? this.loadTranslationData(toolName, lang, snapshot) : null)
       .then((data) => {
         if (!data || !this.isCurrent(key, entry)) return;
-        this.translate.setTranslation(lang, data, true);
+        this.translate.setTranslation(lang, this.normalizeChildToolCopy(data, snapshot), true);
         entry.loaded = true;
       })
       .catch((error) => {
@@ -82,6 +82,20 @@ export class ToolI18nService {
   async loadChildTools(lang: string = this.currentLang(), force = false): Promise<void> {
     const toolIds = Object.keys(getChildToolConfigs());
     await Promise.all(toolIds.map(toolId => this.load(toolId, lang, force)));
+  }
+
+  private normalizeChildToolCopy(data: Record<string, unknown>, config: ChildToolConfig | null): Record<string, unknown> {
+    if (!config) return data;
+    const namespace = data[config.namespace];
+    if (!namespace || typeof namespace !== 'object' || Array.isArray(namespace)) return data;
+    const copy = { ...namespace } as Record<string, unknown>;
+    const titleKey = config.titleKey.startsWith(`${config.namespace}.`)
+      ? config.titleKey.slice(config.namespace.length + 1)
+      : '';
+    for (const key of new Set(['TITLE', 'NAME', 'DESCRIPTION', titleKey])) {
+      if (typeof copy[key] === 'string') copy[key] = copy[key].replace(/\baily\b/gi, 'aily');
+    }
+    return { ...data, [config.namespace]: copy };
   }
 
   private sourceKey(config: ChildToolConfig | null): string {

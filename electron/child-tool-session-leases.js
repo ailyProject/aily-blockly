@@ -147,10 +147,18 @@ function ownerCount(session) {
   return session?.owners instanceof Map ? session.owners.size : 0;
 }
 
-function authorizeExclusiveRestart(session, ownerId, payload = {}) {
+function authorizeRestart(session, ownerId, payload = {}) {
   if (!session) return { success: false, reason: 'not-found' };
   if (payload.streamId && payload.streamId !== session.streamId) {
     return { success: false, reason: 'stale-session' };
+  }
+  // Explicit restarts replace the Runtime shared by the UI and background
+  // bridges. Automatic entry/region reconciliation remains exclusive.
+  if (payload.restartShared === true) {
+    if (!payload.streamId) return { success: false, reason: 'stale-session' };
+    return hasOwner(session, ownerId, payload.leaseId)
+      ? { success: true }
+      : { success: false, reason: 'owner-not-authorized' };
   }
   if (ownerCount(session) > 1 || (ownerCount(session) > 0 && !hasOwner(session, ownerId, payload.leaseId))) {
     return { success: false, reason: 'shared-runtime-in-use' };
@@ -166,7 +174,7 @@ function classifyRegistration(existing, candidateStreamId, existingAlive) {
 
 module.exports = {
   acquireOwner,
-  authorizeExclusiveRestart,
+  authorizeRestart,
   authorizeMessagePortSend,
   classifyRegistration,
   electMessageControllerOwner,

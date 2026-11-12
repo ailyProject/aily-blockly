@@ -8,6 +8,27 @@ export function mainMenuAutomationRejection(
   action: string | undefined,
   itemId: string,
 ): UiAutomationCommandResult | null {
+  if (action === 'project-save-as' || action === 'project-save') return {
+    ok: false, operation: 'main_menu_execute', itemId, action,
+    code: action === 'project-save-as' ? 'PROJECT_RECOVERY_IN_PLACE_REQUIRED' : 'PROJECT_SAVE_REQUIRES_TOOL',
+    reason: action === 'project-save-as' ? 'project_copy_requires_user_intent' : 'project_save_requires_candidate_preservation',
+    requiresUserAction: false, retryable: false, commandDispatched: false,
+    nextAction: { tool: action === 'project-save-as' ? 'project_recover' : 'project_save',
+      ...(action === 'project-save-as' ? { input: { action: 'inspect' } } : {}) },
+    message: action === 'project-save-as'
+      ? '自动恢复必须留在当前项目；系统保存内部恢复版本，不得要求用户打开或切换副本。'
+      : '请使用当前项目的 project_save 工具，系统会先保留待应用的 ABS 草稿再保存当前画布。',
+  };
+  const lifecycleTool = action === 'project-new' ? 'project_create'
+    : action === 'project-open' || action === 'recent-project-open' ? 'app_open'
+    : action === 'project-close' ? 'app_close' : undefined;
+  if (lifecycleTool) return {
+    ok: false, operation: 'main_menu_execute', itemId, action,
+    code: 'PROJECT_LIFECYCLE_REQUIRES_TOOL', reason: 'project_lifecycle_requires_candidate_preservation',
+    requiresUserAction: false, retryable: false, commandDispatched: false,
+    nextAction: { tool: lifecycleTool },
+    message: `请使用 ${lifecycleTool} 工具，先保留当前项目的待应用草稿，再执行项目操作；不得让用户通过菜单对话接手内部恢复。`,
+  };
   if (action !== 'app-exit') {
     return null;
   }

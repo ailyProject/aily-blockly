@@ -497,7 +497,10 @@ function activate(rootDir, entry, prepared, options = {}) {
     if (active) {
       if (active.selected.version === selected.version && active.selected.path === selected.path
         && (active.selected.integrity || null) === (selected.integrity || null)
-        && active.mode === (options.mode === 'pinned' ? 'pinned' : 'auto')) return selected;
+        && active.mode === (options.mode === 'pinned' ? 'pinned' : 'auto')) {
+        clearManualUninstall(rootDir, entry);
+        return selected;
+      }
       previous = active.selected;
     }
   } catch {
@@ -518,7 +521,35 @@ function activate(rootDir, entry, prepared, options = {}) {
     previous,
     activatedAt: new Date().toISOString(),
   });
+  clearManualUninstall(rootDir, entry);
   return selected;
+}
+
+// Keep the user's removal decision outside the package directory being deleted.
+// Catalog identity survives both version changes and package-name migrations.
+function manualUninstallPath(rootDir, entry, create = false) {
+  validateEntry(entry, false);
+  const parent = directory(rootDir, ['store', '.uninstalled'], { create, optional: !create });
+  return parent ? path.join(parent, `${entry.id}.json`) : null;
+}
+
+function markManuallyUninstalled(rootDir, entry) {
+  writeJsonAtomic(manualUninstallPath(rootDir, entry, true), {
+    schemaVersion: 1,
+    id: entry.id,
+    uninstalledAt: new Date().toISOString(),
+  });
+}
+
+function isManuallyUninstalled(rootDir, entry) {
+  const file = manualUninstallPath(rootDir, entry);
+  const value = file && readJson(file, true);
+  return !!value && value.schemaVersion === 1 && value.id === entry.id;
+}
+
+function clearManualUninstall(rootDir, entry) {
+  const file = manualUninstallPath(rootDir, entry);
+  if (file) fs.rmSync(file, { force: true });
 }
 
 function uninstallMarkerPath(rootDir, entry, create = false) {
@@ -563,7 +594,9 @@ module.exports = {
   beginUninstall,
   createCandidate,
   finishUninstall,
+  isManuallyUninstalled,
   isUninstalling,
+  markManuallyUninstalled,
   publishCandidate,
   readActiveManifest,
   readPrepared,

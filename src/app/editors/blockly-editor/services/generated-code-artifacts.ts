@@ -10,6 +10,9 @@ export interface GeneratedSourcePublicationOptions { readonly preserveSuperseded
 
 export interface GeneratedSourcePublicationReceipt {
   changed: boolean;
+  target?: 'preview' | 'disk';
+  previewPublished?: boolean;
+  diskPublished?: boolean;
   sourceArchive?: { version: 1; manifest: string; hash: string; fileCount: number; bytes: number };
 }
 

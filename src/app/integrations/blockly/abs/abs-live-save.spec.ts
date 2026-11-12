@@ -82,6 +82,21 @@ describe('live Blockly save completion', () => {
         ['live-blockly-operation', true], ['live-blockly-operation', false],
       ]);
     }));
+
+    for (const code of ['BUILD_WORKSPACE_BUSY', 'PROJECT_DEPENDENCY_SAVE_FAILED']) {
+      it(`${operation} keeps a saved source in place after ${code}`, async () => {
+        const f = fixture();
+        const pending = f.service[operation]();
+        f.rejectSave(Object.assign(new Error('The source is saved; a later stage failed.'), {
+          code, projectSaved: true, generatedCodePublished: false, partial: true,
+        }));
+        const result = await pending;
+        expect(result).toEqual(jasmine.objectContaining({ ok: false, projectSaved: true,
+          generatedCodePublished: false, partial: true, code }));
+        expect(result.recovery).toContain('this same project');
+        expect(result.recovery).not.toContain('fork');
+      });
+    }
   }
 
   it('rejects a project switch while tidy is queued before touching either workspace', async () => {

@@ -14,7 +14,8 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * This is deliberately not the Services CAS/ledger. Usage is synthetic and no
  * credentials, tool-result bodies or program source enter snapshot evidence.
  */
-export async function createAbsTerminalExpiryBridge({ interactionId, nextTool, mode = 'available', resultFault, unsettledTool }) {
+export async function createAbsTerminalExpiryBridge({ interactionId, nextTool, mode = 'available', resultFault, unsettledTool, allowEarlyStateProbe = false,
+  finalText = 'Isolated ABS read, write and edit completed exactly once. Validation, application, reopen and C3 compilation passed. Final response recovered without replay.' }) {
   assert.match(interactionId, /^[a-zA-Z0-9_-]{1,128}$/)
   assert.equal(typeof nextTool, 'function')
   assert.ok(['available', 'missing', 'incomplete'].includes(mode))
@@ -23,7 +24,7 @@ export async function createAbsTerminalExpiryBridge({ interactionId, nextTool, m
   assert.ok(unsettledTool === undefined || (mode === 'available' && typeof unsettledTool.id === 'string'
     && typeof unsettledTool.name === 'string' && typeof unsettledTool.arguments === 'object'))
   const operations = new Map(), requests = [], failures = []
-  const finalText = 'Isolated ABS read, write and edit completed exactly once. Validation, application, reopen and C3 compilation passed. Final response recovered without replay.'
+  assert.ok(typeof finalText === 'string' && finalText.length >= 72 && finalText.length <= 4096)
   const prefix = finalText.slice(0, 72), base = `/api/v3/interactions/${interactionId}`
   const operation = step => `${interactionId}:${step}`
   const lease = step => `isolated-terminal-lease-${step}`
@@ -137,7 +138,7 @@ export async function createAbsTerminalExpiryBridge({ interactionId, nextTool, m
         value.eventReads++
         json(response, { error: 'interaction_operation_expired' }, 410)
       } else if (match[2] === 'state') {
-        assert.ok(value.eventReads >= 1, 'The first event reconnect must already have expired')
+        if (!allowEarlyStateProbe) assert.ok(value.eventReads >= 1, 'The first event reconnect must already have expired')
         value.stateReads++
         json(response, { interactionId, operationId: operation(step), operationStepIndex: step, stepIndex: step + 1,
           status: 'completed', pendingKind: 'none', lastSequence: null, streamState: 'expired',

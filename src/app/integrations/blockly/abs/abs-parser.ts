@@ -1719,7 +1719,7 @@ export function parseAbs(code: string): AbsParseResult {
  */
 export function getAbsSyntaxHelp(): string {
   return `
-# Blockly ABS 语法指南 (Aily Block Syntax)
+# Blockly ABS 语法指南 (aily Block Syntax)
 
 ## 基本语法
 

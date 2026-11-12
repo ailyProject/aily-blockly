@@ -6,6 +6,45 @@ const { createRequire } = require('node:module');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const { acquireOwner } = require('../../electron/child-tool-session-leases');
+
+test('concurrent shared restarts stop once and broadcast an expected exit to all windows', async () => {
+  const harness = createHarness();
+  const session = harness.register('shared-stream');
+  acquireOwner(session, 1, 'background');
+  acquireOwner(session, 2, 'standalone');
+  let stops = 0, finish;
+  harness.stop = () => {
+    stops++;
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const request = { toolId: 'fixture', streamId: 'shared-stream', leaseId: 'standalone', restartShared: true };
+  const first = harness.api.restartChildToolSession(request, 2);
+  const second = harness.api.restartChildToolSession({ ...request, leaseId: 'background' }, 1);
+  assert.equal(stops, 1);
+  assert.equal(harness.api.childToolSessions.get('fixture'), session);
+  finish(true);
+  for (const result of await Promise.all([first, second])) assert.equal(result.success, true);
+  assert.equal(harness.api.childToolSessions.has('fixture'), false);
+  assert.equal(harness.messages.length, 2);
+  assert.equal(harness.messages.every(message => message.payload[0].exit.expected), true);
+});
+
+test('an unconfirmed shared restart keeps its registration and can be retried', async () => {
+  const harness = createHarness();
+  const session = harness.register('shared-stream');
+  acquireOwner(session, 1, 'background');
+  acquireOwner(session, 2, 'standalone');
+  const request = { toolId: 'fixture', streamId: 'shared-stream', leaseId: 'standalone', restartShared: true };
+  harness.stop = async () => false;
+  assert.equal((await harness.api.restartChildToolSession(request, 2)).reason, 'process-still-running');
+  assert.equal(harness.api.childToolSessions.get('fixture'), session);
+  assert.equal(session.owners.size, 2);
+  assert.equal(harness.messages.length, 0);
+  harness.stop = async () => true;
+  assert.equal((await harness.api.restartChildToolSession(request, 2)).success, true);
+  assert.equal(harness.api.childToolSessions.has('fixture'), false);
+});
 
 test('main broadcasts an exact-stream exit to every window even after its spawning renderer has gone', () => {
   const harness = createHarness();
@@ -78,7 +117,7 @@ function createHarness() {
   };
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(file, 'utf8') + `
-    module.exports.testApi = { childToolSessions, listChildToolSessions, isChildToolSessionAlive, stopChildToolSessionProcess };
+    module.exports.testApi = { childToolSessions, listChildToolSessions, isChildToolSessionAlive, stopChildToolSessionProcess, restartChildToolSession };
   `, {
     module,
     require: id => {

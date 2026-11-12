@@ -13,6 +13,7 @@ function isProjectWriterTransient(relativePath) {
   const name = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
   return name === '.aily/project-files.write.lock'
     || name === '.aily/project-open.lock'
+    || name === '.aily/build-executions'
     || BUILD_WORKSPACE_OWNER_FILES.has(name)
     || /^(?:\.aily\/abs-sync\/(?:baselines\/)?)?\.abs-sync-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name)
     || /^\.(?:project\.(?:abi|abs|abs\.map\.json)|project-data-backup)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name);

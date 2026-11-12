@@ -32,7 +32,7 @@ function catalogEntry(version, archive, overrides = {}) {
     version,
     namespace: 'AILY_CHAT',
     titleKey: 'AILY_CHAT.NAME',
-    app: { name: 'Aily Chat', enabled: true },
+    app: { name: 'aily Chat', enabled: true },
     update: { download: 'background', install: 'next-launch' },
     dist: { tarball: `https://packages.example.test/${version}.tgz`, integrity: integrity(archive) },
     ...overrides,
@@ -759,7 +759,7 @@ test('published self-contained Aily Coder packages without the portable marker s
     }),
     'index.js': "import './runtime/index.js';\n",
     'runtime/index.js': 'export const version = 1;\n',
-    'ui/index.html': '<h1>Aily Coder</h1>',
+    'ui/index.html': '<h1>aily Coder</h1>',
   });
   const entry = {
     id,
@@ -767,7 +767,7 @@ test('published self-contained Aily Coder packages without the portable marker s
     version,
     namespace: 'AILY_CODER_EDITOR',
     titleKey: 'AILY_CODER_EDITOR.TITLE',
-    app: { name: 'Aily Coder Editor', enabled: true, extension: true },
+    app: { name: 'aily Coder Editor', enabled: true, extension: true },
     dist: { tarball: `https://packages.example.test/${version}.tgz`, integrity: integrity(archive) },
   };
   let npmCalls = 0;
@@ -854,6 +854,26 @@ test('uninstall removes B, every A version, cache and only this root dependency'
   assert.equal(rootLock.packages[`node_modules/${PACKAGE}`], undefined);
   assert.ok(rootLock.packages['node_modules/other']);
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('manual removal survives a manager restart and a failed reinstall; successful reinstall clears it', async t => {
+  const f = fixture(t);
+  assert.equal((await f.manager.list()).apps[0].manuallyUninstalled, false);
+  await f.manager.install({ id: ID });
+  const removed = await f.manager.uninstall({ id: ID });
+  assert.equal(removed.apps[0].installed, false);
+  assert.equal(removed.apps[0].manuallyUninstalled, true);
+  const restarted = createSubappManager(f.managerOptions);
+  assert.equal((await restarted.list()).apps[0].manuallyUninstalled, true);
+  const offline = createSubappManager({ ...f.managerOptions,
+    downloadFile: async () => { throw new Error('offline'); },
+  });
+  await assert.rejects(offline.install({ id: ID }), /offline/);
+  assert.equal((await restarted.list()).apps[0].manuallyUninstalled, true);
+  const installed = await restarted.install({ id: ID });
+  assert.equal(installed.apps[0].installed, true);
+  assert.equal(installed.apps[0].manuallyUninstalled, false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), false);
 });
 
 function coderUninstallFixture(t, managerOptions = {}) {
@@ -946,6 +966,7 @@ test('a busy Windows preflight keeps the installation visible and a forced retry
   writeRunnablePackage(legacy, '0.1.32');
   await assert.rejects(f.manager.uninstall({ id: ID }), error => error.requiresForceClose === true);
   assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), false);
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, true);
   assert.ok(fs.existsSync(path.join(legacy, 'package.json')));
   await f.manager.uninstall({ id: ID, forceClose: true });
@@ -1337,4 +1358,29 @@ test('offline activation rejects a damaged cached archive and preserves the sele
   assert.equal(fs.existsSync(versions.activePath(f.rootDir, f.entry)), false);
   // Drain a catalog-triggered retry before deleting the fixture.
   await manager.downloadUpdate({ id: ID }).catch(() => {});
+});
+
+
+test('feedback diagnostics report missing Chat without network or background installation', t => {
+  const f = fixture(t);
+  assert.deepEqual(f.manager.diagnostics(), { ailyChat: {
+    installed: false, installedVersion: null, selectedVersion: null, selectedSource: null,
+    running: false, runningVersion: null, runningSource: null,
+  } });
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.downloads.length, 0);
+});
+
+test('feedback distinguishes selected installed Chat from an older running runtime', t => {
+  const f = fixture(t, { managerOptions: { getRunningSubappConfig: () => ({ version: '0.1.30',
+    env: { AILY_SUBAPP_SOURCE: 'portable' } }) } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.33');
+  const chat = f.manager.diagnostics().ailyChat;
+  assert.equal(chat.installed, true);
+  assert.equal(chat.installedVersion, '0.1.33');
+  assert.equal(chat.selectedVersion, '0.1.33');
+  assert.equal(chat.selectedSource, 'legacy-npm');
+  assert.equal(chat.runningVersion, '0.1.30');
+  assert.equal(chat.runningSource, 'portable');
+  assert.equal(f.calls.length, 0);
 });

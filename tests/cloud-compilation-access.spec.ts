@@ -102,15 +102,16 @@ describe('cloud compilation account access', () => {
     } finally { subscription.unsubscribe(); }
   });
 
-  it('restores local SDK requirements when Pro access is lost', () => {
-    window['path'] = { getAppDataPath: () => '/sdk', isExists: () => false };
+  it('restores local SDK requirements when Pro access is lost', async () => {
+    window['path'] = { getAppDataPath: () => '/sdk', isExists: () => false, join: (...parts: string[]) => parts.join('/') };
     const project = Object.assign(Object.create(ProjectService.prototype), { configService: config, currentProjectPathSubject: { value: '/project' } });
-    const npm = Object.assign(Object.create(NpmService.prototype), { configService: config, prjService: project });
+    const npm = Object.assign(Object.create(NpmService.prototype), { configService: config, prjService: project,
+      getPlatformPathBases: async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' }) });
     const board = { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } };
     account(true, 'pro');
-    expect(npm.getMissingBoardDependencies(board)).toEqual([]);
+    expect(await npm.getMissingBoardDependencies(board)).toEqual([]);
     account(true, 'free');
-    expect(npm.getMissingBoardDependencies(board)).toEqual(['@aily-project/sdk-test@1.0.0']);
+    expect(await npm.getMissingBoardDependencies(board)).toEqual(['@aily-project/sdk-test@1.0.0']);
   });
 
   it('submits Coder compilation to the local branch with a saved cloud preference after logout', async () => {

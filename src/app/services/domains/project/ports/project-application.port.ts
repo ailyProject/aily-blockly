@@ -2,6 +2,7 @@ import { InjectionToken } from '@angular/core';
 import type { BlocklySaveAsSnapshot, ProjectSaveOutcome } from '../project-save-outcome';
 import type { ProjectRecoveryFragment } from '../project-disk-recovery';
 import type { ProjectConflictChoice, ProjectConflictOffer, ProjectConflictResolution } from '../project-conflict';
+import type { ProjectSaveRequest, ProjectSaveReceiptResponse } from '../project-save-receipts';
 
 export interface ProjectFooterState {
   state: string;
@@ -48,10 +49,15 @@ export interface ProjectApplicationPort {
   prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
   /** A zero feedback budget retains the original editor completion. Transport
    * observers use the domain receipt, never cancel or replay this save. */
-  dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
+  dispatchProjectSave(path: string, timeoutMs: number, request?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult>;
+  observeProjectPublication?(path: string, request: ProjectSaveRequest, originalTargetPid?: number): Promise<ProjectSaveReceiptResponse | null>;
   inspectBlocklyConflict?(path: string): Promise<ProjectConflictOffer>;
   resolveBlocklyConflict?(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution>;
   captureBlocklySaveAsSnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
+  /** Capture the active editor revision and materialize its generated inputs in a new Coder project. */
+  createBlocklyCoderProject(sourcePath: string): Promise<string>;
+  /** Read existing matching build evidence only; never compile as a conversion prerequisite. */
+  hasVerifiedBlocklyBuild?(sourcePath: string): Promise<boolean>;
   captureBlocklyRecoveryCopySnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
   captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;
@@ -68,8 +74,14 @@ export interface ProjectApplicationPort {
   /** File equality alone is not evidence that a failed Realm became ready. */
   isBlocklyLibraryRuntimeReady?(projectPath: string): boolean;
   hasBlocklyRuntimeRecovery?(projectPath: string): boolean;
+  recoverBlocklyRuntimeInPlace?(projectPath: string, signal?: AbortSignal): Promise<{ ready: boolean; cancelled?: boolean; code?: string; message?: string }>;
+  acknowledgeBlocklyRecoveryDiscard?(projectPath: string): Promise<void>;
+  prepareBlocklyRecoveryDiscard?(projectPath: string): Promise<{ commit(): Promise<void>; dispose(): void }>;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
+  /** Host-owned callback only, admitted by the existing durable document publisher. */
+  publishBlocklyEnvironmentMutation?(projectPath: string, mutate: (publication: unknown) => Promise<any>, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome>;
+  settleEnvironmentBeforeOpen?(projectPath: string, assertCurrent: () => void): Promise<void>;
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean>;
   materializeCoderProjectLibraries(projectPath: string): Promise<void>;
 }

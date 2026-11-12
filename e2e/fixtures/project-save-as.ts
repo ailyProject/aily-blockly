@@ -129,6 +129,9 @@ export class SaveAsApp {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     for (const region of Object.values(config.regions || {}) as any[]) region.api_server = catalogUrl;
     config.onboardingCompleted = true; config.blocklyOnboardingCompleted = true;
+    // These flows intentionally exercise unsaved edits. Keep the product's idle
+    // auto-save disabled only in this private test configuration.
+    config.blockly = { ...config.blockly, autoSave: false };
     config.project_path = path.join(work, 'projects'); writeJson(configPath, config);
     writeJson(path.join(appdata, 'auth', `${this.mode}.json`), { access_token: 'isolated-e2e' });
     const board = path.join(seed, 'node_modules/@aily-project/board-arduino_uno');
@@ -198,8 +201,21 @@ export class SaveAsApp {
   async menu(icon: string) {
     // Do not mistake a previous operation's still-visible toast for this operation's result.
     await expect(this.page.locator('.ant-message-notice')).toHaveCount(0);
-    await this.page.locator('app-main-window app-header .menu').click();
-    await this.page.locator(`app-header app-menu:not(.ports) .menu-item:has(i.${icon})`).click();
+    const item = this.page.locator(`app-header app-menu:not(.ports) .menu-item:has(i.${icon})`);
+    await until(async () => {
+      if (!await item.isVisible()) {
+        if (!await this.page.locator('app-header app-menu:not(.ports)').isVisible())
+          await this.page.locator('app-main-window app-header .menu').click();
+        return false;
+      }
+      try { await item.click({ timeout: 1_500 }); return true; }
+      catch (error) {
+        // Initial sign-in/Chat opening can close the menu between observation
+        // and click. Retry that transition; retain real overlay/action errors.
+        if (await item.isVisible()) throw error;
+        return false;
+      }
+    }, `菜单操作 ${icon}`);
   }
   active() { return new URLSearchParams(new URL(this.page.url()).hash.split('?')[1]).get('path'); }
   async open(directory: string) {
@@ -306,8 +322,17 @@ export class SaveAsApp {
   }
   async warning(pattern: RegExp) { await this.page.locator('.ant-message-notice-content').filter({ hasText: pattern }).last().waitFor(); }
   async chat() {
-    await this.page.locator('app-header .toolbox .btn:has(i.fa-star-christmas)').click();
-    this.frame = await until(async () => { for (const frame of this.page.frames()) if (await frame.locator('.aily-chat-wrapper').count()) return frame; }, '真实 Chat iframe', 120_000);
+    this.frame = await until(async () => {
+      for (const iframe of await this.page.locator('app-main-window nz-sider app-child-tool-host iframe').all()) {
+        const frame = await (await iframe.elementHandle())?.contentFrame();
+        if (frame && await frame.locator('.aily-chat-wrapper').count().catch(() => 0)) return frame;
+      }
+      // Sign-in may already have opened Chat while its iframe is still loading.
+      // The toolbar toggles it, so check and click atomically in the renderer.
+      await this.page.locator('app-header .toolbox .btn:has(i.fa-star-christmas)').evaluate(element => {
+        if (!element.classList.contains('selected')) (element as HTMLElement).click();
+      });
+    }, '真实 Chat iframe', 120_000);
     await this.frame.locator('.aily-chat-composer-input[role="textbox"]').waitFor({ timeout: 60_000 });
     const url = new URL(this.frame.url());
     const inspect = async (method: string, values = {}) => {

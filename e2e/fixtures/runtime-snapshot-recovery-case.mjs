@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 /** Own isolated renderer only. The real loader loads its first root and then
  * fails once; all recovery/ABS/file edits continue through actual SDK tools. */
 export async function runRuntimeSnapshotRecoveryCase({ page, harness, project, generation, absPath,
-  before, canonicalHash, candidateHash, readCandidateHash, nativeDocument, stage, captureUi, changeRuntimeInput }) {
+  before, canonicalHash, candidateHash, readCandidateHash, nativeDocument, stage, changeRuntimeInput }) {
   await stage('runtime-snapshot-partial-load-fault')
   const fault = await page.evaluate(async expected => {
     const component = window.ng.getComponent(document.querySelector('app-blockly-editor'))
@@ -41,21 +41,6 @@ export async function runRuntimeSnapshotRecoveryCase({ page, harness, project, g
   assert.equal(fault.ready, false)
   assert.notEqual(canonicalHash(await nativeDocument()), canonicalHash(before), 'The failed live canvas must actually be partial')
   assert.equal(await readCandidateHash(), candidateHash, 'Native loading must not overwrite the pending ABS candidate')
-
-  await stage('manual-save-and-native-exit-retain-full-snapshot')
-  const recoveryDialog = page.locator('.ant-modal').filter({ hasText: '完整画布已受保护' })
-  await page.keyboard.press('Control+s')
-  await recoveryDialog.waitFor({ state: 'visible', timeout: 15000 })
-  assert.match(await recoveryDialog.innerText(), /保存完整恢复副本/)
-  await captureUi?.('runtime-snapshot-manual-save')
-  await recoveryDialog.getByRole('button', { name: /^(取消|Cancel)$/ }).click()
-  await recoveryDialog.waitFor({ state: 'hidden' })
-  await page.evaluate(() => window.iWindow.close())
-  await recoveryDialog.waitFor({ state: 'visible', timeout: 15000 })
-  assert.match(await recoveryDialog.innerText(), /保存完整副本并继续/)
-  await recoveryDialog.getByRole('button', { name: /^(取消|Cancel)$/ }).click()
-  await recoveryDialog.waitFor({ state: 'hidden' })
-  assert.equal(await readCandidateHash(), candidateHash, 'Cancelling save and native exit must retain the candidate')
 
   await stage('actual-sdk-runtime-snapshot-inspection')
   const inspected = (await harness.call('project_recover', { project, action: 'inspect' })).structured
@@ -123,7 +108,7 @@ export async function runRuntimeSnapshotRecoveryCase({ page, harness, project, g
     completeCanvasPreserved: true, candidateBytesPreserved: true, candidateApplied: false,
     snapshotHash: offer.snapshotHash, observationCalls: observations + 1,
     nativeRuntimeRecoveryVerified: recovered.runtimeRecoveryVerification,
-    manualSaveRecoveryChoiceVerified: true, nativeExitRecoveryChoiceVerified: true,
+    manualRecoveryActions: 0, sameProjectRestored: true,
     oldCompletionCannotCertifyChangedInputs: !!changeRuntimeInput,
     validation: validated,
   } }

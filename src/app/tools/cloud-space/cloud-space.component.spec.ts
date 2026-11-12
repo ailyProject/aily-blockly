@@ -2,9 +2,11 @@ import { BehaviorSubject, NEVER, of, Subject } from 'rxjs';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api';
 import { detectProjectMode, projectDataRuntime } from '@domain/project/public-api';
 import { CloudSpaceComponent } from './cloud-space.component';
+import { AbsBaselineStore, absBaselineKey } from '../../integrations/blockly/abs/abs-baseline-store';
+import { absJson, createAbsProjection, hashAbsText } from '../../integrations/blockly/abs/abs-identity-map';
 
 describe('CloudSpace project packaging and sync mode isolation', () => {
-  const root = '/Aily Projects/demo';
+  const root = '/aily Projects/demo';
   let component: any;
   let files: Map<string, string>;
   let directories: Set<string>;
@@ -34,6 +36,17 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       statSync: (path: string) => ({ size: files.get(path)?.length || 0 }),
     };
     window['path'] = { join: (...parts: string[]) => parts.join('/') };
+    const filePath = (key: string) => root + '/' + (['package.json', 'project.abi', 'project.abs', 'project.abs.map.json'].includes(key) ? key : '.aily/abs-sync/' + key);
+    const read = async (key: string) => files.get(filePath(key)) ?? null;
+    const access = { read, replace: async (key: string, expected: string | null, content: string | null) => {
+      const before = await read(key);
+      if ((before === null ? null : await hashAbsText(before)) !== expected) return false;
+      if (content === null) files.delete(filePath(key)); else files.set(filePath(key), content);
+      return true;
+    } };
+    window['fs'].projectSyncStorageVersion = 2;
+    window['fs'].openProjectSyncStorage = async () => ({ read, withLock: run => new Promise((resolve, reject) =>
+      run(access, result => result.ok ? resolve(result.value) : reject(result.error))) });
     window['os'] = { tmpdir: () => '/tmp' };
     component = Object.create(CloudSpaceComponent.prototype);
     component.message = { error: jasmine.createSpy('error'), success: jasmine.createSpy('success') };
@@ -113,10 +126,42 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
     expect(flush).toHaveBeenCalledTimes(1);
     expect(validate).toHaveBeenCalledOnceWith([{ blocks: {} }, { resource: 1 }]);
-    expect(component.cmdService.runAsync).toHaveBeenCalledOnceWith(
-      `7zz a -t7z -mx=9 "${root}/project.7z" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`,
+    expect(component.cmdService.runAsync.calls.first().args).toEqual([
+      `7zz a -t7z -mx=9 "${root}/project.7z" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi" "-x!package.json" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`,
       root, false,
-    );
+    ]);
+    expect(component.cmdService.runAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('packages one immutable saved source when public mirrors and the manifest change during archive creation', async () => {
+    useBlockly();
+    const document = { schemaVersion: 3, activePageId: 'main', openedPageIds: ['main'],
+      pages: [{ id: 'main', title: 'Main', content: { blocks: { blocks: [] } } }], sharedModel: { procedureBlocks: [] } };
+    const abi = absJson(document), generation = 'cloud-original';
+    files.set(`${root}/project.abi`, abi);
+    const native = await window['fs'].openProjectSyncStorage(root, () => {});
+    const port = { read: native.read, withLock: action => native.withLock((io, settle) =>
+      action(io).then(value => settle({ ok: true, value }), error => settle({ ok: false, error }))) };
+    const store = new AbsBaselineStore(port, { projectKey: root, pageId: 'main' });
+    const projection = await createAbsProjection(document.pages[0].content, { document, generation,
+      baselineRef: absBaselineKey(generation), scope: { projectKey: root, pageId: 'main' }, savedAbiHash: await hashAbsText(abi) });
+    await store.stage({ projection, abi, mode: 'import', inputAbs: projection.abs, expected: await store.captureDisk() });
+    await store.commit(generation, () => {}, async (text, expected, io) => { expect(await io.replace('project.abi', expected, text)).toBeTrue(); });
+    files.set(`${root}/project.abi`, 'partial next ABI');
+    files.set(`${root}/project.abs`, 'unpublished next draft');
+    component.cmdService.runAsync.and.callFake(async (_command, cwd) => {
+      if (cwd === root) files.set(`${root}/package.json`, '{"name":"later manifest"}');
+      else {
+        expect(files.get(cwd + '/project.abi')).toBe(abi);
+        expect(JSON.parse(files.get(cwd + '/package.json')!)).toEqual({ name: 'demo' });
+      }
+      files.set(`${root}/project.7z`, 'archive'); return { type: 'close', code: 0 };
+    });
+    expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
+    expect(component.cmdService.runAsync).toHaveBeenCalledTimes(2);
+    expect(files.get(`${root}/project.abi`)).toBe('partial next ABI');
+    expect(files.get(`${root}/project.abs`)).toBe('unpublished next draft');
+    expect(component.message.error).not.toHaveBeenCalled();
   });
 
   it('still refuses Blockly archives with missing external resources', async () => {
@@ -186,7 +231,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   it('does not upload another project metadata when the active project changes while packing', async () => {
     component.cmdService.runAsync.and.callFake(async () => {
       files.set(`${root}/project.7z`, 'archive');
-      component.projectService.currentProjectPath = '/Aily Projects/other';
+      component.projectService.currentProjectPath = '/aily Projects/other';
       return { type: 'close', code: 0 };
     });
     await component.syncToCloud();
@@ -196,7 +241,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   });
 
   it('writes the returned cloud ID to the uploaded project even after switching projects', async () => {
-    const otherPath = '/Aily Projects/other';
+    const otherPath = '/aily Projects/other';
     const otherData = { name: 'other', cloudId: 'other-cloud' };
     files.set(`${otherPath}/package.json`, JSON.stringify(otherData));
     component.projectService.currentProjectPath = otherPath;

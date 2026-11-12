@@ -39,32 +39,37 @@ export class NotificationComponent {
   timer;
 
   ngOnInit(): void {
-    this.noticeSubscription = this.noticeService.stateSubject.subscribe((data) => {
-      if (this.closeTimer) clearTimeout(this.closeTimer);
-      this.closeTimer = undefined;
-      this.willClose = false;
+    this.noticeSubscription = this.noticeService.stateSubject.subscribe(data => this.showNotice(data));
+    // Editor reload replaces this view without changing its operation owner.
+    // Restore only its live presentation, without repeating work or logs.
+    this.noticeService.restoreOwnedPresentation();
+  }
 
-      const closable = data ? (data.closable ?? data.state !== 'doing') : true;
-      this.isClosable = closable;
-      this.data = data ? { ...data, closable, showProgress: data.showProgress !== false,
-        text: data.text ? this.cleanAnsi(data.text) : data.text } : data;
+  private showNotice(data: NoticeOptions): void {
+    if (this.closeTimer) clearTimeout(this.closeTimer);
+    this.closeTimer = undefined;
+    this.willClose = false;
 
-      // 如果有进度值，启动进度动画
-      if (this.data && this.data.progress !== undefined) {
-        this.startProgressAnimation(this.data.progress);
-      }
+    const closable = data ? (data.closable ?? data.state !== 'doing') : true;
+    this.isClosable = closable;
+    this.data = data ? { ...data, closable, showProgress: data.showProgress !== false,
+      text: data.text ? this.cleanAnsi(data.text) : data.text } : data;
 
-      if (this.timer) {
-        clearTimeout(this.timer);
-      }
-      if (this.data?.setTimeout) {
-        this.timer = setTimeout(() => {
-          this.close();
-        }, this.data.setTimeout);
-      }
-      // 尺寸交给 CSS 计算，进度更新时不再同步测量整个 Blockly 工作区。
-      this.cd.detectChanges();
-    });
+    // 如果有进度值，启动进度动画
+    if (this.data && this.data.progress !== undefined) {
+      this.startProgressAnimation(this.data.progress);
+    }
+
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+    if (this.data?.setTimeout) {
+      this.timer = setTimeout(() => {
+        this.close();
+      }, this.data.setTimeout);
+    }
+    // 尺寸交给 CSS 计算，进度更新时不再同步测量整个 Blockly 工作区。
+    this.cd.detectChanges();
   }
 
   ngOnDestroy(): void {
@@ -81,6 +86,9 @@ export class NotificationComponent {
 
   close() {
     if (this.closeTimer) return;
+    const closing = this.data;
+    closing?.onClose?.();
+    if (this.data !== closing) return; // Owner dismissal may reveal another current notice.
     if (this.timer) clearTimeout(this.timer);
     this.willClose = true;
     this.closeTimer = setTimeout(() => {

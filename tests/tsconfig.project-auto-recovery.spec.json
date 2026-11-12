@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/integrations/blockly/abs/abs-runtime-recovery-ui.spec.ts",
+    "../src/app/main-window/components/header/header-save-receipt.spec.ts",
+    "../src/app/services/domains/build/coder-build-info.service.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

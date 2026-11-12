@@ -44,14 +44,14 @@ describe('Project Data normalization publication boundary', () => {
       }) };
   });
 
-  it('prepares and restores arbitrary large values before publishing a compact protected ABI with backup', async () => {
+  it('prepares a compact protected load candidate while retaining the original ABI for native publication', async () => {
     const original = disk; const result = await prepare();
     expect(result.document).toEqual({ ...source(), $ailyProjectData: createProjectDataMarker() });
-    expect(disk.length).toBeLessThan(2000);
+    expect(disk).toBe(original);
+    expect(result.deferredNormalization!.persistedText.length).toBeLessThan(2000);
     expect(JSON.parse(disk).blocks.blocks[0]).toEqual(jasmine.objectContaining({ id: 'protected', deletable: false }));
-    expect(events).toEqual(['put', 'put', 'flush', 'validate', 'resolve', 'resolve', 'publish']);
-    expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ projectPath: path,
-      expectedHash: await digest(original), backup: 'project-data' }));
+    expect(events).toEqual(['put', 'put', 'flush', 'validate', 'resolve', 'resolve']);
+    expect(files.replaceProjectText).not.toHaveBeenCalled();
   });
 
   it('initialization externalizes and validates without materializing large fields', async () => {
@@ -99,7 +99,7 @@ describe('Project Data normalization publication boundary', () => {
       try { check(); } catch { return { status: 'NOT_COMMITTED' }; }
       throw new Error('No ABI write is authorized');
     });
-    const result = await prepare();
+    const result = await prepare(source(), false);
     expect(disk).toBe(original); expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
     expect(isDeferredProjectDataNormalization(result.deferredNormalization)).toBeTrue();
   });
@@ -109,8 +109,8 @@ describe('Project Data normalization publication boundary', () => {
       block: { id: `value-${id}`, type: 'number' }, shadow: { id: 'shared-default', type: 'number', fields: { NUM: 1500 } },
     } } })) } });
     beforeEach(() => { disk = JSON.stringify(legacy()); files.existsSync = () => false; files.projectShadowIdentityMigrationVersion = 1; });
-    it('publishes exactly once with a recoverable original and a host-locked identity precondition', async () => {
-      const result = await prepare(legacy());
+    it('publishes an initial template once with a recoverable original and locked identity precondition', async () => {
+      const result = await prepare(legacy(), false);
       expect(result.identityMigration.length).toBe(1);
       expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
       expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ backup: 'project-data', migrateLegacyShadowIds: true }));
@@ -118,7 +118,7 @@ describe('Project Data normalization publication boundary', () => {
     });
     it('retains standalone ABS text while repairing identities in the ABI', async () => {
       files.existsSync = (file: string) => file.endsWith('/project.abs');
-      const result = await prepare(legacy());
+      const result = await prepare(legacy(), false);
       expect(result.identityMigration.length).toBe(1);
       expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
     });
@@ -193,11 +193,10 @@ describe('Project Data normalization publication boundary', () => {
     expect(document.blocks.blocks.map(block => block.fields.TYPE)).toEqual(['string', 'string', 'string']);
     expect(result.legacyFieldMigration.map(change => change.blockId)).toEqual(['global-string', 'scoped-string']);
     expect(migrated.blocks.blocks.map(block => block.fields.TYPE)).toEqual(['String', 'String', 'string']);
-    expect(JSON.parse(disk).blocks.blocks.map((block: any) => block.fields.TYPE)).toEqual(['String', 'String', 'string']);
-    expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
-    expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
-      expectedHash: await digest(original), backup: 'project-data',
-    }));
+    expect(disk).toBe(original);
+    expect(JSON.parse(result.deferredNormalization!.persistedText).blocks.blocks.map((block: any) => block.fields.TYPE))
+      .toEqual(['String', 'String', 'string']);
+    expect(files.replaceProjectText).not.toHaveBeenCalled();
   });
 
   it('migrates only verified serial and U8G2 dropdown values, preserving the original ABI as backup', async () => {
@@ -303,7 +302,9 @@ describe('Project Data normalization publication boundary', () => {
 
   it('retains an external edit made during restoration instead of overwriting it', async () => {
     (store.resolve as jasmine.Spy).and.callFake(async ref => { disk = 'external'; return values.get(ref.$ailyData.id); });
-    await expectAsync(prepare()).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_FILE_CONFLICT' }));
+    const result = await prepare();
+    expect(isDeferredProjectDataNormalization(result.deferredNormalization)).toBeTrue();
+    expect(files.replaceProjectText).not.toHaveBeenCalled();
     expect(disk).toBe('external');
   });
 
@@ -317,7 +318,7 @@ describe('Project Data normalization publication boundary', () => {
 
   it('retains a committed ABI when the acknowledgement is uncertain and does not return a load candidate', async () => {
     files.replaceProjectText.and.callFake(async request => { disk = request.content; return { status: 'UNKNOWN' }; });
-    await expectAsync(prepare()).toBeRejectedWith(jasmine.objectContaining({ uncertain: true }));
+    await expectAsync(prepare(source(), false)).toBeRejectedWith(jasmine.objectContaining({ uncertain: true }));
     expect(disk.length).toBeLessThan(2000); expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
   });
 
@@ -326,7 +327,7 @@ describe('Project Data normalization publication boundary', () => {
       disk = request.content; current = false;
       return { status: 'COMMITTED', hash: await digest(disk), backupHash: request.expectedHash };
     });
-    await expectAsync(prepare()).toBeRejectedWithError('stale'); expect(disk.length).toBeLessThan(2000);
+    await expectAsync(prepare(source(), false)).toBeRejectedWithError('stale'); expect(disk.length).toBeLessThan(2000);
   });
 
   it('does not share a caller-mutated unchanged document across asynchronous validation', async () => {

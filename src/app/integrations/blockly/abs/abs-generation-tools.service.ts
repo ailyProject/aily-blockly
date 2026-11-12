@@ -1,11 +1,16 @@
 import { AbsPrecheckFailure } from './abs-precheck';
+import { AbsComposeFailure } from './abs-compose';
 import { Injectable } from '@angular/core';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
-import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
+import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
 import { AbsSyncError } from './abs-state';
 import { absJson } from './abs-identity-map';
 import { serializeAbsFailure } from './abs-diagnostics';
 import { AbsApplicationFailure } from './abs-application-failure';
+import { AbsCandidateJournal, assertCandidateArchiveRequest } from './abs-candidate-journal';
+import { openAbsHostStorage } from './abs-host-storage';
+import { rejectAbsLiveRequest } from './abs-live-protocol';
+import type { MediaImportTarget } from '../project-media-target';
 
 /** Wire adaptation only. Preparation, leases, publication and recovery belong to the coordinator. */
 @Injectable({ providedIn: 'root' })
@@ -13,6 +18,18 @@ export class AbsGenerationToolsService {
   constructor(private readonly sync: AbsWorkspaceSyncService) {}
 
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
+  captureMediaImportTarget(target: MediaImportTarget) { return this.sync.captureMediaImportTarget(target); }
+  observeApplication(requestId: string) { return this.sync.observeApplication(requestId); }
+
+  async candidateBackup(project: string, input: Record<string, any>, assertCurrent: () => void) {
+    try {
+      assertGenerationRequest(input); assertCandidateArchiveRequest(input); assertCurrent();
+      const journal = new AbsCandidateJournal(await openAbsHostStorage(project, assertCurrent), project, assertCurrent);
+      const result = await journal.read(input['recordHash']);
+      return { ok: true, operation: 'abs_recovery', project, candidateApplied: false, ...result,
+        receipt: { version: 2, requestId: input['requestId'], action: input['action'], candidateApplied: false } };
+    } catch (error) { return { ok: false, operation: 'abs_recovery', project, candidateApplied: false, ...serializeAbsFailure(error) }; }
+  }
 
   assertNativeRecoveryCurrent(input: Record<string, any>) {
     this.sync.assertNativeRecoveryCurrent(input['token'], input['requestId']);
@@ -37,31 +54,37 @@ export class AbsGenerationToolsService {
 
   authoring(operation: 'abs_compose' | 'abs_precheck', input: Record<string, any>) {
     try { return this.sync.authoring(operation, input); }
-    catch (error) { return { ok: false, operation, ...serializeAbsFailure(error) }; }
+    catch (error) {
+      return { ok: false, operation, ...serializeAbsFailure(error),
+        ...(error instanceof AbsComposeFailure ? { composeDiagnostics: error.composeDiagnostics } : {}) };
+    }
   }
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,
-    activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string) {
+    activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string,
+    archiveContext?: { project: string; assertCurrent: () => void; prepareRuntime?: () => Promise<void> }) {
+    const rejected = rejectAbsLiveRequest(operation, input);
+    if (rejected) return rejected;
     let applyStarted = false;
     try {
       const { abs, absPath, ...wire } = input;
-      const params: Record<string, any> = JSON.parse(absJson(wire));
+      let params: Record<string, any> = JSON.parse(absJson(wire));
       assertGenerationRequest(params);
-      if (operation === 'abs_projection') {
-        assertGenerationProjectionRequest(params);
-        const result = await this.sync.exportGeneration({ initialize: params['initialize'], publish: params['publish'], expectedAbiHash: params['expectedAbiHash'], rebind: params['rebind'], reuseCurrent: params['reuseCurrent'], synchronize: params['synchronize'] });
-        const ok = !!result.evidence && (params['publish'] === false || result.publication.status === 'COMMITTED');
-        return { ...result, ok, operation, project: result.evidence?.binding.scope.projectKey,
-          ...(ok ? { receipt: { version: 2, requestId: params.requestId, base: result.evidence!.binding,
-            output: result.evidence, persisted: params['publish'] !== false, ...(params['rebind'] ? { rebind: params['rebind'] } : {}),
-            // Canonical export can also save a user-edited canvas. Bind its
-            // input independently from the newly committed output ABI.
-            inputAbiHash: params['expectedAbiHash'],
-            ...(params['synchronize'] ? { synchronized: true } : {}),
-            validation: { ok: true, scope: 'generation-projection' } } } : {}) };
-      }
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
+        if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false,
+          capture: await this.sync.captureWorkingCandidate() };
+        if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false,
+          capture: await this.sync.captureLegacyCandidate(params['legacy']) };
+        if (params['originalTargetPid'] !== undefined
+          && (!Number.isSafeInteger(params['originalTargetPid']) || params['originalTargetPid'] < 1)) {
+          throw new AbsSyncError('ABS_REQUEST_INVALID', 'Original executor PID must identify a positive process.');
+        }
+        if (params['action'] === 'history_inspect') return { ...reply, ...await this.sync.inspectHistoryProgram() };
+        if (params['action'] === 'restore_program_map') return { ...reply, ...await this.sync.restoreProgramMap(params['observation']) };
+        if (params['action'] === 'history_publish') return { ...reply, ...await this.sync.publishHistoryProgram(params) };
+        if (params['action'] === 'history_observe') return { ...reply, ...await this.sync.observeHistoryProgram(params, params['originalTargetPid']) };
+        if (params['action'] === 'observe_state') return { ...reply, ...await this.sync.observeBlockState(params['state'], params['originalTargetPid']) };
         if (params['action'] === 'history_begin') return { ...reply, ok: true, ...await this.sync.beginHistoryNavigation() };
         if (['history_seal', 'history_release'].includes(params['action']) && typeof params['token'] === 'string') {
           if (params['action'] === 'history_seal') await this.sync.sealHistoryNavigation(params['token']);
@@ -123,47 +146,8 @@ export class AbsGenerationToolsService {
               inputAbiHash: result.inputAbiHash, output: result.evidence, recoveryArchive: result.recoveryArchive,
               candidateApplied: false } };
         }
-        if (params['action'] === 'reopen' && typeof params['generation'] === 'string'
-          && /^[A-Za-z0-9_-]{1,96}$/.test(params['generation']) && typeof params['token'] === 'string'
-          && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
-          const observed = await this.sync.observeJournalReopen(params['generation'], params['token']);
-          if (observed) return { ...reply, ...observed, ok: true, project: observed.evidence.binding.scope.projectKey, activated: true,
-            receipt: { ...reply.receipt, token: params['token'], generation: params['generation'], output: observed.evidence,
-              candidateApplied: false, activated: true, reused: true } };
-          if (!activateRecovery) throw new AbsSyncError('ABS_JOURNAL_REOPEN_UNAVAILABLE', 'This host has no recovery activation capability.');
-          const handoff = await this.sync.beginJournalReopen(params['generation'], params['token']);
-          let started = false;
-          try {
-            handoff.assertCurrent(); started = true;
-            const activation = await activateRecovery(handoff.path, handoff.assertCurrent);
-            if (!activation.activated || activation.project !== handoff.path) {
-              throw new AbsSyncError('ABS_JOURNAL_REOPEN_UNKNOWN', 'The recovered project was not verified activated.');
-            }
-            const result = await this.sync.verifyJournalReopen(handoff);
-            return { ...reply, ...result, ok: true, project: handoff.path, activated: true,
-              receipt: { ...reply.receipt, token: params['token'], generation: params['generation'],
-                output: result.evidence, candidateApplied: false, activated: true } };
-          } catch (error) {
-            if (started) throw new AbsSyncError('ABS_JOURNAL_REOPEN_UNKNOWN', `Recovery activation outcome requires inspection: ${String(error)}`);
-            throw error;
-          } finally { handoff.release(); }
-        }
-        if (params['action'] === 'repair' && params['authority'] === 'workspace'
-          && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
-          const result = await this.sync.repairGeneration(params['token'], params['authority']);
-          const ok = result.publication.status === 'COMMITTED' && !result.requiresReload && !!result.evidence && !!result.recoveryArchive;
-          return { ...reply, ...result, ok, authority: 'workspace', receipt: { ...reply.receipt, token: params['token'],
-            authority: 'workspace', inputAbiHash: result.inputAbiHash, output: result.evidence,
-            recoveryArchive: result.recoveryArchive } };
-        }
         if (params['action'] === 'read_repair' && typeof params['generation'] === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(params['generation'])) {
           return { ...reply, ok: true, ...await this.sync.readRepair(params['generation']), requiresReload: false };
-        }
-        if (params['action'] === 'refresh' && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
-          const result = await this.sync.exportGeneration({ preserveDraft: params['token'] });
-          const ok = result.publication.status === 'COMMITTED' && !!result.evidence && !!result.draftArchive;
-          return { ...reply, ...result, ok, receipt: { ...reply.receipt, token: params['token'],
-            inputAbiHash: result.inputAbiHash, output: result.evidence } };
         }
         if (params['action'] === 'read_draft' && typeof params['generation'] === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(params['generation'])) {
           return { ...reply, ok: true, draft: await this.sync.readArchivedDraft(params['generation']), requiresReload: false };
@@ -175,18 +159,17 @@ export class AbsGenerationToolsService {
             ...(params['token'] !== undefined ? { receipt: { ...reply.receipt,
               journal: { action: 'recover', token: params['token'], generation: params['generation'] } } } : {}) };
         }
-        if (params['action'] === 'abandon' && typeof params['generation'] === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(params['generation'])) {
-          await this.sync.abandonGeneration(params['generation'], params['token']);
-          return { ...reply, ok: true, requiresReload: true,
-            ...(params['token'] !== undefined ? { receipt: { ...reply.receipt,
-              journal: { action: 'abandon', token: params['token'], generation: params['generation'] } } } : {}) };
-        }
-        throw new AbsSyncError('ABS_REQUEST_INVALID', 'Recovery requires inspect/recover, abandon/read_draft/read_repair with a generation, refresh with its inspection token, or repair with its token and authority=workspace.');
+        throw new AbsSyncError('ABS_REQUEST_INVALID', 'Inspect or read the exact retained record. Recovery uses the current automatic project recovery path.');
       }
       if (typeof source !== 'string' || !source.trim()) throw new AbsSyncError('ABS_REQUEST_INVALID', 'Candidate source is empty.');
       if (operation === 'abs_validate') {
         assertGenerationCandidate(params);
-        const { syntaxAdvice, ...prepared } = await this.sync.validateGeneration(source, params);
+        if (params['workingCandidate']) params = await this.sync.bindWorkingCandidate(source, params as any);
+        if (archiveContext) {
+          await archiveContext.prepareRuntime?.();
+          archiveContext.assertCurrent();
+        }
+        const { syntaxAdvice, ...prepared } = await this.sync.validateGeneration(source, params as any);
         return { ok: true, operation, project: prepared.base.scope.projectKey, syntaxAdvice,
           receipt: { ...prepared, validation: { ok: true, scope: 'prepared-generation' } } };
       }
@@ -200,6 +183,7 @@ export class AbsGenerationToolsService {
           ...(result.historyBase ? { historyBase: { hash: result.historyBase.hash, inputAbsHash: result.historyBase.inputAbsHash } } : {}),
           appliedRevision: result.appliedRevision, validation: { ok: true, scope: 'complete-generation' } } } : {}) };
     } catch (error) {
+      if (typeof (error as any)?.code === 'string' && /^LIBRARY_/.test((error as any).code)) throw error;
       const failure = serializeAbsFailure(error);
       const nativeFailure = ['abs_validate', 'abs_apply'].includes(operation) && /^ABS_(NATIVE_|RUNTIME_|GENERATION_FAILED$)/.test(failure.code)
         ? await this.sync.describeNativeCandidateFailure(source) : undefined;

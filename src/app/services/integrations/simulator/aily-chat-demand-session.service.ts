@@ -214,7 +214,7 @@ export class AilyChatDemandSessionService {
         return result;
       }
       if (result.accepted !== true || result.state !== 'settled') {
-        throw new Error(result.error || 'Aily Chat 需求会话执行失败');
+        throw new Error(result.error || 'aily Chat 需求会话执行失败');
       }
       return result;
     } finally {
@@ -325,12 +325,12 @@ ${(connectionData.connections || []).length} 条连线
           clearTimeout(timeout);
           removeListener();
           if (response.result) resolve(response.result);
-          else reject(new Error('Aily Chat Runtime 未返回需求会话结果'));
+          else reject(new Error('aily Chat Runtime 未返回需求会话结果'));
         },
       );
       const timeout = setTimeout(() => {
         removeListener();
-        reject(new Error('Aily Chat 需求会话执行超时'));
+        reject(new Error('aily Chat 需求会话执行超时'));
       }, DEMAND_SESSION_TIMEOUT_MS);
 
       void this.childToolProcess

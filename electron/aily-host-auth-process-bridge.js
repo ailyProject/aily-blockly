@@ -27,7 +27,7 @@ function parseAilyHostAuthRequest(toolId, message) {
             result: {
                 ok: false,
                 errorCode: 'HOST_AUTH_INVALID_REQUEST',
-                message: 'Invalid Aily host authentication request',
+                message: 'Invalid aily host authentication request',
             },
         };
     }

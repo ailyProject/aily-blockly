@@ -181,7 +181,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     }
   }
 
-  build(path: string, options: { preprocessOnly?: boolean; clearCache?: boolean } = {}): Promise<any> {
+  build(path: string, options: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string } = {}): Promise<any> {
     return this.run(path, 'build', async session => {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);

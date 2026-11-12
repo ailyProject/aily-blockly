@@ -1,6 +1,8 @@
-import { inspectProjectDiskRecovery } from '@domain/project/public-api';
+import { inspectProjectDiskRecovery, inspectLegacyProjectRecovery } from '@domain/project/public-api';
 import { assertGenerationRequest } from '../../../integrations/blockly/abs/abs-generation-protocol';
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
+import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
+import { readAbsRecoveryLineage } from '../../../integrations/blockly/abs/abs-recovery-lineage';
 
 export interface FailedProjectLoadStatus { ready: boolean; state: string; error?: string }
 interface VerifiedSavedRecoveryTarget { project: string; sourceProject: string; abiHash: string; recoveryArchive: string }
@@ -17,8 +19,8 @@ export function projectLoadFailureGuidance(project: string, status: FailedProjec
   };
 }
 
-/** A failed-load inspection does not read generation/private state or serialize
- * an incomplete canvas. It only offers a disk-primary copy of observed bytes. */
+/** A failed-load inspection never publishes a partial canvas or creates another
+ * project. History is discovery-only; recovery revalidates the current source. */
 export async function inspectFailedProjectLoad(project: string, loadStatus: FailedProjectLoadStatus,
   input: Record<string, unknown>, assertCurrent: () => void,
   inspectSavedTarget?: () => Promise<VerifiedSavedRecoveryTarget | null>) {
@@ -29,9 +31,18 @@ export async function inspectFailedProjectLoad(project: string, loadStatus: Fail
   }
   let disk: Awaited<ReturnType<typeof inspectProjectDiskRecovery>>;
   let saved: VerifiedSavedRecoveryTarget | null = null;
+  let lineage: Awaited<ReturnType<typeof readAbsRecoveryLineage>> = null;
+  let legacy: Awaited<ReturnType<typeof inspectLegacyProjectRecovery>> = null;
+  let lineageIssue: string | undefined;
   try {
     disk = await inspectProjectDiskRecovery(project, assertCurrent);
     assertCurrent(); saved = await inspectSavedTarget?.() ?? null; assertCurrent();
+    if (window['fs']?.projectSyncStorageVersion === 2) {
+      try { lineage = await readAbsRecoveryLineage(await openAbsHostStorage(project, assertCurrent), project); }
+      catch (error) { lineageIssue = typeof (error as any)?.code === 'string' ? (error as any).code : 'ABS_LINEAGE_INVALID'; }
+      assertCurrent();
+    }
+    if (!lineage) { legacy = await inspectLegacyProjectRecovery(project, assertCurrent); assertCurrent(); }
   }
   catch (error) {
     return { ok: false, operation: 'abs_recovery', project,
@@ -44,17 +55,20 @@ export async function inspectFailedProjectLoad(project: string, loadStatus: Fail
   const loadRecovery = { version: 1, source: 'saved-document', loadStatus: { ...loadStatus }, disk,
     pendingMutation: false, ...(independent ? { scope: 'saved-recovery-project', alreadyIndependent: true,
       recoveryTarget: { project, sourceProject: saved.sourceProject, abiHash: saved.abiHash, recoveryArchive: saved.recoveryArchive } }
-      : disk.abi === 'available' ? { offer: { action: 'fork' } } : {}) };
+      : {}), ...(lineage ? { lineage, alreadyIndependent: true } : {}),
+    ...(legacy ? { legacyRecovery: legacy } : {}), ...(lineageIssue ? { lineageIssue } : {}),
+    offer: { action: 'recover_project', sameProject: true, candidateApplied: false } };
   const common = { operation: 'abs_recovery', project, requiresReload: false,
     receipt: { version: 2, requestId: input.requestId, action: 'inspect' }, diagnostics: { loadRecovery } };
   if (independent) return { ...common, ok: true,
-    nextAction: { tool: 'project_status', input: { project } },
-    guidance: 'This is already a verified independent saved-primary recovery target. Do not fork again. Read project_status and the load error to identify missing or invalid dependencies; repair them with the managed lib_add or lib_install_local tools, whose admission rechecks this saved primary. Successful managed installation reloads this same target. Then continue fresh ABS validation and apply. The original source, its view and protection remain unchanged; never edit ABI/map or clear locks to bypass failed loading.' };
+    nextAction: { tool: 'project_recover', input: { project, action: 'recover_project' } },
+    guidance: 'Recover this same project through the host-owned operation. Its current document and partial view are preserved and verified before reopening; no candidate is applied. A persisted relationship is not a write permission. Do not fork again or ask the user to open a copy or confirm readiness. If dependencies are unavailable, use the reported managed dependency route.' };
   return disk.abi === 'available'
     ? { ...common, ok: true,
-      nextAction: { tool: 'project_recover', input: { project, action: 'fork' } },
-      guidance: 'This project never completed loading; its canvas is not a complete program. Call project_recover(action="fork") to preserve the complete saved project.abi as the independent target primary, keeping the partial canvas and original ABS/map in a separate archive. No source file, lock or guard is cleared. Continue on the returned target only after its runtime is ready; do not save or apply over the failed source or edit internal ABI/map records.' }
+      nextAction: { tool: 'project_recover', input: { project, action: 'recover_project' } },
+      guidance: 'Call recover_project to converge the exact interrupted transaction and reload this same project from verified saved content. The host preserves the partial view and complete candidate. This does not apply the candidate; after verified readiness, prepare it against the fresh trusted generation. Do not create another project or ask the user to confirm readiness.' }
     : { ...common, ok: false, code: 'PROJECT_RECOVERY_SOURCE_UNAVAILABLE',
       message: `The saved project.abi is ${disk.abi}; no complete recovery source was invented.`,
-      guidance: 'Keep the original project and partial view intact. Read the available saved source/backups and dependency diagnostics before choosing a recoverable source. Do not replace it with a half-loaded canvas, clear locks or claim a completed recovery.' };
+      nextAction: { tool: 'project_recover', input: { project, action: 'recover_project' } },
+      guidance: 'The host may restore only an independently verified operation snapshot or committed transaction. Invoke recover_project once; it retains damaged bytes and refuses to invent a source. Never use the partial canvas as the primary or ask the user to open a copy.' };
 }

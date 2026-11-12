@@ -22,7 +22,7 @@ for (const topology of ['original', 'expanded']) {
         hostGeometry ??= record.geometrySha256;
         assert.equal(record.geometrySha256, hostGeometry, 'Host block/field geometry changed');
       }
-      if (variant === 'aily-ui') assert.equal(record.geometrySha256, hostGeometry, 'Independent Aily UI geometry differs from host');
+      if (variant === 'aily-ui') assert.equal(record.geometrySha256, hostGeometry, 'Independent aily UI geometry differs from host');
     }
     const metric = get => {
       const values = records.map(get);
