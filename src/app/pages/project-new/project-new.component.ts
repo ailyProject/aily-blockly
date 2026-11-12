@@ -104,8 +104,6 @@ export class ProjectNewComponent implements OnDestroy {
   /** 程序写入推荐名时跳过 ngModelChange 的手动编辑标记 */
   private isApplyingRecommendedName = false;
 
-  /** 第三步加载态：区分 Blockly 脚手架与 Aily Code 骨架的提示文案 */
-  creatingMode: 'blockly' | 'aily' | null = null;
   /** 与 Aily Code 对话框一致：阻塞重复弹出未保存提示 */
   private unsaveDialogOpen = false;
 
@@ -508,8 +506,7 @@ export class ProjectNewComponent implements OnDestroy {
           }
           return this.checkPathInvalidChars() ? 'invalid-path' : null;
         },
-        onCreating: creationMode => {
-          this.creatingMode = creationMode === 'coder' ? 'aily' : 'blockly';
+        onCreating: () => {
           this.currentStep = 2;
         },
         recordBoardUsage: boardName => this.configService.recordBoardUsage(boardName),
@@ -572,7 +569,6 @@ export class ProjectNewComponent implements OnDestroy {
 
   private resetCreationState(): void {
     this.currentStep = 1;
-    this.creatingMode = null;
   }
 
   /** 若当前在主编辑器且存在未保存，弹窗对齐「打开项目」行为（与 AilyCodeNewDialog 一致） */
