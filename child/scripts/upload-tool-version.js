@@ -26,10 +26,11 @@ function findPinnedUploadToolDirectories(toolsPath, tool, version) {
 }
 
 function isToolExecutableInDirectory(command, directory) {
-    if (!path.isAbsolute(command)) return false;
-    const relative = path.relative(directory, command);
+    if (!path.isAbsolute(command) || !fs.statSync(command, { throwIfNoEntry: false })?.isFile()) return false;
+    // Preprocessing can use a read-only or short-path view of the same payload.
+    const relative = path.relative(fs.realpathSync(directory), fs.realpathSync(command));
     return Boolean(relative) && relative !== '..' && !relative.startsWith('..' + path.sep)
-        && !path.isAbsolute(relative) && fs.statSync(command, { throwIfNoEntry: false })?.isFile();
+        && !path.isAbsolute(relative);
 }
 
 module.exports = { findUploadToolDependency, findPinnedUploadToolDirectories, isToolExecutableInDirectory };

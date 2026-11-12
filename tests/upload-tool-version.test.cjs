@@ -18,7 +18,7 @@ function fixture(t) {
     const resolve = (command, dependencies = {}, preprocess = false) => processUploadParams(
         command, root, tools, root, '115200', dependencies, 'COM1', 'win32', undefined, preprocess
     );
-    return { put, resolve };
+    return { root, put, resolve };
 }
 
 test('board and preprocess upload use the exact pin while two esptool versions coexist', async t => {
@@ -44,13 +44,17 @@ test('a missing pinned executable never resolves from another version or PATH', 
 });
 
 test('an SDK uploader cannot delegate to a stale version from cached preprocessing', async t => {
-    const { put, resolve } = fixture(t);
+    const { root, put, resolve } = fixture(t);
     const sdkUploader = put('sdk', 'tools', 'flasher.exe');
     const pinned = put('tools', 'esptool_py@5.3.0', 'esptool.exe');
     const other = put('tools', 'esptool_py@5.3.1', 'esptool.exe');
     const dependencies = { esptool_py: '5.3.0' };
     const recipe = tool => `"${sdkUploader}" --esptool "${tool}"`;
     assert.equal((await resolve(recipe(pinned), dependencies, true)).args[1], `"${pinned}"`);
+    const view = path.join(root, 'short-view');
+    fs.symlinkSync(path.dirname(pinned), view, process.platform === 'win32' ? 'junction' : 'dir');
+    const throughView = path.join(view, path.basename(pinned));
+    assert.equal((await resolve(recipe(throughView), dependencies, true)).args[1], `"${throughView}"`);
     await assert.rejects(resolve(recipe(other), dependencies, true), /esptool_py@5\.3\.0/);
 });
 
