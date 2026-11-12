@@ -24,6 +24,7 @@ import { ConfigService } from '@core/preferences/public-api';
 import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 import { findCompilerIntegrityProblem } from '../../../utils/compiler-integrity.utils';
+import { readyVersionedPlatformResource, versionedPlatformResource } from '../../../utils/versioned-platform-resource.utils';
 
 import {
   appendScopedNpmRegistry,
@@ -739,12 +740,12 @@ export class NpmService {
           await project.getCloudBoardProfile({}, session);
           this.assertDependencySession(session);
         }
-        // Use the same version check as Blockly's build preflight, plus extracted SDK/tools.
-        const missing = this.getMissingBoardDependencies(boardPackage, projectPath);
-        const localDependencies = this.isCloudBuild(projectPath) ? getCloudEditorDependencies(boardPackage) : boardPackage?.boardDependencies || {};
-        if (missing.length || !await this.areBoardPlatformDepsReady(localDependencies)) {
+        const cloudMode = this.isCloudBuild(projectPath);
+        const localDependencies = cloudMode ? getCloudEditorDependencies(boardPackage) : boardPackage?.boardDependencies || {};
+        const missing = await this.getUnreadyBoardPlatformDeps(localDependencies, !cloudMode);
+        if (missing.length) {
           throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
-            name: missing.length ? missing.join(', ') : boardModule,
+            name: missing.join(', '),
           }));
         }
       }
@@ -1424,50 +1425,44 @@ export class NpmService {
     if (result?.ok !== true) throw new Error(result?.error || this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: packageName }));
   }
 
-  /**
-   * npm 版本 + sdk/tools 解压目录均满足主板 boardDependencies 声明时返回 true（与 Blockly 跳过已安装逻辑一致）。
-   */
   private async areBoardPlatformDepsReady(
     boardDependencies: Record<string, string>,
+    useVersionedResources = this.configService.isCoderProduct(),
   ): Promise<boolean> {
-    const keys = Object.keys(boardDependencies);
+    return (await this.getUnreadyBoardPlatformDeps(boardDependencies, useVersionedResources)).length === 0;
+  }
 
-    if (keys.length === 0) {
-      return true;
-    }
-
+  private async getUnreadyBoardPlatformDeps(
+    boardDependencies: Record<string, string>,
+    useVersionedResources: boolean,
+  ): Promise<string[]> {
+    const dependencies = Object.entries(boardDependencies);
+    if (!dependencies.length) return [];
     const appDataPath = window['path'].getAppDataPath();
     const platformBases = await this.getPlatformPathBases();
-
-    for (const key of keys) {
-      const versionStr = String(boardDependencies[key] ?? '').trim();
-
-      if (!versionStr) {
-        return false;
+    const missing: string[] = [];
+    for (const [key, declaration] of dependencies) {
+      const version = String(declaration ?? '').trim();
+      const resource = useVersionedResources && versionedPlatformResource(key, version, platformBases);
+      if (resource) {
+        if (!readyVersionedPlatformResource(key, version, resource)) missing.push(`${key}@${version}`);
+        continue;
       }
-
-      const depPathPackageJson = `${appDataPath}/node_modules/${key}/package.json`;
-
-      if (!window['path'].isExists(depPathPackageJson)) {
-        return false;
-      }
-
+      const manifest = `${appDataPath}/node_modules/${key}/package.json`;
+      let installedVersion: string | undefined;
       try {
-        const depPackageJson = JSON.parse(window['fs'].readFileSync(depPathPackageJson));
-
-        if (!this.depVersionSatisfiesDecl(depPackageJson.version, versionStr)) {
-          return false;
+        if (window['path'].isExists(manifest)) {
+          installedVersion = JSON.parse(window['fs'].readFileSync(manifest)).version;
         }
       } catch {
-        return false;
+        // Treat an unreadable manifest as an incomplete npm installation.
       }
-
-      if (!this.isPlatformPackageOnDisk(key, versionStr, platformBases)) {
-        return false;
+      if (!version || !installedVersion || !this.depVersionSatisfiesDecl(installedVersion, version)
+        || !this.isPlatformPackageOnDisk(key, version, platformBases)) {
+        missing.push(`${key}@${version}`);
       }
     }
-
-    return true;
+    return missing;
   }
 
   getMissingBoardDependencies(packageJson: any, projectPath?: string): string[] {
@@ -1506,7 +1501,8 @@ export class NpmService {
     const boardDependencies: Record<string, string> = cloudMode ? getCloudEditorDependencies(packageJson) : packageJson.boardDependencies || {};
     if (Object.keys(boardDependencies).length === 0) return;
 
-    if (!force && await this.areBoardPlatformDepsReady(boardDependencies)) {
+    const useVersionedResources = !cloudMode && this.configService.isCoderProduct();
+    if (!force && await this.areBoardPlatformDepsReady(boardDependencies, useVersionedResources)) {
       this.assertDependencySession(session);
       console.log('[installBoardDependencies] 平台依赖已就绪，跳过');
 
@@ -1547,13 +1543,33 @@ export class NpmService {
         const depPath = `${appDataPath}/node_modules/${key}`;
         const depPathPackageJson = `${depPath}/package.json`;
         let installedVersionWhenMismatch: string | undefined;
-        const versionStr = String(version);
+        const versionStr = declaredVersion.trim();
         if (cloudMode) {
           await this.installIsolatedCloudPackage({ name: key, version: declaredVersion }, session, registry);
           this.assertDependencySession(session);
           continue;
         }
 
+
+        const resource = useVersionedResources && versionedPlatformResource(key, versionStr, platformBases);
+        if (resource) {
+          const directory = readyVersionedPlatformResource(key, versionStr, resource);
+          if (directory) {
+            this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, directory });
+            continue;
+          }
+          const script = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'install-versioned-platform-resource.js');
+          const npmRegistry = registry ? new URL(registry).href : '';
+          const registryArgument = npmRegistry ? ` "${btoa(npmRegistry)}"` : '';
+          this.traceToAppLog('DEP_INSTALL_START', { name: key, version: versionStr, versionedResource: true });
+          await this.cmdService.runAsyncChecked(`node "${script}" "${key}" "${versionStr}"${registryArgument}`, appDataPath, true, false, session);
+          this.assertDependencySession(session);
+          if (!readyVersionedPlatformResource(key, versionStr, resource)) {
+            throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: `${key}@${versionStr}` }));
+          }
+          this.traceToAppLog('DEP_INSTALL_DONE', { name: key, version: versionStr, versionedResource: true });
+          continue;
+        }
 
         if (this.configService.isCoderProduct()) {
           await this.removeIncompleteSdkDirectory(key, versionStr, platformBases, session);

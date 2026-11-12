@@ -14,6 +14,7 @@ const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs } = require('./build-execution-workspace');
 const { resolvePlatformResourceRoots, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
+const { readBuilderCapabilities } = require('./builder-capabilities');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json';
@@ -211,6 +212,7 @@ async function preprocessProject(config, workspace) {
     logger.log(`开始处理 ${libsPath.length} 个库文件`);
     let copiedLibraries = [];
     let librarySearchPaths;
+    let projectLibraryPaths = [];
     if (isAilyCode) {
         // Remove the obsolete projection created by older builds. New builds
         // never create .temp/lib* or copy/hard-link dependency sources.
@@ -224,6 +226,7 @@ async function preprocessProject(config, workspace) {
             libraryEvidence,
             compiler
         );
+        projectLibraryPaths = librarySearchPaths;
         if (projectPackageJson.arduinoSketch === true) {
             const arduinoLibraries = [
                 path.join(require('node:os').homedir(), 'Documents', 'Arduino', 'libraries'),
@@ -384,8 +387,10 @@ async function preprocessProject(config, workspace) {
         '--tool-versions', `"${toolVersions.join(',')}"`,
         '--save-result', `"${preprocessCachePath}"`
     ];
+    const explicitPaths = projectLibraryPaths.length && readBuilderCapabilities(builderCommand).projectLibraryPaths
+        ? new Set(projectLibraryPaths) : new Set();
     for (const librarySearchPath of librarySearchPaths) {
-        pre_args.push('--libraries-path', `"${librarySearchPath}"`);
+        pre_args.push(explicitPaths.has(librarySearchPath) ? '--project-library-path' : '--libraries-path', `"${librarySearchPath}"`);
     }
 
     // 添加项目配置参数（如 UploadSpeed, FlashMode, FlashSize, PartitionScheme, PSRAM 等）

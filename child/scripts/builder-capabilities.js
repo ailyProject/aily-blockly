@@ -23,6 +23,8 @@ function readBuilderCapabilities(command, launch = spawnSync) {
                         && c.buildInputVerification.scope === 'prepared-dependency-trees-and-sdk-tools',
                     verifiedLocalArchiveCache: c.verifiedLocalArchiveCache?.schemaVersion === 1
                         && c.verifiedLocalArchiveCache.cliOption === '--verified-local-archive-cache',
+                    projectLibraryPaths: c.projectLibraryPaths?.schemaVersion === 1
+                        && c.projectLibraryPaths.cliOption === '--project-library-path',
                 };
             }
         }
