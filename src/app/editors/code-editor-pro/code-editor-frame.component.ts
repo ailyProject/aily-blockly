@@ -242,7 +242,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     hasUnsavedChanges: async () => {
       const result = await this.requestCoderLifecycle('status');
       if (!result.ok) {
-        throw new Error(result.message || '无法检查 Aily Coder 未保存状态');
+        throw new Error(result.message || '无法检查 aily Coder 未保存状态');
       }
       return result.dirtyAfter > 0;
     },
@@ -602,7 +602,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         ok: false,
         dirtyBefore: 0,
         dirtyAfter: 0,
-        message: 'Aily Coder 编辑器尚未就绪',
+        message: 'aily Coder 编辑器尚未就绪',
       });
     }
 
@@ -648,7 +648,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         ok: false,
         dirtyBefore: 0,
         dirtyAfter: 0,
-        message: '等待 Aily Coder 保存确认超时',
+        message: '等待 aily Coder 保存确认超时',
       }), timeoutMs);
 
       window.addEventListener('message', listener);
@@ -960,7 +960,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       if (updated) {
         this.message.success(this.translate.instant(
           restartOnly ? 'APP_STORE.RESTART_SUCCESS' : 'APP_STORE.UPDATE_SUCCESS',
-          { name: 'Aily Coder Editor' },
+          { name: 'aily Coder Editor' },
         ));
       }
     } catch (error) {
@@ -970,7 +970,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private confirmCoderEditorUpdateRestart(restartFlow: boolean): Promise<boolean> {
-    const name = 'Aily Coder Editor';
+    const name = 'aily Coder Editor';
     return new Promise((resolve) => {
       this.modal.confirm({
         nzClassName: 'subapp-service-confirm-modal',
@@ -1042,7 +1042,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       await this.initCoderEmbed(root, false);
     } catch (error: any) {
       if (!this.isCurrentCoderWorkspace(root)) return;
-      console.error('Aily Coder Editor reinstallation failed', error);
+      console.error('aily Coder Editor reinstallation failed', error);
       this.detachCoderEmbedFrame();
       this.clearCoderEmbedLoadingTimers();
       this.coderEmbedLoading = false;

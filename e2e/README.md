@@ -41,7 +41,7 @@
 npm --prefix e2e run test:onboarding -- --lex-root <aily-lex-pro> --project <已安装依赖的Blockly项目> --reuse-angular
 ```
 
-该入口与 Eval 的“验证启动与项目引导”共用判定器和运行逻辑，验证助手入口显示/隐藏时的完整步骤、独立 AI/应用商店文案、实际工作区高亮、正常及最小原生窗口、前进后退、跳过和完成标记持久化。仅复制传入项目，使用独立用户目录，通过真实本地 Aily Chat 便携包注册助手入口；不注入 DOM、不调用 Angular 调试接口、不手动启动引导服务，不发送 AI 消息或编译烧录。
+该入口与 Eval 的“验证启动与项目引导”共用判定器和运行逻辑，验证助手入口显示/隐藏时的完整步骤、独立 AI/应用商店文案、实际工作区高亮、正常及最小原生窗口、前进后退、跳过和完成标记持久化。仅复制传入项目，使用独立用户目录，通过真实本地 aily Chat 便携包注册助手入口；不注入 DOM、不调用 Angular 调试接口、不手动启动引导服务，不发送 AI 消息或编译烧录。
 
 `--reuse-angular` 要求已有开发服务来自当前主软件源码；否则省略该参数，由 Eval 启动并核对开发服务。默认读取 Lex 的 `packages/aily-chat/dist/aily-chat`，可用 `--chat-root` 指定已有便携构建；本专项只验证入口和引导，不代表 AI 任务验收。证据保存在 `e2e/.artifacts/onboarding/<运行ID>/` 的 `onboarding.json` 和逐步截图中，可通过 `--output` 更改。测试结束恢复本次修改的引导及工具栏配置，并清除私有用户目录。
 
@@ -272,7 +272,7 @@ GPIO3 ── 220Ω Resistor ── LED(A→C) ── GND
 GPIO4(INPUT_PULLUP) ── Button(NO) ── GND
 ```
 
-它会检查 iframe 中 Aily 自有 `aily.appearance.resistor@1.0.0` 外观、LED
+它会检查 iframe 中 aily 自有 `aily.appearance.resistor@1.0.0` 外观、LED
 `off → on → off` 闪烁、按下后持续点亮及松开后恢复闪烁。Button 没有隐藏上拉电阻；
 松开时由 QEMU IOMUX 根据固件的 `INPUT_PULLUP` 解析电平。若改用外接上拉/下拉，
 电阻必须作为连接图中的独立双端组件出现。
@@ -299,7 +299,7 @@ npm --prefix e2e run validate:simulator-debug
 
 从当前 Simulator 源码重新打包使用 `--refresh-runtime`；没有补丁 QEMU 构建和现成
 runtime bundle 时，安装 Docker 后使用 `--build-patched-qemu`。脚本不会回退到不含
-Aily Engine Bridge 的官方 QEMU。
+aily Engine Bridge 的官方 QEMU。
 
 结构化结果保存在：
 

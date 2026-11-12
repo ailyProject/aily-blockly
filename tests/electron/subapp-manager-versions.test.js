@@ -32,7 +32,7 @@ function catalogEntry(version, archive, overrides = {}) {
     version,
     namespace: 'AILY_CHAT',
     titleKey: 'AILY_CHAT.NAME',
-    app: { name: 'Aily Chat', enabled: true },
+    app: { name: 'aily Chat', enabled: true },
     update: { download: 'background', install: 'next-launch' },
     dist: { tarball: `https://packages.example.test/${version}.tgz`, integrity: integrity(archive) },
     ...overrides,
@@ -759,7 +759,7 @@ test('published self-contained Aily Coder packages without the portable marker s
     }),
     'index.js': "import './runtime/index.js';\n",
     'runtime/index.js': 'export const version = 1;\n',
-    'ui/index.html': '<h1>Aily Coder</h1>',
+    'ui/index.html': '<h1>aily Coder</h1>',
   });
   const entry = {
     id,
@@ -767,7 +767,7 @@ test('published self-contained Aily Coder packages without the portable marker s
     version,
     namespace: 'AILY_CODER_EDITOR',
     titleKey: 'AILY_CODER_EDITOR.TITLE',
-    app: { name: 'Aily Coder Editor', enabled: true, extension: true },
+    app: { name: 'aily Coder Editor', enabled: true, extension: true },
     dist: { tarball: `https://packages.example.test/${version}.tgz`, integrity: integrity(archive) },
   };
   let npmCalls = 0;

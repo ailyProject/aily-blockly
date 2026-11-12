@@ -392,7 +392,7 @@ export class ProjectDebugConfigurationService {
       throw new Error('请先打开一个 Blockly 项目。');
     }
     if (!this.hasLocalProjectFileSystem()) {
-      throw new Error('项目断点编辑仅支持 Aily Blockly 桌面版。');
+      throw new Error('项目断点编辑仅支持 aily Blockly 桌面版。');
     }
     return this.readConfigurationFile(projectPath);
   }

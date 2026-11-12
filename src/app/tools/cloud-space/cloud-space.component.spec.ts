@@ -6,7 +6,7 @@ import { AbsBaselineStore, absBaselineKey } from '../../integrations/blockly/abs
 import { absJson, createAbsProjection, hashAbsText } from '../../integrations/blockly/abs/abs-identity-map';
 
 describe('CloudSpace project packaging and sync mode isolation', () => {
-  const root = '/Aily Projects/demo';
+  const root = '/aily Projects/demo';
   let component: any;
   let files: Map<string, string>;
   let directories: Set<string>;
@@ -231,7 +231,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   it('does not upload another project metadata when the active project changes while packing', async () => {
     component.cmdService.runAsync.and.callFake(async () => {
       files.set(`${root}/project.7z`, 'archive');
-      component.projectService.currentProjectPath = '/Aily Projects/other';
+      component.projectService.currentProjectPath = '/aily Projects/other';
       return { type: 'close', code: 0 };
     });
     await component.syncToCloud();
@@ -241,7 +241,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   });
 
   it('writes the returned cloud ID to the uploaded project even after switching projects', async () => {
-    const otherPath = '/Aily Projects/other';
+    const otherPath = '/aily Projects/other';
     const otherData = { name: 'other', cloudId: 'other-cloud' };
     files.set(`${otherPath}/package.json`, JSON.stringify(otherData));
     component.projectService.currentProjectPath = otherPath;

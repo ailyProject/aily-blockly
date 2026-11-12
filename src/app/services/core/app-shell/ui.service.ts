@@ -837,7 +837,7 @@ export class UiService {
     // The existing independent-window host focuses/reuses the same route.
     // Opening the form never submits feedback or uploads an attachment.
     if (typeof window['subWindow']?.open === 'function') {
-      this.openWindow({ path: 'feedback', type: 'feedback-open', title: 'Aily Feedback',
+      this.openWindow({ path: 'feedback', type: 'feedback-open', title: 'aily Feedback',
         data, width: 620, height: 740, minWidth: 520, minHeight: 520, alwaysOnTop: false, windowClass: 'builtin' });
       void this.reportOpenChatIssue().catch(() => undefined);
       return;

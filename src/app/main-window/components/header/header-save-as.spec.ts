@@ -7,13 +7,13 @@ describe('Header project save as', () => {
   beforeEach(() => {
     previousApis = { path: window['path'], ipcRenderer: window['ipcRenderer'] };
     window['path'] = {
-      dirname: () => '/Aily Projects',
+      dirname: () => '/aily Projects',
       basename: () => 'My Project',
     };
-    window['ipcRenderer'] = { invoke: jasmine.createSpy('dialog').and.resolveTo('/Aily Projects/Copy') };
+    window['ipcRenderer'] = { invoke: jasmine.createSpy('dialog').and.resolveTo('/aily Projects/Copy') };
     header = Object.create(HeaderComponent.prototype);
     header.projectService = {
-      currentProjectPath: '/Aily Projects/My Project',
+      currentProjectPath: '/aily Projects/My Project',
       currentPackageData: { name: 'my_project', path: '/legacy/default' },
       getProjectMode: jasmine.createSpy('mode').and.returnValue('coder'),
       captureCurrentProjectGuard() {
@@ -31,9 +31,9 @@ describe('Header project save as', () => {
   it('defaults Coder copies to a sibling directory and opts into empty cancellation', async () => {
     await header.process({ action: 'project-save-as' });
     expect(window['ipcRenderer'].invoke).toHaveBeenCalledOnceWith('select-folder-saveAs', {
-      path: '/Aily Projects', suggestedName: 'My Project_new', returnEmptyOnCancel: true,
+      path: '/aily Projects', suggestedName: 'My Project_new', returnEmptyOnCancel: true,
     });
-    expect(header.projectService.saveAs).toHaveBeenCalledOnceWith('/Aily Projects/Copy');
+    expect(header.projectService.saveAs).toHaveBeenCalledOnceWith('/aily Projects/Copy');
   });
 
   for (const mode of ['blockly', 'coder']) it(`does nothing when the ${mode} dialog is cancelled`, async () => {
@@ -59,7 +59,7 @@ describe('Header project save as', () => {
     window['ipcRenderer'].invoke.and.returnValue(new Promise<string>(resolve => { finish = resolve; }));
     const first = header.process({ action: 'project-save-as' });
     await header.process({ action: 'project-save-as' });
-    finish('/Aily Projects/Copy');
+    finish('/aily Projects/Copy');
     await first;
     expect(window['ipcRenderer'].invoke).toHaveBeenCalledTimes(1);
     expect(header.projectService.saveAs).toHaveBeenCalledTimes(1);
@@ -68,7 +68,7 @@ describe('Header project save as', () => {
   it('does not copy a different project when the active project changes during the dialog', async () => {
     window['ipcRenderer'].invoke.and.callFake(async () => {
       header.projectService.currentProjectPath = '/different/project';
-      return '/Aily Projects/Copy';
+      return '/aily Projects/Copy';
     });
     await header.process({ action: 'project-save-as' });
     expect(header.projectService.saveAs).not.toHaveBeenCalled();
@@ -81,7 +81,7 @@ describe('Header project save as', () => {
     expect(window['ipcRenderer'].invoke).toHaveBeenCalledOnceWith('select-folder-saveAs', {
       path: '/legacy/default', suggestedName: 'my_project_new', returnEmptyOnCancel: true,
     });
-    expect(header.projectService.saveAs).toHaveBeenCalledOnceWith('/Aily Projects/Copy');
+    expect(header.projectService.saveAs).toHaveBeenCalledOnceWith('/aily Projects/Copy');
   });
   for (const mode of ['blockly', 'coder']) it(`blocks ${mode} Save As while AI is running without opening a dialog`, async () => {
     header.projectService.getProjectMode.and.returnValue(mode);

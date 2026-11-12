@@ -117,7 +117,7 @@ function getBuildProduct() {
 
 function applyAppIdentity(product) {
   const isCoderProduct = normalizeBuildProduct(product) === 'coder';
-  app.setName(isCoderProduct ? 'Aily Coder' : 'aily blockly');
+  app.setName(isCoderProduct ? 'aily Coder' : 'aily blockly');
   if (isWin32) {
     app.setAppUserModelId(getProductAppId(product));
   }

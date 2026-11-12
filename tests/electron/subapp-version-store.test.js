@@ -11,7 +11,7 @@ const DIST = { tarball: 'https://registry.example.test/subapp-aily-chat.tgz', in
 function fixture(t) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-version-store-'));
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
-  return { temporary, root: path.join(temporary, 'Aily 用户', 'npm-global', 'app') };
+  return { temporary, root: path.join(temporary, 'aily 用户', 'npm-global', 'app') };
 }
 
 function writePackage(source, entry, marker = entry.version) {

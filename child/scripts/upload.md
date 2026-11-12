@@ -2,7 +2,7 @@
 
 > Coder 路径更新（2026-08-21）：下文的 `.temp/*.json` 表示 Blockly 路径；Coder 对应文件位于持久化 `sketch/*.json`。`upload.js` 会按根 `package.json` 的 `type: "coder"` 自动选择 `sketch/preprocess.json`，应用层也会把 Coder 的 upload/network OTA 配置写入 `sketch/`。
 
-本文描述 Aily Blockly 当前的固件上传参数选择逻辑。最终使用哪类上传命令，由用户选择的设备类型决定；`linkUploadParam` 是否存在不会自动把上传方式切换为调试器。
+本文描述 aily Blockly 当前的固件上传参数选择逻辑。最终使用哪类上传命令，由用户选择的设备类型决定；`linkUploadParam` 是否存在不会自动把上传方式切换为调试器。
 
 ## 结论
 
@@ -94,7 +94,7 @@
 
 OTA 不能替代开发板的首次烧录。目标设备必须已经运行包含相应 OTA 功能的固件，并且正在提供 BLE OTA GATT 服务或 WiFi OTA HTTP(S) 服务。通常需要先通过串口或调试器烧录一版启用 OTA 的固件，之后才能使用 OTA 更新。
 
-项目中存在 OTA 库依赖只决定 Aily Blockly 是否显示对应入口；目标设备没有启动匹配的 OTA 服务时，搜索、连接或上传仍会失败。
+项目中存在 OTA 库依赖只决定 aily Blockly 是否显示对应入口；目标设备没有启动匹配的 OTA 服务时，搜索、连接或上传仍会失败。
 
 ## BLE OTA
 

@@ -213,8 +213,8 @@ function createChildToolAppItem(config: ChildToolConfig): AppItem {
   return {
     ...app,
     id: appId,
-    name: app.name || config.titleKey,
-    description: app.description || `${config.namespace}.DESCRIPTION`,
+    name: (app.name || config.titleKey).replace(/\baily\b/gi, 'aily'),
+    description: (app.description || `${config.namespace}.DESCRIPTION`).replace(/\baily\b/gi, 'aily'),
     action: app.action || 'tool-open',
     data: app.data || { type: 'tool', data: config.id },
     icon: app.icon || 'fa-light fa-puzzle-piece',

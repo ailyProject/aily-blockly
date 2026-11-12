@@ -449,7 +449,7 @@ export class MainWindowComponent implements OnDestroy {
       if (this.destroyed || !this.isAilyChatAvailable()) return;
 
       void this.childToolProcessService.prewarm(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID, 90000).catch(error => {
-        console.warn('[Subapp] Aily Chat prewarm failed:', error);
+        console.warn('[Subapp] aily Chat prewarm failed:', error);
       });
     };
 

@@ -1930,7 +1930,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         : {
           ok: false,
           code: 'DEVELOPMENT_MODE_LOCKED',
-          message: 'Aily Coder is locked to Coder mode.',
+          message: 'aily Coder is locked to Coder mode.',
           context: this.createHostContext(),
         };
     }
@@ -2030,7 +2030,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     payload: { sessionId?: string | null } = {},
   ): Record<string, unknown> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Active chat session reporting is only available to Aily Chat' };
+      return { ok: false, message: 'Active chat session reporting is only available to aily Chat' };
     }
 
     const sessionId = typeof payload.sessionId === 'string'
@@ -2054,7 +2054,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     surfaceState?: 'collapsed' | 'expanded';
   } = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Subapp Dock controls are only available to Aily Chat' };
+      return { ok: false, message: 'Subapp Dock controls are only available to aily Chat' };
     }
 
     const sessionId = String(payload.sessionId || '').trim();
@@ -2142,7 +2142,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private reportAiOperationState(payload: unknown = {}, scope = this.aiOperationStateScope): Record<string, unknown> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'AI operation state is only available to Aily Chat' };
+      return { ok: false, message: 'AI operation state is only available to aily Chat' };
     }
     if (scope !== this.aiOperationStateScope) return { ok: false, code: 'AI_OPERATION_SCOPE_CHANGED' };
     const value = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
@@ -2254,7 +2254,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       if (owner) this.aiOperationProtocol?.stopRejected(owner);
       else if (this.aiLegacyRunSessionId === legacySession) this.aiLegacyStopping = false;
       this.refreshAiOperationNotice();
-      this.logError('stop active Aily Chat turn failed', error);
+      this.logError('stop active aily Chat turn failed', error);
     }
   }
 
@@ -2290,7 +2290,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private openFile(payload: { path?: string }): Record<string, unknown> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'File reveal is only available to Aily Chat' };
+      return { ok: false, message: 'File reveal is only available to aily Chat' };
     }
 
     const fullPath = typeof payload?.path === 'string' ? payload.path.trim() : '';
@@ -2329,7 +2329,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async selectChatResources(payload: ChatResourcePickerRequest = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Resource selection is only available to Aily Chat' };
+      return { ok: false, message: 'Resource selection is only available to aily Chat' };
     }
     const dialog = (window as any).dialog;
     const fs = (window as any).fs;
@@ -2430,7 +2430,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async listChatChildApps(payload: { limit?: number } = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Child app listing is only available to Aily Chat' };
+      return { ok: false, message: 'Child app listing is only available to aily Chat' };
     }
     const listed = await this.mainUiAutomation.listChildApps({
       limit: Math.max(1, Math.min(100, Number(payload?.limit) || 100)),
@@ -2456,7 +2456,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     payload: { toolId?: string; mode?: 'embedded' | 'window' } = {},
   ): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Opening child apps is only available to Aily Chat' };
+      return { ok: false, message: 'Opening child apps is only available to aily Chat' };
     }
     return this.mainUiAutomation.openChildApp({
       toolId: String(payload?.toolId || ''),
@@ -2466,7 +2466,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async startGithubLogin(payload: { inviteCode?: string } = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      throw new Error('GitHub login is only available to Aily Chat');
+      throw new Error('GitHub login is only available to aily Chat');
     }
 
     const inviteCode = typeof payload?.inviteCode === 'string'
@@ -2537,7 +2537,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async openUserSubscription(): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'The user subscription page is only available to Aily Chat' };
+      return { ok: false, message: 'The user subscription page is only available to aily Chat' };
     }
     if (!this.authService.isLoggedIn) {
       return { ok: false, message: 'The user is not signed in' };

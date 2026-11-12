@@ -308,7 +308,7 @@ export class ElectronService {
       return { ok: true, notified: false, reason: 'foreground' };
     }
 
-    const title = String(payload?.title || 'Aily').trim().slice(0, 120) || 'Aily';
+    const title = String(payload?.title || 'aily').trim().slice(0, 120) || 'aily';
     const body = String(payload?.body || '').trim().slice(0, 500);
     if (!body) {
       return { ok: false, notified: false, reason: 'empty-body' };

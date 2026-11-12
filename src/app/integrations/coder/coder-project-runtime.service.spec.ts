@@ -181,14 +181,14 @@ describe('Coder concurrent process integration', () => {
     // Finish A after switching to B: the failure must remain attached to A.
     project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
     callback({ type: 'close', code: 1, streamId: id });
-    a.notice.update({ title: 'Library preparation failed', detail: 'Unknown Aily Coder Agent method: coder.library.materialize', state: 'error' });
+    a.notice.update({ title: 'Library preparation failed', detail: 'Unknown aily Coder Agent method: coder.library.materialize', state: 'error' });
     expect((await visible.readPage()).entries).toEqual([]);
     expect(b.log.list).toEqual([]);
     project.currentProjectPath = '/a'; project.currentProjectPath$.next('/a');
     const entries = (await visible.readPage()).entries;
     expect(entries.map(entry => entry.detail)).toEqual([
       'npm install', 'npm install\ndependency install failed',
-      'Unknown Aily Coder Agent method: coder.library.materialize',
+      'Unknown aily Coder Agent method: coder.library.materialize',
     ]);
     project.currentProjectPath = ''; project.currentProjectPath$.next('');
     expect((await visible.readPage()).entries).toEqual([]);

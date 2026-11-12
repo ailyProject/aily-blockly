@@ -13,7 +13,7 @@ const { values } = parseArgs({ options: {
   output: { type: 'string' }, 'reuse-angular': { type: 'boolean' }, help: { type: 'boolean' },
 } });
 if (values.help) {
-  console.log('npm --prefix e2e run test:onboarding -- --lex-root <Aily Lex 仓库> --project <已安装依赖的 Blockly 项目> [--chat-root <Aily Chat 便携包>] [--reuse-angular] [--output <证据目录>]');
+  console.log('npm --prefix e2e run test:onboarding -- --lex-root <aily Lex 仓库> --project <已安装依赖的 Blockly 项目> [--chat-root <aily Chat 便携包>] [--reuse-angular] [--output <证据目录>]');
   process.exit(0);
 }
 const lex = values['lex-root'] || process.env.AILY_E2E_LEX_ROOT;

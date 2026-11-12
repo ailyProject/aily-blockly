@@ -19,7 +19,7 @@ export function detectProjectMode(input: {
 }
 
 export function getProjectApplicationName(mode: ProjectMode): string {
-  return mode === 'coder' ? 'Aily Coder' : 'Aily Blockly';
+  return mode === 'coder' ? 'aily Coder' : 'aily Blockly';
 }
 
 /** Explicit AI mode arguments are assertions, never permission to change the host mode. */

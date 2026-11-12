@@ -58,7 +58,7 @@ async function invokeAilyConnector(channel, payload) {
     throw new Error('Invalid aily-connector IPC response');
   }
   if (!envelope.ok) {
-    const error = new Error(envelope.error?.message || 'Aily Connector request failed');
+    const error = new Error(envelope.error?.message || 'aily Connector request failed');
     error.code = envelope.error?.code || 'CONNECTOR_ERROR';
     if (envelope.error?.details) error.details = envelope.error.details;
     throw error;

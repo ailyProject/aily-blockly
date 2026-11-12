@@ -43,7 +43,7 @@ export function assertGenerationRequest(value: any): asserts value is AbsGenerat
         reason: 'generation-protocol-version', field: 'version', allowedValues: [2],
         received: typeof received === 'string' ? received.slice(0, 80)
           : typeof received === 'number' && Number.isFinite(received) || typeof received === 'boolean' ? received : null,
-        hint: 'Reconnect/restart the MCP service using current Aily Chat tools. Restarting Blockly alone cannot refresh an old MCP process. Tools construct version 2 and receipts; do not add wire fields to ABS or edit ABI/map data.',
+        hint: 'Reconnect/restart the MCP service using current aily Chat tools. Restarting Blockly alone cannot refresh an old MCP process. Tools construct version 2 and receipts; do not add wire fields to ABS or edit ABI/map data.',
       });
   }
   if (typeof value.requestId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(value.requestId)) {

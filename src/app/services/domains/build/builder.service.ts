@@ -259,7 +259,7 @@ export class BuilderService {
     if (feedback?.success !== true) {
       throw new Error(
         feedback?.error
-        || 'Aily Coder source could not be saved to disk before compilation.',
+        || 'aily Coder source could not be saved to disk before compilation.',
       );
     }
   }

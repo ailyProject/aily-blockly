@@ -55,7 +55,7 @@ async function main() {
     }, { timeout: 60000 }).toBe(true);
     const dismiss = mainPage.getByText('稍后登录', {exact:true});
     if (await dismiss.count()) await dismiss.click();
-    await expect.poll(() => mainPage.evaluate(() => window.ng.getComponent(document.querySelector('app-header')).uiService.openFeedback.toString().includes('Aily Feedback'))).toBe(true);
+    await expect.poll(() => mainPage.evaluate(() => window.ng.getComponent(document.querySelector('app-header')).uiService.openFeedback.toString().includes('aily Feedback'))).toBe(true);
     await mainPage.evaluate(() => {
       const header = window.ng.getComponent(document.querySelector('app-header'));
       header.serialService.currentPort = 'COM999'; // metadata only, never opens a port

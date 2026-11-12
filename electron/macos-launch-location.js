@@ -20,7 +20,7 @@ function isDiskImageAppPath(value) {
 
 const PRODUCTS = {
   blockly: { appName: 'aily blockly', bundleName: 'aily blockly' },
-  coder: { appName: 'Aily Coder', bundleName: 'aily coder' },
+  coder: { appName: 'aily Coder', bundleName: 'aily coder' },
 };
 
 function normalizeProduct(product) {

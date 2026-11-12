@@ -5,8 +5,8 @@ import { ProjectLifecycleGate } from './project-lifecycle-gate';
 import { sha256Hex } from '../../../utils/crypto.utils';
 
 describe('ProjectService save as mode isolation', () => {
-  const source = '/Aily Projects/source';
-  const target = '/Aily Projects/My Copy';
+  const source = '/aily Projects/source';
+  const target = '/aily Projects/My Copy';
   let service: any;
   let files: Map<string, string>;
   let directories: Set<string>;
@@ -31,7 +31,7 @@ describe('ProjectService save as mode isolation', () => {
       [`${source}/sketch/src/main.cpp`, 'old code'],
       [`${source}/sketch/libraries/Local/Local.h`, 'local library'],
     ]);
-    directories = new Set(['/Aily Projects', source]);
+    directories = new Set(['/aily Projects', source]);
     fs = {
       projectSyncStorageVersion: 2,
       openProjectSyncStorage: async (root: string, guard: () => void) => {

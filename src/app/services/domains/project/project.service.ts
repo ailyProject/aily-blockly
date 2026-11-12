@@ -3415,7 +3415,7 @@ export class ProjectService {
     if (this.configService.getPreferredChatAgentRuntimeMode() === 'coder') return this.projectOpen(projectPath);
     const result = await window['ipcRenderer'].invoke('project-companion-open', { mode: 'coder', projectPath });
     if (result?.ok === true) return true;
-    if (result?.reason !== 'not_installed') throw new Error(result?.error || 'Aily Coder 启动失败');
+    if (result?.reason !== 'not_installed') throw new Error(result?.error || 'aily Coder 启动失败');
     // Coder may have been removed after the preflight check. Keep the prepared copy.
     await this.downloadCompanionApplication('coder');
     return false;

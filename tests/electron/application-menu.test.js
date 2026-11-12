@@ -36,7 +36,7 @@ for (const [label, input] of [
 ]) {
   test(`${label} refreshes product labels while preserving native actions`, () => {
     const product = resolveBuildProduct(input);
-    const name = product === 'coder' ? 'Aily Coder' : 'aily blockly';
+    const name = product === 'coder' ? 'aily Coder' : 'aily blockly';
     const harness = createMenuHarness(name);
     assert.equal(refreshApplicationMenu({ ...harness, platform: 'darwin' }), true);
     const installed = harness.installed.items;
@@ -70,7 +70,7 @@ test('Windows and Linux keep their current menu unchanged', () => {
 });
 
 test('does not invent a menu when the application explicitly has no native menu', () => {
-  const harness = createMenuHarness('Aily Coder');
+  const harness = createMenuHarness('aily Coder');
   harness.Menu.getApplicationMenu = () => null;
   assert.equal(refreshApplicationMenu({ ...harness, platform: 'darwin' }), false);
   assert.equal(harness.installed, undefined);

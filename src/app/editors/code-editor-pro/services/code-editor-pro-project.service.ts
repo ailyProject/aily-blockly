@@ -66,10 +66,10 @@ export class CodeEditorProProjectService {
 
   async saveAll(requestedPath = this.projectService.currentProjectPath): Promise<{ ok: true }> {
     const entry = this.persistenceBridges.get(this.key(requestedPath));
-    if (!entry) throw new Error(`Aily Coder 保存通道尚未就绪: ${requestedPath}`);
+    if (!entry) throw new Error(`aily Coder 保存通道尚未就绪: ${requestedPath}`);
     const { path, bridge } = entry;
     const result = await bridge.saveAll();
-    if (!result.ok) throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
+    if (!result.ok) throw new Error(result.message || 'aily Coder 未能保存全部代码文件');
     await this.projectService.saveLibraryChanges(path);
     if (path && this.projectService.isAilyCodeProject(path)) {
       await this.coderBuildInfo.updateCodeHash(path);

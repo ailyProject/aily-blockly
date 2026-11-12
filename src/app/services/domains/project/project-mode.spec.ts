@@ -15,7 +15,7 @@ describe('project mode boundaries', () => {
       data: { recentlyProjects: [coder, blockly] },
       init: jasmine.createSpy('init').and.resolveTo(),
       getPreferredChatAgentRuntimeMode: () => mode,
-      getApplicationName: () => 'Aily',
+      getApplicationName: () => 'aily',
       getWebUrl: () => 'https://yiyu.pro',
       save: jasmine.createSpy('save').and.resolveTo(),
     };
@@ -226,8 +226,8 @@ describe('project mode boundaries', () => {
   it('leaves firmware devmode separate from the host project type', () => {
     expect(getProjectCreationModeError('blockly', { devmode: 'micropython' })).toBeNull();
     expect(getProjectCreationModeError('coder', { developmentMode: 'coder', devmode: 'arduino' })).toBeNull();
-    expect(getProjectCreationModeError('coder', { projectType: 'blockly' })).toContain('Aily Coder');
-    expect(getProjectCreationModeError('blockly', { developmentMode: 'unknown' })).toContain('Aily Blockly');
+    expect(getProjectCreationModeError('coder', { projectType: 'blockly' })).toContain('aily Coder');
+    expect(getProjectCreationModeError('blockly', { developmentMode: 'unknown' })).toContain('aily Blockly');
   });
 
   it('deduplicates the Coder conversion dialog and cancels without creating a project', async () => {

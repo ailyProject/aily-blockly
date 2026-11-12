@@ -3,8 +3,8 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { assertSelectedOnlineModel, explicitOnlineModelId, isOnlineModelChipLabel, observeOnlineModelCatalog, resolveOnlineModelPreset } from '../../e2e/fixtures/online-model-selection.mjs'
 
-const catalog = () => ({ data: { model_presets: { 'auto-fast': { display_name: 'Aily Fast', model: 'glm-5.3-flash', is_user_selectable: true } },
-  user_visible_model_presets: { 'auto-fast': { display_name: 'Aily Fast', is_user_selectable: true, unavailable_reason: null } } } })
+const catalog = () => ({ data: { model_presets: { 'auto-fast': { display_name: 'aily Fast', model: 'glm-5.3-flash', is_user_selectable: true } },
+  user_visible_model_presets: { 'auto-fast': { display_name: 'aily Fast', is_user_selectable: true, unavailable_reason: null } } } })
 
 test('no override and auto keep the existing product default without inspecting catalog', () => {
   assert.equal(explicitOnlineModelId(undefined), undefined)
@@ -15,7 +15,7 @@ test('no override and auto keep the existing product default without inspecting 
 
 test('explicit preset uses only the real visible selectable catalog display name and exact SDK identity', () => {
   const selected = resolveOnlineModelPreset(catalog(), 'auto-fast')
-  assert.deepEqual(selected, { id: 'auto-fast', provider: 'aily-services', label: 'Aily Fast' })
+  assert.deepEqual(selected, { id: 'auto-fast', provider: 'aily-services', label: 'aily Fast' })
   assert.doesNotThrow(() => assertSelectedOnlineModel({ model: { id: 'auto-fast', provider: 'aily-services' } }, selected))
   for (const model of [{ id: 'auto', provider: 'aily-services' }, { id: 'auto-fast', provider: 'another-provider' }, undefined])
     assert.throws(() => assertSelectedOnlineModel({ model }, selected))
@@ -43,18 +43,18 @@ test('legacy catalog fallback still requires an explicitly visible base preset',
   const source = catalog(); delete source.data.user_visible_model_presets
   assert.throws(() => resolveOnlineModelPreset(source, 'auto-fast'))
   source.data.model_presets['auto-fast'].user_visible = true
-  assert.equal(resolveOnlineModelPreset(source, 'auto-fast').label, 'Aily Fast')
+  assert.equal(resolveOnlineModelPreset(source, 'auto-fast').label, 'aily Fast')
 })
 
 test('chip labels allow only the exact catalog name with an optional nonempty single-line reasoning label', () => {
-  for (const label of ['Aily Fast', 'Aily Fast · High', 'Aily Fast · High accuracy'])
-    assert.equal(isOnlineModelChipLabel(label, 'Aily Fast'), true)
-  for (const label of ['Aily FastOther', 'Aily Fast Other · High', 'Aily Fast · ', 'Aily Fast ·  ',
-    'Aily Fast · High\n', 'Aily Fast\n · High', 'Aily Fast · High\rLow', 'Aily Fast ·  High', 'Aily Fast · High '])
-    assert.equal(isOnlineModelChipLabel(label, 'Aily Fast'), false)
+  for (const label of ['aily Fast', 'aily Fast · High', 'aily Fast · High accuracy'])
+    assert.equal(isOnlineModelChipLabel(label, 'aily Fast'), true)
+  for (const label of ['aily FastOther', 'aily Fast Other · High', 'aily Fast · ', 'aily Fast ·  ',
+    'aily Fast · High\n', 'aily Fast\n · High', 'aily Fast · High\rLow', 'aily Fast ·  High', 'aily Fast · High '])
+    assert.equal(isOnlineModelChipLabel(label, 'aily Fast'), false)
 })
 
-const preset = { id: 'auto-fast', provider: 'aily-services', label: 'Aily Fast' }
+const preset = { id: 'auto-fast', provider: 'aily-services', label: 'aily Fast' }
 function channel(t) {
   const page = new EventEmitter(), socket = new EventEmitter()
   socket.url = () => 'ws://127.0.0.1:1234/ws?token=never-persist-this'

@@ -428,6 +428,10 @@ export class SubappManagerService implements OnDestroy {
         : 'current';
     return {
       ...item,
+      ...(typeof item?.name === 'string' ? { name: item.name.replace(/\baily\b/gi, 'aily') } : {}),
+      ...(typeof item?.description === 'string'
+        ? { description: item.description.replace(/\baily\b/gi, 'aily') }
+        : {}),
       updateStatus: {
         ...rawStatus,
         state,

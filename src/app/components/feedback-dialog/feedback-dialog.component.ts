@@ -408,7 +408,7 @@ export class FeedbackDialogComponent implements OnDestroy {
     const runtimeJson = runtimeBlock.content || 'null';
     this.runtimeDiagnosticBytes = new TextEncoder().encode(runtimeJson).byteLength;
     return [
-      '### Aily Chat',
+      '### aily Chat',
       this.renderTable([
         ['Installed', chat?.installed ?? null],
         ['Installed Version', chat?.installedVersion ?? null],

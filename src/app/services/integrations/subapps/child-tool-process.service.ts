@@ -825,7 +825,7 @@ export class ChildToolProcessService implements OnDestroy {
     this.ensureProcessMessageListener();
 
     if (!pathApi?.getAilyChildPath || !pathApi?.join) {
-      throw new Error('Aily child path API is not available');
+      throw new Error('aily child path API is not available');
     }
 
     const childPath = pathApi.getAilyChildPath();

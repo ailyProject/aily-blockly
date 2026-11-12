@@ -58,11 +58,11 @@ test('embeds only PNG data URLs as the app icon', () => {
 
 test('names the product and bundle separately for Blockly and Coder', () => {
   const coderPath = '/private/var/folders/x/T/AppTranslocation/1/d/aily coder.app/Contents/MacOS/aily coder';
-  const coder = inspectMacosLaunchLocation({ platform: 'darwin', paths: [coderPath], appName: 'Aily Coder', product: 'coder', locale: 'zh-CN' });
+  const coder = inspectMacosLaunchLocation({ platform: 'darwin', paths: [coderPath], appName: 'aily Coder', product: 'coder', locale: 'zh-CN' });
   assert.equal(coder.product, 'coder');
   assert.equal(coder.bundleName, 'aily coder');
   const coderHtml = renderInstallGuideHtml(coder);
-  assert.match(coderHtml, /请先将 Aily Coder 安装到「应用程序」/);
+  assert.match(coderHtml, /请先将 aily Coder 安装到「应用程序」/);
   assert.match(coderHtml, /「aily coder\.app」拖入/);
   assert.doesNotMatch(coderHtml, /aily blockly/);
 
@@ -105,10 +105,10 @@ test('reads the icon from the running bundle, trying each source in order', asyn
 
 test('escapes the evidence path and uses English for other locales', () => {
   const report = inspectMacosLaunchLocation({
-    platform: 'darwin', paths: ['/Volumes/<x>/Aily Coder.app/Contents/MacOS/Aily Coder'], appName: 'Aily Coder', locale: 'en-US',
+    platform: 'darwin', paths: ['/Volumes/<x>/Aily Coder.app/Contents/MacOS/Aily Coder'], appName: 'aily Coder', locale: 'en-US',
   });
   const html = renderInstallGuideHtml(report);
-  assert.match(html, /Move Aily Coder to Applications first/);
+  assert.match(html, /Move aily Coder to Applications first/);
   assert.match(html, /&lt;x&gt;/);
   assert.doesNotMatch(html, /<x>/);
 });
