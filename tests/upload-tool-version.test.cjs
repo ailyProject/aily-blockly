@@ -41,6 +41,8 @@ test('a missing pinned executable never resolves from another version or PATH', 
     process.env.PATH = path.dirname(fromPath);
     await assert.rejects(resolve('esptool write-flash', { esptool_py: '5.3.0' }), /esptool_py@5\.3\.0/);
     assert.equal((await resolve('esptool write-flash')).command, other);
+    assert.equal((await resolve('esptool write-flash', { esptool_py: '^5.3.0' })).command, other);
+    assert.equal((await resolve(`"${other}" write-flash`, { esptool_py: '^5.3.0' }, true)).command, `"${other}"`);
 });
 
 test('an SDK uploader cannot delegate to a stale version from cached preprocessing', async t => {

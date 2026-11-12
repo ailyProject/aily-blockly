@@ -8,8 +8,9 @@ function findUploadToolDependency(command, dependencies) {
     const keys = Object.keys(dependencies);
     for (const candidate of names) {
         const tool = keys.find(key => key.toLowerCase() === candidate);
-        if (tool && dependencies[tool]) {
-            return { tool, version: dependencies[tool] };
+        const version = tool && dependencies[tool];
+        if (typeof version === 'string' && /^\d+\.\d+(?:\.\d+)?(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(version)) {
+            return { tool, version };
         }
     }
     return null;
