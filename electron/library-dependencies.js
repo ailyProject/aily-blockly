@@ -41,7 +41,10 @@ class LibraryDependencies {
     this.history = new (require('./library-history').LibraryHistory)();
   }
 
-  root(project) { return fs.realpathSync(project); }
+  // Match the child's fs.promises.realpath and the publication guard. On
+  // Windows the JS resolver preserves input casing (including the drive),
+  // which would split one physical project's session, queue and staged state.
+  root(project) { return (fs.realpathSync.native || fs.realpathSync)(project); }
   read(root) { return JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); }
 
   effective(root) {

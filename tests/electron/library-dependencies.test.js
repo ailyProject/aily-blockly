@@ -71,6 +71,37 @@ test('public library operations persist manifest and lockfile before returning a
   assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), baseline);
 });
 
+test('Windows Coder requests share one transaction across drive and directory casing',
+  { skip: process.platform !== 'win32' }, async t => {
+    const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+    const canonical = await fs.promises.realpath(f.root);
+    const aliases = [canonical[0].toLowerCase() + canonical.slice(1), canonical.toLowerCase()];
+    for (const alias of aliases) {
+      assert.equal(await fs.promises.realpath(alias), canonical);
+      const { transaction } = await sessions.run('begin', alias);
+      try {
+        assert.equal((await sessions.run('status', canonical)).busy, true);
+        assert.equal((await sessions.run('status', alias)).busy, true);
+        await sessions.run('mutate', canonical, {
+          action: 'install', packages: ['test-c@file:local-libraries/c'],
+        }, transaction);
+        assert.equal((await sessions.run('status', alias)).dirty, true);
+        await sessions.run('end', alias, undefined, transaction);
+      } finally {
+        if (sessions.sessions.size) await sessions.run('abort', canonical, undefined, transaction);
+      }
+      assert.equal((await sessions.run('status', canonical)).busy, false);
+      assert.equal((await sessions.run('status', alias)).dirty, false);
+      assert.equal(sessions.sessions.size, 0);
+      assert.equal(f.api.queues.size, 0);
+      assert.equal(JSON.parse(f.read('package.json')).dependencies['test-c'], 'file:local-libraries/c');
+      await new LibraryDependencies().discard(alias, { reconcile: true });
+      assert.deepEqual(f.installed(), ['test-a', 'test-b', 'test-c']);
+      await sessions.run('mutate', canonical, { action: 'remove', packages: ['test-c'] });
+      assert.deepEqual(f.installed(), ['test-a', 'test-b']);
+    }
+  });
+
 test('a library operation archives only changed packages and its attempts share one recovery copy', async t => {
   const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
   await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
