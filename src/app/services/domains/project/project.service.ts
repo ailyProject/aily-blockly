@@ -1245,6 +1245,12 @@ export class ProjectService {
     finally { lease.release(); }
   }
 
+  async withProjectLifecycleAdmission<T>(assertCurrent: () => void, operation: (owner: symbol) => Promise<T>): Promise<T> {
+    const lease = this.acquireProjectLifecycle([this.currentProjectPath, '*']);
+    try { assertCurrent(); return await operation(lease.token); }
+    finally { lease.release(); }
+  }
+
   private acquireProjectLifecycle(paths: string[], owner?: symbol, checkMutation = true): ProjectLifecycleLease {
     if (paths.some(path => this.dependencyLifecycle.isStopping(path))) {
       throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', '项目任务尚未确认停止，请重试关闭项目。');
@@ -2889,7 +2895,7 @@ export class ProjectService {
     return targetProjectPath;
   }
 
-  async close(options: { save?: boolean } = {}) {
+  async close(options: { save?: boolean; lifecycleOwner?: symbol } = {}) {
     if (this.coderOperationsSubject.value.size) {
       this.message.warning('工程正在编译或上传');
       return false;
@@ -2905,7 +2911,7 @@ export class ProjectService {
       opening.lease.release();
     }
     let lease: ProjectLifecycleLease;
-    try { lease = this.projectLifecycle.acquire(['*']); }
+    try { lease = this.projectLifecycle.acquire(['*'], options.lifecycleOwner); }
     catch (error) {
       if (opening && !this.boardSwitchLifecycle && this.dependencyLifecycle.get(opening.path)) {
         opening.lease = this.projectLifecycle.acquire(opening.paths);
