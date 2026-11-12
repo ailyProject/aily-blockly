@@ -7,7 +7,7 @@ const ailyCodeProject = require('./aily-code-project');
 const { selectFirmwareFile } = require('./firmware-selection');
 const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
 const { resolveBuiltinUploader } = require('./builtin-uploaders');
-const { findUploadToolDependency, findPinnedUploadToolDirectory, isToolExecutableInDirectory } = require('./upload-tool-version');
+const { findUploadToolDependency, findPinnedUploadToolDirectories, isToolExecutableInDirectory } = require('./upload-tool-version');
 
 // 简单的日志工具
 const logger = {
@@ -758,13 +758,18 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
     const pinnedTool = builtinUploader ? null : findUploadToolDependency(toolExecutable, toolDependencies);
     const toolFileName = path.basename(toolExecutable) + (platform === 'win32' && !/\.exe$/i.test(toolExecutable) ? '.exe' : '');
     if (pinnedTool) {
-        pinnedToolDirectory = findPinnedUploadToolDirectory(toolsPath, pinnedTool.tool, pinnedTool.version);
-        if (pinnedToolDirectory) {
-            commandPath = skipToolResolve && path.isAbsolute(toolExecutable)
-                ? (isToolExecutableInDirectory(toolExecutable, pinnedToolDirectory) ? toolName : '')
-                : await findFile(pinnedToolDirectory, toolFileName);
+        const directories = findPinnedUploadToolDirectories(toolsPath, pinnedTool.tool, pinnedTool.version);
+        for (const directory of directories) {
+            const executable = skipToolResolve && path.isAbsolute(toolExecutable)
+                ? (isToolExecutableInDirectory(toolExecutable, directory) ? toolName : '')
+                : await findFile(directory, toolFileName);
+            if (executable) {
+                pinnedToolDirectory = directory;
+                commandPath = executable;
+                break;
+            }
         }
-        if (!pinnedToolDirectory || !commandPath) {
+        if (!pinnedToolDirectory) {
             throw new Error(`无法使用烧录工具 ${pinnedTool.tool}@${pinnedTool.version}: ${toolName}`);
         }
     } else if (!skipToolResolve && !builtinUploader) {
@@ -784,6 +789,20 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
 
         if (!commandPath) {
             throw new Error(`无法找到可执行文件: ${toolFileName}`);
+        }
+    }
+
+    // SDK uploaders can delegate to another tool by passing its full path.
+    if (skipToolResolve) {
+        for (const argument of paramList.slice(1)) {
+            const executable = argument.replace(/^--[^=]+=/, '').replace(/^"|"$/g, '');
+            if (!path.isAbsolute(executable)) continue;
+            const dependency = findUploadToolDependency(executable, toolDependencies);
+            if (!dependency) continue;
+            const directories = findPinnedUploadToolDirectories(toolsPath, dependency.tool, dependency.version);
+            if (!directories.some(directory => isToolExecutableInDirectory(executable, directory))) {
+                throw new Error(`无法使用烧录工具 ${dependency.tool}@${dependency.version}: ${executable}`);
+            }
         }
     }
 

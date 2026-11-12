@@ -43,6 +43,17 @@ test('a missing pinned executable never resolves from another version or PATH', 
     assert.equal((await resolve('esptool write-flash')).command, other);
 });
 
+test('an SDK uploader cannot delegate to a stale version from cached preprocessing', async t => {
+    const { put, resolve } = fixture(t);
+    const sdkUploader = put('sdk', 'tools', 'flasher.exe');
+    const pinned = put('tools', 'esptool_py@5.3.0', 'esptool.exe');
+    const other = put('tools', 'esptool_py@5.3.1', 'esptool.exe');
+    const dependencies = { esptool_py: '5.3.0' };
+    const recipe = tool => `"${sdkUploader}" --esptool "${tool}"`;
+    assert.equal((await resolve(recipe(pinned), dependencies, true)).args[1], `"${pinned}"`);
+    await assert.rejects(resolve(recipe(other), dependencies, true), /esptool_py@5\.3\.0/);
+});
+
 test('legacy directories keep the executable and config file on the same version', async t => {
     const { put, resolve } = fixture(t);
     put('tools', 'avrdude@6.2.0', 'avrdude.conf');
