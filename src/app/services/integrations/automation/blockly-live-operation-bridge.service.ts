@@ -29,7 +29,6 @@ import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbs
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
 import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
-import { createProjectLifecycleAssertion, type ProjectLifecycleSnapshot } from './project-lifecycle-admission';
 import { forkClosedProject, forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
 import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
@@ -47,7 +46,6 @@ import {
 type BlocklyLiveOperationPayload = {
   requestId?: string;
   rendererGeneration?: number;
-  lifecycle?: ProjectLifecycleSnapshot;
   path?: string;
   operation?: string;
   params?: Record<string, any>;
@@ -140,7 +138,6 @@ export class BlocklyLiveOperationBridgeService {
         ok: false,
         code: (error as any)?.code,
         message: error instanceof Error ? error.message : String(error),
-        ...((error as any)?.commandDispatched === false ? { commandDispatched: false, stateChanged: false, candidateApplied: false, requiresUserAction: false } : {}),
         ...(localDependencyConflict ? { project, operation: payload.operation,
           nextAction: { tool: 'project_recover', input: { project, action: 'inspect_dependencies' } },
           recovery: 'Inspect the retained dependency entries before reading ABS; projection did not complete. No version was discarded or candidate applied.' } : {}),
@@ -331,15 +328,7 @@ export class BlocklyLiveOperationBridgeService {
       && this.projectService.ownsLibraryHistoryNavigation(payload.params['token'], projectPath);
   }
 
-  private async executeOperation(payload: BlocklyLiveOperationPayload, lifecycleOwner?: symbol): Promise<Record<string, any>> {
-    if (payload.lifecycle !== undefined && lifecycleOwner === undefined
-      && ['project_create', 'project_open', 'project_close', 'project_reload'].includes(payload.operation || '')) {
-      const assertCurrent = createProjectLifecycleAssertion(payload.lifecycle,
-        () => this.projectService.currentProjectPath || null,
-        () => this.electronService.currentRendererGeneration, payload.rendererGeneration);
-      return this.projectService.withProjectLifecycleAdmission(assertCurrent,
-        owner => this.executeOperation(payload, owner));
-    }
+  private async executeOperation(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
     // Owner control does not access the workspace. Keep heartbeats and cleanup
     // reachable while a project operation holds its gate; the subapp bridge
     // still validates lease ownership. Tool execution remains behind the gate.
@@ -375,10 +364,10 @@ export class BlocklyLiveOperationBridgeService {
       return forkProject(this.projectService, payload.path, payload.params || {});
     }
     if (payload.operation === 'project_open') {
-      return this.executeProjectOpen(payload.path || '', lifecycleOwner);
+      return this.executeProjectOpen(payload.path || '');
     }
     if (payload.operation === 'project_close') {
-      return this.executeProjectClose(payload.path, lifecycleOwner);
+      return this.executeProjectClose(payload.path);
     }
     if (payload.operation === 'project_load_status') {
       const path = payload.path || this.projectService.currentProjectPath;
@@ -400,7 +389,7 @@ export class BlocklyLiveOperationBridgeService {
       return this.executeSearchBoardsLibraries(payload.params || {});
     }
     if (payload.operation === 'project_create') {
-      return this.executeProjectCreate(payload.params || {}, lifecycleOwner);
+      return this.executeProjectCreate(payload.params || {});
     }
     if (payload.operation === 'main_menu_list') {
       return this.mainUiAutomationService.listMainMenu(payload.params || {});
@@ -651,7 +640,7 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_save':
         return this.runBlockWritingOperation(() => this.executeProjectSave());
       case 'project_reload':
-        return this.executeProjectReload(lifecycleOwner);
+        return this.executeProjectReload();
       default:
         return { ok: false, message: `不支持的 live Blockly 操作: ${payload.operation || ''}` };
     }
@@ -733,8 +722,7 @@ export class BlocklyLiveOperationBridgeService {
     return {
       ok: true,
       operation: 'app_info',
-      capabilities: { projectBuildReceipts: 1, projectForkReceipts: 1, projectRecoveryOpen: 1, projectLifecycle: 1 },
-      lifecycle: { version: 1, sourceProject: this.projectService.currentProjectPath || null },
+      capabilities: { projectBuildReceipts: 1, projectForkReceipts: 1, projectRecoveryOpen: 1 },
       app: {
         name: this.configService.getApplicationName(),
         version: this.electronService.applicationVersion,
@@ -1074,7 +1062,7 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectCreate(params: Record<string, any>): Promise<Record<string, any>> {
     await this.configService.init();
     const mode = this.configService.getPreferredChatAgentRuntimeMode();
     const modeError = getProjectCreationModeError(mode, params);
@@ -1082,7 +1070,7 @@ export class BlocklyLiveOperationBridgeService {
       return { ok: false, operation: 'project_create', reason: 'project_mode_mismatch', developmentMode: mode, message: modeError };
     }
     if (mode === 'coder') {
-      return this.executeCoderProjectCreate(params, lifecycleOwner);
+      return this.executeCoderProjectCreate(params);
     }
 
     const requestedName = String(params['name'] || '').trim();
@@ -1111,34 +1099,18 @@ export class BlocklyLiveOperationBridgeService {
       ? window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'))
       : `${newProjectData.path.replace(/[\\/]+$/, '')}/${newProjectData.name.replace(/\s/g, '_')}`;
 
-    const created = await this.projectService.projectNew(
+    const ok = await this.projectService.projectNew(
       newProjectData,
-      { activationReason: 'chat-tool-create', ...(lifecycleOwner ? { deferActivation: true } : {}) },
+      { activationReason: 'chat-tool-create' },
     );
-    let ok = created;
-    let activationError: unknown;
-    if (created && lifecycleOwner) {
-      try {
-        ok = await this.projectService.projectOpen(projectPath,
-          { reason: 'chat-tool-create', interactive: false, lifecycleOwner });
-      } catch (error) {
-        ok = false;
-        activationError = error;
-      }
-    }
 
     return {
       ok,
       operation: 'project_create',
       developmentMode: mode,
       projectType: mode,
-      project: created ? projectPath : null,
-      ...(created && !ok ? { projectCreated: true, createdProject: projectPath,
-        activation: { completed: false, currentProject: this.projectService.currentProjectPath || null },
-        code: (activationError as any)?.code || 'PROJECT_CREATE_ACTIVATION_FAILED' } : {}),
-      message: ok ? `项目已创建并打开: ${projectPath}` : created
-        ? (activationError instanceof Error ? activationError.message : activationError ? String(activationError) : '项目已创建，但未确认打开完成')
-        : '项目创建失败',
+      project: ok ? projectPath : null,
+      message: ok ? `项目已创建并打开: ${projectPath}` : '项目创建失败',
       name: newProjectData.name,
       path: newProjectData.path,
       board: {
@@ -1150,7 +1122,7 @@ export class BlocklyLiveOperationBridgeService {
     };
   }
 
-  private async executeCoderProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeCoderProjectCreate(params: Record<string, any>): Promise<Record<string, any>> {
     const result = await executeCoderProjectCreateOperation(params, {
       normalizeBoardName: (value) => this.normalizeAilyBoardPackageName(value),
       getBoards: () => this.configService.getBoardListForSelector(),
@@ -1158,14 +1130,17 @@ export class BlocklyLiveOperationBridgeService {
       defaultParentPath: () => this.projectService.getDefaultProjectParentPath(),
       generateUniqueName: (parentPath, prefix) =>
         this.projectService.generateUniqueProjectName(parentPath, prefix),
-      createProject: (data) => this.projectService.projectNewWithResult(data, {
-        deferActivation: true,
-        templateDirectory: 'template_arduino',
-        activationReason: 'chat-tool-create',
-      }),
+      createProject: async (data) => {
+        const projectPath = window['path'].join(data.path, data.name.replace(/\s/g, '_'));
+        const ok = await this.projectService.projectNew(data, {
+          deferActivation: true,
+          templateDirectory: 'template_arduino',
+          activationReason: 'chat-tool-create',
+        });
+        return { ok, projectPath: ok ? projectPath : undefined };
+      },
       openProject: (projectPath) => this.projectService.projectOpen(projectPath, {
         reason: 'chat-tool-create',
-        lifecycleOwner,
       }),
       recordBoardUsage: (boardName) => this.configService.recordBoardUsage(boardName),
     });
@@ -1432,7 +1407,7 @@ export class BlocklyLiveOperationBridgeService {
       ...(failure.projectSaved ? { recovery: 'The project is saved. For a stale build owner use project_recover(action="fork") to create an independent recovery project; do not delete unknown ownership records.' } : {}) };
   }
 
-  private async executeProjectOpen(projectPath: string, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectOpen(projectPath: string): Promise<Record<string, any>> {
     const requestedProject = String(projectPath || '').trim();
     if (!requestedProject) {
       return { ok: false, operation: 'project_open', message: '缺少项目路径' };
@@ -1480,7 +1455,6 @@ export class BlocklyLiveOperationBridgeService {
       === this.normalizePath(this.projectService.currentProjectPath);
     try {
       const opened = await this.projectService.projectOpen(requestedProject, {
-        lifecycleOwner,
         reason: sameProject ? 'chat-tool-reload' : 'chat-tool-open',
         interactive: false,
       });
@@ -1527,7 +1501,7 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeProjectClose(requestedPath?: string, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectClose(requestedPath?: string): Promise<Record<string, any>> {
     const projectPath = this.projectService.currentProjectPath;
     if (!projectPath) {
       return { ok: true, operation: 'project_close', project: null, message: '当前没有打开的项目' };
@@ -1539,7 +1513,7 @@ export class BlocklyLiveOperationBridgeService {
 
     const loadStatus = this.projectService.getBlocklyProjectLoadStatus(projectPath);
     let closed: boolean;
-    try { closed = await this.projectService.close({ save: true, lifecycleOwner }); }
+    try { closed = await this.projectService.close({ save: true }); }
     catch (error) {
       return { ok: false, operation: 'project_close', project: projectPath, reason: 'project_close_failed',
         code: (error as any)?.code, message: error instanceof Error ? error.message : String(error), loadStatus };
@@ -1554,13 +1528,13 @@ export class BlocklyLiveOperationBridgeService {
     };
   }
 
-  private async executeProjectReload(lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectReload(): Promise<Record<string, any>> {
     const projectPath = this.projectService.currentProjectPath;
     if (!projectPath) {
       return { ok: false, message: '当前未打开 Blockly 项目' };
     }
     try {
-      const opened = await this.projectService.projectOpen(projectPath, { reason: 'chat-tool-reload', lifecycleOwner });
+      const opened = await this.projectService.projectOpen(projectPath, { reason: 'chat-tool-reload' });
       if (opened && this.projectService.getProjectMode(projectPath) === 'coder') {
         const ready = await this.waitForCoderEditor(projectPath);
         return { ok: ready, operation: 'project_reload', project: projectPath,

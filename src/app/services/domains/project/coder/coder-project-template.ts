@@ -1,5 +1,3 @@
-import { valid } from 'semver';
-
 export const CODER_TEMPLATE_DIRECTORY = 'template_arduino';
 export const LEGACY_CODER_TEMPLATE_DIRECTORY = 'template_arrduino';
 export const CODER_SOURCE_ENTRY = 'src/main.cpp';
@@ -133,46 +131,6 @@ export function resolveCoderProjectCreationTemplate(
     templatePath: pathApi.join(boardPackagePath, 'template'),
     useDefaultSource: true,
   };
-}
-
-interface CoderTemplateReadApi {
-  lstatSync(path: string): { _isDirectory: boolean; _isFile: boolean };
-  readFileSync(path: string): string;
-}
-
-function readTemplateManifest(path: string, fsApi: CoderTemplateReadApi): CoderProjectPackageManifest | undefined {
-  if (!fsApi.lstatSync(path)._isFile) return undefined;
-  const manifest = JSON.parse(fsApi.readFileSync(path));
-  return manifest && typeof manifest === 'object' && !Array.isArray(manifest) ? manifest : undefined;
-}
-
-export function findReusableCoderBoardTemplate(
-  boardPackagePath: string,
-  board: { name: string; version: string },
-  pathApi: CoderTemplatePathApi,
-  fsApi: CoderTemplateReadApi,
-): ReturnType<typeof resolveCoderProjectCreationTemplate> | undefined {
-  const version = String(board.version || '').trim();
-  if (!valid(version)) return undefined;
-
-  try {
-    if (!fsApi.lstatSync(boardPackagePath)._isDirectory) return undefined;
-    const manifest = readTemplateManifest(pathApi.join(boardPackagePath, 'package.json'), fsApi);
-    if (manifest?.['name'] !== board.name || manifest['version'] !== version) return undefined;
-    if (!readTemplateManifest(pathApi.join(boardPackagePath, 'board.json'), fsApi)) return undefined;
-
-    const template = resolveCoderProjectCreationTemplate(boardPackagePath, pathApi);
-    if (!fsApi.lstatSync(template.templatePath)._isDirectory) return undefined;
-    if (!readTemplateManifest(pathApi.join(template.templatePath, 'package.json'), fsApi)) return undefined;
-    if (!template.useDefaultSource) {
-      const sourcePath = pathApi.join(template.templatePath, 'project.aci');
-      if (!fsApi.lstatSync(sourcePath)._isFile) return undefined;
-      fsApi.readFileSync(sourcePath);
-    }
-    return template;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

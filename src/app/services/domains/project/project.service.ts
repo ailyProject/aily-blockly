@@ -50,7 +50,6 @@ import {
   readCoderBoardTemplateDependencies,
   recordCoderBoardTemplateDependencies,
   copyCoderArduinoTemplate,
-  findReusableCoderBoardTemplate,
   isCoderProjectPackage,
   resolveCoderProjectCreationTemplate,
 } from './coder/coder-project-template';
@@ -150,12 +149,6 @@ interface ProjectCreationOptions {
   /** Board package template directory. Blockly uses `template`; Coder uses `template_arduino`. */
   templateDirectory?: 'template' | typeof CODER_TEMPLATE_DIRECTORY;
 }
-
-type ProjectCreationStage = 'validation' | 'board-install' | 'board-template' | 'project-files' | 'activation';
-
-type ProjectCreationResult =
-  | { ok: true; projectPath: string }
-  | { ok: false; stage: ProjectCreationStage; error: string; npmExitCode?: number };
 
 export type ProjectState = 'default' | 'loading' | 'loaded' | 'closing' | 'saving' | 'saved' | 'error';
 
@@ -1252,12 +1245,6 @@ export class ProjectService {
     finally { lease.release(); }
   }
 
-  async withProjectLifecycleAdmission<T>(assertCurrent: () => void, operation: (owner: symbol) => Promise<T>): Promise<T> {
-    const lease = this.acquireProjectLifecycle([this.currentProjectPath, '*']);
-    try { assertCurrent(); return await operation(lease.token); }
-    finally { lease.release(); }
-  }
-
   private acquireProjectLifecycle(paths: string[], owner?: symbol, checkMutation = true): ProjectLifecycleLease {
     if (paths.some(path => this.dependencyLifecycle.isStopping(path))) {
       throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', '项目任务尚未确认停止，请重试关闭项目。');
@@ -1553,57 +1540,39 @@ export class ProjectService {
 
   // 新建项目
   async projectNew(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<boolean> {
-    return (await this.projectNewWithResult(newProjectData, options)).ok;
-  }
-
-  async projectNewWithResult(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<ProjectCreationResult> {
-    let stage: ProjectCreationStage = 'validation';
-    let npmExitCode: number | undefined;
     try {
-      const templateDirectory = options.templateDirectory || 'template';
-      const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
-      await this.assertProjectCreationMode(isCoderTemplate ? 'coder' : 'blockly');
+      await this.assertProjectCreationMode(options.templateDirectory === CODER_TEMPLATE_DIRECTORY ? 'coder' : 'blockly');
+      // console.log('newProjectData: ', newProjectData);
       const appDataPath = window['path'].getAppDataPath();
       const projectPath = this.buildProjectPath(newProjectData);
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
+      const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
+      // 创建前还没有 package.json，用向导选定的 devmode 决定板包仓库。
+      const installCommand = await this.buildNpmInstallCommand(boardPackage, {
+        prefixPath: appDataPath,
+        registry: this.configService.getNpmRegistryForProject({ devmode: newProjectData.devmode }),
+      });
+
+      this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
+      const npmInstallResult = await this.cmdService.runAsync(installCommand, undefined, true, false);
+      if (npmInstallResult.code !== 0) {
+        throw new Error(npmInstallResult.stderr || npmInstallResult.stdout || `npm install failed with exit code ${npmInstallResult.code}`);
+      }
+      const templateDirectory = options.templateDirectory || 'template';
       const boardPackagePath = window['path'].join(
         appDataPath,
         'node_modules',
         boardPackageName,
       );
-      const reusableTemplate = isCoderTemplate && isAilyBoardPackageName(boardPackageName)
-        ? findReusableCoderBoardTemplate(boardPackagePath, {
-          name: boardPackageName, version: newProjectData.board.version,
-        }, window['path'], window['fs'])
-        : undefined;
-
-      this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
-      if (!reusableTemplate) {
-        stage = 'board-install';
-        const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
-        // 创建前还没有 package.json，用向导选定的 devmode 决定板包仓库。
-        const installCommand = await this.buildNpmInstallCommand(boardPackage, {
-          prefixPath: appDataPath,
-          registry: this.configService.getNpmRegistryForProject({ devmode: newProjectData.devmode }),
-        });
-        const npmInstallResult = await this.cmdService.runAsync(installCommand, undefined, true, false);
-        if (npmInstallResult.type === 'error' || npmInstallResult.code !== 0) {
-          npmExitCode = npmInstallResult.code;
-          throw new Error(npmInstallResult.error || npmInstallResult.stderr || npmInstallResult.stdout
-            || `npm install failed with exit code ${npmExitCode ?? 'unknown'}`);
-        }
-      }
-
-      stage = 'board-template';
-      const coderTemplate = reusableTemplate ?? (isCoderTemplate
+      const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
+      const coderTemplate = isCoderTemplate
         ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
-        : undefined);
+        : null;
       const templatePath = coderTemplate?.templatePath
         ?? window['path'].join(boardPackagePath, templateDirectory);
       if (!window['fs'].existsSync(templatePath)) {
         throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
       }
-      stage = 'project-files';
       if (isCoderTemplate) {
         window['fs'].mkdirSync(projectPath);
         copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
@@ -1623,18 +1592,19 @@ export class ProjectService {
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
         this.metrics.record('project_created');
-        return { ok: true, projectPath };
+        return true;
       }
-      stage = 'activation';
       const created = await this.finishProjectCreation(projectPath, options);
-      if (!created) return { ok: false, stage, error: '主软件未能激活新建的项目' };
-      this.metrics.record('project_created');
-      return { ok: true, projectPath };
+      if (created) this.metrics.record('project_created');
+      return created;
+
+      // if (closeWindow) {
+      //   this.uiService.closeWindow();
+      // }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.message.error(`${this.translate.instant('PROJECT.CREATE_FAILED')}: ${message}`);
+      this.message.error(this.translate.instant('PROJECT.CREATE_FAILED') + ": " + error.message);
       this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
-      return { ok: false, stage, error: message, ...(npmExitCode === undefined ? {} : { npmExitCode }) };
+      return false;
     }
   }
 
@@ -2919,7 +2889,7 @@ export class ProjectService {
     return targetProjectPath;
   }
 
-  async close(options: { save?: boolean; lifecycleOwner?: symbol } = {}) {
+  async close(options: { save?: boolean } = {}) {
     if (this.coderOperationsSubject.value.size) {
       this.message.warning('工程正在编译或上传');
       return false;
@@ -2935,7 +2905,7 @@ export class ProjectService {
       opening.lease.release();
     }
     let lease: ProjectLifecycleLease;
-    try { lease = this.projectLifecycle.acquire(['*'], options.lifecycleOwner); }
+    try { lease = this.projectLifecycle.acquire(['*']); }
     catch (error) {
       if (opening && !this.boardSwitchLifecycle && this.dependencyLifecycle.get(opening.path)) {
         opening.lease = this.projectLifecycle.acquire(opening.paths);
