@@ -9,7 +9,8 @@ describe('project title unsaved marker', () => {
     view.unsavedCheckRevision = 0;
     view.unsavedCheckRunning = false;
     view.router = { url: '/main/blockly-editor', events: new Subject() };
-    view.blocklyService = { projectDirtyState: { changed: new BehaviorSubject(false) } };
+    view.configService = { configReloaded$: new Subject() };
+    view.blocklyService = { projectDirtyState: { changed: new BehaviorSubject(false), activity: new Subject() } };
     view.projectService = { currentProjectPath: '/project', stateSubject: new BehaviorSubject('loaded'),
       hasCachedLibraryChanges: jasmine.createSpy('cached library state').and.returnValue(false),
       hasUnsavedChanges: jasmine.createSpy('full check').and.throwError('title must not serialize'),
@@ -73,5 +74,30 @@ describe('project title unsaved marker', () => {
     view.router.url = '/main/code-editor-pro'; tick(1000);
     expect(view.scheduleUnsavedCheck).toHaveBeenCalledTimes(1);
     clearInterval(view.coderUnsavedPoll);
+  }));
+
+  it('retains canvas edits during dependency preparation and autosaves once it settles', fakeAsync(() => {
+    const view = fixture(), activity = new Subject();
+    let installing = true;
+    view.unsavedSubscriptions = { add() {} };
+    view.projectService.currentProjectPath$ = new Subject();
+    view.projectService.libraryChangesChanged = new Subject();
+    view.projectService.isProjectTransitionInProgress = () => false;
+    view.projectService.isProjectDependencyPreparationInProgress = () => installing;
+    view.projectService.hasUnsavedChanges.and.resolveTo(true);
+    view.projectService.save = jasmine.createSpy('save').and.resolveTo({ success: true });
+    view.blocklyService.projectDirtyState.activity = activity;
+    view.blocklyService.isWorkspaceEditBlocked = () => false;
+    view.blocklyService.workspace = { isDragging: () => false };
+    view.configService = { data: { blockly: { autoSave: true } }, configReloaded$: new Subject() };
+    view.watchProjectUnsavedState();
+    activity.next({}); tick(2000); activity.next({}); tick(6000);
+    expect(view.projectService.save).not.toHaveBeenCalled();
+    expect(view.projectService.hasUnsavedChanges).not.toHaveBeenCalled();
+    expect(view.autoSaveState).toBe('pending');
+    installing = false; tick(2000);
+    expect(view.projectService.save).toHaveBeenCalledOnceWith('/project');
+    expect(view.autoSaveState).toBe('saved');
+    view.autoSave.dispose(); clearInterval(view.coderUnsavedPoll);
   }));
 });

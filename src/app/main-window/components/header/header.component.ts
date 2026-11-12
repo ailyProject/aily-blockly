@@ -185,6 +185,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         && !this.blocklyService.isWorkspaceEditBlocked()
         && !this.blocklyService.workspace?.isDragging()
         && !this.projectService.isProjectTransitionInProgress(this.projectService.currentProjectPath)
+        && !this.projectService.isProjectDependencyPreparationInProgress(this.projectService.currentProjectPath)
         && ['loaded', 'saved'].includes(this.projectService.stateSubject.value),
       dirty: () => this.projectService.hasUnsavedChanges(),
       save: path => this.projectService.save(path),

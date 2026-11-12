@@ -160,9 +160,9 @@ describe('Coder dependency installation and recovery', () => {
     const refresh = jasmine.createSpy('refresh');
     expect(await npm.ensureProjectAndBoardDeps('/project', { onBoardDepsSettled: refresh }, session)).toBeTrue();
     expect(npm.application.materializeCoderProjectLibraries).toHaveBeenCalledBefore(npm.installBoardDeps);
-    expect(npm.installBoardDeps).toHaveBeenCalledOnceWith(session);
+    expect(npm.installBoardDeps).toHaveBeenCalledOnceWith(session, { showSuccessNotice: false });
     expect(npm.installBoardDeps).toHaveBeenCalledBefore(refresh);
-    expect(npm.application.updateNotice).not.toHaveBeenCalled();
+    expect(npm.application.updateNotice).toHaveBeenCalledOnceWith(jasmine.objectContaining({ state: 'done', progress: 100 }));
     expect(lifecycle.getStatus('/project')).toBe('idle');
   });
 

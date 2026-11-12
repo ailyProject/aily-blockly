@@ -329,7 +329,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       .some(([name, version]) => version.startsWith('file:')
         && !this.isBlocklyLibraryPackageReady(projectPath, name));
     const dependenciesInstalled = hasMissingLocalLibrary
-      ? false : await this.npmService.ensureProjectDependenciesInstalled(projectPath, undefined, session);
+      ? false : await this.npmService.ensureProjectDependenciesInstalled(projectPath, { deferSuccessNotice: true }, session);
     assertCurrent();
     if (!dependenciesInstalled && !hasMissingLocalLibrary) {
       throw new Error('项目依赖安装未完成，无法继续加载 Blockly 项目。');
@@ -395,17 +395,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
         missingDeclaredLibraries.push(...missingLibraries);
         console.error('[ProjectLoad] continuing with missing Blockly libraries:', missingLibraries);
-      } else {
-        setTimeout(() => {
-          try { assertCurrent(); } catch { return; }
-          this.noticeService.update({
-            title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
-            text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
-            state: 'done',
-            showProgress: false,
-            setTimeout: 3000,
-          });
-        }, 100);
       }
     }
     // 3. 加载开发板module中的board.json
@@ -578,7 +567,13 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     // 7. 后台安装开发板依赖
     try {
-      await this.npmService.installBoardDeps(session);
+      await this.npmService.installBoardDeps(session, { showSuccessNotice: false });
+      assertCurrent();
+      if (missingDeclaredLibraries.length === 0) this.noticeService.update({
+        title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+        text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+        state: 'done', progress: 100, setTimeout: 3000,
+      });
     } catch (error) {
       // 项目和生成器已经就绪。登录或切换编译设置仅使旧依赖任务失效，
       // 不能把已打开的项目改成加载失败；下次编译会按新会话重新准备依赖。

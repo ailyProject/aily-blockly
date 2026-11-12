@@ -32,6 +32,7 @@ describe('NpmService shared dependency operations', () => {
     service = Object.create(NpmService.prototype);
     service.cmdService = { runAsyncChecked: jasmine.createSpy('cmd').and.resolveTo() };
     service.application = { updateNotice: jasmine.createSpy('notice'), startInstall() {}, finishInstall() {} };
+    service.logService = { update: jasmine.createSpy('log').and.callFake(log => service.handleBoardDependencyProgressLog(log)) };
     service.translate = { instant: (s: string) => s };
     service.configService = { isCoderProduct: () => false, withBoardNpmRegistry: (cmd: string) => cmd, getNpmRegistryForProject: () => '' };
     service.traceToAppLog = () => {};
@@ -168,6 +169,15 @@ describe('NpmService shared dependency operations', () => {
       emit('stderr', 'gress: 20%\n解压进度: 80%');
       options.onOutput({ type: 'close', code: 0, streamId: 'platform' });
       expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.progress)).toEqual([1, 10, 20, 60, 90]);
+      expect(service.logService.update.calls.allArgs().map(([log]: any[]) => [log.title, log.detail])).toEqual([
+        [`${name}@5.3.0`, 'Download progress: 20%'], [`${name}@5.3.0`, 'Download progress: 40%'],
+        [`${name}@5.3.0`, 'Extraction progress: 20%'], [`${name}@5.3.0`, '解压进度: 80%'],
+      ]);
+      const logs = service.logService.update.calls.allArgs().map(([log]: any[]) => log);
+      expect(logs[0].mergeKey).toBe(logs[1].mergeKey);
+      expect(logs[0].mergeKey).not.toBe(logs[2].mergeKey);
+      service.handleBoardDependencyProgressLog({ detail: 'Download progress: 100%' });
+      expect(service.application.updateNotice.calls.count()).toBe(5);
       files.add(next);
       files.add(`${next}/${executable}`);
     });
@@ -199,6 +209,18 @@ describe('NpmService shared dependency operations', () => {
     service.boardDependencyInstallProgress = undefined;
     current({ type: 'close', code: 0 });
     expect(service.application.updateNotice).not.toHaveBeenCalled();
+    expect(service.logService.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps each dependency and version in separate progress log rows', () => {
+    for (const [name, version] of [['@aily-project/sdk-esp32', '3.3.1'], ['@aily-project/sdk-esp32', '3.3.10'],
+      ['@aily-project/tool-esptool_py', '5.3.0']]) {
+      const progress = service.startBoardDependencyProgress(undefined, 3, 0, name, version);
+      service.boardDependencyCommandOutput(progress)({ type: 'stdout', data: 'Download progress: 25%\r' });
+    }
+    const logs = service.logService.update.calls.allArgs().map(([log]: any[]) => log);
+    expect(new Set(logs.map(log => log.mergeKey)).size).toBe(3);
+    expect(logs.every(log => log.detail === 'Download progress: 25%')).toBeTrue();
   });
 
   it('reports an already installed package as complete without reinstalling it', async () => {
@@ -342,6 +364,14 @@ describe('NpmService Coder dependency sources', () => {
     expect(service.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
   }));
 
+  it('keeps Blockly project installation doing when the caller still has platform preparation to finish', async () => {
+    const service = createService(false);
+    service.ensureCoderDependencyLibrarySources = async () => true;
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template', { deferSuccessNotice: true })).toBeTrue();
+    expect(window['libraryDependencies'].reconcile).toHaveBeenCalled();
+    expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.state)).toEqual(['doing']);
+  });
+
   it('repairs npm-only Coder projects without rerunning npm', async () => {
     const service = createService(true, true);
     expect(await service.ensureProjectDependenciesInstalled('/tmp/coder-template')).toBeTrue();
@@ -381,15 +411,14 @@ describe('NpmService Coder dependency sources', () => {
     }));
   });
 
-  it('preserves Blockly installation notices at the existing 0 and 100 ms delays', async () => {
+  it('settles standalone Blockly installation without a delayed notice overwriting the next stage', async () => {
     const service = createService(false);
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
     (window.setTimeout as unknown as jasmine.Spy).and.callFake((callback: () => void, delay: number) => {
       scheduled.push({ callback, delay }); return 0;
     });
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
-    expect(service.application.updateNotice).not.toHaveBeenCalled();
-    expect(scheduled.map(item => item.delay)).toEqual([0, 100]);
+    expect(scheduled).toEqual([]);
     scheduled.forEach(item => item.callback());
     expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.state)).toEqual(['doing', 'done']);
   });
@@ -404,8 +433,8 @@ describe('NpmService Coder dependency sources', () => {
     });
     const retry = jasmine.createSpy('retry');
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template', { onRetryInstall: retry })).toBeFalse();
-    expect(service.application.updateNotice).not.toHaveBeenCalled();
-    expect(scheduled.map(item => item.delay)).toEqual([0, 1000]);
+    expect(service.application.updateNotice.calls.mostRecent().args[0].state).toBe('doing');
+    expect(scheduled.map(item => item.delay)).toEqual([1000]);
     scheduled.forEach(item => item.callback());
     const notice = service.application.updateNotice.calls.mostRecent().args[0];
     expect(notice).toEqual(jasmine.objectContaining({ state: 'error', detail: 'install failed', sendToLog: false }));
@@ -553,11 +582,15 @@ describe('NpmService installBoardDeps', () => {
     expect(lifecycle.isBusy(session.projectPath)).toBeTrue();
     expect(ready).toBeFalse();
     expect(settled).not.toHaveBeenCalled();
+    expect(service.ensureProjectDependenciesInstalled).toHaveBeenCalledWith(session.projectPath,
+      jasmine.objectContaining({ deferSuccessNotice: true }), session);
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
     finishPlatform();
     flushMicrotasks();
     expect(ready).toBeTrue();
     expect(settled).toHaveBeenCalledTimes(1);
     expect(lifecycle.isBusy(session.projectPath)).toBeFalse();
+    expect(service.application.updateNotice).toHaveBeenCalledOnceWith(jasmine.objectContaining({ state: 'done', progress: 100 }));
   }));
 
   it('does not let an old installation finally clear the next session', fakeAsync(() => {

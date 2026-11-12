@@ -215,9 +215,9 @@ export class NpmService {
     };
   }
 
-  private startBoardDependencyProgress(session: ProjectDependencySession | undefined, total: number, index: number, name: string) {
+  private startBoardDependencyProgress(session: ProjectDependencySession | undefined, total: number, index: number, name: string, version?: string) {
     const progress: BoardDependencyInstallProgress = {
-      session, total, index, name, downloadProgress: 0, extractProgress: 0,
+      session, total, index, name, version, downloadProgress: 0, extractProgress: 0,
       lastProgress: Math.max(1, this.clampProgress((index / total) * 100)),
     };
     this.boardDependencyInstallProgress = progress;
@@ -226,8 +226,21 @@ export class NpmService {
   }
 
   private boardDependencyCommandOutput(progress: BoardDependencyInstallProgress): (output: CmdOutput) => void {
+    progress.commandOutput = true;
     const pending = { stdout: '', stderr: '' };
-    const consume = (line: string) => this.handleBoardDependencyProgressLog({ detail: line });
+    const consume = (line: string) => {
+      const detail = line.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').trim();
+      const parsed = this.parseDependencyProgressLog({ detail });
+      if (!parsed) return;
+      this.handleBoardDependencyProgressLog({ detail }, progress);
+      // Keep each package's own percentages in the bottom log. The notice uses
+      // aggregate progress; log merging must never combine different packages.
+      this.logService.update({
+        title: `${progress.name}${progress.version ? `@${progress.version}` : ''}`,
+        detail, state: 'doing',
+        mergeKey: `platform:${progress.session?.projectSessionId ?? ''}:${progress.name}@${progress.version ?? ''}:${parsed.phase}`,
+      });
+    };
     return output => {
       if (this.boardDependencyInstallProgress !== progress || !this.isDependencySessionCurrent(progress.session)) return;
       if (output.type === 'stdout' || output.type === 'stderr') {
@@ -244,10 +257,10 @@ export class NpmService {
     };
   }
 
-  private handleBoardDependencyProgressLog(log: LogOptions) {
+  private handleBoardDependencyProgressLog(log: LogOptions, source?: BoardDependencyInstallProgress) {
     const progress = this.boardDependencyInstallProgress;
 
-    if (!progress || !this.isDependencySessionCurrent(progress.session)) {
+    if (!progress || (progress.commandOutput && source !== progress) || !this.isDependencySessionCurrent(progress.session)) {
       return;
     }
 
@@ -812,14 +825,23 @@ export class NpmService {
     // Software identity is intentional: Blockly can also open Coder projects.
     if (!this.configService.isCoderProduct()) {
       return this.prjService.runProjectDependencyTask(session, async () => {
-        if (!(await this.ensureProjectDependenciesInstalled(projectPath, options, session))) return false;
+        if (!(await this.ensureProjectDependenciesInstalled(projectPath, { ...options, deferSuccessNotice: true }, session))) return false;
         this.assertDependencySession(session);
-        if (this.prjService.isAilyCodeProject(projectPath) && !await this.prjService.getBoardModule()) return true;
+        const hasBoard = !this.prjService.isAilyCodeProject(projectPath) || await this.prjService.getBoardModule();
+        this.assertDependencySession(session);
         // 上一步已经展开库源码；统一链不再重复扫描。单独调用 installBoardDeps 仍完整准备。
-        if (this.isCloudBuild(projectPath)) await this.installBoardDeps(session, { prepareCloudSources: false });
-        else await this.installBoardDeps(session);
+        if (hasBoard) {
+          if (this.isCloudBuild(projectPath)) await this.installBoardDeps(session, { showSuccessNotice: false, prepareCloudSources: false });
+          else await this.installBoardDeps(session, { showSuccessNotice: false });
+        }
         this.assertDependencySession(session);
         await options?.onBoardDepsSettled?.();
+        this.assertDependencySession(session);
+        this.application.updateNotice({
+          title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+          text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+          state: 'done', progress: 100, setTimeout: 3000,
+        });
         return true;
       });
     }
@@ -1558,7 +1580,7 @@ export class NpmService {
             this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, directory });
             continue;
           }
-          const progress = this.startBoardDependencyProgress(session, dependencies.length, index, key);
+          const progress = this.startBoardDependencyProgress(session, dependencies.length, index, key, versionStr);
           const script = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'install-versioned-platform-resource.js');
           const npmRegistry = registry ? new URL(registry).href : '';
           const registryArgument = npmRegistry ? ` "${btoa(npmRegistry)}"` : '';
@@ -2185,17 +2207,13 @@ export class NpmService {
       return this.ensureCoderDependencyLibrarySources(projectPath, options, session, inventory.value);
     }
 
-    // 与 Blockly 一致：下一帧再挂通知，避免变更检测/弹层偶发不同步
-    setTimeout(() => {
-      if (!this.isDependencySessionCurrent(session)) return;
-      this.application.updateNotice({
-        title: this.translate.instant('NPM.INSTALLING_TITLE'),
-        text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
-        state: 'doing',
-        icon: 'fa-light fa-cubes',
-        showProgress: false,
-      });
-    }, 0);
+    this.application.updateNotice({
+      title: this.translate.instant('NPM.INSTALLING_TITLE'),
+      text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+      state: 'doing',
+      icon: 'fa-light fa-cubes',
+      showProgress: false,
+    });
 
     let projectPackageJson: Record<string, unknown> = {};
 
@@ -2245,16 +2263,13 @@ export class NpmService {
     }
     this.assertDependencySession(session);
 
-    setTimeout(() => {
-      if (!this.isDependencySessionCurrent(session)) return;
-      this.application.updateNotice({
+    if (!options?.deferSuccessNotice) this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
         text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
         state: 'done',
         showProgress: false,
         setTimeout: 3000,
-      });
-    }, 100);
+    });
 
     return true;
   }
@@ -2554,6 +2569,8 @@ interface BoardDependencyInstallProgress {
   total: number;
   index: number;
   name: string;
+  version?: string;
+  commandOutput?: boolean;
   downloadProgress: number;
   extractProgress: number;
   lastProgress: number;
