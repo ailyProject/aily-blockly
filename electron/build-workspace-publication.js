@@ -33,6 +33,7 @@ function runExecutionWorker(request) {
 
 module.exports = {
   ISOLATED_BUILD_EXECUTION_VERSION: 1,
+  inspectBlocklyCompileProof: config => runExecutionWorker({ action: 'inspect-compile-proof', config }).then(value => value.proof),
   prepareBuildExecution: (config, workspace, operation) => runExecutionWorker({ config, workspace, operation }).then(value => value.config),
   abandonPreparedPreprocess: ({ currentProjectPath, execution, sourceCapture }) => runExecutionWorker({
     action: 'abandon-preprocess', config: { currentProjectPath, execution, sourceCapture },

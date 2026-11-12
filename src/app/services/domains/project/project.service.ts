@@ -3333,18 +3333,21 @@ export class ProjectService {
     const locale = this.injector.get(TranslationService);
     await locale.setLanguage(locale.getSelectedLanguage(), { persist: false });
     await firstValueFrom(this.translate.get('PROJECT.CONVERT_CODER_TITLE'));
-    let compileVerified = false;
-    try { compileVerified = await this.application.hasVerifiedBlocklyBuild?.(projectPath) === true; }
-    catch { /* Missing or unreadable build evidence is a warning, never a conversion gate. */ }
+    let compileWarning: string | undefined;
+    try {
+      if (!this.application.hasVerifiedBlocklyBuild) throw new Error('Compile evidence bridge unavailable.');
+      if (!await this.application.hasVerifiedBlocklyBuild(projectPath)) compileWarning = 'PROJECT.CONVERT_CODER_UNVERIFIED';
+    } catch { compileWarning = 'PROJECT.CONVERT_CODER_UNKNOWN'; }
     return new Promise<boolean>((resolve) => {
       const ref = this.modal.confirm({
-        nzClassName: 'project-coder-conversion-modal',
+        nzClassName: `project-coder-conversion-modal compile-${compileWarning === 'PROJECT.CONVERT_CODER_UNKNOWN'
+          ? 'unknown' : compileWarning ? 'unverified' : 'verified'}`,
         nzCentered: true,
         nzWidth: 480,
         nzMaskClosable: false,
         nzTitle: this.translate.instant('PROJECT.CONVERT_CODER_TITLE'),
         nzContent: [this.translate.instant('PROJECT.CONVERT_CODER_CONTENT'),
-          ...(!compileVerified ? [this.translate.instant('PROJECT.CONVERT_CODER_UNVERIFIED')] : [])].join('\n\n'),
+          ...(compileWarning ? [this.translate.instant(compileWarning)] : [])].join('\n\n'),
         nzOkText: this.translate.instant('PROJECT.CONVERT_CODER_BUTTON'),
         nzCancelText: this.translate.instant('PROJECT.LOCK_CANCEL'),
         nzOnOk: async () => {

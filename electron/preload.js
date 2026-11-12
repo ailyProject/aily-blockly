@@ -15,7 +15,7 @@ const { createNotificationApi } = require('./notification-preload');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
-const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, GENERATED_SOURCE_ARCHIVE_VERSION,
+const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
     prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 
@@ -588,6 +588,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     patchBuildMetadata,
     captureBuildSource,
     canReuseBlocklyUpload,
+    inspectBlocklyCompileProof,
     isolatedBuildExecutionVersion: ISOLATED_BUILD_EXECUTION_VERSION,
     prepareBuildExecution,
     abandonPreparedPreprocess,

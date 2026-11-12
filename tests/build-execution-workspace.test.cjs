@@ -47,6 +47,63 @@ function complete(config) {
     api.finishBuildExecution(config, true);
 }
 
+test('conversion evidence survives repeated view-only saves without weakening upload reuse', async t => {
+    const f = fixture(t);
+    const document = { pages: [{ id: 'main', blocks: { languageVersion: 0, blocks: [] }, viewState: { scrollX: 0, scrollY: 0, scale: 1 } }] };
+    f.put('project.abi', JSON.stringify(document));
+    const compiled = api.prepareBuildExecution(f.config); complete(compiled);
+    const receipts = ['current.json', `${compiled.execution.id}/execution.json`, `${compiled.execution.id}/outcome.json`]
+        .map(name => [name, fs.readFileSync(path.join(f.root, '.aily/build-executions', name))]);
+    for (let index = 0; index < 10; index++) {
+        document.pages[0].viewState.scrollX = index * 21;
+        document.pages[0].viewState.scrollY = index * -42;
+        f.put('project.abi', JSON.stringify(document, null, index % 2 ? 2 : 0));
+        assert.equal(api.inspectBlocklyCompileProof(f.config).status, 'verified');
+    }
+    assert.equal(api.canReuseBuildExecution(f.config), false, 'upload retains strict document identity');
+    for (const [name, content] of receipts) assert.deepEqual(fs.readFileSync(path.join(f.root, '.aily/build-executions', name)), content);
+    const worker = fork(require.resolve('../child/scripts/build-execution-worker'), [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    const message = once(worker, 'message'), closed = once(worker, 'close');
+    worker.send({ action: 'inspect-compile-proof', config: f.config });
+    assert.equal((await message)[0].proof.status, 'verified');
+    assert.deepEqual(await closed, [0, null]);
+});
+
+test('conversion evidence compares actual code, macros, generated artifacts and all compiler files', t => {
+    const f = fixture(t), compiled = api.prepareBuildExecution(f.config); complete(compiled);
+    const proof = config => api.inspectBlocklyCompileProof(config || f.config).status;
+    assert.equal(proof(), 'verified', 'effective generator macros match the compiled manifest');
+    assert.equal(proof({ ...f.config, code: 'different generated code' }), 'unverified');
+    assert.equal(proof({ ...f.config, projectMacros: [{ name: 'CAPTURED', value: 'CAPTURED=2' }] }), 'unverified');
+    assert.equal(proof({ ...f.config, generatedArtifacts: [{ ...f.config.generatedArtifacts[0], content: 'changed declaration' }] }), 'unverified');
+    const changedFiles = ['src/user.h', 'components/driver.cpp', 'partitions.csv',
+        'node_modules/@aily-project/lib-test/src/library.h', 'node_modules/@aily-project/board-test/board.json'];
+    for (const name of changedFiles) {
+        const filename = path.join(f.root, name), original = fs.existsSync(filename) ? fs.readFileSync(filename) : undefined;
+        f.put(name, 'modified compiler input'); assert.equal(proof(), 'unverified', name);
+        if (original) f.put(name, original); else { fs.rmSync(filename); if (name.startsWith('components/')) fs.rmdirSync(path.dirname(filename)); }
+        assert.equal(proof(), 'verified', `restored ${name}`);
+    }
+    const manifest = fs.readFileSync(path.join(f.root, 'package.json'));
+    f.put('package.json', JSON.stringify({ ...JSON.parse(manifest), MACROS: [['USER_FLAG=2']] }));
+    assert.equal(proof(), 'unverified'); f.put('package.json', manifest);
+    fs.writeFileSync(path.join(compiled.currentProjectPath, '.build/firmware.bin'), 'tampered firmware');
+    assert.equal(proof(), 'unverified', 'a completed exit code cannot substitute for valid firmware');
+});
+
+test('conversion evidence handles missing, failed and unreadable receipts and an initially absent src directory', t => {
+    const f = fixture(t);
+    fs.rmSync(path.join(f.root, 'src'), { recursive: true }); f.config.generatedArtifacts = [];
+    assert.equal(api.inspectBlocklyCompileProof(f.config).status, 'unverified');
+    const compiled = api.prepareBuildExecution(f.config); complete(compiled);
+    assert.equal(api.inspectBlocklyCompileProof(f.config).status, 'verified');
+    const next = api.prepareBuildExecution({ ...f.config, buildRequestId: 'failed-request' });
+    api.finishBuildExecution(next, false);
+    assert.equal(api.inspectBlocklyCompileProof(f.config).status, 'unverified');
+    f.put('.aily/build-executions/current.json', '{incomplete');
+    assert.equal(api.inspectBlocklyCompileProof(f.config).status, 'unknown');
+});
+
 test('an orphan compiler keeps its old paths and PID while the new execution uses detached captured bytes', async t => {
     const f = fixture(t);
     f.put('.build/aily-workspace.lock', JSON.stringify({ schemaVersion: 1, nativeLeaseVersion: 1, delegationVersion: 1,

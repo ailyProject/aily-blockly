@@ -240,7 +240,7 @@ describe('project mode boundaries', () => {
     await new Promise(resolve => setTimeout(resolve));
     expect(service.modalService.confirm).toHaveBeenCalledTimes(1);
     const dialog = service.modalService.confirm.calls.mostRecent().args[0];
-    expect(dialog.nzContent).toBe('PROJECT.CONVERT_CODER_CONTENT\n\nPROJECT.CONVERT_CODER_UNVERIFIED');
+    expect(dialog.nzContent).toBe('PROJECT.CONVERT_CODER_CONTENT\n\nPROJECT.CONVERT_CODER_UNKNOWN');
     close.next(undefined);
     expect(await first).toBeFalse(); expect(await second).toBeFalse();
     expect(convert).not.toHaveBeenCalled(); expect(service.currentProjectPath).toBe(blockly.path);
@@ -257,12 +257,30 @@ describe('project mode boundaries', () => {
       await new Promise(resolve => setTimeout(resolve));
       const dialog = service.modalService.confirm.calls.mostRecent().args[0];
       expect(dialog.nzContent.includes('PROJECT.CONVERT_CODER_UNVERIFIED')).toBe(!verified);
+      expect(dialog.nzClassName).toContain(verified ? 'compile-verified' : 'compile-unverified');
       expect(await dialog.nzOnOk()).toBeTrue();
       expect(convert).toHaveBeenCalledWith(blockly.path, undefined);
       close.next(true);
       expect(await pending).toBeTrue();
     });
   }
+
+  it('shows a neutral warning when build evidence cannot be read and still allows conversion', async () => {
+    const service = createService('coder'), close = new Subject();
+    service.modalService.confirm.and.returnValue({afterClose: close, updateConfig: () => {}});
+    Object.defineProperty(service, 'application', {value: {hasVerifiedBlocklyBuild: async () => {throw new Error('unreadable');}}});
+    const convert = spyOn(service, 'convertAndOpenCoderProject').and.resolveTo(true);
+    const pending = service.openProjectInCoder(blockly.path);
+    await new Promise(resolve => setTimeout(resolve));
+    const dialog = service.modalService.confirm.calls.mostRecent().args[0];
+    expect(dialog.nzContent).toContain('PROJECT.CONVERT_CODER_UNKNOWN');
+    expect(dialog.nzClassName).toContain('compile-unknown');
+    expect(dialog.nzContent).not.toContain('PROJECT.CONVERT_CODER_UNVERIFIED');
+    expect(await dialog.nzOnOk()).toBeTrue();
+    expect(convert).toHaveBeenCalledWith(blockly.path, undefined);
+    close.next(true);
+    expect(await pending).toBeTrue();
+  });
 
   it('opens the selected region homepage before saving or converting when Coder is absent', async () => {
     const service = createService('blockly');

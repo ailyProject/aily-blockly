@@ -4,6 +4,7 @@ import type { BlocklyProjectDocument } from '../../editors/blockly-editor/servic
 import { Injectable, Injector } from '@angular/core';
 import { ActionService, UiService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { DEPENDENCY_APPLICATION_PORT, NpmService } from '@domain/dependencies/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 import {
   BlocklyLibraryRuntimeRebuildInput,
   ProjectApplicationPort,
@@ -33,7 +34,7 @@ import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.servi
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 import { settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
 import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
-import { _BuilderService } from '../../editors/blockly-editor/services/builder.service';
+import { captureBuildSource } from '../../utils/build-publication.utils';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -97,11 +98,39 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   }
 
   async hasVerifiedBlocklyBuild(path: string): Promise<boolean> {
-    const changed = () => !this.isSameProjectPath(path, this.projectService.currentProjectPath);
+    const changed = () => !this.isSameProjectPath(path, this.projectService.currentProjectPath)
+      || !this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath);
     if (changed()) return false;
-    try {
-      return await this.injector.get(_BuilderService).canReuseBuildForUpload(changed);
-    } catch { return false; }
+    const settings = this.injector.get(ConfigService);
+    const settingsKey = settings.getCompileSettingsKey();
+    const current = () => !changed() && settingsKey === settings.getCompileSettingsKey();
+    const boardModule = await this.projectService.getBoardModule();
+    if (!current()) return false;
+    // _BuilderService is component-scoped. Resolving it from this root
+    // adapter creates an unused instance whose in-memory passed flag is false.
+    // Read the actual matching build receipt from the current editor capture.
+    return await this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+      assertCurrent();
+      if (!current()) return false;
+      const config = { currentProjectPath: path, boardModule, code: prepared.code,
+        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
+      let verified: boolean;
+      if (settings.getCompileBackend() === 'cloud') {
+        if (!prepared.sourceWorkspace || !window['cloudBuild']?.reusable) return false;
+        const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
+        verified = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } }) === true;
+      } else {
+        const inspect = window['builder']?.inspectBlocklyCompileProof;
+        if (!inspect) throw new Error('Compile evidence bridge unavailable; restart the host.');
+        const proof = await inspect(config);
+        if (proof?.version !== 1 || !['verified', 'unverified'].includes(proof.status)) {
+          throw new Error('Compile evidence is temporarily unavailable.');
+        }
+        verified = proof.status === 'verified';
+      }
+      assertCurrent();
+      return current() && verified;
+    });
   }
 
   async createBlocklyCoderProject(path: string): Promise<string> {

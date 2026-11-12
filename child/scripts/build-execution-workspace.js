@@ -121,9 +121,10 @@ function pruneTerminalPreprocessInputs(projectPath) {
 
 /** These are detached byte copies, including npm junctions. No hardlinks or live
  * library links may give an old compiler a path into the new execution. */
-function snapshot(config, target, copy) {
+function snapshot(config, target, copy, compilerInputsOnly = false) {
     const root = fs.realpathSync(config.currentProjectPath), manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     delete manifest.codeHash; delete manifest.buildInfo;
+    if (compilerInputsOnly) mergeGeneratorInputs(manifest, config);
     const inputs = [], active = new Set();
     let bytes = 0, count = 0;
     const visit = (source, relative, depth = 0) => {
@@ -149,9 +150,16 @@ function snapshot(config, target, copy) {
             if (copy) { fs.mkdirSync(path.dirname(path.join(target, relative)), { recursive: true }); fs.writeFileSync(path.join(target, relative), content, { flag: 'wx', mode: before.mode & 0o777 }); }
         } else fail('Unsupported execution source entry.');
     };
-    inputs.push(['package.json', hash(JSON.stringify(manifest))]);
+    inputs.push(['package.json', hash(JSON.stringify(compilerInputsOnly ? canonical(manifest) : manifest))]);
     if (copy) fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify(manifest, null, 2), { flag: 'wx' });
-    for (const name of ['project.abi', 'src', 'components', 'partitions.csv']) if (fs.existsSync(path.join(root, name))) visit(path.join(root, name), name);
+    // The compiler consumes the captured generation, not Blockly's document.
+    // View state, block positions and serialization may change without changing
+    // a compiler input. Upload reuse deliberately keeps its stricter ABI check.
+    for (const name of ['project.abi', 'src', 'components', 'partitions.csv']) {
+        if (compilerInputsOnly && name === 'project.abi') continue;
+        if (fs.existsSync(path.join(root, name))) visit(path.join(root, name), name);
+        else if (compilerInputsOnly && name === 'src' && config.generatedArtifacts != null) inputs.push([name, 'directory']);
+    }
     const packages = new Map([[path.join('node_modules', config.boardModule), path.join(root, 'node_modules', config.boardModule)]]);
     for (const pkg of collectLibraryPackages(manifest.dependencies, root)) packages.set(path.relative(root, pkg.packagePath), pkg.packagePath);
     for (const [relative, source] of [...packages].sort(([a], [b]) => a.localeCompare(b))) {
@@ -160,11 +168,16 @@ function snapshot(config, target, copy) {
         visit(source, relative);
     }
     return hash(JSON.stringify({ inputs, boardModule: config.boardModule, code: config.code,
-        generatedArtifacts: config.generatedArtifacts ?? null, projectMacros: config.projectMacros ?? [] }));
+        generatedArtifacts: compilerInputsOnly && config.generatedArtifacts != null
+            ? config.generatedArtifacts.map(({ fileName, content }) => [fileName, content]).sort(([a], [b]) => a.localeCompare(b))
+            : config.generatedArtifacts ?? null,
+        projectMacros: compilerInputsOnly ? undefined : config.projectMacros ?? [] }));
 }
 
-function applyGeneratorInputs(root, config) {
-    const pkgPath = path.join(root, 'package.json'), pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+
+function mergeGeneratorInputs(pkg, config) {
     if (config.projectMacros !== undefined) {
         const macros = new Map();
         for (const item of pkg.MACROS || []) { const value = String(Array.isArray(item) ? item[0] : item).trim(); if (value) macros.set(value.split('=')[0], value); }
@@ -174,6 +187,13 @@ function applyGeneratorInputs(root, config) {
             macros.delete(name); if (value !== null) { macros.set(name, value); owned[name] = value; }
         }
         pkg.MACROS = [...macros.values()].map(value => [value]); pkg.ailyGeneratorMacros = owned;
+    }
+}
+
+function applyGeneratorInputs(root, config) {
+    const pkgPath = path.join(root, 'package.json'), pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (config.projectMacros !== undefined) {
+        mergeGeneratorInputs(pkg, config);
         fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
     }
     if (config.generatedArtifacts !== undefined && config.generatedArtifacts !== null) {
@@ -306,21 +326,49 @@ function abandonPreparedPreprocess(config) {
     if (abandoned) retireStandalonePreprocessInputs(config);
     return abandoned;
 }
+function completedExecution(projectPath) {
+    const store = storage(projectPath), pointer = json(store.pointer);
+    if (!UUID.test(pointer.id)) return null;
+    const folder = path.join(store.parent, pointer.id), record = json(path.join(folder, 'execution.json')), root = path.join(folder, 'project');
+    const outcome = json(path.join(folder, 'outcome.json'));
+    if (outcome.status !== 'completed' || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
+        || outcome.inputDigest !== record.inputDigest) return null;
+    if (record.status !== 'completed' || record.operation !== 'compile' || record.id !== pointer.id
+        || record.buildRequestId !== pointer.buildRequestId || !samePath(record.logicalProjectPath, store.root)
+        || !samePath(fs.realpathSync(root), root)) return null;
+    // A directory or exit code alone is never a firmware receipt.
+    const upload = require('./blockly-upload-state'), config = json(path.join(folder, 'config.json'), 160 * 1024 * 1024);
+    if (!upload.canReuseBlocklyUpload({ ...config, currentProjectPath: root })) return null;
+    return { store, pointer, record, root, config };
+}
+
+/** Read-only conversion evidence. This does not grant permission to reuse a
+ * firmware for upload and never publishes or starts a build. */
+function inspectBlocklyCompileProof(config) {
+    try {
+        const completed = completedExecution(config.currentProjectPath);
+        if (!completed) return { version: 1, status: 'unverified', reason: 'no-completed-build' };
+        const { store, pointer, record, root, config: compiled } = completed;
+        const actual = snapshot(config, '', false, true);
+        const expected = snapshot({ ...compiled, currentProjectPath: root }, '', false, true);
+        if (snapshot(config, '', false, true) !== actual || JSON.stringify(json(store.pointer)) !== JSON.stringify(pointer)) {
+            return { version: 1, status: 'unknown', reason: 'inputs-changed-during-check' };
+        }
+        return { version: 1, status: actual === expected ? 'verified' : 'unverified',
+            reason: actual === expected ? 'matching-compiler-inputs' : 'compiler-inputs-changed',
+            executionId: record.id, buildRequestId: record.buildRequestId };
+    } catch (error) {
+        return { version: 1, status: error.code === 'ENOENT' ? 'unverified' : 'unknown',
+            reason: error.code === 'ENOENT' ? 'missing-build-input-or-receipt' : 'evidence-unavailable' };
+    }
+}
+
 function resolveBuildExecution(projectPath) {
     try {
-        const store = storage(projectPath), pointer = json(store.pointer);
-        if (!UUID.test(pointer.id)) return null;
-        const folder = path.join(store.parent, pointer.id), record = json(path.join(folder, 'execution.json')), root = path.join(folder, 'project');
-        const outcome = json(path.join(folder, 'outcome.json'));
-        if (outcome.status !== 'completed' || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
-            || outcome.inputDigest !== record.inputDigest) return null;
-        if (record.status !== 'completed' || record.operation !== 'compile' || record.id !== pointer.id
-            || record.buildRequestId !== pointer.buildRequestId || !samePath(record.logicalProjectPath, store.root)
-            || !samePath(fs.realpathSync(root), root)) return null;
-        // A directory or exit code alone is never a firmware receipt.
-        const upload = require('./blockly-upload-state'), config = json(path.join(folder, 'config.json'), 160 * 1024 * 1024);
-        if (!upload.canReuseBlocklyUpload({ ...config, currentProjectPath: root })
-            || snapshot({ ...config, currentProjectPath: store.root }, '', false) !== record.inputDigest) return null;
+        const completed = completedExecution(projectPath);
+        if (!completed) return null;
+        const { store, record, root, config } = completed;
+        if (snapshot({ ...config, currentProjectPath: store.root }, '', false) !== record.inputDigest) return null;
         return { currentProjectPath: root, logicalProjectPath: store.root, buildPath: path.join(root, '.build'),
             preprocessPath: path.join(root, '.temp', 'preprocess.json'), buildRequestId: record.buildRequestId, inputDigest: record.inputDigest };
     } catch { return null; }
@@ -380,4 +428,4 @@ function inspectBuildExecution(projectPath, buildRequestId) {
 
 module.exports = { prepareBuildExecution, startBuildExecution, finishBuildExecution, cancelBuildExecution, resolveBuildExecution,
     resolveBuildProjectPath, canReuseBuildExecution, inspectBuildExecution, recordFor, retireStandalonePreprocessInputs,
-    pruneTerminalPreprocessInputs, abandonPreparedPreprocess };
+    pruneTerminalPreprocessInputs, abandonPreparedPreprocess, inspectBlocklyCompileProof };

@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.abs-sync.spec.json",
   "include": [
+    "../src/app/editors/blockly-editor/services/blockly-xiaozhi-display-context.spec.ts",
+    "../src/app/editors/blockly-editor/services/blockly-xiaozhi-parameter-declarations.spec.ts",
     "../src/app/integrations/project/project-coder-conversion.spec.ts",
     "../src/app/services/domains/project/project-mode.spec.ts",
     "../src/**/*.d.ts"
