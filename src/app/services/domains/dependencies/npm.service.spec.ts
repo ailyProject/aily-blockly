@@ -158,7 +158,16 @@ describe('NpmService shared dependency operations', () => {
 
     expect(await service.getMissingBoardDependencies(board('5.3.0'))).toEqual([`${name}@5.3.0`]);
     expect(await service.getMissingBoardDependencies(board('5.3.1'))).toEqual([]);
-    service.cmdService.runAsyncChecked.and.callFake(async () => {
+    service.cmdService.runAsyncChecked.and.callFake(async (_cmd: string, _cwd: string, _queue: boolean, _silent: boolean, options: any) => {
+      expect(service.application.updateNotice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ state: 'doing', progress: 1 }));
+      const emit = (type: string, data: string) => options.onOutput({ type, data, streamId: 'platform' });
+      emit('stdout', '\u001b[32mDownload pro');
+      expect(service.application.updateNotice.calls.count()).toBe(1);
+      emit('stdout', 'gress: 20%\u001b[0m\rDownload progress: 40%\r');
+      emit('stderr', 'Extraction pro');
+      emit('stderr', 'gress: 20%\n解压进度: 80%');
+      options.onOutput({ type: 'close', code: 0, streamId: 'platform' });
+      expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.progress)).toEqual([1, 10, 20, 60, 90]);
       files.add(next);
       files.add(`${next}/${executable}`);
     });
@@ -167,9 +176,29 @@ describe('NpmService shared dependency operations', () => {
     expect(await service.getMissingBoardDependencies(board('5.3.0'))).toEqual([]);
     expect(await service.getMissingBoardDependencies(board('5.3.1'))).toEqual([]);
     expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
-      `node "/child/scripts/install-versioned-platform-resource.js" "${name}" "5.3.0"`, '/app', true, false, undefined);
+      `node "/child/scripts/install-versioned-platform-resource.js" "${name}" "5.3.0"`, '/app', true, false,
+      jasmine.objectContaining({ onOutput: jasmine.any(Function) }));
+    expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.state))
+      .toEqual(['doing', 'doing', 'doing', 'doing', 'doing', 'doing', 'done']);
     expect(window['npm'].run).not.toHaveBeenCalled();
     expect(window['fs'].readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('ignores progress from settled, superseded or cancelled platform installations', () => {
+    const { lifecycle, session } = attachProjectDependencies(service);
+    const first = service.startBoardDependencyProgress(session, 2, 0, 'first');
+    const output = service.boardDependencyCommandOutput(first);
+    service.startBoardDependencyProgress(session, 2, 1, 'next');
+    service.application.updateNotice.calls.reset();
+    output({ type: 'stdout', data: 'Download progress: 99%\r' });
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    const current = service.boardDependencyCommandOutput(service.boardDependencyInstallProgress);
+    lifecycle.cancel(session.projectPath);
+    current({ type: 'stdout', data: 'Extraction progress: 99%\r' });
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    service.boardDependencyInstallProgress = undefined;
+    current({ type: 'close', code: 0 });
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
   });
 
   it('reports an already installed package as complete without reinstalling it', async () => {
@@ -269,7 +298,8 @@ describe('NpmService Coder dependency sources', () => {
   let previousLibraries: any;
   beforeEach(() => {
     previousLibraries = window['libraryDependencies'];
-    window['libraryDependencies'] = { prepare: jasmine.createSpy('prepare').and.resolveTo() };
+    window['libraryDependencies'] = { environmentVersion: 2,
+      reconcile: jasmine.createSpy('reconcile').and.resolveTo(), prepare: jasmine.createSpy('prepare').and.resolveTo() };
   });
   afterEach(() => { window['libraryDependencies'] = previousLibraries; });
   function createService(coder = true, alreadyInstalled = false) {
@@ -279,7 +309,8 @@ describe('NpmService Coder dependency sources', () => {
     );
     service.isAilyCodeProjectRoot = jasmine.createSpy('isAilyCodeProjectRoot').and.returnValue(coder);
     service.cmdService = { runAsync: jasmine.createSpy('runAsync').and.resolveTo({ code: 0 }) };
-    service.configService = { isCoderProduct: () => coder, withProjectNpmRegistry: (command: string) => command };
+    service.configService = { isCoderProduct: () => coder, withProjectNpmRegistry: (command: string) => command,
+      getNpmRegistryForProject: () => '' };
     service.translate = { instant: (key: string) => key };
     service.application = {
       materializeCoderProjectLibraries: jasmine.createSpy('materializeCoderProjectLibraries').and.resolveTo(),
@@ -334,7 +365,8 @@ describe('NpmService Coder dependency sources', () => {
   it('does not invoke the Coder runtime for Blockly dependency installs', async () => {
     const service = createService(false);
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
-    expect(service.cmdService.runAsync).toHaveBeenCalled();
+    expect(service.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(window['libraryDependencies'].reconcile).toHaveBeenCalledOnceWith('/tmp/blockly-template', { options: {} });
     expect(service.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
     expect(window['libraryDependencies'].prepare).toHaveBeenCalledOnceWith('/tmp/blockly-template');
   });
@@ -365,7 +397,7 @@ describe('NpmService Coder dependency sources', () => {
   it('preserves the delayed Blockly failure notice and its existing retry callback', async () => {
     const service = createService(false);
     service.installedOk.and.resolveTo(false);
-    service.cmdService.runAsync.and.resolveTo({ code: 1, stderr: 'install failed' });
+    window['libraryDependencies'].reconcile.and.rejectWith(new Error('install failed'));
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
     (window.setTimeout as unknown as jasmine.Spy).and.callFake((callback: () => void, delay: number) => {
       scheduled.push({ callback, delay }); return 0;

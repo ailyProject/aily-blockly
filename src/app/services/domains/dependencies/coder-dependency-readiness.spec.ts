@@ -194,7 +194,8 @@ describe('Coder dependency installation and recovery', () => {
     await expectAsync(npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '3.3.1' } }, false, true, session))
       .toBeRejectedWithError('NPM.DEPENDENCY_INCOMPLETE');
     expect(npm.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
-      'node "/child/scripts/install-versioned-platform-resource.js" "@aily-project/sdk-esp32" "3.3.1"', '/app', true, false, session);
+      'node "/child/scripts/install-versioned-platform-resource.js" "@aily-project/sdk-esp32" "3.3.1"', '/app', true, false,
+      jasmine.objectContaining({ ...session, onOutput: jasmine.any(Function) }));
     expect(window['npm'].run).not.toHaveBeenCalled();
     expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('error');
   });
@@ -338,7 +339,8 @@ describe('Coder dependency installation and recovery', () => {
     });
     await npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '1.0.0' } }, false, true, session);
     expect(npm.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
-      'node "/child/scripts/install-versioned-platform-resource.js" "@aily-project/sdk-esp32" "1.0.0"', '/app', true, false, session);
+      'node "/child/scripts/install-versioned-platform-resource.js" "@aily-project/sdk-esp32" "1.0.0"', '/app', true, false,
+      jasmine.objectContaining({ ...session, onOutput: jasmine.any(Function) }));
     expect(window['npm'].run).not.toHaveBeenCalled();
     expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
     await npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '1.0.0' } }, false, true, session);

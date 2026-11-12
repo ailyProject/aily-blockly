@@ -4,6 +4,7 @@ import { lastValueFrom, reduce } from 'rxjs';
 
 import {
   CmdService,
+  type CmdOutput,
   ElectronService,
   LogOptions,
   LogService,
@@ -188,7 +189,7 @@ export class NpmService {
   }
 
   private parseDependencyProgressLog(log: LogOptions): { phase: 'download' | 'extract', percent: number } | null {
-    const text = String(log?.detail || log?.title || '').trim();
+    const text = String(log?.detail || log?.title || '').replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').trim();
 
     if (!text) {
       return null;
@@ -198,9 +199,7 @@ export class NpmService {
       return { phase: 'download', percent: 100 };
     }
 
-    const pattern = this.configService.isCoderProduct()
-      ? /^(下载进度|Download progress|解压进度|Extract(?:ion)? progress)[:：]?\s*(\d+(?:\.\d+)?)/i
-      : /^(下载进度|Download progress|解压进度|Extract progress)[:：]?\s*(\d+(?:\.\d+)?)/i;
+    const pattern = /^(下载进度|Download progress|解压进度|Extract(?:ion)? progress)[:：]?\s*(\d+(?:\.\d+)?)/i;
     const match = text.match(pattern);
 
     if (!match) {
@@ -213,6 +212,35 @@ export class NpmService {
     return {
       phase: isDownload ? 'download' : 'extract',
       percent
+    };
+  }
+
+  private startBoardDependencyProgress(session: ProjectDependencySession | undefined, total: number, index: number, name: string) {
+    const progress: BoardDependencyInstallProgress = {
+      session, total, index, name, downloadProgress: 0, extractProgress: 0,
+      lastProgress: Math.max(1, this.clampProgress((index / total) * 100)),
+    };
+    this.boardDependencyInstallProgress = progress;
+    this.updateBoardDependencyNotice(progress, progress.lastProgress);
+    return progress;
+  }
+
+  private boardDependencyCommandOutput(progress: BoardDependencyInstallProgress): (output: CmdOutput) => void {
+    const pending = { stdout: '', stderr: '' };
+    const consume = (line: string) => this.handleBoardDependencyProgressLog({ detail: line });
+    return output => {
+      if (this.boardDependencyInstallProgress !== progress || !this.isDependencySessionCurrent(progress.session)) return;
+      if (output.type === 'stdout' || output.type === 'stderr') {
+        const channel = output.type;
+        const lines = (pending[channel] + (output.data || '')).split(/\r\n|\r|\n/);
+        pending[channel] = lines.pop()!.slice(-8192);
+        for (const line of lines) consume(line);
+      } else if (output.type === 'close' || output.type === 'error') {
+        for (const channel of ['stdout', 'stderr'] as const) {
+          consume(pending[channel]);
+          pending[channel] = '';
+        }
+      }
     };
   }
 
@@ -1530,17 +1558,21 @@ export class NpmService {
             this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, directory });
             continue;
           }
+          const progress = this.startBoardDependencyProgress(session, dependencies.length, index, key);
           const script = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'install-versioned-platform-resource.js');
           const npmRegistry = registry ? new URL(registry).href : '';
           const registryArgument = npmRegistry ? ` "${btoa(npmRegistry)}"` : '';
           this.traceToAppLog('DEP_INSTALL_START', { name: key, version: versionStr, versionedResource: true });
-          await this.cmdService.runAsyncChecked(`node "${script}" "${key}" "${versionStr}"${registryArgument}`, appDataPath, true, false, session);
+          await this.cmdService.runAsyncChecked(`node "${script}" "${key}" "${versionStr}"${registryArgument}`, appDataPath, true, false, {
+            ...session, onOutput: this.boardDependencyCommandOutput(progress),
+          });
           this.assertDependencySession(session);
           // A legacy archive alias may first appear after postinstall.
           const installed = versionedPlatformResource(key, versionStr, platformBases);
           if (!installed || !readyVersionedPlatformResource(key, versionStr, installed)) {
             throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: `${key}@${versionStr}` }));
           }
+          this.updateBoardDependencyNotice(progress, ((index + 1) / dependencies.length) * 100);
           this.traceToAppLog('DEP_INSTALL_DONE', { name: key, version: versionStr, versionedResource: true });
           continue;
         }
@@ -1596,20 +1628,7 @@ export class NpmService {
           }
         }
 
-        const progress: BoardDependencyInstallProgress = {
-          session,
-          total: dependencies.length,
-          index,
-          name: key,
-          downloadProgress: 0,
-          extractProgress: 0,
-          lastProgress: Math.max(1, this.clampProgress((index / dependencies.length) * 100))
-        };
-
-        this.boardDependencyInstallProgress = progress;
-
-        // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: key }), timeout: 300000 });
-        this.updateBoardDependencyNotice(progress, progress.lastProgress);
+        const progress = this.startBoardDependencyProgress(session, dependencies.length, index, key);
 
         // --save-exact：与开发板声明版本一致写入 prefix 下 package.json，避免 ^ 导致再次解析到更高版
         const npmCmd = appendScopedNpmRegistry(

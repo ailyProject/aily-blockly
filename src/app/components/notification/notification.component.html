@@ -11,7 +11,8 @@
             }
         </div>
         @if (data.showProgress) {
-        <div class="num-box ccenter">
+        <div class="num-box ccenter" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+            [attr.aria-valuenow]="data.progress" [attr.aria-label]="data.text || data.title">
             {{progressValue}}%
         </div>
         }
