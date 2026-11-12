@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/integrations/project/project-coder-conversion.spec.ts",
+    "../src/app/services/domains/project/project-mode.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

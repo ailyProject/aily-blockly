@@ -3309,6 +3309,9 @@ export class ProjectService {
     const locale = this.injector.get(TranslationService);
     await locale.setLanguage(locale.getSelectedLanguage(), { persist: false });
     await firstValueFrom(this.translate.get('PROJECT.CONVERT_CODER_TITLE'));
+    let compileVerified = false;
+    try { compileVerified = await this.application.hasVerifiedBlocklyBuild?.(projectPath) === true; }
+    catch { /* Missing or unreadable build evidence is a warning, never a conversion gate. */ }
     return new Promise<boolean>((resolve) => {
       const ref = this.modal.confirm({
         nzClassName: 'project-coder-conversion-modal',
@@ -3316,7 +3319,8 @@ export class ProjectService {
         nzWidth: 480,
         nzMaskClosable: false,
         nzTitle: this.translate.instant('PROJECT.CONVERT_CODER_TITLE'),
-        nzContent: this.translate.instant('PROJECT.CONVERT_CODER_CONTENT'),
+        nzContent: [this.translate.instant('PROJECT.CONVERT_CODER_CONTENT'),
+          ...(!compileVerified ? [this.translate.instant('PROJECT.CONVERT_CODER_UNVERIFIED')] : [])].join('\n\n'),
         nzOkText: this.translate.instant('PROJECT.CONVERT_CODER_BUTTON'),
         nzCancelText: this.translate.instant('PROJECT.LOCK_CANCEL'),
         nzOnOk: async () => {
@@ -3354,7 +3358,9 @@ export class ProjectService {
       if (typeof window['fs'].convertBlocklyProjectToCoder !== 'function') {
         throw new Error('请重启应用后再转换项目');
       }
-      target = window['fs'].convertBlocklyProjectToCoder(projectPath, selectedSketch);
+      target = selectedSketch
+        ? window['fs'].convertBlocklyProjectToCoder(projectPath, selectedSketch)
+        : await this.application.createBlocklyCoderProject(projectPath);
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CONVERT_CODER_INSTALLING') });
       if (!await this.application.reinstallAilyCodeDependencies(target)) {
         throw new Error(this.translate.instant('PROJECT.CONVERT_CODER_DEPENDENCIES_FAILED'));

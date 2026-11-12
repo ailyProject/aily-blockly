@@ -1169,6 +1169,7 @@
       "OPEN_IN_CODER": "使用 aily coder 開啟",
       "CONVERT_CODER_TITLE": "轉換為 aily coder 專案",
       "CONVERT_CODER_CONTENT": "此檔案屬於 aily blockly 專案。將建立 aily coder 專案副本並安裝依賴；副本可能無法再使用積木編輯。原專案保留。",
+      "CONVERT_CODER_UNVERIFIED": "目前版本尚未通過編譯驗證，轉換後可能需要修復程式碼。是否繼續轉換？",
       "CONVERT_CODER_BUTTON": "轉換並開啟",
       "CONVERT_CODER_FAILED": "轉換失敗：{{error}}",
       "CONVERT_CODER_INSTALLING": "正在安裝 Coder 專案依賴",

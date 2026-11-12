@@ -1240,6 +1240,7 @@
       "OPEN_IN_CODER": "使用 aily coder 打开",
       "CONVERT_CODER_TITLE": "转换为 aily coder 项目",
       "CONVERT_CODER_CONTENT": "此文件属于 aily blockly 项目。将创建 aily coder 项目副本并安装依赖；副本可能无法再使用积木编辑。原项目保留。",
+      "CONVERT_CODER_UNVERIFIED": "当前版本尚未通过编译验证，转换后可能需要修复代码。是否继续转换？",
       "CONVERT_CODER_BUTTON": "转换并打开",
       "CONVERT_CODER_FAILED": "转换失败：{{error}}",
       "CONVERT_CODER_INSTALLING": "正在安装 Coder 项目依赖",

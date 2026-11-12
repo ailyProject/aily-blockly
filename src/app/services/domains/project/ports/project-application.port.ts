@@ -54,6 +54,10 @@ export interface ProjectApplicationPort {
   inspectBlocklyConflict?(path: string): Promise<ProjectConflictOffer>;
   resolveBlocklyConflict?(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution>;
   captureBlocklySaveAsSnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
+  /** Capture the active editor revision and materialize its generated inputs in a new Coder project. */
+  createBlocklyCoderProject(sourcePath: string): Promise<string>;
+  /** Read existing matching build evidence only; never compile as a conversion prerequisite. */
+  hasVerifiedBlocklyBuild?(sourcePath: string): Promise<boolean>;
   captureBlocklyRecoveryCopySnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
   captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;

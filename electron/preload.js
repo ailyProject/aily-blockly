@@ -773,7 +773,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
     copyRecoveryProjectDirectory: (src, dest) => copyRecoveryProjectDirectory(src, dest),
     importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
-    convertBlocklyProjectToCoder: (src, entry) => require('./blockly-coder-conversion').convertBlocklyProjectToCoder(src, entry),
+    blocklyCoderConversionVersion: 2,
+    convertBlocklyProjectToCoder: (src, entry, generatedSource) => require('./blockly-coder-conversion').convertBlocklyProjectToCoder(src, entry, generatedSource),
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => {
       const s = require("fs").statSync(path);

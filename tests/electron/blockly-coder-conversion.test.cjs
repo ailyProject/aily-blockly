@@ -27,6 +27,40 @@ function fixture(t) {
   return { source: fs.realpathSync(source), write };
 }
 
+test('converts a current generated snapshot without a shared .temp and excludes stale generated declarations', t => {
+  const {source, write} = fixture(t);
+  fs.rmSync(path.join(source, '.temp'), {recursive: true});
+  write('src/variables_old-deadbeef.h', '// stale cache');
+  const original = fs.readFileSync(path.join(source, 'package.json'), 'utf8');
+  assert.throws(() => convertBlocklyProjectToCoder(source), {code: 'ENOENT'});
+  const generated = {code: '#include "src/variables_current-deadbeef.h"\nvoid setup() { delay(913); }\nvoid loop() {}',
+    artifacts: [{fileName: 'variables_current-deadbeef.h', content: 'int current = 913;', sourceTag: 'variables'}],
+    macros: [['USER_MACRO=1'], ['CURRENT_DRIVER=913']]};
+  const target = convertBlocklyProjectToCoder(source, undefined, generated);
+  assert.match(fs.readFileSync(path.join(target, 'sketch/src/main.cpp'), 'utf8'), /#include "variables_current-deadbeef.h"/);
+  assert.match(fs.readFileSync(path.join(target, 'sketch/src/main.cpp'), 'utf8'), /delay\(913\)/);
+  assert.equal(fs.readFileSync(path.join(target, 'sketch/src/variables_current-deadbeef.h'), 'utf8'), 'int current = 913;');
+  assert.equal(fs.existsSync(path.join(target, 'sketch/src/variables_old-deadbeef.h')), false);
+  assert.equal(fs.existsSync(path.join(source, '.temp')), false);
+  assert.equal(fs.readFileSync(path.join(source, 'src/variables_old-deadbeef.h'), 'utf8'), '// stale cache');
+  assert.equal(fs.readFileSync(path.join(source, 'package.json'), 'utf8'), original);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target, 'package.json'), 'utf8')).MACROS, generated.macros);
+});
+
+test('a current snapshot overrides a stale .temp entry and rejects invalid or ambiguous generated input before reserving a copy', t => {
+  const {source} = fixture(t);
+  const generated = {code: 'void setup() { delay(913); }\nvoid loop() {}', artifacts: [], macros: []};
+  for (const invalid of [{...generated, code: ''}, {...generated, artifacts: [{fileName: '../outside.h', content: 'x', sourceTag: 'x'}]},
+    {...generated, macros: [['BAD\nVALUE']]}, {...generated, artifacts: [null]}]) {
+    assert.throws(() => convertBlocklyProjectToCoder(source, undefined, invalid), /无效/);
+    assert.equal(fs.existsSync(`${source}_coder`), false);
+  }
+  assert.throws(() => convertBlocklyProjectToCoder(source, path.join(source, '.temp/sketch/sketch.ino'), generated), /同时/);
+  const target = convertBlocklyProjectToCoder(source, undefined, generated);
+  assert.match(fs.readFileSync(path.join(target, 'sketch/src/main.cpp'), 'utf8'), /delay\(913\)/);
+  assert.equal(fs.existsSync(path.join(target, 'sketch/src/secondary.cpp')), false, 'do not borrow stale build workspace inputs');
+});
+
 test('copies generated source, user headers, components, configuration and outer dependencies', t => {
   const {source}=fixture(t);
   const original=fs.readFileSync(path.join(source,'package.json'),'utf8');
@@ -50,6 +84,16 @@ test('copies generated source, user headers, components, configuration and outer
   }
   assert.equal(fs.readFileSync(path.join(source,'package.json'),'utf8'),original);
   assert.ok(fs.existsSync(path.join(source,'project.abi')));
+});
+
+test('keeps compiler-invalid generated text convertible without a successful build or shared cache', t => {
+  const {source} = fixture(t);
+  fs.rmSync(path.join(source, '.temp'), {recursive: true});
+  const brokenCode = 'void setup() { missing_library_symbol( ; }\nvoid loop() {}';
+  const target = convertBlocklyProjectToCoder(source, undefined, {code: brokenCode, artifacts: [], macros: []});
+  assert.ok(fs.readFileSync(path.join(target, 'sketch/src/main.cpp'), 'utf8').includes(brokenCode));
+  assert.equal(fs.existsSync(path.join(source, '.temp')), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target, 'package.json'), 'utf8')).type, 'coder');
 });
 
 test('merges Arduino tabs and relocates local includes without changing library or nested includes', t => {

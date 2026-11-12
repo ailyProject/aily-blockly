@@ -32,6 +32,8 @@ import { PasteInstallDialogComponent } from '../../editors/blockly-editor/compon
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 import { settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
+import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
+import { _BuilderService } from '../../editors/blockly-editor/services/builder.service';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -92,6 +94,37 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
 
   captureBlocklySaveAsSnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
     return this.blocklyEditorProjectService.captureSaveAsSnapshot(path);
+  }
+
+  async hasVerifiedBlocklyBuild(path: string): Promise<boolean> {
+    const changed = () => !this.isSameProjectPath(path, this.projectService.currentProjectPath);
+    if (changed()) return false;
+    try {
+      return await this.injector.get(_BuilderService).canReuseBuildForUpload(changed);
+    } catch { return false; }
+  }
+
+  async createBlocklyCoderProject(path: string): Promise<string> {
+    if (window['fs']?.blocklyCoderConversionVersion !== 2) throw new Error('请重启应用后再转换当前 Blockly 源码');
+    let target: string | undefined;
+    try {
+      return await this.blocklyService.runWithPreparedProjectCode((prepared, assertCurrent) => {
+        assertCurrent();
+        if (!this.isSameProjectPath(path, this.projectService.currentProjectPath)
+          || !this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) {
+          throw new Error('Blockly 项目已切换，无法转换旧编辑器源码');
+        }
+        const manifest = JSON.parse(window['fs'].readFileSync(window['path'].join(path, 'package.json'), 'utf8'));
+        const merged = mergeGeneratorMacros(manifest, prepared.projectMacros ?? []);
+        target = window['fs'].convertBlocklyProjectToCoder(path, undefined, {
+          code: prepared.code, artifacts: prepared.artifacts, macros: merged.MACROS,
+        });
+        return target!;
+      });
+    } catch (error) {
+      if (target) await window['fsp'].rm(target, { recursive: true, force: true });
+      throw error;
+    }
   }
 
   captureBlocklyRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
