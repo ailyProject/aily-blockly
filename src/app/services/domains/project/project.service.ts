@@ -50,6 +50,7 @@ import {
   readCoderBoardTemplateDependencies,
   recordCoderBoardTemplateDependencies,
   copyCoderArduinoTemplate,
+  findReusableCoderBoardTemplate,
   isCoderProjectPackage,
   resolveCoderProjectCreationTemplate,
 } from './coder/coder-project-template';
@@ -149,6 +150,12 @@ interface ProjectCreationOptions {
   /** Board package template directory. Blockly uses `template`; Coder uses `template_arduino`. */
   templateDirectory?: 'template' | typeof CODER_TEMPLATE_DIRECTORY;
 }
+
+type ProjectCreationStage = 'validation' | 'board-install' | 'board-template' | 'project-files' | 'activation';
+
+type ProjectCreationResult =
+  | { ok: true; projectPath: string }
+  | { ok: false; stage: ProjectCreationStage; error: string; npmExitCode?: number };
 
 export type ProjectState = 'default' | 'loading' | 'loaded' | 'closing' | 'saving' | 'saved' | 'error';
 
@@ -1546,39 +1553,57 @@ export class ProjectService {
 
   // 新建项目
   async projectNew(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<boolean> {
+    return (await this.projectNewWithResult(newProjectData, options)).ok;
+  }
+
+  async projectNewWithResult(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<ProjectCreationResult> {
+    let stage: ProjectCreationStage = 'validation';
+    let npmExitCode: number | undefined;
     try {
-      await this.assertProjectCreationMode(options.templateDirectory === CODER_TEMPLATE_DIRECTORY ? 'coder' : 'blockly');
-      // console.log('newProjectData: ', newProjectData);
+      const templateDirectory = options.templateDirectory || 'template';
+      const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
+      await this.assertProjectCreationMode(isCoderTemplate ? 'coder' : 'blockly');
       const appDataPath = window['path'].getAppDataPath();
       const projectPath = this.buildProjectPath(newProjectData);
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
-      const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
-      // 创建前还没有 package.json，用向导选定的 devmode 决定板包仓库。
-      const installCommand = await this.buildNpmInstallCommand(boardPackage, {
-        prefixPath: appDataPath,
-        registry: this.configService.getNpmRegistryForProject({ devmode: newProjectData.devmode }),
-      });
-
-      this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
-      const npmInstallResult = await this.cmdService.runAsync(installCommand, undefined, true, false);
-      if (npmInstallResult.code !== 0) {
-        throw new Error(npmInstallResult.stderr || npmInstallResult.stdout || `npm install failed with exit code ${npmInstallResult.code}`);
-      }
-      const templateDirectory = options.templateDirectory || 'template';
       const boardPackagePath = window['path'].join(
         appDataPath,
         'node_modules',
         boardPackageName,
       );
-      const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
-      const coderTemplate = isCoderTemplate
+      const reusableTemplate = isCoderTemplate && isAilyBoardPackageName(boardPackageName)
+        ? findReusableCoderBoardTemplate(boardPackagePath, {
+          name: boardPackageName, version: newProjectData.board.version,
+        }, window['path'], window['fs'])
+        : undefined;
+
+      this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
+      if (!reusableTemplate) {
+        stage = 'board-install';
+        const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
+        // 创建前还没有 package.json，用向导选定的 devmode 决定板包仓库。
+        const installCommand = await this.buildNpmInstallCommand(boardPackage, {
+          prefixPath: appDataPath,
+          registry: this.configService.getNpmRegistryForProject({ devmode: newProjectData.devmode }),
+        });
+        const npmInstallResult = await this.cmdService.runAsync(installCommand, undefined, true, false);
+        if (npmInstallResult.type === 'error' || npmInstallResult.code !== 0) {
+          npmExitCode = npmInstallResult.code;
+          throw new Error(npmInstallResult.error || npmInstallResult.stderr || npmInstallResult.stdout
+            || `npm install failed with exit code ${npmExitCode ?? 'unknown'}`);
+        }
+      }
+
+      stage = 'board-template';
+      const coderTemplate = reusableTemplate ?? (isCoderTemplate
         ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
-        : null;
+        : undefined);
       const templatePath = coderTemplate?.templatePath
         ?? window['path'].join(boardPackagePath, templateDirectory);
       if (!window['fs'].existsSync(templatePath)) {
         throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
       }
+      stage = 'project-files';
       if (isCoderTemplate) {
         window['fs'].mkdirSync(projectPath);
         copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
@@ -1598,19 +1623,18 @@ export class ProjectService {
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
         this.metrics.record('project_created');
-        return true;
+        return { ok: true, projectPath };
       }
+      stage = 'activation';
       const created = await this.finishProjectCreation(projectPath, options);
-      if (created) this.metrics.record('project_created');
-      return created;
-
-      // if (closeWindow) {
-      //   this.uiService.closeWindow();
-      // }
+      if (!created) return { ok: false, stage, error: '主软件未能激活新建的项目' };
+      this.metrics.record('project_created');
+      return { ok: true, projectPath };
     } catch (error) {
-      this.message.error(this.translate.instant('PROJECT.CREATE_FAILED') + ": " + error.message);
+      const message = error instanceof Error ? error.message : String(error);
+      this.message.error(`${this.translate.instant('PROJECT.CREATE_FAILED')}: ${message}`);
       this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
-      return false;
+      return { ok: false, stage, error: message, ...(npmExitCode === undefined ? {} : { npmExitCode }) };
     }
   }
 

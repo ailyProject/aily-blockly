@@ -1133,13 +1133,12 @@ export class BlocklyLiveOperationBridgeService {
       developmentMode: mode,
       projectType: mode,
       project: created ? projectPath : null,
-      message: ok ? `项目已创建并打开: ${projectPath}`
-        : created ? '项目已创建，但未完成打开' : '项目创建失败',
-      ...(created && !ok ? {
-        reason: 'project_activation_failed',
-        partialMutation: true,
-        ...(activationError instanceof Error ? { error: activationError.message } : {}),
-      } : {}),
+      ...(created && !ok ? { projectCreated: true, createdProject: projectPath,
+        activation: { completed: false, currentProject: this.projectService.currentProjectPath || null },
+        code: (activationError as any)?.code || 'PROJECT_CREATE_ACTIVATION_FAILED' } : {}),
+      message: ok ? `项目已创建并打开: ${projectPath}` : created
+        ? (activationError instanceof Error ? activationError.message : activationError ? String(activationError) : '项目已创建，但未确认打开完成')
+        : '项目创建失败',
       name: newProjectData.name,
       path: newProjectData.path,
       board: {
@@ -1159,15 +1158,11 @@ export class BlocklyLiveOperationBridgeService {
       defaultParentPath: () => this.projectService.getDefaultProjectParentPath(),
       generateUniqueName: (parentPath, prefix) =>
         this.projectService.generateUniqueProjectName(parentPath, prefix),
-      createProject: async (data) => {
-        const projectPath = window['path'].join(data.path, data.name.replace(/\s/g, '_'));
-        const ok = await this.projectService.projectNew(data, {
-          deferActivation: true,
-          templateDirectory: 'template_arduino',
-          activationReason: 'chat-tool-create',
-        });
-        return { ok, projectPath: ok ? projectPath : undefined };
-      },
+      createProject: (data) => this.projectService.projectNewWithResult(data, {
+        deferActivation: true,
+        templateDirectory: 'template_arduino',
+        activationReason: 'chat-tool-create',
+      }),
       openProject: (projectPath) => this.projectService.projectOpen(projectPath, {
         reason: 'chat-tool-create',
         lifecycleOwner,
