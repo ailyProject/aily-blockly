@@ -7,13 +7,13 @@ const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const targetCompileContext = require('./target-compile-context');
 const { prepareCompileSource } = require('./compile-source');
-const { createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
+const { captureLibrarySource, createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
 const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDelivery } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs } = require('./build-execution-workspace');
-const { resolvePlatformResourceRoots, prepareReadOnlyToolsView } = require('./platform-resource-roots');
+const { resolvePlatformResourceRoots, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json';
@@ -158,6 +158,27 @@ async function preprocessProject(config, workspace) {
     ], { projectManifest: projectPackageJsonPath });
     const boardDependencies = boardPackageJson.boardDependencies || {};
 
+    let compiler = '';
+    let sdk = '';
+    const toolVersions = [];
+    Object.entries(boardDependencies).forEach(([key, version]) => {
+        if (key.startsWith('@aily-project/compiler-')) {
+            compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
+            toolVersions.push(compiler);
+        } else if (key.startsWith('@aily-project/sdk-')) {
+            sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
+        } else if (key.startsWith('@aily-project/tool-')) {
+            let toolName = key.replace(/^@aily-project\/tool-/, '');
+            if (toolName.startsWith('idf_')) {
+                toolName = 'esp32-arduino-libs';
+            }
+            toolVersions.push(toolName + '@' + version);
+        }
+    });
+    if (!compiler || !sdk) {
+        throw new Error('未找到编译器或SDK信息');
+    }
+
     // 缓存文件路径
     const cacheFilePath = path.join(tempPath, 'library-cache.json');
     let libraryCache = {};
@@ -200,7 +221,8 @@ async function preprocessProject(config, workspace) {
             currentProjectPath,
             za7Path,
             localLibrariesPath,
-            libraryEvidence
+            libraryEvidence,
+            compiler
         );
         if (projectPackageJson.arduinoSketch === true) {
             const arduinoLibraries = [
@@ -268,31 +290,6 @@ async function preprocessProject(config, workspace) {
                 }
             }
         }
-    }
-
-    // 5. 获取编译器、SDK、Tool信息
-    let compiler = "";
-    let sdk = "";
-    const toolVersions = [];
-
-    Object.entries(boardDependencies || {}).forEach(([key, version]) => {
-        if (key.startsWith('@aily-project/compiler-')) {
-            compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
-            toolVersions.push(compiler);
-        } else if (key.startsWith('@aily-project/sdk-')) {
-            sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
-        } else if (key.startsWith('@aily-project/tool-')) {
-            let toolName = key.replace(/^@aily-project\/tool-/, '');
-            if (toolName.startsWith('idf_')) {
-                toolName = 'esp32-arduino-libs';
-            }
-            const tool = toolName + '@' + version;
-            toolVersions.push(tool);
-        }
-    });
-
-    if (!compiler || !sdk) {
-        throw new Error('未找到编译器或SDK信息');
     }
 
     // 6. 配置路径和参数
@@ -371,7 +368,7 @@ async function preprocessProject(config, workspace) {
 
     // 9. 同步编译器工具
     if (!readOnlyResources) await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath);
-    const builderToolsPath = prepareReadOnlyToolsView(appDataPath, resources, fullCompilerPath);
+    const builderToolsPath = prepareBuilderToolsPath(appDataPath, resources, fullCompilerPath);
 
     // 10. 执行预编译
     logger.log('开始预编译...');
@@ -623,7 +620,7 @@ async function processLibrariesParallel(libsPath, librariesPath, currentProjectP
     return copiedLibraries;
 }
 
-async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7Path, localLibrariesPath, evidence) {
+async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7Path, localLibrariesPath, evidence, compiler) {
     const result = [];
     const seen = new Set();
     const localizedSourceRoots = collectLocalizedCoderSourceRoots(
@@ -636,10 +633,11 @@ async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7P
         const canonical = fs.realpathSync(sourcePath);
         if (seen.has(canonical)) return;
         // Reject escaping/cyclic links before handing a source tree to the builder.
-        createLibrarySourceFingerprint(canonical);
-        if (evidence) evidence.add(owner, evidence.capture(canonical), canonical, inputs);
+        const source = captureLibrarySource(canonical);
+        const builderPath = prepareBuilderLibraryPath(compiler, source);
+        if (evidence) evidence.add(owner, source, builderPath, inputs);
         seen.add(canonical);
-        result.push(canonical);
+        result.push(builderPath);
     };
 
     for (const lib of libsPath) {
