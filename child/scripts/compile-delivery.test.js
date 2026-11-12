@@ -139,11 +139,12 @@ test('capabilities queried once; malformed/old versions cannot enable strict del
         buildWorkspaceLease: { schemaVersion: 1, delegationEnvironment: 'AILY_BUILDER_WORKSPACE' },
         buildPackageInputs: { schemaVersion: 1, scope: 'resolved-sdk-tool-trees', verification: 'content-and-state-at-build-boundaries' },
         buildInputVerification: { schemaVersion: 1, command: 'verify-build-inputs', contextFileName: 'aily-build-input-context.json', scope: 'prepared-dependency-trees-and-sdk-tools' },
-        sceneGraphProvenance: { schemaVersion: 1, cliOption: '--graph-semantic-revision' } } }) }; });
-    assert.deepEqual(current, { artifact: true, graph: true, inputs: true, workspace: true, packages: true, verification: true }); assert.equal(calls, 1);
+        sceneGraphProvenance: { schemaVersion: 1, cliOption: '--graph-semantic-revision' },
+        verifiedLocalArchiveCache: { schemaVersion: 1, cliOption: '--verified-local-archive-cache' } } }) }; });
+    assert.deepEqual(current, { artifact: true, graph: true, inputs: true, workspace: true, packages: true, verification: true, verifiedLocalArchiveCache: true }); assert.equal(calls, 1);
     calls = 0;
-    const legacy = readBuilderCapabilities('builder', () => ({ status: 0, stdout: ++calls === 1 ? 'malformed' : '--emit-artifact-manifest' }));
-    assert.deepEqual(legacy, { artifact: true, graph: false, inputs: false, workspace: false, packages: false, verification: false }); assert.equal(calls, 2);
+    const legacy = readBuilderCapabilities('builder', () => ({ status: 0, stdout: ++calls === 1 ? 'malformed' : '--emit-artifact-manifest --verified-local-archive-cache' }));
+    assert.deepEqual(legacy, { artifact: true, graph: false, inputs: false, workspace: false, packages: false, verification: false, verifiedLocalArchiveCache: false }); assert.equal(calls, 2);
     for (const packageCapability of [undefined,
         { schemaVersion: 2, scope: 'resolved-sdk-tool-trees', verification: 'content-and-state-at-build-boundaries' },
         { schemaVersion: 1, scope: 'version-labels', verification: 'content-and-state-at-build-boundaries' },
@@ -152,6 +153,7 @@ test('capabilities queried once; malformed/old versions cannot enable strict del
         const unsupported = readBuilderCapabilities('builder', () => ({ status: 0, stdout: JSON.stringify({ schemaVersion: 1,
             capabilities: { buildPackageInputs: packageCapability } }) }));
         assert.equal(unsupported.packages, false, 'Missing or different evidence contracts must not enable package coverage.');
+        assert.equal(unsupported.verifiedLocalArchiveCache, false);
     }
 });
 
