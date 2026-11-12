@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { resolvePlatformResourceRoots } = require('./platform-resource-roots');
+const { resolvePlatformResourceRoots, resolveBoardResourceDirectory } = require('./platform-resource-roots');
 const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
@@ -459,8 +459,8 @@ async function main() {
         let fullSdkPath = '';
         Object.entries(boardDependencies || {}).forEach(([key, version]) => {
             if (key.startsWith('@aily-project/sdk-')) {
-                const sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
-                fullSdkPath = path.join(sdkPath, sdk);
+                const name = key.replace(/^@aily-project\/sdk-/, '');
+                fullSdkPath = resolveBoardResourceDirectory(sdkPath, 'sdk', name, version);
             }
         });
         if (config.sdkDirectory) fullSdkPath = config.sdkDirectory;

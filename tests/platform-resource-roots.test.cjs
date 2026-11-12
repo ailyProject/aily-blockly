@@ -81,6 +81,23 @@ test('an explicit upload tool root takes precedence while recovery retains its s
     assert.equal(unquote(captured.command), tool);
     assert.deepEqual(captured.args.map(unquote), ['--port', 'NO_DEVICE', '--boot', path.join(f.sdk, 'test_1.0.0/tools/partitions/boot_app0.bin')]);
 });
+test('Blockly preprocessing and upload use the same exact alternate SDK directory', t => {
+    const f = fixture(t, 'blockly', true);
+    const sdk = path.join(f.sdk, 'test@1.0.0');
+    fs.renameSync(path.join(f.sdk, 'test_1.0.0'), sdk);
+    fs.writeFileSync(path.join(sdk, 'boards.txt'), 'test.name=Test');
+    fs.writeFileSync(path.join(sdk, 'platform.txt'), 'name=Test');
+
+    const compiler = path.join(f.compilers, 'test', '1.0.0');
+    fs.mkdirSync(path.dirname(compiler));
+    fs.renameSync(path.dirname(path.dirname(f.compilerBinary)), compiler);
+    const { args } = f.run('preprocess.js');
+    assert.equal(unquote(args[args.indexOf('--sdk-path') + 1]), sdk);
+    const tools = unquote(args[args.indexOf('--tools-path') + 1]);
+    assert.equal(fs.realpathSync(path.join(tools, 'test@1.0.0')), fs.realpathSync(compiler));
+    assert.deepEqual(f.run('upload.js').args.map(unquote),
+        ['--port', 'NO_DEVICE', '--boot', path.join(sdk, 'tools/partitions/boot_app0.bin')]);
+});
 test('private split-root view reuses exact mappings and rejects a conflicting existing mapping', t => {
     const f = fixture(t, 'blockly', true), resources = { toolsPath: f.tools, compilerPath: f.compilers, readOnly: true };
     const compiler = path.dirname(path.dirname(f.compilerBinary));

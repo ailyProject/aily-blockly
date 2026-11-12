@@ -176,7 +176,7 @@ describe('Coder dependency installation and recovery', () => {
 
   it('does not remove existing SDK directories or rerun their postinstall in Blockly software', async () => {
     project.configService.isCoderProduct.and.returnValue(false);
-    const files = new Set(['/sdk/esp32_1.0.0', '/app/node_modules/@aily-project/sdk-esp32/package.json']);
+    const files = new Set(['/sdk/esp32_1.0.0', '/sdk/esp32_1.0.0/boards.txt', '/sdk/esp32_1.0.0/platform.txt']);
     window['path'].isExists = (path: string) => files.has(path);
     window['ipcRenderer'] = { invoke: jasmine.createSpy('remove') };
     npm.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
@@ -187,13 +187,16 @@ describe('Coder dependency installation and recovery', () => {
     expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
   });
 
-  it('preserves Blockly software native-install completion without the new SDK metadata check', async () => {
+  it('does not report Blockly installation success for a missing staged SDK', async () => {
     project.configService.isCoderProduct.and.returnValue(false);
     window['path'].isExists = () => false;
     npm.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
-    await npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '3.3.1' } }, false, true, session);
-    expect(window['npm'].run).toHaveBeenCalledTimes(1);
-    expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
+    await expectAsync(npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '3.3.1' } }, false, true, session))
+      .toBeRejectedWithError('NPM.DEPENDENCY_INCOMPLETE');
+    expect(npm.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      'node "/child/scripts/install-versioned-platform-resource.js" "@aily-project/sdk-esp32" "3.3.1"', '/app', true, false, session);
+    expect(window['npm'].run).not.toHaveBeenCalled();
+    expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('error');
   });
 
   it('rejects unknown readiness and offers a complete retry before admitting execution', fakeAsync(() => {

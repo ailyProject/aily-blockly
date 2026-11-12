@@ -81,6 +81,7 @@ import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 import { readManagedLibraryEnvironment, type ManagedLibraryEnvironmentReference } from './project-managed-library-environment';
 import { boardPublicationRequest } from './project-board-publication-request';
 import { resolveVariantPaths } from '../../../utils/board-variant.utils';
+import { resolvePlatformPackageDirOnDisk } from '../../../utils/platform-packages.utils';
 import {
   canonicalCloudJson, cloudBoardProperties, getCloudBoardOptions,
   getCloudBuildSettings, selectCloudBoardProfile,
@@ -4344,35 +4345,17 @@ export class ProjectService {
       }
 
       const sdkVersion = boardDependencies[sdkModule];
-      const sdkFileName = sdkModule.replace('@aily-project/sdk-', '') + '_' + sdkVersion;
-      const appDataPath = window['path'].getAppDataPath()
-      const sdkLibPath = this.electronService.pathJoin(appDataPath, 'sdk', `${sdkFileName}`);
-      if (!window['fs'].existsSync(sdkLibPath)) {
+      const sdkBase = await window['env'].get('AILY_SDK_PATH')
+        || window['path'].join(window['path'].getAppDataPath(), 'sdk');
+      const sdkLibPath = resolvePlatformPackageDirOnDisk(sdkModule, sdkVersion, { sdkBase, compilersBase: '', toolsBase: '' });
+      if (!sdkLibPath) {
         if (options.optional) {
-          console.warn('[ProjectService] SDK is not ready:', sdkLibPath);
+          console.warn('[ProjectService] SDK is not ready:', sdkModule, sdkVersion);
           return '';
         }
-        throw new Error('SDK 库路径不存在: ' + sdkLibPath);
+        throw new Error(`SDK 库路径不存在: ${sdkModule}@${sdkVersion}`);
       }
-
-      // // Get all files in the SDK library path
-      // const sdkFiles = window['fs'].readDirSync(sdkLibPath);
-
-      // // Filter for .7z files
-      // const sdkZipFiles = sdkFiles.filter(file => file.name.endsWith('.7z'));
-
-      // // If there are no .7z files, throw an error
-      // if (sdkZipFiles.length === 0) {
-      //   throw new Error('未找到 SDK 压缩包文件');
-      // }
-
-      // // Replace '@' with '_' in the filename
-      // const sdkZipFileName = sdkZipFiles[0].name;
-      // const formattedSdkZipFileName = sdkZipFileName.replace(/@/g, '_').replace(/\.7z$/i, '');
-
-      // sdk path
-      // return `${await window["env"].get('AILY_SDK_PATH')}/${formattedSdkZipFileName}`;
-      return `${await window["env"].get('AILY_SDK_PATH')}/${sdkFileName}`;
+      return sdkLibPath;
     } catch (error) {
       console.error('获取 SDK 路径失败:', error);
       return "";

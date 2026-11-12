@@ -20,9 +20,6 @@ export function versionedPlatformResource(
   const match = /^@aily-project\/(sdk|compiler|tool)-([a-zA-Z0-9][a-zA-Z0-9_.-]*)$/.exec(packageName);
   if (!match || !valid(version) || valid(version) !== version) return;
   const [, kind, name] = match;
-  // IDF packages share a version directory with other chip payloads. Keep
-  // their existing installer until readiness can identify the chip subdirectory.
-  if (kind === 'tool' && name.startsWith('idf_')) return;
   const join = (...parts: string[]) => window['path'].join(...parts);
   const base = kind === 'sdk' ? bases.sdkBase : kind === 'compiler' ? bases.compilersBase : bases.toolsBase;
   if (!base) return;

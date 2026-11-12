@@ -1,21 +1,24 @@
 'use strict';
 
-const legacyToolVersions = {
+const legacyResourceVersions = {
     'ctags@5.8.0': '5.8-arduino11',
     'pqt-mklittlefs@4.1.0': '4.1.0-1aec55e',
     'pqt-picotool@4.1.0': '4.1.0-1aec55e',
     'pqt-pioasm@4.1.0': '4.1.0-1aec55e',
     'pqt-python3@1.0.1': '1.0.1-base-3a57aed-1',
+    'xpack-arm-none-eabi-gcc@14.2.1': '14.2.1-1.1',
 };
 
 function platformResourcePaths(kind, name, version, entries = []) {
+    const idfChip = kind === 'tool' && /^idf_(esp32[a-z0-9]*)$/.exec(name);
+    if (idfChip) return [`esp32-arduino-libs@${version}/${idfChip[1]}`];
+
     const flat = [`${name}@${version}`, `${name}_${version}`];
     const paths = kind === 'sdk' ? [...flat].reverse() : flat;
     paths.push(`${name}/${version}`);
-    if (kind !== 'tool') return paths;
-
-    const alias = legacyToolVersions[`${name}@${version}`];
+    const alias = legacyResourceVersions[`${name}@${version}`];
     if (alias) paths.push(`${name}@${alias}`);
+    if (kind !== 'tool') return paths;
     const compatibleVersions = new Set([version, version.replace(/\.0$/, '')]);
     for (const entry of [...entries].sort()) {
         if (!entry.startsWith(name + '@')) continue;
@@ -30,7 +33,7 @@ function requiredToolFiles(name, windows) {
         const file = 'esptool' + (windows ? '.exe' : '');
         return [[file], ['bin/' + file]];
     }
-    if (/^esp32[a-z0-9]*-libs$/.test(name)) return [['flags/includes', 'flags/defines']];
+    if (/^(?:esp32[a-z0-9]*-libs|idf_esp32[a-z0-9]*)$/.test(name)) return [['flags/includes', 'flags/defines']];
     return [];
 }
 

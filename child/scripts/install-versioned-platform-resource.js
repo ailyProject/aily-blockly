@@ -35,7 +35,6 @@ function installVersionedPlatformResource(packageName, version, registry = '') {
         throw new Error('Expected an exact versioned platform package');
     }
     const [, kind, name] = match;
-    if (name.startsWith('idf_')) throw new Error('Unsupported shared tool package layout');
     const base = process.env[RESOURCE_ENV[kind]];
     if (!base || !path.isAbsolute(base) || process.env.AILY_REPAIR_READONLY_NPM_PREFIX) {
         throw new Error('Writable platform resource directory required');

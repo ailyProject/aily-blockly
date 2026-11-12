@@ -49,7 +49,8 @@ describe('board cloud support and local fallback', () => {
     expect(config.data.compile.backend).toBe('cloud');
     expect(npm.installBoardDeps).toHaveBeenCalledTimes(1);
     expect(npm.ensureCoderDependencyLibrarySources).toHaveBeenCalled();
-    expect(npm.getMissingBoardDependencies(JSON.parse(files.get(`/project/node_modules/${boardModule}/package.json`)!))).toEqual(['@aily-project/sdk-test@1.0.0']);
+    npm.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
+    expect(await npm.getMissingBoardDependencies(JSON.parse(files.get(`/project/node_modules/${boardModule}/package.json`)!))).toEqual(['@aily-project/sdk-test@1.0.0']);
     expect(window['cloudBuild'].boardSupport).toHaveBeenCalledWith(jasmine.objectContaining({ boardModule, boardVersion: '3.2.1' }));
     operation.release();
     expect(project.isCloudBuild()).toBeTrue();

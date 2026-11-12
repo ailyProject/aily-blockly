@@ -13,7 +13,7 @@ const { invalidateBuildDelivery } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs } = require('./build-execution-workspace');
-const { resolvePlatformResourceRoots, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
+const { resolvePlatformResourceRoots, resolveBoardResourceDirectory, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
 const { readBuilderCapabilities } = require('./builder-capabilities');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
@@ -160,14 +160,18 @@ async function preprocessProject(config, workspace) {
     const boardDependencies = boardPackageJson.boardDependencies || {};
 
     let compiler = '';
-    let sdk = '';
+    let fullCompilerPath = '';
+    let fullSdkPath = '';
     const toolVersions = [];
     Object.entries(boardDependencies).forEach(([key, version]) => {
         if (key.startsWith('@aily-project/compiler-')) {
-            compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
+            const name = key.replace(/^@aily-project\/compiler-/, '');
+            compiler = name + '@' + version;
+            fullCompilerPath = resolveBoardResourceDirectory(compilerPath, 'compiler', name, version);
             toolVersions.push(compiler);
         } else if (key.startsWith('@aily-project/sdk-')) {
-            sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
+            const name = key.replace(/^@aily-project\/sdk-/, '');
+            fullSdkPath = resolveBoardResourceDirectory(sdkPath, 'sdk', name, version);
         } else if (key.startsWith('@aily-project/tool-')) {
             let toolName = key.replace(/^@aily-project\/tool-/, '');
             if (toolName.startsWith('idf_')) {
@@ -176,7 +180,7 @@ async function preprocessProject(config, workspace) {
             toolVersions.push(toolName + '@' + version);
         }
     });
-    if (!compiler || !sdk) {
+    if (!fullCompilerPath || !fullSdkPath) {
         throw new Error('未找到编译器或SDK信息');
     }
 
@@ -296,8 +300,6 @@ async function preprocessProject(config, workspace) {
     }
 
     // 6. 配置路径和参数
-    const fullCompilerPath = path.join(compilerPath, compiler);
-    const fullSdkPath = path.join(sdkPath, sdk);
     if (!isAilyCode) {
         librarySearchPaths = prependSdkLibrarySearchPath(fullSdkPath, librarySearchPaths);
     }
@@ -370,8 +372,8 @@ async function preprocessProject(config, workspace) {
     compilerParam += buildProperties;
 
     // 9. 同步编译器工具
-    if (!readOnlyResources) await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath);
-    const builderToolsPath = prepareBuilderToolsPath(appDataPath, resources, fullCompilerPath);
+    if (!readOnlyResources) await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath, compiler);
+    const builderToolsPath = prepareBuilderToolsPath(appDataPath, resources, fullCompilerPath, compiler);
 
     // 10. 执行预编译
     logger.log('开始预编译...');
@@ -1028,11 +1030,12 @@ function linkItem(src, dest, copyOnly = false) {
     }
 }
 
-async function syncCompilerToolsToToolsPath(compilerPath, toolsPath) {
+async function syncCompilerToolsToToolsPath(compilerPath, toolsPath, compilerDirName) {
     if (!fs.existsSync(compilerPath)) return;
+    const relative = path.relative(toolsPath, compilerPath);
+    if (!relative || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative))) return;
     mkdirp(toolsPath);
     
-    const compilerDirName = path.basename(compilerPath);
     const targetCompilerPath = path.join(toolsPath, compilerDirName);
     
     if (fs.existsSync(targetCompilerPath)) return;

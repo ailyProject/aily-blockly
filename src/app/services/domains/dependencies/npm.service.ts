@@ -740,9 +740,7 @@ export class NpmService {
           await project.getCloudBoardProfile({}, session);
           this.assertDependencySession(session);
         }
-        const cloudMode = this.isCloudBuild(projectPath);
-        const localDependencies = cloudMode ? getCloudEditorDependencies(boardPackage) : boardPackage?.boardDependencies || {};
-        const missing = await this.getUnreadyBoardPlatformDeps(localDependencies, !cloudMode);
+        const missing = await this.getMissingBoardDependencies(boardPackage, projectPath);
         if (missing.length) {
           throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
             name: missing.join(', '),
@@ -1427,23 +1425,23 @@ export class NpmService {
 
   private async areBoardPlatformDepsReady(
     boardDependencies: Record<string, string>,
-    useVersionedResources = this.configService.isCoderProduct(),
+    local = true,
   ): Promise<boolean> {
-    return (await this.getUnreadyBoardPlatformDeps(boardDependencies, useVersionedResources)).length === 0;
+    return (await this.getUnreadyBoardPlatformDeps(boardDependencies, local)).length === 0;
   }
 
   private async getUnreadyBoardPlatformDeps(
     boardDependencies: Record<string, string>,
-    useVersionedResources: boolean,
+    local: boolean,
   ): Promise<string[]> {
     const dependencies = Object.entries(boardDependencies);
     if (!dependencies.length) return [];
     const appDataPath = window['path'].getAppDataPath();
-    const platformBases = await this.getPlatformPathBases();
+    const platformBases = local ? await this.getPlatformPathBases() : undefined;
     const missing: string[] = [];
     for (const [key, declaration] of dependencies) {
       const version = String(declaration ?? '').trim();
-      const resource = useVersionedResources && versionedPlatformResource(key, version, platformBases);
+      const resource = platformBases && versionedPlatformResource(key, version, platformBases);
       if (resource) {
         if (!readyVersionedPlatformResource(key, version, resource)) missing.push(`${key}@${version}`);
         continue;
@@ -1458,41 +1456,17 @@ export class NpmService {
         // Treat an unreadable manifest as an incomplete npm installation.
       }
       if (!version || !installedVersion || !this.depVersionSatisfiesDecl(installedVersion, version)
-        || !this.isPlatformPackageOnDisk(key, version, platformBases)) {
+        || (platformBases && /^@aily-project\/(sdk|compiler|tool)-/.test(key) && !this.isPlatformPackageOnDisk(key, version, platformBases))) {
         missing.push(`${key}@${version}`);
       }
     }
     return missing;
   }
 
-  getMissingBoardDependencies(packageJson: any, projectPath?: string): string[] {
-    const appDataPath = window['path'].getAppDataPath();
-    // 云端模式不因本地缺少大型 SDK/编译器而触发下载，仍校验显式声明的编辑器依赖。
-    const boardDependencies = this.isCloudBuild(projectPath) ? getCloudEditorDependencies(packageJson) : packageJson?.boardDependencies || {};
-    const missingDependencies: string[] = [];
-
-    for (const [key, version] of Object.entries(boardDependencies)) {
-      const declaredVersion = String(version);
-      const depPathPackageJson = `${appDataPath}/node_modules/${key}/package.json`;
-
-      if (!window['path'].isExists(depPathPackageJson)) {
-        missingDependencies.push(`${key}@${declaredVersion}`);
-
-        continue;
-      }
-
-      try {
-        const depPackageJson = JSON.parse(window['fs'].readFileSync(depPathPackageJson));
-
-        if (!this.depVersionSatisfiesDecl(depPackageJson.version, declaredVersion)) {
-          missingDependencies.push(`${key}@${declaredVersion} (installed ${depPackageJson.version || 'unknown'})`);
-        }
-      } catch {
-        missingDependencies.push(`${key}@${declaredVersion}`);
-      }
-    }
-
-    return missingDependencies;
+  getMissingBoardDependencies(packageJson: any, projectPath?: string): Promise<string[]> {
+    const cloudMode = this.isCloudBuild(projectPath);
+    const dependencies = cloudMode ? getCloudEditorDependencies(packageJson) : packageJson?.boardDependencies || {};
+    return this.getUnreadyBoardPlatformDeps(dependencies, !cloudMode);
   }
   // 安装开发板依赖
   async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false, session?: ProjectDependencySession, showSuccessNotice = true) {
@@ -1501,8 +1475,7 @@ export class NpmService {
     const boardDependencies: Record<string, string> = cloudMode ? getCloudEditorDependencies(packageJson) : packageJson.boardDependencies || {};
     if (Object.keys(boardDependencies).length === 0) return;
 
-    const useVersionedResources = !cloudMode && this.configService.isCoderProduct();
-    if (!force && await this.areBoardPlatformDepsReady(boardDependencies, useVersionedResources)) {
+    if (!force && await this.areBoardPlatformDepsReady(boardDependencies, !cloudMode)) {
       this.assertDependencySession(session);
       console.log('[installBoardDependencies] 平台依赖已就绪，跳过');
 
@@ -1542,7 +1515,6 @@ export class NpmService {
         const declaredVersion = String(version);
         const depPath = `${appDataPath}/node_modules/${key}`;
         const depPathPackageJson = `${depPath}/package.json`;
-        let installedVersionWhenMismatch: string | undefined;
         const versionStr = declaredVersion.trim();
         if (cloudMode) {
           await this.installIsolatedCloudPackage({ name: key, version: declaredVersion }, session, registry);
@@ -1551,7 +1523,7 @@ export class NpmService {
         }
 
 
-        const resource = useVersionedResources && versionedPlatformResource(key, versionStr, platformBases);
+        const resource = versionedPlatformResource(key, versionStr, platformBases);
         if (resource) {
           const directory = readyVersionedPlatformResource(key, versionStr, resource);
           if (directory) {
@@ -1564,7 +1536,9 @@ export class NpmService {
           this.traceToAppLog('DEP_INSTALL_START', { name: key, version: versionStr, versionedResource: true });
           await this.cmdService.runAsyncChecked(`node "${script}" "${key}" "${versionStr}"${registryArgument}`, appDataPath, true, false, session);
           this.assertDependencySession(session);
-          if (!readyVersionedPlatformResource(key, versionStr, resource)) {
+          // A legacy archive alias may first appear after postinstall.
+          const installed = versionedPlatformResource(key, versionStr, platformBases);
+          if (!installed || !readyVersionedPlatformResource(key, versionStr, installed)) {
             throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: `${key}@${versionStr}` }));
           }
           this.traceToAppLog('DEP_INSTALL_DONE', { name: key, version: versionStr, versionedResource: true });
@@ -1619,29 +1593,14 @@ export class NpmService {
               this.assertDependencySession(session);
               console.warn(`依赖 ${key} postinstall 失败，将重新 npm install:`, error);
             }
-          } else {
-            installedVersionWhenMismatch = depPackageJson.version;
           }
         }
-
-        const needUninstallForDowngrade =
-          window['path'].isExists(depPath) &&
-          installedVersionWhenMismatch !== undefined &&
-          this.installedIsNewerThanDeclared(installedVersionWhenMismatch, declaredVersion);
-
-        const dependency: BoardDependencyToInstall = {
-          name: key,
-          version: declaredVersion,
-          needUninstallForDowngrade
-        };
-
-        this.traceToAppLog('DEP_PLAN', { name: key, declaredVersion, installedVersionWhenMismatch, needUninstallForDowngrade });
 
         const progress: BoardDependencyInstallProgress = {
           session,
           total: dependencies.length,
           index,
-          name: dependency.name,
+          name: key,
           downloadProgress: 0,
           extractProgress: 0,
           lastProgress: Math.max(1, this.clampProgress((index / dependencies.length) * 100))
@@ -1652,26 +1611,14 @@ export class NpmService {
         // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: key }), timeout: 300000 });
         this.updateBoardDependencyNotice(progress, progress.lastProgress);
 
-        // 仅当当前安装版本高于声明基线（需降级）时先卸载；升级或未读到版本时直接 install，避免无谓卸载
-        if (dependency.needUninstallForDowngrade) {
-          const uninstallCmd = `npm uninstall ${dependency.name} --prefix "${appDataPath}"`;
-
-          console.log(`执行命令: ${uninstallCmd}, 时间: ${new Date().toISOString()}`);
-          this.traceToAppLog('DEP_UNINSTALL_START', { name: dependency.name, version: dependency.version });
-          await window['npm'].run({ cmd: uninstallCmd, ...(session ? {
-            projectPath: session.projectPath, projectSessionId: session.projectSessionId,
-          } : {}) });
-          this.assertDependencySession(session);
-        }
-
         // --save-exact：与开发板声明版本一致写入 prefix 下 package.json，避免 ^ 导致再次解析到更高版
         const npmCmd = appendScopedNpmRegistry(
-          `npm install ${dependency.name}@${dependency.version} --save-exact --prefix "${appDataPath}"`,
+          `npm install ${key}@${declaredVersion} --save-exact --prefix "${appDataPath}"`,
           registry,
         );
 
         console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
-        this.traceToAppLog('DEP_INSTALL_START', { name: dependency.name, version: dependency.version });
+        this.traceToAppLog('DEP_INSTALL_START', { name: key, version: declaredVersion });
         await window['npm'].run({ cmd: npmCmd, ...(session ? {
           projectPath: session.projectPath, projectSessionId: session.projectSessionId,
         } : {}) });
@@ -1692,8 +1639,8 @@ export class NpmService {
           this.assertDependencySession(session);
         }
         this.updateBoardDependencyNotice(progress, ((index + 1) / dependencies.length) * 100);
-        console.log(`依赖 ${dependency.name} 安装成功, 时间: ${new Date().toISOString()}`);
-        this.traceToAppLog('DEP_INSTALL_DONE', { name: dependency.name, version: dependency.version });
+        console.log(`依赖 ${key} 安装成功, 时间: ${new Date().toISOString()}`);
+        this.traceToAppLog('DEP_INSTALL_DONE', { name: key, version: declaredVersion });
       }
 
       // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_COMPLETE') });
@@ -2581,12 +2528,6 @@ export class NpmService {
   async getAllInstalledLibraries(path: string): Promise<any[]> {
     return this.blocklyLibraryPackageService.scanInstalledLibraries(path);
   }
-}
-
-interface BoardDependencyToInstall {
-  name: string;
-  version: string;
-  needUninstallForDowngrade: boolean;
 }
 
 interface BoardDependencyInstallProgress {
