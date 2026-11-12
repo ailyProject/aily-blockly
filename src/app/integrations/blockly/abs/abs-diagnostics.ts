@@ -61,6 +61,13 @@ export interface AbsNativeUiTiming {
   snapshots: number;
   callbackMs: number;
   snapshotMs: number;
+  registered?: number;
+  cancelled?: number;
+  peakPending?: number;
+  schedulingOperations?: number;
+  frameRegistrations?: number;
+  frameCancellations?: number;
+  frameCallbacks?: number;
 }
 export interface AbsNativeTiming {
   elapsedMs: number;
@@ -76,8 +83,12 @@ export function boundedAbsNativeUiTiming(value: unknown): AbsNativeUiTiming | un
   const count = (key: string) => Number.isSafeInteger(input[key]) && (input[key] as number) >= 0 && (input[key] as number) <= 1000000;
   const time = (key: string) => typeof input[key] === 'number' && Number.isFinite(input[key]) && (input[key] as number) >= 0 && (input[key] as number) <= Number.MAX_SAFE_INTEGER;
   if (!['callbacks', 'pending', 'snapshots'].every(count) || !['callbackMs', 'snapshotMs'].every(time)) return undefined;
+  const counts = ['registered', 'cancelled', 'peakPending', 'schedulingOperations',
+    'frameRegistrations', 'frameCancellations', 'frameCallbacks'] as const;
+  if (counts.some(key => input[key] !== undefined && !count(key))) return undefined;
   return { callbacks: input['callbacks'] as number, pending: input['pending'] as number, snapshots: input['snapshots'] as number,
-    callbackMs: input['callbackMs'] as number, snapshotMs: input['snapshotMs'] as number };
+    callbackMs: input['callbackMs'] as number, snapshotMs: input['snapshotMs'] as number,
+    ...Object.fromEntries(counts.filter(key => input[key] !== undefined).map(key => [key, input[key]])) };
 }
 
 function boundedNativeTiming(value: unknown): AbsNativeTiming | undefined {

@@ -20,7 +20,7 @@ import type { NativeCandidateProgress } from './blockly-native-progress';
 import { NativeCandidateProgressReporter } from './blockly-native-observation';
 import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
 import { beginNativeFieldDependencies } from './blockly-native-field-dependencies';
-import { registerCustomFunctionContract, captureCustomFunctionRegistration } from './blockly-custom-function-contract';
+import { registerCustomFunctionContract } from './blockly-custom-function-contract';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import { decodeNativeCandidateRequest, encodeNativeCandidateResult, type NativeCandidateWireRequest } from './blockly-native-transfer';
 
@@ -210,7 +210,6 @@ export function installNativeCandidateRealm(): void {
       if (!request.verify && !binding) for (const operation of request.blocks) execution.create(operation);
       if (!request.verify) {
         construction!.prepare();
-        captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);
         progress('views');
         execution.initializeViews();
         await comments.drain();

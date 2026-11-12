@@ -71,6 +71,83 @@ test('public library operations persist manifest and lockfile before returning a
   assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), baseline);
 });
 
+test('Windows Coder requests share one transaction across drive and directory casing',
+  { skip: process.platform !== 'win32' }, async t => {
+    const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+    const canonical = await fs.promises.realpath(f.root);
+    const aliases = [canonical[0].toLowerCase() + canonical.slice(1), canonical.toLowerCase()];
+    for (const alias of aliases) {
+      assert.equal(await fs.promises.realpath(alias), canonical);
+      const { transaction } = await sessions.run('begin', alias);
+      try {
+        assert.equal((await sessions.run('status', canonical)).busy, true);
+        assert.equal((await sessions.run('status', alias)).busy, true);
+        await sessions.run('mutate', canonical, {
+          action: 'install', packages: ['test-c@file:local-libraries/c'],
+        }, transaction);
+        assert.equal((await sessions.run('status', alias)).dirty, true);
+        await sessions.run('end', alias, undefined, transaction);
+      } finally {
+        if (sessions.sessions.size) await sessions.run('abort', canonical, undefined, transaction);
+      }
+      assert.equal((await sessions.run('status', canonical)).busy, false);
+      assert.equal((await sessions.run('status', alias)).dirty, false);
+      assert.equal(sessions.sessions.size, 0);
+      assert.equal(f.api.queues.size, 0);
+      assert.equal(JSON.parse(f.read('package.json')).dependencies['test-c'], 'file:local-libraries/c');
+      await new LibraryDependencies().discard(alias, { reconcile: true });
+      assert.deepEqual(f.installed(), ['test-a', 'test-b', 'test-c']);
+      await sessions.run('mutate', canonical, { action: 'remove', packages: ['test-c'] });
+      assert.deepEqual(f.installed(), ['test-a', 'test-b']);
+    }
+  });
+
+test('a library operation archives only changed packages and its attempts share one recovery copy', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  const recovery = path.join(f.root, '.aily/dependency-recovery');
+  const trees = [];
+  const visit = folder => {
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const child = path.join(folder, entry.name);
+      if (entry.name === 'trees') trees.push(child); else visit(child);
+    }
+  };
+  visit(recovery);
+  assert.ok(trees.length > 1, 'The session operation retains original and attempt checkpoints');
+  const archived = trees.map(folder => fs.readdirSync(folder, { withFileTypes: true }).filter(entry => entry.isDirectory()));
+  for (const entries of archived) assert.equal(entries.length, 1, 'Unchanged installed packages are not copied into recovery');
+  const inodes = new Set(trees.map((folder, index) => fs.statSync(path.join(folder, archived[index][0].name, 'package.json')).ino));
+  assert.equal(inodes.size, 1, 'Attempts checkpointed together link the original archive instead of copying it again');
+});
+
+test('settled operations beyond the latest five drop archived bytes but keep their observation records', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  for (let index = 0; index < 4; index++) {
+    await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+    await sessions.run('mutate', f.root, { action: 'install', packages: ['test-b@file:local-libraries/b'] });
+  }
+  const recovery = path.join(f.root, '.aily/dependency-recovery');
+  const operations = fs.readdirSync(recovery).filter(name => name.startsWith('environment-')).map(name => path.join(recovery, name));
+  assert.equal(operations.length, 8);
+  for (const folder of operations) {
+    assert.ok(fs.existsSync(path.join(folder, 'checkpoint.json')) && fs.existsSync(path.join(folder, 'result.json')));
+  }
+  const retained = operations.filter(folder => fs.existsSync(path.join(folder, 'trees')));
+  assert.equal(retained.length, 5);
+  const newest = operations.map(folder => JSON.parse(fs.readFileSync(path.join(folder, 'checkpoint.json'), 'utf8')))
+    .map((record, index) => ({ folder: operations[index], createdAt: record.payload.createdAt }))
+    .sort((left, right) => right.createdAt - left.createdAt).slice(0, 5).map(value => value.folder);
+  assert.deepEqual(retained.sort(), newest.sort());
+  for (let wait = 0; operations.some(folder => fs.readdirSync(folder).some(name => name.startsWith('pruned-'))); wait++) {
+    assert.ok(wait < 100, 'Discarded archives are removed in the background');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  assert.deepEqual(f.installed(), ['test-a']);
+});
+
 test('automatic library save preserves build fingerprints refreshed during npm and source preparation', async t => {
   const f = await fixture(t), sessions = new LibraryDependencySessions(f.api), run = f.api.run;
   let revision = 0;
@@ -112,13 +189,17 @@ test('automatic source preparation expands root/nested archives and transitives,
   const source = name => path.join(f.root, 'node_modules', `@aily-project/lib-${name}`, 'src/Fixture.h');
   assert.equal(fs.readFileSync(source('archive'), 'utf8'), '// archive\n');
   assert.equal(fs.readFileSync(source('nested'), 'utf8'), '// nested\n');
-  // Reload may hold the renderer's mirror-publication lock while preparing
-  // package sources. Expansion must not try to acquire that same lock again.
+  // R2 source expansion owns the same physical lock. Production startup does
+  // not nest that lock; a competing writer must finish before any extraction.
   fs.rmSync(path.dirname(source('archive')), { recursive: true });
   const { createProjectFileAccess, acquireProjectFileLock } = require('../../electron/project-file-access');
   const lock = await acquireProjectFileLock(createProjectFileAccess(f.root, f.root), () => {});
-  try { await sessions.run('prepare', f.root); }
-  finally { lock.release(); }
+  const preparing = sessions.run('prepare', f.root);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(fs.existsSync(source('archive')), false, 'No source write may bypass a live native writer');
+  } finally { lock.release(); }
+  await preparing;
   assert.equal(fs.readFileSync(source('archive'), 'utf8'), '// archive\n');
   fs.writeFileSync(source('archive'), '// user edit\n');
   const baseline = ['package.json', 'package-lock.json'].map(f.read);
@@ -255,7 +336,9 @@ test('real npm: cumulative installs/removals, save, discard and no draft files',
   assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), snapshot);
   assert.equal(api.status(root).dirty, false);
   assert.deepEqual(fs.readdirSync(root).sort(), ['.aily', 'local-libraries', 'node_modules', 'package-lock.json', 'package.json']);
-  assert.deepEqual(fs.readdirSync(path.join(root, '.aily')), []);
+  assert.deepEqual(fs.readdirSync(path.join(root, '.aily')).sort(), ['dependency-recovery', 'project-files.guard']);
+  assert.ok(fs.readdirSync(path.join(root, '.aily/dependency-recovery')).every(name => /^environment-[0-9a-f]{64}$/.test(name)),
+    'Only checksummed original environment checkpoints are retained; no loose manifest drafts');
 });
 
 test('discard follows current disk after Chat restore; save preserves unrelated external metadata', async t => {

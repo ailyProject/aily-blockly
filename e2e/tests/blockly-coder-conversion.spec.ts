@@ -283,7 +283,7 @@ test(`Code Viewer ${surface} icon saves the latest Blockly code, converts and ha
       viewer=app.windows().find(page=>page.url().endsWith('/code-viewer'))!;
     }
     const button=viewer.getByTestId('code-viewer-open-coder');
-    await expect(button).toBeVisible(); await expect(button).toHaveAccessibleName('使用 Aily Coder 打开');
+    await expect(button).toBeVisible(); await expect(button).toHaveAccessibleName('使用 aily Coder 打开');
     const size=await button.boundingBox(); expect(size?.width).toBeGreaterThanOrEqual(28);
     await viewer.screenshot({path:info.outputPath(`${surface}-viewer-icon.png`)});
     // Exercise the real viewer -> main window -> download IPC path, controlling

@@ -232,6 +232,7 @@ describe('Blockly dependency preparation cancellation', () => {
           getMissingBlockDefinitions: () => [], acquireWorkspaceEditLease: () => ({ assertCurrent() {}, release() {} }),
           loadProjectDocumentForOpen: async () => {} },
         generatorRuntime: { updateContext() {}, markReady() {} }, uiService: { updateFooterState() {} },
+        noticeService: { update: jasmine.createSpy('notice') },
         translate: { instant: text => text }, getMissingProjectLibraries: () => [], waitForNextFrame: async () => {},
         loadProjectAbiDocument: async () => ({ document: { pages: [] }, usedBoardTemplate: false,
           diskText: 'original ABI', completeAbs: false,

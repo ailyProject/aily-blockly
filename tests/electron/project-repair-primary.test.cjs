@@ -60,7 +60,7 @@ test('an unsafe final-name alias is retained without reading or modifying its ex
 test('unsafe proof directory ancestry still rejects rather than falling back outside the target', t => {
   const f = fixture(t), external = path.join(f.root, 'outside'); fs.mkdirSync(external);
   fs.rmdirSync(f.directory); fs.symlinkSync(external, f.directory, 'junction');
-  assert.throws(f.create, /directory|linked|unsafe/i); assert.deepEqual(fs.readdirSync(external), []);
+  assert.throws(f.create, { code: 'PROJECT_FILE_UNSAFE_PATH' }); assert.deepEqual(fs.readdirSync(external), []);
 });
 test('an interrupted exclusive write remains inert and the next admission uses a complete fresh file', t => {
   const f = fixture(t);

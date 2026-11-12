@@ -11,6 +11,7 @@ import { normalizeAbsSerializedWorkspace } from '../../../integrations/blockly/a
 import { indexAbsAbi } from '../../../integrations/blockly/abs/abs-abi-index';
 import { AbsSyncError, type AbsAbiBlock } from '../../../integrations/blockly/abs/abs-state';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
+import { declaredMediaImportFieldType } from '../../../integrations/blockly/project-media-target';
 import { initializeNativeCandidateBlock } from './blockly-native-graphics';
 import { assertNativeBudget } from './blockly-native-budget';
 import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
@@ -30,7 +31,8 @@ export class NativeCandidateWorkspace {
 
   constructor(readonly native: typeof Blockly, readonly workspace: Blockly.Workspace,
     readonly observer: ReturnType<typeof createNativeStructureObserver>, readonly assertClean: () => void,
-    readonly models = new NativeCandidateModels(workspace), replay?: AbsNativeCreation[], declarations = new Map<string, Record<string, any>>()) {
+    readonly models = new NativeCandidateModels(workspace), replay?: AbsNativeCreation[],
+    private readonly declarations = new Map<string, Record<string, any>>()) {
     this.creations = new NativeDefaultCreations(native, replay);
     this.shadows = new NativeShadowEvidence(native, workspace, block => this.createdBy.get(block), id => this.requested.has(id),
       (block, state) => captureNativeBlock(this, declarations, block, state),
@@ -132,9 +134,14 @@ export class NativeCandidateWorkspace {
     const requestedValue = structuredClone(value);
     this.owned(block.id, () => field.loadState(structuredClone(requestedValue))); this.assertClean();
     if (!sameJsonValue(field.saveState(), requestedValue)) {
-      const media = block.type === 'tftespi_image' || block.type === 'tftespi_animation';
-      throw new Error(`Native field did not retain requested value: ${name}.` + (media
-        ? ' Import the original media with project_media_import and use its returned value unchanged; legacy Base64 fields are not canonical resource references.' : ''));
+      const mediaType = declaredMediaImportFieldType(this.declarations.get(block.type), name);
+      const registry = this.native.registry;
+      const mediaClass = mediaType && registry.hasItem(registry.Type.FIELD, mediaType)
+        ? registry.getClass(registry.Type.FIELD, mediaType, false) : undefined;
+      const target = mediaClass && field instanceof mediaClass ? JSON.stringify({ blockType: block.type, fieldName: name }) : undefined;
+      throw new Error(`Native field did not retain requested value: ${name}.` + (target
+        ? ` Use project_media_import with the original media as source and target ${target}, then use the returned absExpression or absArgument unchanged.`
+        : ''));
     }
     if (previous) previous.value = requestedValue;
     else request.fields.push({ name, value: requestedValue });

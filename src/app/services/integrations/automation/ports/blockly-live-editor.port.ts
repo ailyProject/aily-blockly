@@ -1,6 +1,6 @@
 import { InjectionToken } from '@angular/core';
 import type * as Blockly from 'blockly';
-import type { ProjectSaveOutcome } from '@domain/project/public-api';
+import type { ProjectSaveOutcome, ProjectSaveRequest } from '@domain/project/public-api';
 
 export interface BlocklyProjectRevisionSnapshot {
   algorithm: 'sha256';
@@ -28,7 +28,7 @@ export interface BlocklyLiveEditorPort {
   /** Queue only the mutation; saving/importing inside this callback would re-enter the same FIFO. */
   runWorkspaceOperation<T>(operation: () => Promise<T>): Promise<T>;
   setAiWritingActive(source: string, active: boolean): void;
-  saveProject(path: string): Promise<ProjectSaveOutcome | void>;
+  saveProject(path: string, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome | void>;
   getProjectRevisionSnapshot(): Promise<BlocklyProjectRevisionSnapshot>;
   getRuntimeBlockMetadataSnapshot(): BlocklyRuntimeMetadataSnapshot;
   getLibraryRuntimeSnapshot(): BlocklyLibraryRuntimeSnapshot;

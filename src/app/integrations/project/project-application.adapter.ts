@@ -1,8 +1,10 @@
 import { recordLibraryMutation } from '../../editors/blockly-editor/services/blockly-library-history';
+import type { ProjectSaveRequest } from '@domain/project/public-api';
 import type { BlocklyProjectDocument } from '../../editors/blockly-editor/services/blockly.service';
 import { Injectable, Injector } from '@angular/core';
 import { ActionService, UiService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { DEPENDENCY_APPLICATION_PORT, NpmService } from '@domain/dependencies/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 import {
   BlocklyLibraryRuntimeRebuildInput,
   ProjectApplicationPort,
@@ -30,6 +32,9 @@ import { firstValueFrom } from 'rxjs';
 import { PasteInstallDialogComponent } from '../../editors/blockly-editor/components/paste-install-dialog/paste-install-dialog.component';
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
+import { settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
+import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
+import { captureBuildSource } from '../../utils/build-publication.utils';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -43,7 +48,22 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     private readonly blocklyService: BlocklyService,
     private readonly blocklyEditorProjectService: BlocklyEditorProjectService,
     private readonly injector: Injector,
-  ) {}
+  ) {
+    this.blocklyEditorProjectService.setEnvironmentRuntimeReader?.(async project => {
+      const runtime = await this.projectService.readBlocklyEnvironmentRuntime(project);
+      const libraryNames = (await this.npmService.getAllInstalledLibraries(project)).map(item => item.name);
+      runtime.assertCurrent();
+      return { ...runtime, libraryNames };
+    });
+  }
+
+  publishBlocklyEnvironmentMutation(project: string, mutate: (publication: unknown) => Promise<any>, request?: ProjectSaveRequest) {
+    return this.blocklyEditorProjectService.publishEnvironmentMutation(project, mutate, request);
+  }
+
+  async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void): Promise<void> {
+    await settleLinkedProjectEnvironment(project, assertCurrent);
+  }
 
   updateFooterState(state: { state: string; text: string; timeout?: number }): void {
     this.uiService.updateFooterState(state);
@@ -75,6 +95,65 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
 
   captureBlocklySaveAsSnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
     return this.blocklyEditorProjectService.captureSaveAsSnapshot(path);
+  }
+
+  async hasVerifiedBlocklyBuild(path: string): Promise<boolean> {
+    const changed = () => !this.isSameProjectPath(path, this.projectService.currentProjectPath)
+      || !this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath);
+    if (changed()) return false;
+    const settings = this.injector.get(ConfigService);
+    const settingsKey = settings.getCompileSettingsKey();
+    const current = () => !changed() && settingsKey === settings.getCompileSettingsKey();
+    const boardModule = await this.projectService.getBoardModule();
+    if (!current()) return false;
+    // _BuilderService is component-scoped. Resolving it from this root
+    // adapter creates an unused instance whose in-memory passed flag is false.
+    // Read the actual matching build receipt from the current editor capture.
+    return await this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+      assertCurrent();
+      if (!current()) return false;
+      const config = { currentProjectPath: path, boardModule, code: prepared.code,
+        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
+      let verified: boolean;
+      if (settings.getCompileBackend() === 'cloud') {
+        if (!prepared.sourceWorkspace || !window['cloudBuild']?.reusable) return false;
+        const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
+        verified = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } }) === true;
+      } else {
+        const inspect = window['builder']?.inspectBlocklyCompileProof;
+        if (!inspect) throw new Error('Compile evidence bridge unavailable; restart the host.');
+        const proof = await inspect(config);
+        if (proof?.version !== 1 || !['verified', 'unverified'].includes(proof.status)) {
+          throw new Error('Compile evidence is temporarily unavailable.');
+        }
+        verified = proof.status === 'verified';
+      }
+      assertCurrent();
+      return current() && verified;
+    });
+  }
+
+  async createBlocklyCoderProject(path: string): Promise<string> {
+    if (window['fs']?.blocklyCoderConversionVersion !== 2) throw new Error('请重启应用后再转换当前 Blockly 源码');
+    let target: string | undefined;
+    try {
+      return await this.blocklyService.runWithPreparedProjectCode((prepared, assertCurrent) => {
+        assertCurrent();
+        if (!this.isSameProjectPath(path, this.projectService.currentProjectPath)
+          || !this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) {
+          throw new Error('Blockly 项目已切换，无法转换旧编辑器源码');
+        }
+        const manifest = JSON.parse(window['fs'].readFileSync(window['path'].join(path, 'package.json'), 'utf8'));
+        const merged = mergeGeneratorMacros(manifest, prepared.projectMacros ?? []);
+        target = window['fs'].convertBlocklyProjectToCoder(path, undefined, {
+          code: prepared.code, artifacts: prepared.artifacts, macros: merged.MACROS,
+        });
+        return target!;
+      });
+    } catch (error) {
+      if (target) await window['fsp'].rm(target, { recursive: true, force: true });
+      throw error;
+    }
   }
 
   captureBlocklyRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
@@ -126,9 +205,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       : this.injector.get(AbsWorkspaceSyncService).prepareCopy();
   }
 
-  dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult> {
+  dispatchProjectSave(path: string, timeoutMs: number, request?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult> {
     return new Promise((resolve) => {
-      this.actionService.dispatch('project-save', { path }, (result) => {
+      this.actionService.dispatch('project-save', { path, ...(request ? { saveRequest: request } : {}) }, (result) => {
         const outcome = result.data;
         if (outcome?.code === 'ACTION_HANDLER_UNAVAILABLE') {
           resolve({ success: false, code: 'PROJECT_SAVE_HANDLER_UNAVAILABLE', projectSaved: false,
@@ -142,6 +221,10 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
           error: structured?.error || (structured?.partial ? '项目文件已保存，但生成代码未完整发布。' : result.error) });
       }, timeoutMs, { requireHandler: true });
     });
+  }
+
+  observeProjectPublication(path: string, request: ProjectSaveRequest, originalTargetPid?: number) {
+    return this.injector.get(AbsWorkspaceSyncService).observeNativeSave(path, request, originalTargetPid);
   }
 
   async inspectBlocklyConflict(path: string) {
@@ -245,6 +328,24 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   hasBlocklyRuntimeRecovery(path: string): boolean {
     return this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
       && this.blocklyEditorProjectService.hasLibraryRuntimeRecovery();
+  }
+
+  recoverBlocklyRuntimeInPlace(path: string, signal?: AbortSignal) {
+    if (!this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) {
+      return Promise.resolve({ ready: false, code: 'PROJECT_RECOVERY_CONTEXT_STALE', message: 'The selected project changed.' });
+    }
+    return this.blocklyEditorProjectService.recoverRuntimeInPlace(signal);
+  }
+
+  async acknowledgeBlocklyRecoveryDiscard(path: string): Promise<void> {
+    if (this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) {
+      await this.blocklyEditorProjectService.discardRetainedOperation(path);
+    }
+  }
+
+  async prepareBlocklyRecoveryDiscard(path: string) {
+    if (!this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) throw new Error('The departing recovery view changed.');
+    return this.blocklyEditorProjectService.prepareRetainedDiscard(path);
   }
 
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any {

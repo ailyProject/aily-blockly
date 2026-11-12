@@ -372,7 +372,7 @@ export const JSON_FILENAME = 'connection_output.json';
 
 /** AWS 语法参考（用于错误提示） */
 export const AWS_SYNTAX_REFERENCE = `
-## AWS (Aily Wiring Syntax) 语法参考
+## AWS (aily Wiring Syntax) 语法参考
 
 ### 预定义别名
 - \`board\` - 开发板（自动可用，无需声明）

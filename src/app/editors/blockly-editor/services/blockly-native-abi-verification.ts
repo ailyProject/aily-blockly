@@ -35,7 +35,6 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
     withNativeStateLoading(native, workspace, detached, () => native.serialization.workspaces.load(detached, workspace));
     construction.prepare();
     const customFunctions = captureCustomFunctionRegistration(native.Blocks);
-    customFunctions?.prepareSerialization(workspace, true);
     await prepareComments();
     assertClean();
     const capture = () => uiTasks.withoutScheduling(() => {

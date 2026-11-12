@@ -31,6 +31,7 @@ function fixture({ native = false, cwd } = {}) {
     } },
     './process-tree': { killRegisteredProcessTree: async pid => { kills.push(pid); return state.kill(pid); } },
     './project-task-scope': require('../../electron/project-task-scope'),
+    './npm-mutation-queue': { acquireNpmMutation: () => null },
   };
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/npm.js'), 'utf8'), {

@@ -25,6 +25,7 @@ export interface RuntimeRecoveryRecord {
   scope: readonly unknown[];
   options: BlocklyLibraryRuntimeRebuildOptions;
   restoreCheckpoint(): void;
+  operation?: { id: string };
   grant?: BlocklyWorkspaceRecoveryGrant;
   description?: RuntimeRecoveryDescription;
   attemptedInput?: string;

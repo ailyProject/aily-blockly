@@ -7,6 +7,7 @@ const path = require('path');
 const { isWin32, isDarwin, isLinux } = require('./platform');
 const { killRegisteredProcessTree } = require('./process-tree');
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
+const { acquireNpmMutation } = require('./npm-mutation-queue');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
 let commandShutdown = false;
 const {
@@ -529,6 +530,7 @@ class CommandManager {
       ownerWebContents: options.ownerWebContents,
       projectPath: options.projectPath,
       projectSessionId: options.projectSessionId,
+      releaseNpmMutation: options.releaseNpmMutation,
       stopRequested: false,
     };
 
@@ -542,7 +544,7 @@ class CommandManager {
       const safeExit = !child.pid || (Number.isInteger(code) && !signal) || recoveredBeforeDelegation;
       entry.completedNormally = safeExit;
       if (entry.terminationConfirmed || (!entry.stopRequested && !entry.terminationUnconfirmed
-          && (!entry.projectSessionId || safeExit) && (!entry.buildWorkspace
+          && (!(entry.projectSessionId || entry.releaseNpmMutation) || safeExit) && (!entry.buildWorkspace
           || (safeExit && entry.buildWorkspace.canReleaseResources())))) {
         entry.terminationConfirmed = true;
         this.releaseCommandResources(streamId, entry);
@@ -612,6 +614,7 @@ class CommandManager {
     const pending = this.pendingCommands.get(streamId);
     if (pending) {
       pending.cancelled = true;
+      pending.abort?.abort();
       return true;
     }
     const entry = this.processes.get(streamId);
@@ -642,7 +645,7 @@ class CommandManager {
             const completedBuild = entry.closed && entry.completedNormally
               && entry.buildWorkspace?.canReleaseResources();
             if (!stopped && !completedBuild) {
-              if (entry.projectSessionId) entry.terminationUnconfirmed = true;
+              if (entry.projectSessionId || entry.releaseNpmMutation) entry.terminationUnconfirmed = true;
               console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
                 streamId, pid: entry.process.pid, reason: 'termination-failed',
               });
@@ -661,7 +664,7 @@ class CommandManager {
         } finally {
           if (!entry.terminationConfirmed) {
             entry.stopRequested = false;
-            if (entry.closed && !entry.buildWorkspace && !entry.projectSessionId) this.releaseCommandResources(streamId, entry);
+            if (entry.closed && !entry.buildWorkspace && !entry.projectSessionId && !entry.releaseNpmMutation) this.releaseCommandResources(streamId, entry);
           }
         }
       })().finally(() => { entry.stopPromise = undefined; });
@@ -681,6 +684,8 @@ class CommandManager {
       }
     }
     if (!entry.workspaceCleanupPending) {
+      entry.releaseNpmMutation?.();
+      entry.releaseNpmMutation = undefined;
       clearTimeout(entry.cleanupTimer);
       if (this.processes.get(streamId) === entry) this.processes.delete(streamId);
     } else if (!entry.cleanupTimer && (entry.cleanupAttempts || 0) < 3) {
@@ -834,28 +839,44 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
     const streamId = options.streamId || `cmd_${Date.now()}_${Math.random()}`;
     const senderWindow = event.sender; // 获取发送请求的窗口
     let delivery;
+    let releaseNpmMutation;
     const pending = { ownerWebContents: senderWindow, cwd: options.cwd || process.cwd(),
       buildWorkspacePath: options.buildWorkspace, projectPath: options.projectPath,
-      projectSessionId: options.projectSessionId, cancelled: false };
+      projectSessionId: options.projectSessionId, cancelled: false, abort: new AbortController() };
+    const onOwnerGone = () => { pending.cancelled = true; pending.abort.abort(); };
+    const onNavigation = (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) onOwnerGone();
+    };
 
     try {
       if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
+      if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
       if (commandManager.pendingCommands.has(streamId) || commandManager.processes.has(streamId)) {
         throw new Error('Command stream is already registered.');
       }
       commandManager.pendingCommands.set(streamId, pending);
+      senderWindow.on?.('destroyed', onOwnerGone);
+      senderWindow.on?.('render-process-gone', onOwnerGone);
+      senderWindow.on?.('did-start-navigation', onNavigation);
       if (options.buildWorkspace) buildDeliveryAuthority?.invalidate(options.buildWorkspace);
       if (options.buildDeliveryRequest !== undefined) {
         if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame) throw new Error('Build delivery authority unavailable; restart the host.');
         delivery = await buildDeliveryAuthority.begin(senderWindow, options);
       }
+      const permit = acquireNpmMutation(options, {
+        signal: pending.abort.signal,
+        onWait: () => sendRendererLog(senderWindow, '依赖正在安装，当前操作已排队等待…', 'doing', `${streamId}:install-wait`),
+      });
+      if (permit) releaseNpmMutation = await permit;
       if (pending.cancelled) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
       const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
+        releaseNpmMutation,
         ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
       });
+      releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
       const process = result.process;
       if (delivery) {
         process.on('message', message => {
@@ -964,6 +985,10 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         streamId
       };
     } finally {
+      releaseNpmMutation?.();
+      senderWindow.removeListener?.('destroyed', onOwnerGone);
+      senderWindow.removeListener?.('render-process-gone', onOwnerGone);
+      senderWindow.removeListener?.('did-start-navigation', onNavigation);
       if (commandManager.pendingCommands.get(streamId) === pending) commandManager.pendingCommands.delete(streamId);
     }
   });

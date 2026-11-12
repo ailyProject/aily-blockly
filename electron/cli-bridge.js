@@ -62,6 +62,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
   const writeDiscovery = (port) => {
     safeWriteDiscoveryFile(discoveryFile, {
       version: BRIDGE_VERSION,
+      nativeSaveReceiptVersion: 2,
       pid,
       port,
       token,
@@ -89,7 +90,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
       } catch (_) {
         /* ignore */
       }
-      sendJson(200, { ok: true, pid, ...status });
+      sendJson(200, { ok: true, pid, ...status, nativeSaveReceiptVersion: 2 });
       return;
     }
 

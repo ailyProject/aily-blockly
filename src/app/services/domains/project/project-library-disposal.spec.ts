@@ -82,6 +82,25 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     expect(service.discardLibraryChanges).not.toHaveBeenCalled();
   });
 
+  it('retires recovery only after accepted teardown and disposes its short-lived admission', async () => {
+    const { service, mounted } = fixture();
+    const commit = jasmine.createSpy('recovery commit').and.callFake(async () => { expect(mounted()).toBeFalse(); });
+    const dispose = jasmine.createSpy('recovery capability disposal');
+    service.application.prepareBlocklyRecoveryDiscard = jasmine.createSpy('prepare while editor exists').and.callFake(async () => {
+      expect(mounted()).toBeTrue(); return { commit, dispose };
+    });
+    expect(await service.close()).toBeTrue();
+    expect(commit).toHaveBeenCalledTimes(1); expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps recovery restorable when the router vetoes an otherwise accepted departure', async () => {
+    const { service } = fixture();
+    const commit = jasmine.createSpy('must not discard').and.resolveTo(); const dispose = jasmine.createSpy('dispose');
+    service.application.prepareBlocklyRecoveryDiscard = async () => ({ commit, dispose });
+    service.router.navigate.and.resolveTo(false);
+    expect(await service.close()).toBeFalse(); expect(commit).not.toHaveBeenCalled(); expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   for (const decision of ['cancel', 'focus']) it(`retains the source activation after target lock ${decision}`, async () => {
     const { service, mounted } = fixture();
     const previous = window['projectLock'];

@@ -827,7 +827,7 @@ function requireProjectRoot(projectPath) {
     'package.json',
   ].some((name) => fs.existsSync(path.join(projectRoot, name)));
   if (!hasProjectFile) {
-    throw new Error('当前目录不是可识别的 Aily 项目。');
+    throw new Error('当前目录不是可识别的 aily 项目。');
   }
   return projectRoot;
 }
@@ -874,7 +874,7 @@ function resolveRuntimePaths({ app, moduleDirectory }) {
     || resolvePatchedQemuExecutable(simulatorRoot);
   if (!qemuExecutable || !fs.existsSync(qemuExecutable)) {
     throw new Error(
-      '未找到带 Aily Engine Bridge 的 QEMU runtime。'
+      '未找到带 aily Engine Bridge 的 QEMU runtime。'
       + '可通过 AILY_PATCHED_QEMU 指定。',
     );
   }

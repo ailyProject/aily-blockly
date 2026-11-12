@@ -135,13 +135,15 @@ describe('manual save and quit conflict choices', () => {
     expect(view.modal.create).not.toHaveBeenCalled();
   });
 
-  it('keeps the actual Agent menu-save entry noninteractive and returns its real failure', async () => {
+  it('routes the actual Agent menu-save entry to the draft-preserving save tool', async () => {
     const { service, view } = fixture(), item = { action: 'project-save', name: 'Save' };
     view.createHeaderMenuAutomationSnapshot = () => ({ sourceById: new Map([['save', item]]) });
     view.showInRouter = () => true; view.translate = { instant: value => value };
     const result = await view.executeHeaderMenuAutomationItem('save');
-    expect(result.ok).toBeFalse(); expect(result.code).toBe('ABS_DUAL_EDIT_CONFLICT');
-    expect(service.save).toHaveBeenCalledTimes(1); expect(service.inspectSaveConflict).not.toHaveBeenCalled();
+    expect(result.ok).toBeFalse(); expect(result.code).toBe('PROJECT_SAVE_REQUIRES_TOOL');
+    expect(result.nextAction).toEqual({ tool: 'project_save' });
+    expect(result.requiresUserAction).toBeFalse(); expect(result.commandDispatched).toBeFalse();
+    expect(service.save).not.toHaveBeenCalled(); expect(service.inspectSaveConflict).not.toHaveBeenCalled();
     expect(view.modal.create).not.toHaveBeenCalled();
   });
 

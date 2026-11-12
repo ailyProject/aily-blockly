@@ -4,6 +4,8 @@ export interface CoderProjectCreateResult {
   ok: boolean;
   projectPath?: string;
   error?: string;
+  stage?: string;
+  npmExitCode?: number;
 }
 
 export interface CoderProjectCreateDependencies {
@@ -83,6 +85,9 @@ export async function executeCoderProjectCreateOperation(
       developmentMode: 'coder',
       reason: normalizeCoderProjectCreateError(result.error),
       message: `Coder 项目创建失败: ${result.error || 'UNKNOWN'}`,
+      stage: result.stage,
+      error: result.error,
+      npmExitCode: result.npmExitCode,
       project: result.projectPath || null,
       name: projectName,
       path: parentPath,

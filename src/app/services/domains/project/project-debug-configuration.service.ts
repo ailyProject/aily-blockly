@@ -392,7 +392,7 @@ export class ProjectDebugConfigurationService {
       throw new Error('请先打开一个 Blockly 项目。');
     }
     if (!this.hasLocalProjectFileSystem()) {
-      throw new Error('项目断点编辑仅支持 Aily Blockly 桌面版。');
+      throw new Error('项目断点编辑仅支持 aily Blockly 桌面版。');
     }
     return this.readConfigurationFile(projectPath);
   }
@@ -477,8 +477,11 @@ export class ProjectDebugConfigurationService {
         consistencyError: '',
       };
     }
+    const isolated = window['builder']?.isolatedBuildExecutionVersion === 1;
+    const artifactRoot = isolated ? window['builder'].resolveBuildProjectPath(projectPath) : projectPath;
+    if (!artifactRoot) return { revision: '', sourceSha256: '', error: '', consistencyError: '' };
     const manifestPath = window['path'].join(
-      projectPath,
+      artifactRoot,
       ...PROJECT_ARTIFACT_MANIFEST_PATH.split('/'),
     );
     if (!window['fs'].existsSync(manifestPath)) {

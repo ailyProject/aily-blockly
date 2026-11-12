@@ -518,7 +518,7 @@ function notifyDisconnectedOwners(error) {
       event: {
         type: 'device.disconnected',
         reason: 'DAEMON_EXITED',
-        message: error?.message || 'Aily Connector stopped unexpectedly',
+        message: error?.message || 'aily Connector stopped unexpectedly',
       },
     });
   }

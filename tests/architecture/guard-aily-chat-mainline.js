@@ -33,11 +33,11 @@ for (const retiredSymbol of ['AilyChatComponent', 'AilyChatChildProtocolService'
 }
 
 if (mainWindowTemplate.includes('<app-aily-chat')) {
-  fail('the main window must not mount the legacy Angular Aily Chat component');
+  fail('the main window must not mount the legacy Angular aily Chat component');
 }
 
 if (!childHostTemplate.includes('<app-subapp-activity-dock')) {
-  fail('the installed Aily Chat surface must be hosted by the generic child-tool shell');
+  fail('the installed aily Chat surface must be hosted by the generic child-tool shell');
 }
 
 const retiredDirectory = 'src/app/tools/aily-chat';
@@ -62,5 +62,5 @@ for (const retiredRuntime of [
 }
 
 if (!process.exitCode) {
-  console.log('[guard:aily-chat-mainline] React subapp is the only Aily Chat UI entry.');
+  console.log('[guard:aily-chat-mainline] React subapp is the only aily Chat UI entry.');
 }

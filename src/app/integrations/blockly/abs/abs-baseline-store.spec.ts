@@ -139,6 +139,30 @@ describe('ABS immutable baseline and commit recovery', () => {
     host.files.set('committed.json', JSON.stringify(pointer));
     await expectAsync(store.loadCommitted()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
   });
+  it('reports a competing commit during a missing-ancestor or failed-continuation observation as stale', async () => {
+    await store.stage(input); await store.commit('g1', assertCurrent, save);
+    const initial = host.files.get('committed.json')!;
+    const projection = await createAbsProjection(input.projection.workspace, { document: input.projection.document,
+      contracts: input.projection.contracts, generation: 'g2', baselineRef: absBaselineKey('g2'), scope,
+      savedAbiHash: input.projection.map.savedAbiHash });
+    await store.stage({ ...input, projection, expected: await store.captureDisk() });
+    await store.commit('g2', assertCurrent, save);
+    const successor = host.files.get('committed.json')!;
+    for (const mode of ['ancestor', 'metadata']) {
+      host.files.set('committed.json', initial);
+      const raced: AbsSyncStoragePort = { withLock: callback => host.withLock(callback), read: async key => {
+        const value = await host.read(key);
+        if (key === absBaselineKey('g1')) host.files.set('committed.json', successor);
+        return value;
+      } };
+      const reader = new AbsBaselineStore(raced, scope), before = [...host.writes];
+      const observation: Promise<unknown> = mode === 'ancestor' ? reader.inspectCommittedAncestor('not-committed')
+        : reader.isMetadataOnlyContinuation(null, input.abi!);
+      await expectAsync(observation)
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_STALE' }));
+      expect(host.files.get('committed.json')).toBe(successor); expect(host.writes).toEqual(before);
+    }
+  });
 
   it('inspects pending state without saving, publishing, deleting, or repairing files', async () => {
     expect(await store.inspectPending()).toBeNull(); await store.stage(input);

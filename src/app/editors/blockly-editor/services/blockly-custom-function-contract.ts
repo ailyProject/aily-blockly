@@ -5,8 +5,13 @@ export type CustomFunctionKind = 'definition' | 'statement-call' | 'value-call';
 const kinds: Record<string, CustomFunctionKind> = { custom_function_def: 'definition',
   custom_function_call_advance: 'statement-call', custom_function_call_return_advance: 'value-call' };
 const scriptTypes = Object.keys(kinds).filter(type => kinds[type] !== 'definition');
-// Audited lib-core-functions 1.0.1 protocol, normalized LF. Names/version strings alone are not provenance.
-const sourceHash = '4d3a8f44d8fbeffc76bdfe6648fa076e2474505ab359a81cd64bfa98aaef592b';
+
+// Audited original and identity-preserving sources, normalized LF.
+// Names/version strings alone are not provenance.
+const sourceHashes = new Set([
+  '4d3a8f44d8fbeffc76bdfe6648fa076e2474505ab359a81cd64bfa98aaef592b',
+  'f19d9900bbaf14bcb159bc8e4f62bb5cce82af27e7265b90af5369ae2caaa10d',
+]);
 export interface CustomFunctionRegistration {
   get(type: string): { kind: CustomFunctionKind; parameterTypes: string[] } | undefined;
   assertCurrent(): void;
@@ -42,7 +47,8 @@ export async function registerCustomFunctionContract(source: string, realm: any,
     && realm.functionParamsMutator === objects[0] && realm.functionCallSyncMutator === objects[1]
     && functions.every(([name, value]) => Object.getOwnPropertyDescriptor(realm, name)?.value === value)
     && typeof extension === 'function' && realm.Blockly.Extensions.TEST_ONLY?.allExtensions?.function_params_mutator === extension;
-  if (await sha256Hex(source.replace(/\r\n/g, '\n')) !== sourceHash || !intact()) return;
+
+  if (!sourceHashes.has(await sha256Hex(source.replace(/\r\n/g, '\n'))) || !intact()) return;
   registrations.set(registry, { owner, capture: () => {
     let used = false;
     const definition = registry['custom_function_def'];

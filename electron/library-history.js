@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const fields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'ailyLocalLibrarySources'];
+const resolutionFiles = { lock: 'package-lock.json', shrinkwrap: 'npm-shrinkwrap.json', yarn: 'yarn.lock' };
 const fault = message => Object.assign(new Error(message), { code: 'LIBRARY_HISTORY_CONFLICT' });
 const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
 const dependencies = manifest => Object.fromEntries(fields.map(field => [field,
@@ -15,7 +16,7 @@ class LibraryHistory {
 
   async capture(root, names = []) {
     const packageText = read(path.join(root, 'package.json'));
-    const lock = read(path.join(root, 'package-lock.json'));
+    const resolution = Object.fromEntries(Object.entries(resolutionFiles).map(([key, file]) => [key, read(path.join(root, file))]));
     const links = [];
     for (const name of names) {
       const logical = path.join(root, 'node_modules', name);
@@ -25,8 +26,8 @@ class LibraryHistory {
     }
     const inputs = dependencies(JSON.parse(packageText));
     if (JSON.stringify(dependencies(JSON.parse(read(path.join(root, 'package.json'))))) !== JSON.stringify(inputs)
-      || read(path.join(root, 'package-lock.json')) !== lock) throw fault('Dependencies changed while recording library history.');
-    return { dependencies: inputs, lock, links };
+      || Object.entries(resolutionFiles).some(([key, file]) => read(path.join(root, file)) !== resolution[key])) throw fault('Dependencies changed while recording library history.');
+    return { dependencies: inputs, ...resolution, links };
   }
 
   async begin(root, packages) {
@@ -90,7 +91,7 @@ class LibraryHistory {
     return result;
   }
 
-  async restoreLinks(root, record) {
+  async restoreLinks(root, record, retainLogical) {
     for (const { name, target } of record.links) {
       // npm validates the saved local spec first. Retain its original link
       // topology without reading or overwriting the canonical source tree.
@@ -101,7 +102,10 @@ class LibraryHistory {
       const relative = path.relative(root, fs.realpathSync(parent));
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw fault('Library link destination escaped this project.');
       if (fs.existsSync(logical) && fs.realpathSync(logical) === target) continue;
-      await fs.promises.rm(logical, { recursive: true, force: true });
+      if (fs.lstatSync(logical, { throwIfNoEntry: false })) {
+        if (typeof retainLogical !== 'function') throw fault('Replacing a logical library requires its original environment archive.');
+        await retainLogical(logical);
+      }
       fs.symlinkSync(process.platform === 'win32' ? target : path.relative(parent, target), logical,
         process.platform === 'win32' ? 'junction' : 'dir');
     }

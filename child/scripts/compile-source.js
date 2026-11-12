@@ -3,6 +3,42 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const project = require('./aily-code-project');
+const { createHash } = require('node:crypto');
+const sourceFault = message => Object.assign(new Error(`BUILD_SOURCE_STALE: ${message}`), { code: 'BUILD_SOURCE_STALE' });
+const stamp = stat => [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+
+/** The Builder consumes this original sketch; its generated .build/sketch C++
+ * may legitimately add prototypes. Verify the actual input, including ordinary
+ * CLI builds without full delivery recording. Never change Coder's contract. */
+function captureBlocklyCompileSource(config, filename, previous) {
+    const root = fs.realpathSync(config.currentProjectPath);
+    if (project.isAilyCodeProjectRoot(root)) return undefined;
+    const expectedPath = path.join(root, '.temp', 'sketch', 'sketch.ino');
+    if (path.resolve(filename) !== expectedPath || typeof config.code !== 'string') throw sourceFault('Unexpected materialized Blockly input.');
+    const expected = Buffer.from(config.code, 'utf8');
+    if (expected.length > 128 * 1024 * 1024) throw sourceFault('Materialized Blockly input exceeds its capture budget.');
+    const digest = createHash('sha256').update(expected).digest('hex');
+    if (config.sourceCapture && config.sourceCapture.sourceSha256 !== digest) throw sourceFault('Materialized input differs from the trusted code capture.');
+    for (let cursor = expectedPath; cursor !== root; cursor = path.dirname(cursor)) {
+        if (fs.lstatSync(cursor).isSymbolicLink()) throw sourceFault('Materialized Blockly input traverses a link.');
+    }
+    const fd = fs.openSync(expectedPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    try {
+        const before = fs.fstatSync(fd), named = fs.lstatSync(expectedPath);
+        if (!before.isFile() || before.nlink !== 1 || before.size !== expected.length || before.ino !== named.ino
+            || previous && (previous.path !== expectedPath || previous.sha256 !== digest || previous.stamp !== stamp(before))) {
+            throw sourceFault('Materialized Blockly input was replaced or changed.');
+        }
+        const bytes = Buffer.alloc(expected.length + 1);
+        let offset = 0, count;
+        while (offset < bytes.length && (count = fs.readSync(fd, bytes, offset, bytes.length - offset, null))) offset += count;
+        if (offset !== expected.length || !bytes.subarray(0, offset).equals(expected)
+            || stamp(fs.fstatSync(fd)) !== stamp(before) || stamp(fs.lstatSync(expectedPath)) !== stamp(before)) {
+            throw sourceFault('Materialized Blockly sketch bytes differ from the captured request.');
+        }
+        return Object.freeze({ path: expectedPath, sha256: digest, stamp: stamp(before) });
+    } finally { fs.closeSync(fd); }
+}
 
 function assertPhysicalTree(root) {
     const stat = fs.lstatSync(root);
@@ -57,4 +93,4 @@ async function prepareCompileSource(config) {
     return filename;
 }
 
-module.exports = { prepareCompileSource };
+module.exports = { prepareCompileSource, captureBlocklyCompileSource };

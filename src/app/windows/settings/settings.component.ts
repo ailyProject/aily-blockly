@@ -164,6 +164,20 @@ export class SettingsComponent implements OnDestroy {
   ailyConnectorStatus: any = null;
   ailyToolsCheckingUpdates = false;
   applying = false;
+  blocklySaveState: 'idle' | 'saving' | 'saved' | 'error' = 'idle';
+  private blocklySaveRevision = 0;
+
+  async saveBlocklyPreference(key: 'renderer' | 'autoSave' | 'minimap' | 'sounds', value: string | boolean) {
+    const revision = ++this.blocklySaveRevision;
+    this.blocklySaveState = 'saving';
+    try {
+      await this.configService.saveBlocklyPreference(key, value);
+      if (revision === this.blocklySaveRevision) this.blocklySaveState = 'saved';
+    } catch (error) {
+      console.error('Failed to save Blockly preference', error);
+      if (revision === this.blocklySaveRevision) this.blocklySaveState = 'error';
+    } finally { if (!this.destroyed) this.cdr.markForCheck(); }
+  }
   regionSwitching = false;
   private ailyBuilderStatusTimer: ReturnType<typeof setTimeout> | null = null;
   private ailyLinterStatusTimer: ReturnType<typeof setTimeout> | null = null;
@@ -984,6 +998,7 @@ export class SettingsComponent implements OnDestroy {
         data: { path: this.configData.project_path },
       });
       window['ipcRenderer'].send('setting-changed', { action: 'devmode-changed', data: this.configData.devmode });
+      window['ipcRenderer'].send('setting-changed', { action: 'blockly-autosave-changed', data: this.configData.blockly.autoSave !== false });
       // 保存完毕后关闭窗口
       this.uiService.closeWindow();
     } finally {

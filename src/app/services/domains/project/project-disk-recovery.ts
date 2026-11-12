@@ -1,5 +1,6 @@
 import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent, type ProjectRecoveryFileReader } from '@shared/public-api';
 import type { BlocklySaveAsSnapshot, ProjectRecoveryActivationBlocked, ProjectRecoverySource } from './project-save-outcome';
+import { writeProjectRecoveryBackup } from './project-recovery-backup';
 
 const sourceNames = ['package.json', 'project.abi', 'project.abs', 'project.abs.map.json'] as const;
 type SourceFiles = Record<typeof sourceNames[number], string | null>;
@@ -82,19 +83,23 @@ export async function captureProjectDiskRecovery(project: string, assertContext:
       if (!native.existsSync(targetAbi) || native.readFileSync(targetAbi, 'utf8') !== source['project.abi']) {
         throw failure('PROJECT_RECOVERY_TARGET_CONFLICT', 'The recovery destination does not match the complete saved source document; no partial canvas was published over it.');
       }
-      const archive = `${target}/recovery-source-${crypto.randomUUID()}.json`;
-      native.writeFileSync(archive, JSON.stringify({ version: 1, sourceProject: project, recoverySource,
+      const record = { version: 1, sourceProject: project, recoverySource,
         files: source, rawFiles: captured.rawFiles, partialCanvas: fragment.notApplicable ? { applicable: false }
           : fragment.documentText === undefined
           ? { captured: false, error: activationBlocked!.message }
-          : { captured: true, document: JSON.parse(fragment.documentText) } }), { flag: 'wx' });
+          : { captured: true, document: JSON.parse(fragment.documentText) } };
+      const archive = target === project ? await writeProjectRecoveryBackup(project, record, assertCurrent)
+        : `${target}/recovery-source-${crypto.randomUUID()}.json`;
+      if (target !== project) native.writeFileSync(archive, JSON.stringify(record), { flag: 'wx' });
       assertCurrent();
       if (native.readFileSync(targetAbi, 'utf8') !== source['project.abi']) throw failure('PROJECT_RECOVERY_TARGET_CONFLICT',
         'The recovery primary document changed during archive publication. Preserve the destination instead of overwriting it.');
       return { projectSaved: true, generatedCodePublished: false, partial: true, projectionPending: true,
         recoverySource, recoveryArchive: archive, ...(activationBlocked ? { activationBlocked } : {}),
         code: 'PROJECT_RECOVERY_RUNTIME_REQUIRED',
-        error: 'The complete saved document is preserved in an independent project. Load its runtime before creating a fresh ABS baseline; the partial canvas is not the primary document.' };
+        error: target === project
+          ? 'The complete saved document and partial view are retained in this project backup. The host will rebuild this same project runtime before preparing its projection.'
+          : 'The complete saved document is preserved in an independent project. Load its runtime before creating a fresh ABS baseline; the partial canvas is not the primary document.' };
     },
     isCurrent: () => { try { assertCurrent(); return true; } catch { return false; } },
     freezeForActivation: () => { assertCurrent(); return fragment.freezeForActivation?.() ?? (() => {}); },

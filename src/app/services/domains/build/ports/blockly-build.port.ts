@@ -1,5 +1,6 @@
 import { InjectionToken } from '@angular/core';
 import type { BuildCheckpoint } from '../build-result-snapshot';
+import type { ProjectBuildLogReference } from '../project-build-log';
 
 export interface BlocklyBuildInput {
   projectPath: string;
@@ -9,7 +10,7 @@ export interface BlocklyBuildInput {
 
 export interface BlocklyBuildOutcome {
   success: boolean;
-  result: { state?: string; text?: string; message?: string; fullStdErr?: string };
+  result: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference };
   checkpoint: BuildCheckpoint;
 }
 

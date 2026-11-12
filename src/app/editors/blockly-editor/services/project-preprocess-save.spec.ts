@@ -7,6 +7,13 @@ import { BlocklyComponent } from '../components/blockly/blockly.component';
 import { ProjectApplicationAdapter } from '../../../integrations/project/project-application.adapter';
 
 describe('complete save and background preprocess handoff', () => {
+  let previousFs: any;
+  beforeEach(() => {
+    previousFs = window['fs'];
+    window['fs'] = { ...previousFs, projectProgramPublicationVersion: 1, nativeSaveReceiptVersion: 2,
+      projectSyncStorageVersion: 2, openProjectSyncStorage: () => { throw new Error('Not used by preprocess handoff'); } } as any;
+  });
+  afterEach(() => { window['fs'] = previousFs; });
   function builder() {
     const service: any = Object.create(_BuilderService.prototype);
     Object.assign(service, {
@@ -122,6 +129,7 @@ describe('complete save and background preprocess handoff', () => {
   for (const fails of [false, true]) {
     it(`keeps the pause until the actual save ${fails ? 'fails' : 'commits'}`, async () => {
       const project: any = Object.create(_ProjectService.prototype);
+      project.captureSaveContext = () => ({ assertCurrent() {} });
       const release = jasmine.createSpy('release');
       let drain!: () => void, complete!: () => void;
       const ready = new Promise<void>(resolve => { drain = resolve; });
@@ -154,6 +162,7 @@ describe('complete save and background preprocess handoff', () => {
 
   it('an older editor cannot unbind the new editor save guard', async () => {
     const project: any = Object.create(_ProjectService.prototype);
+    project.captureSaveContext = () => ({ assertCurrent() {} });
     const oldGuard = jasmine.createSpy('oldGuard').and.resolveTo(() => {});
     const nextRelease = jasmine.createSpy('nextRelease');
     const nextGuard = jasmine.createSpy('nextGuard').and.resolveTo(nextRelease);

@@ -41,6 +41,7 @@ export interface SubappCatalogItem {
   installedVersion?: string | null;
   installed: boolean;
   uninstalling?: boolean;
+  manuallyUninstalled?: boolean;
   updateAvailable: boolean;
   updateStatus: SubappUpdateStatus;
   updatePolicy?: SubappUpdatePolicy;
@@ -427,6 +428,10 @@ export class SubappManagerService implements OnDestroy {
         : 'current';
     return {
       ...item,
+      ...(typeof item?.name === 'string' ? { name: item.name.replace(/\baily\b/gi, 'aily') } : {}),
+      ...(typeof item?.description === 'string'
+        ? { description: item.description.replace(/\baily\b/gi, 'aily') }
+        : {}),
       updateStatus: {
         ...rawStatus,
         state,

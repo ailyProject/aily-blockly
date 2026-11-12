@@ -1,4 +1,6 @@
-import { importProjectMedia, MediaImportRequest } from './project-media-import';
+import { decodeProjectMedia, importProjectMedia, MediaImportRequest } from './project-media-import';
+import { bindMediaImportTarget } from './project-media-target';
+import { readAbsSyntax } from './abs/abs-syntax';
 
 describe('project media import asset boundary', () => {
   const request: MediaImportRequest = { kind: 'tft_image', source: '/input.png', width: 2, height: 1 };
@@ -9,8 +11,17 @@ describe('project media import asset boundary', () => {
     const written: string[] = [];
     const packed: Uint8Array[] = [];
     let current = true;
+    const resolve = (p: string) => {
+      const parts: string[] = [];
+      for (const segment of p.split('/').filter(Boolean)) {
+        if (segment === '..') parts.pop();
+        else if (segment !== '.') parts.push(segment);
+      }
+      return '/' + parts.join('/');
+    };
     const fs: any = {
       join: (...parts: string[]) => parts.join('/'), isAbsolute: (p: string) => p.startsWith('/'),
+      resolve, relative: (from: string, to: string) => to.startsWith(from + '/') ? to.slice(from.length + 1) : '..' + to,
       exists: async (p: string) => files.has(p) || dirs.has(p),
       stat: async (p: string) => ({ isFile: files.has(p), isDirectory: dirs.has(p), isSymbolicLink: links.has(p), size: files.get(p)?.length ?? 0 }),
       readBinary: async (p: string) => files.get(p)!.slice(),
@@ -28,14 +39,154 @@ describe('project media import asset boundary', () => {
     const f = fixture();
     const result = await importProjectMedia('/project', request, f.deps);
     expect(result.ok).toBeTrue();
-    if (!result.ok) return;
+    if (!result.ok || result.kind === 'u8g2_bitmap') return;
     expect(result.value.frameCount).toBe(1); expect(result.value.maxFrames).toBe(1);
     expect(result.value.encoding).toBe('rgb565-be'); expect(result.decodedBytes).toBe(4);
+    expect(result.absExpression).toBeUndefined();
     expect(f.packed[0]).toEqual(new Uint8Array([0xf8, 0, 0x07, 0xe0]));
     expect(f.written.length).toBe(1); expect(f.written[0]).toContain('/assets/media-import/');
     expect(f.files.get(f.written[0])).toEqual(new Uint8Array([1, 2, 3]));
     expect((await importProjectMedia('/project', request, f.deps)).ok).toBeTrue();
     expect(f.written.length).toBe(1);
+  });
+  async function png(width: number, height: number, draw: (context: CanvasRenderingContext2D) => void) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    draw(canvas.getContext('2d')!);
+    const blob = await new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!), 'image/png'));
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+  const bitmapRequest: MediaImportRequest = { kind: 'u8g2_bitmap', source: '/input.png', width: 104, height: 212 };
+  it('decodes a real Linkbit portrait image into its native resource without dropping the last row', async () => {
+    const f = fixture();
+    const original = await png(104, 212, context => {
+      context.fillRect(0, 0, 1, 1);
+      context.fillRect(103, 211, 1, 1);
+      context.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      context.fillRect(102, 211, 1, 1);
+    });
+    f.files.set('/input.png', original);
+    const result = await importProjectMedia('/project', bitmapRequest, f.deps);
+    expect(result.ok).toBeTrue();
+    if (!result.ok || result.kind !== 'u8g2_bitmap') return;
+    expect(result.fieldType).toBe('field_bitmap_u8g2');
+    expect(result.value).toEqual({ schemaVersion: 1, encoding: 'xbm-lsb-row-v1', width: 104, height: 212,
+      bitmap: jasmine.objectContaining({ $ailyData: jasmine.objectContaining({ codec: 'u8g2-xbm-v1', rawLength: 2756 }) }) });
+    const expected = new Uint8Array(2756);
+    expected[0] = 1;
+    expected[2755] = 128;
+    expect(result.decodedBytes).toBe(expected.length);
+    expect(f.packed[0]).toEqual(expected);
+    expect(f.written).toEqual([`/project/${result.sourcePath}`]);
+    expect(f.files.get(f.written[0])).toEqual(original);
+  });
+  it('centers an image with white padding and packs each row independently', async () => {
+    const f = fixture();
+    f.files.set('/input.png', await png(9, 1, context => context.fillRect(0, 0, 9, 1)));
+    const result = await importProjectMedia('/project', { ...bitmapRequest, width: 9, height: 3 }, f.deps);
+    expect(result.ok).toBeTrue();
+    expect(f.packed[0]).toEqual(new Uint8Array([0, 0, 255, 1, 0, 0]));
+  });
+  it('returns a complete ABS expression for one registered media field in an output block', async () => {
+    const f = fixture();
+    f.dirs.add('/project/.assets');
+    f.files.set('/project/.assets/image.png', await png(9, 1, context => context.fillRect(0, 0, 9, 1)));
+    const definitions = {
+      types: ['screen_bitmap'], registered: () => true, assertCurrent: () => {},
+      get: (type: string) => type === 'screen_bitmap' ? {
+        type, output: 'Bitmap', args1: [{ type: 'field_bitmap_u8g2', name: 'DATA', width: 9, height: 3 }],
+      } : undefined
+    };
+    const result = await importProjectMedia('/project', { source: '.assets/image.png', target: { blockType: 'screen_bitmap' } },
+      f.deps, target => bindMediaImportTarget(target, definitions, () => {}));
+    expect(result.ok).toBeTrue();
+    if (!result.ok) return;
+    expect(result).toEqual(jasmine.objectContaining({ kind: 'u8g2_bitmap', blockType: 'screen_bitmap', fieldName: 'DATA',
+      geometry: { source: { width: 9, height: 1 }, target: { width: 9, height: 3 }, content: { x: 0, y: 1, width: 9, height: 1 }, fit: 'contain' } }));
+    expect(JSON.parse(result.absArgument)).toEqual(result.value);
+    expect(result.absExpression).toBe(`screen_bitmap(${result.absArgument})`);
+    const [block] = readAbsSyntax(`# ABS Schema: 2\n${result.absExpression}`);
+    expect(block.type).toBe('screen_bitmap');
+    expect(block.parameters.length).toBe(1);
+    expect(block.parameters[0].name).toBeUndefined();
+    expect(block.parameters[0].token?.raw).toBe(result.absArgument);
+    expect(f.packed[0]).toEqual(new Uint8Array([0, 0, 255, 1, 0, 0]));
+  });
+  it('uses the native field defaults and contain mode for a TFT target and rejects an ambiguous target', async () => {
+    const f = fixture();
+    f.files.set('/project/image.png', new Uint8Array([1, 2, 3]));
+    const target = { blockType: 'photo', fieldName: 'IMAGE' };
+    const definitions = {
+      types: ['photo'], registered: () => true, assertCurrent: () => {},
+      get: () => ({ type: 'photo', output: 'Bitmap',
+        args0: [{ type: 'field_tftespi_image', name: 'IMAGE' }, { type: 'field_tftespi_image', name: 'OTHER' }] })
+    };
+    const bind = (selection: typeof target | { blockType: string }) => bindMediaImportTarget(selection, definitions, () => {});
+    expect(() => bind({ blockType: 'photo' })).toThrowError(/IMAGE, OTHER/);
+    f.deps.decode = async request => {
+      expect(request.width).toBe(160); expect(request.height).toBe(120); expect(request.fit).toBe('contain');
+      return { ...request, frames: [new Uint8Array(160 * 120 * 2)] };
+    };
+    const result = await importProjectMedia('/project', { source: 'image.png', target }, f.deps, bind);
+    expect(result.ok).toBeTrue();
+    if (result.ok) {
+      expect(JSON.parse(result.absArgument)).toEqual(result.value);
+      expect(result.absExpression).toBeUndefined();
+    }
+  });
+  it('leaves dynamic and non-value media declarations on the argument contract', () => {
+    const args0 = [{ type: 'field_bitmap_u8g2', name: 'DATA', width: 9, height: 3 }];
+    const fixed = { type: 'bitmap', output: 'Bitmap', args0 };
+    for (const definition of [
+      { ...fixed, mutator: 'dynamic_media' },
+      { ...fixed, extensions: ['dynamic_media'] },
+      { type: 'bitmap', previousStatement: null, nextStatement: null, args0 },
+      { ...fixed, type: 'bitmap-invalid' },
+    ]) {
+      const target = bindMediaImportTarget({ blockType: definition.type }, {
+        types: [definition.type], registered: () => true, assertCurrent: () => {}, get: () => definition,
+      }, () => {});
+      expect(target.fieldName).toBe('DATA');
+      expect(target.singleFieldOutput).toBeUndefined();
+    }
+  });
+  it('fits real RGB565 worker frames into the target dimensions with centered black padding', async () => {
+    const source = await png(2, 1, context => {
+      context.fillStyle = '#ff0000';
+      context.fillRect(0, 0, 2, 1);
+    });
+    const result = await decodeProjectMedia({
+      type: 'decode', requestId: 1, fileName: 'image.png', mimeType: 'image/png',
+      buffer: source.buffer as ArrayBuffer, width: 2, height: 3, fps: 1, maxFrames: 1, format: 'rgb565', fit: 'contain',
+    });
+    expect(result.firstFrame).toEqual({ source: { width: 2, height: 1 }, content: { x: 0, y: 1, width: 2, height: 1 } });
+    expect(result.frames).toEqual([new Uint8Array([0, 0, 0, 0, 0xf8, 0, 0xf8, 0, 0, 0, 0, 0])]);
+  });
+  it('rejects paths escaping or traversing links and stops if the resolved field goes stale', async () => {
+    const f = fixture();
+    const target = { blockType: 'photo' };
+    f.dirs.add('/project/.assets'); f.links.add('/project/.assets');
+    f.files.set('/project/.assets/image.png', new Uint8Array([1, 2, 3]));
+    let current = true;
+    const bind = () => ({ kind: 'tft_image' as const, blockType: 'photo', fieldName: 'IMAGE', fieldType: 'field_tftespi_image',
+      width: 2, height: 1, assertCurrent: () => { if (!current) throw new Error('Field changed'); } });
+    for (const source of ['../input.png', '/input.png', '.assets/image.png']) {
+      expect((await importProjectMedia('/project', { source, target }, f.deps, bind)).ok).toBeFalse();
+    }
+    f.links.clear();
+    const decode = f.deps.decode;
+    f.deps.decode = async r => { const decoded = await decode(r); current = false; return decoded; };
+    expect((await importProjectMedia('/project', { source: '.assets/image.png', target }, f.deps, bind)).ok).toBeFalse();
+    expect(f.written).toEqual([]); expect(f.packed).toEqual([]);
+  });
+  it('rejects oversized bitmap dimensions, video, or undecodable bytes before asset writes', async () => {
+    const f = fixture();
+    for (const invalid of [{ width: 257 }, { source: '/input.mp4' }, {}]) {
+      expect((await importProjectMedia('/project', { ...bitmapRequest, ...invalid }, f.deps)).ok).toBeFalse();
+    }
+    expect(f.written.length).toBe(0);
+    expect(f.packed.length).toBe(0);
   });
   it('rejects bad dimensions and unsupported input before decoding or writing', async () => {
     const f = fixture(); spyOn(f.deps, 'decode').and.callThrough();

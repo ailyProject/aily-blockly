@@ -903,10 +903,11 @@ function resolveLocalizedCopy(entry, locale) {
     || locales.en
     || {};
   return {
-    name: typeof translation.TITLE === 'string' ? translation.TITLE : entry.app.name,
-    description: typeof translation.DESCRIPTION === 'string'
+    name: (typeof translation.TITLE === 'string' ? translation.TITLE : entry.app.name)
+      .replace(/\baily\b/gi, 'aily'),
+    description: (typeof translation.DESCRIPTION === 'string'
       ? translation.DESCRIPTION
-      : entry.app.description,
+      : entry.app.description).replace(/\baily\b/gi, 'aily'),
   };
 }
 
@@ -968,6 +969,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           installedVersion: installedState.installedVersion,
           installed: installedState.installed,
           uninstalling: installedState.uninstalling === true,
+          manuallyUninstalled: !installedState.installed && versions.isManuallyUninstalled(rootDir, entry),
           updateAvailable,
           updateStatus,
           ...(entry.update ? { updatePolicy: entry.update } : {}),
@@ -995,7 +997,7 @@ function ensureInstallProject(rootDir) {
       name: 'aily-installed-subapps',
       private: true,
       version: '1.0.0',
-      description: 'Aily Blockly user-installed child applications',
+      description: 'aily Blockly user-installed child applications',
       dependencies: {},
     }, null, 2)}\n`);
   }
@@ -1011,7 +1013,7 @@ function readBundledCoderFallback(options = {}) {
   if (!fs.existsSync(manifestPath) || !fs.existsSync(tarballPath)) return null;
   const manifest = readJson(manifestPath);
   if (manifest.schemaVersion !== 1 || manifest.entry?.package !== BUNDLED_CODER_PACKAGE) {
-    throw new Error('Invalid bundled Aily Coder Editor manifest');
+    throw new Error('Invalid bundled aily Coder Editor manifest');
   }
   const entry = validateIndex({ [BUNDLED_CODER_ID]: manifest.entry })[BUNDLED_CODER_ID];
   parseIntegrity(manifest.integrity);
@@ -1636,7 +1638,7 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
       if (manifest.ailySubapp?.id !== entry.id
         || !fs.existsSync(path.join(candidate.source, 'runtime', 'index.js'))
         || Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies }).length) {
-        throw new Error('Bundled Aily Coder Editor is not a complete self-contained package');
+        throw new Error('Bundled aily Coder Editor is not a complete self-contained package');
       }
     }
     options.signal.throwIfAborted();
@@ -2267,7 +2269,7 @@ function removeOwnedBinLinks(rootDir, packagePath, packageName, binNames) {
 
 function assertSubappCanBeUninstalled(id, options) {
   if (id === BUNDLED_CODER_ID && options.isCoderProjectOpen?.()) {
-    const error = new Error('Close the current project before uninstalling Aily Coder Editor.');
+    const error = new Error('Close the current project before uninstalling aily Coder Editor.');
     error.code = 'SUBAPP_REQUIRED_BY_PROJECT';
     throw error;
   }
@@ -2333,6 +2335,7 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
       removePackageFromRootManifests(rootDir, entry.package);
       assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
       restoreCatalogAfterUninstall(rootDir, entry);
+      versions.markManuallyUninstalled(rootDir, entry);
       versions.finishUninstall(rootDir, entry);
     });
   } catch (error) {
@@ -2593,6 +2596,25 @@ function createSubappManager(options = {}) {
       if (runningConfig) item.config = runningConfig;
     }
     return state;
+  }
+
+  function diagnostics() {
+    // Read local installation selection only: feedback must never fetch, install or activate updates.
+    const entry = { id: 'aily-chat', package: '@aily-project/subapp-aily-chat', version: '0.0.0',
+      namespace: 'AILY_CHAT', titleKey: 'AILY_CHAT.NAME', app: {} };
+    const selected = readInstalledState(rootDir, entry);
+    const running = options.getRunningSubappConfig?.(entry.id);
+    return {
+      ailyChat: {
+        installed: selected.installed,
+        installedVersion: selected.installed ? selected.installedVersion : null,
+        selectedVersion: selected.config?.version || null,
+        selectedSource: selected.config?.env?.AILY_SUBAPP_SOURCE || null,
+        running: Boolean(running),
+        runningVersion: running?.version || null,
+        runningSource: running?.env?.AILY_SUBAPP_SOURCE || null,
+      },
+    };
   }
 
   function updateKey(entry) {
@@ -3039,6 +3061,7 @@ function createSubappManager(options = {}) {
       return resolveIndexUrl();
     },
     list,
+    diagnostics,
     install: (payload) => mutate('install', payload),
     reinstall: (payload) => mutate('reinstall', payload),
     repair,
@@ -3158,6 +3181,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     if (launch?.owner === event.sender.id) launch.release();
   });
 
+  ipcMain.handle('subapp-manager-diagnostics', () => defaultManager.diagnostics());
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
   ipcMain.handle('subapp-manager-install', handleMutation('install'));
   ipcMain.handle('subapp-manager-reinstall', handleMutation('reinstall'));

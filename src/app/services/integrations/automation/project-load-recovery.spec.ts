@@ -107,22 +107,23 @@ describe('failed-load recovery source isolation', () => {
     expect(writes).toEqual([]);
   });
 
-  it('returns byte-bound saved-document facts and a specific fork offer without touching private store or native state', async () => {
+  it('returns byte-bound saved-document facts and a same-project recovery offer without touching native state', async () => {
     const disk = await inspectProjectDiskRecovery(source, () => {});
     expect(disk.abi).toBe('available'); expect(disk.hashes.abi).toMatch(/^sha256:[a-f0-9]{64}$/);
     const result: any = await inspectFailedProjectLoad(source, loadStatus, request, () => {});
     expect(result.ok).toBeTrue(); expect(result.receipt).toEqual({ version: 2, requestId: request.requestId, action: 'inspect' });
     expect(result.diagnostics.loadRecovery).toEqual(jasmine.objectContaining({ version: 1,
-      source: 'saved-document', pendingMutation: false, disk, offer: { action: 'fork' } }));
+      source: 'saved-document', pendingMutation: false, disk, offer: { action: 'recover_project', sameProject: true, candidateApplied: false } }));
     expect(result.recoverySource).toBeUndefined();
-    expect(result.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'fork' } });
+    expect(result.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'recover_project' } });
     expect(writes).toEqual([]);
   });
 
   it('does not offer a fork for an unavailable primary or claim ownership when inspection changes', async () => {
     files.delete(`${source}/project.abi`);
     const missing: any = await inspectFailedProjectLoad(source, loadStatus, request, () => {});
-    expect(missing.ok).toBeFalse(); expect(missing.diagnostics.loadRecovery.offer).toBeUndefined(); expect(missing.nextAction).toBeUndefined();
+    expect(missing.ok).toBeFalse(); expect(missing.diagnostics.loadRecovery.offer.action).toBe('recover_project');
+    expect(missing.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'recover_project' } });
     const busy: any = await inspectFailedProjectLoad(source, loadStatus, request,
       () => { throw Object.assign(new Error('busy'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' }); });
     expect(busy.ok).toBeFalse(); expect(busy.code).toBe('PROJECT_RECOVERY_SOURCE_BUSY');
@@ -133,6 +134,22 @@ describe('failed-load recovery source isolation', () => {
     await expectAsync(inspectFailedProjectLoad(source, loadStatus, { ...request, version: 1 }, () => {})).toBeRejected();
     await expectAsync(inspectFailedProjectLoad(source, loadStatus, { ...request, token: 'invented' }, () => {})).toBeRejected();
     expect(writes).toEqual([]);
+  });
+
+  it('discovers an old recovery archive after edits or relocation without making stale lineage a recovery gate', async () => {
+    const archive = `${source}/recovery-source-12345678-1234-1234-1234-123456789abc.json`;
+    files.set(archive, JSON.stringify({ version: 1, sourceProject: '/old/source', files: { 'project.abi': '{"pages":[]}' } }));
+    Object.assign(window['fs'], { projectSyncStorageVersion: 2,
+      openProjectSyncStorage: async () => ({ withLock: () => {}, read: async () => JSON.stringify({ version: 1,
+        project: '/old/recovery-location', sourceProject: '/old/source', operationId: 'old-recovery-request' }) }),
+      readDirSync: () => [{ name: archive.slice(source.length + 1), _isFile: true }],
+    });
+    const result: any = await inspectFailedProjectLoad(source, loadStatus, request, () => {});
+    expect(result.ok).toBeTrue(); expect(result.diagnostics.loadRecovery.lineageIssue).toBe('ABS_LINEAGE_INVALID');
+    expect(result.diagnostics.loadRecovery.legacyRecovery).toEqual(jasmine.objectContaining({
+      sourceProject: '/old/source', authority: 'discovery-only' }));
+    expect(result.nextAction.input).toEqual({ project: source, action: 'recover_project' });
+    expect(files.get(`${source}/project.abi`)).toBe(abi); expect(writes).toEqual([]);
   });
 
   it('routes real failed-load inspect before readiness but keeps apply/save and active writers gated', async () => {

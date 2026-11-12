@@ -52,8 +52,10 @@ describe('Blockly library failure recovery', () => {
       libraryIntegrityFailureLogSignatures: new Map(), libraryIntegrityWarningLogSignatures: new Map(),
       loadLibraryFinishedLoadingSubject: new Subject(),
       toolbox: { kind: 'categoryToolbox', contents: [] },
-      getProjectDocument: () => ({ pages: [] }),
+      getProjectDocument: () => ({ schemaVersion: 3, activePageId: 'one', openedPageIds: ['one'],
+        pages: [{ id: 'one', title: 'One', content: { blocks: { blocks: [] } } }], sharedModel: { procedureBlocks: [] } }),
       loadProjectDocument: jasmine.createSpy('restoreDocument'),
+      loadProjectDocumentSettled: jasmine.createSpy('settledDocument').and.resolveTo(), setAiWritingActive() {},
       refreshToolboxFromContents: jasmine.createSpy('refreshToolbox'),
       requestCodeViewerRefresh: jasmine.createSpy('refreshCode'),
       ensureToolboxItemIds: () => {}, applyToolboxSortOrderToContents: () => {},
@@ -174,7 +176,8 @@ describe('Blockly library failure recovery', () => {
     expect(service.failedLibraryLoads.size).toBe(0);
     const generator = runtime.getActiveGenerator() as ArduinoGenerator;
     expect(generator.forBlock['recovery_bad']({ type: 'recovery_test' } as Blockly.Block, generator)).toBe('2');
-    expect(service.loadProjectDocument).toHaveBeenCalled();
+    expect(service.loadProjectDocumentSettled).toHaveBeenCalled();
+    expect(service.loadProjectDocument).not.toHaveBeenCalled();
   });
 
   it('retains multiple failed placeholders across repeated syntax and runtime failures', async () => {
@@ -190,6 +193,43 @@ describe('Blockly library failure recovery', () => {
     expect(await service.retryLibrary(name('bad'), projectPath)).toBeFalse();
     expect(service.loadedLibraries.size).toBe(2);
     expect(toolbox('second_bad').ailyLibraryLoadFailed).toBeTrue();
+  });
+
+  it('waits for settled native readback before acknowledging a repaired library', async () => {
+    library('bad', 'missingRecoverySymbol;'); await load('bad');
+    sources.set(`${path('bad')}/generator.js`, 'Arduino.forBlock.recovery_bad = () => "fixed";');
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    service.loadProjectDocumentSettled.and.callFake(async (_document, owner, check) => {
+      check(); expect(service.isWorkspaceEditInProgress()).toBeTrue();
+      await pending; owner.assertCurrent(); check();
+    });
+    const retry = service.retryLibrary(name('bad'), projectPath);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(service.noticeService.update.calls.allArgs().some(([notice]) => notice.state === 'done')).toBeFalse();
+    finish(); expect(await retry).toBeTrue(); expect(service.isWorkspaceEditInProgress()).toBeFalse();
+    expect(service.noticeService.update.calls.mostRecent().args[0].state).toBe('done');
+  });
+
+  it('does not replace a project after a retry changed its runtime', async () => {
+    library('bad');
+    spyOn(service, 'loadLibrary').and.callFake(async () => {
+      runtime.rebuild({ projectPath }); service.loadedLibraries.add(path('bad'));
+    });
+    await expectAsync(service.retryLibrary(name('bad'), projectPath)).toBeRejectedWithError(/changed during library recovery/);
+    expect(service.loadProjectDocumentSettled).not.toHaveBeenCalled();
+    expect(service.noticeService.update).not.toHaveBeenCalled();
+    expect(service.isWorkspaceEditInProgress()).toBeFalse();
+  });
+
+  it('retains quarantine and withholds readiness if automatic native recovery fails', async () => {
+    library('bad', 'missingRecoverySymbol;'); runtime.markReady(projectPath);
+    const ready = spyOn(runtime, 'markReady').and.callThrough();
+    service.loadProjectDocumentSettled.and.rejectWith(new Error('native comments failed'));
+    await expectAsync(load('bad')).toBeRejectedWithError('native comments failed');
+    expect(ready).not.toHaveBeenCalled(); expect(runtime.isReady()).toBeFalse();
+    expect(service.isWorkspaceEditInProgress()).toBeFalse(); expect(service.isWorkspaceRecoveryRequired()).toBeTrue();
+    expect(service.loadProjectDocument).not.toHaveBeenCalled();
   });
 
   it('serializes concurrent loads while recovering and deduplicates one library', async () => {

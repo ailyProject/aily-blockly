@@ -4,6 +4,7 @@ import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tas
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { nativeSemanticChange } from './blockly-native-semantic-diagnostic';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 
 const active = new WeakMap<Blockly.Workspace, NativeFieldDependencies>();
 const initializers = new Set<{ workspace: () => Blockly.Workspace | null; initialize: (workspace: Blockly.Workspace) => void }>();
@@ -28,6 +29,7 @@ export class NativeFieldDependencies {
   private sequence = 0;
   private loadingNotified = false;
   private settling = false;
+  private preparation: 'pending' | 'preparing' | 'prepared' = 'pending';
   private readonly tasks: NativeUiTasks;
   private readonly initializationQueue: boolean;
   constructor(private readonly native: typeof Blockly, private readonly workspace: Blockly.Workspace,
@@ -61,48 +63,71 @@ export class NativeFieldDependencies {
   }
 
   private retry(): unknown {
+    if (!this.pending.size) return;
+
+    // Freeze the allowed field set for the entire retry phase. Removing a
+    // successful field early would make the final snapshot use another mask.
+    const allowed = new Map([...this.pending].map(([block, fields]) => [block, new Map(fields)]));
+    const before = this.snapshot(allowed);
+    const completed: Array<[Blockly.Block, string]> = [];
     let failure: unknown;
-    for (const [block, fields] of this.pending) {
-      for (const [name, apply] of fields) {
-        const before = this.snapshot();
-        try {
-          apply();
-          const after = this.snapshot();
-          if (after !== before) throw nativeSemanticChange(before, after, 'initialization', 'Native deferred field changed other persisted state or structure');
-          fields.delete(name);
-        } catch (error) {
-          const after = this.snapshot();
-          if (after !== before) throw nativeSemanticChange(before, after, 'initialization', 'Native rejected field changed persisted state or structure');
-          if (!(error instanceof AbsSyncError) || error.code !== 'ABS_FIELD_OPTION_INVALID') throw error;
-          failure = error;
-        }
+
+    for (const [block, fields] of allowed) for (const [name, apply] of fields) {
+      try {
+        apply();
+        completed.push([block, name]);
+      } catch (error) {
+        if (!(error instanceof AbsSyncError) || error.code !== 'ABS_FIELD_OPTION_INVALID') throw error;
+        failure = error;
       }
+    }
+
+    const after = this.snapshot(allowed);
+    if (after !== before) throw nativeSemanticChange(before, after, 'initialization',
+      'Native deferred fields changed other persisted state or structure');
+
+    for (const [block, name] of completed) {
+      const fields = this.pending.get(block)!;
+      fields.delete(name);
       if (!fields.size) this.pending.delete(block);
     }
+
     return failure;
   }
-  private snapshot(): string {
+  private snapshot(allowed = this.pending): string {
     const value = JSON.parse(nativeUiSemanticSnapshot(this.native, this.workspace));
     const states = new Map(collectProjectBlocks(value.state).map(({ state }) => [state['id'], state]));
     // Option discovery is allowed only during construction. All other shape,
     // model, topology and already-bound field state remains immutable.
     for (const shape of value.shapes) for (const input of shape.inputs) for (const field of input.fields) {
       if (field.type !== 'field_dropdown') continue;
-      const pending = this.pending.get(this.workspace.getBlockById(shape.id)!);
+      const pending = allowed.get(this.workspace.getBlockById(shape.id)!);
       const fields = states.get(shape.id)?.['fields'] as Record<string, unknown> | undefined;
       const selected = fields?.[field.name];
       // Discovery may expand/reorder candidates, never invalidate an already
       // bound selection. Retaining options in that case exposes the change to
-      // the same per-callback semantic comparison instead of hiding it.
+      // the same complete-phase semantic comparison instead of hiding it.
       if (field.preservedValue || pending?.has(field.name) || field.options?.includes(selected)) delete field.options;
     }
     for (const { state } of collectProjectBlocks(value.state)) {
-      const pending = this.pending.get(this.workspace.getBlockById(state['id'] as string)!);
+      const pending = allowed.get(this.workspace.getBlockById(state['id'] as string)!);
       for (const name of pending?.keys() ?? []) if (state['fields']) delete state['fields'][name];
     }
     return absJson(value);
   }
   private beginSettlement(required: boolean): boolean {
+    // The first settlement, including model binding's early settle(false),
+    // follows restored fields rather than the still-default name checkpoint.
+    // Commit once before comparing complete-phase semantics; later settlement and
+    // ordinary editor snapshots must not advance an uncommitted rename.
+    if (this.preparation === 'preparing') throw new Error('Native construction metadata preparation must not reenter initialization.');
+    if (this.preparation === 'pending') {
+      this.preparation = 'preparing';
+      try {
+        captureCustomFunctionRegistration(this.native.Blocks)?.prepareSerialization(this.workspace, true);
+        this.preparation = 'prepared';
+      } catch (error) { this.preparation = 'pending'; throw error; }
+    }
     if (!this.pending.size && (!this.initializationQueue || !required)) return false;
     if (!this.pending.size && this.loadingNotified && !this.tasks.hasPending && !this.timers.size) return false;
     this.settling = true;
@@ -140,8 +165,8 @@ export class NativeFieldDependencies {
       this.finishSettlement(required);
     } finally { this.settling = previous; }
   }
-  /** Only the outer completed-topology boundary may yield. Missing fields
-   * encountered during synchronous block construction still settle inline. */
+  /** Only the outer completed-topology boundary may yield. The completed ABS
+   * graph's synchronous model dependency worklist still settles inline. */
   async settleCooperatively(yieldToHost: () => Promise<void>, assertCurrent: () => void): Promise<void> {
     const previous = this.settling;
     try {

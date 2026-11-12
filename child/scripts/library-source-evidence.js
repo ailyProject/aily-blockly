@@ -23,7 +23,7 @@ const identity = filename => hash(process.platform === 'win32' ? filename.toLowe
 function captureLibrarySource(sourcePath) {
     const root = realpath(sourcePath), active = new Set(), digest = crypto.createHash('sha256');
     const states = [];
-    let fileCount = 0, sizeBytes = 0;
+    let fileCount = 0, sizeBytes = 0, maxRelativePathBytes = 0;
     const visit = (filename, relative, depth) => {
         if (depth > 64) fail('Source depth exceeds limit.');
         const real = realpath(filename);
@@ -35,6 +35,7 @@ function captureLibrarySource(sourcePath) {
             for (const name of fs.readdirSync(filename).sort((a, b) => a.localeCompare(b))) visit(path.join(filename, name), path.join(relative, name), depth + 1);
             active.delete(real);
         } else if (before.isFile()) {
+            maxRelativePathBytes = Math.max(maxRelativePathBytes, Buffer.byteLength(relative));
             if (++fileCount > 4096 || (sizeBytes += before.size) > MAX_LIBRARY_SOURCE_BYTES) fail('Source exceeds capture budget.');
             const fd = fs.openSync(filename, 'r');
             try {
@@ -55,7 +56,7 @@ function captureLibrarySource(sourcePath) {
         } else fail('Unsupported source entry.');
     };
     visit(root, '', 0);
-    return { location: root, requestedPath: path.resolve(sourcePath), fingerprint: `sha256:${digest.digest('hex')}`, states, fileCount, sizeBytes };
+    return { location: root, requestedPath: path.resolve(sourcePath), fingerprint: `sha256:${digest.digest('hex')}`, states, fileCount, sizeBytes, maxRelativePathBytes };
 }
 const createLibrarySourceFingerprint = source => captureLibrarySource(source).fingerprint;
 function confirmSource(before) {

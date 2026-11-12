@@ -62,6 +62,8 @@ export interface SimulatorProjectArtifactCallbackAuthorityOptions {
   maxArtifactReferences?: number;
   createArtifactReference?: () => string;
   createSceneCommitId?: () => string;
+  /** Trusted Host selection; null means there is no current verified build. */
+  resolveBuildRoot?: () => string | null;
 }
 
 interface StoredSceneHeadV1 {
@@ -105,7 +107,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private readonly projectRoot: string;
   private readonly sceneFilePath: string;
   private readonly buildRoot: string;
-  private readonly manifestFilePath: string;
+  private readonly resolveBuildRoot: () => string | null;
   private readonly files: SimulatorProjectArtifactFilePort;
   private readonly now: () => number;
   private readonly artifactReferenceTtlMs: number;
@@ -137,10 +139,12 @@ export class SimulatorProjectArtifactCallbackAuthority {
       'scene-network-v2.json',
     );
     this.buildRoot = this.files.join(this.projectRoot, '.build');
-    this.manifestFilePath = this.files.join(
-      this.buildRoot,
-      'aily-artifact-manifest.json',
-    );
+    this.resolveBuildRoot = options.resolveBuildRoot ?? (() => {
+      const bridge = typeof window === 'undefined' ? undefined : window['builder'];
+      if (bridge?.isolatedBuildExecutionVersion !== 1) return this.buildRoot;
+      const selected = bridge.resolveBuildProjectPath(this.projectRoot);
+      return selected ? this.files.join(selected, '.build') : null;
+    });
     this.now = options.now ?? Date.now;
     this.artifactReferenceTtlMs = requireIntegerInRange(
       options.artifactReferenceTtlMs ?? DEFAULT_ARTIFACT_REFERENCE_TTL_MS,
@@ -307,7 +311,8 @@ export class SimulatorProjectArtifactCallbackAuthority {
   ): Promise<SimulatorSubappHostArtifactDescriptorV1> {
     this.requireProject(request.projectIdentity);
     this.requireActive(signal);
-    const artifact = await this.readManifest(signal, false);
+    const buildRoot = this.resolveBuildRoot();
+    const artifact = await this.readManifest(signal, false, buildRoot);
     if (!artifact) {
       throw new SimulatorHostProviderOperationError(
         'operation-failed',
@@ -321,7 +326,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
     ) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
-    const reference = await this.createReference(artifact, signal);
+    const reference = await this.createReference(artifact, signal, buildRoot!);
     return descriptorFromReference(reference);
   }
 
@@ -435,9 +440,11 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private async readManifest(
     signal: AbortSignal,
     allowMissing: boolean,
+    buildRoot: string | null = this.resolveBuildRoot(),
   ): Promise<SimulationArtifact | null> {
+    if (!buildRoot) return null;
     const bytes = await this.readRegularFile(
-      this.manifestFilePath,
+      this.files.join(buildRoot, 'aily-artifact-manifest.json'),
       MAX_MANIFEST_BYTES,
       signal,
       allowMissing,
@@ -455,8 +462,9 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private async createReference(
     artifact: SimulationArtifact,
     signal: AbortSignal,
+    buildRoot: string,
   ): Promise<ArtifactReference> {
-    const buildRootRealPath = await this.files.realpath(this.buildRoot, signal);
+    const buildRootRealPath = await this.files.realpath(buildRoot, signal);
     const fileEntries = new Map<string, Readonly<{
       filePath: string;
       sizeBytes: number;
@@ -464,7 +472,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
     for (const file of artifact.files) {
       const relativePath = requirePortableArtifactPath(file.path);
       const filePath = this.files.resolve(
-        this.buildRoot,
+        buildRoot,
         ...relativePath.split('/'),
       );
       const fileRealPath = await this.files.realpath(filePath, signal);

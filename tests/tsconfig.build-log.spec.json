@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/services/domains/build/coder-build-info.service.spec.ts",
+    "../src/app/services/domains/build/builder.service.spec.ts",
+    "../src/app/services/domains/build/builder-notification.spec.ts",
+    "../src/app/editors/blockly-editor/services/builder.service.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-build-completion.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-build-receipts.spec.ts",
+    "../src/app/services/integrations/automation/project-build-receipts.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

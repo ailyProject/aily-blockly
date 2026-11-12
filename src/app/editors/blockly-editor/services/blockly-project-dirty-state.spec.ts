@@ -19,6 +19,12 @@ describe('lightweight project title dirty state', () => {
   });
   afterEach(()=>state.reset());
 
+  it('keeps recovered unsaved content dirty until a real saved checkpoint is acknowledged', () => {
+    const saved = fixture(); document.pages[0].content.blocks.blocks[0].fields.TEXT = 'recovered';
+    state.recover(saved, document); expect(state.changed.value).toBeTrue();
+    state.remember(document); expect(state.changed.value).toBeFalse();
+  });
+
   it('does not capture on ordinary edits, repeated queries or viewport changes', fakeAsync(() => {
     for(let i=1;i<=100;i++) { state.viewport('one',{scale:1,scrollX:i,scrollY:0}); }
     expect(state.changed.value).toBeTrue();

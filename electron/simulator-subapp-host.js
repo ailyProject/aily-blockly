@@ -1710,7 +1710,7 @@ function resolveSimulatorSubappRuntime({ app, moduleDirectory }) {
     ),
   ]);
   if (!qemuExecutable) {
-    throw new Error('Aily patched QEMU runtime is unavailable.');
+    throw new Error('aily patched QEMU runtime is unavailable.');
   }
   const qemuDataDirectory = firstExistingDirectory([
     process.env.AILY_SIMULATOR_QEMU_DATA,

@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/integrations/blockly/abs/abs-protocol-discovery.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

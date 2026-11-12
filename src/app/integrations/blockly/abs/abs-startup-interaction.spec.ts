@@ -15,7 +15,9 @@ describe('generated artifact retry interaction boundary', () => {
     workspace = Blockly.inject(container, {toolbox: {kind: 'flyoutToolbox', contents: []}});
     component = Object.create(BlocklyComponent.prototype);
     Object.assign(component, {destroy$: new Subject(), generatedArtifactRetryToken: 0,
-      generatedArtifactRetryTimer: null, projectService: {currentProjectPath: '/project'},
+      generatedArtifactRetryTimer: null, projectService: {currentProjectPath: '/project',
+        isProjectTransitionInProgress: () => false, stateSubject: { value: 'loaded' }},
+      builderService: { isPreprocessing: () => false },
       blocklyService: {workspace, getWorkspaceContentRevision: jasmine.createSpy('captureRevision').and.returnValue(7)}});
     previousBuilder = window['builder'];
     window['builder'] = {publishArduinoGeneratedCode: jasmine.createSpy('publish')};

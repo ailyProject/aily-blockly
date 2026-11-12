@@ -16,14 +16,15 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * real model usage or billing evidence.
  */
 export async function createAbsStepSubmissionBridge({ interactionId, failAfterToolId, nextTool,
-  finalText = 'Isolated ABS edit, recovery, apply and compile completed.', liveRecovery }) {
+  finalText = 'Isolated ABS edit, recovery, apply and compile completed.', liveRecovery,
+  allowInterrupt = false }) {
   assert.match(interactionId, /^[a-zA-Z0-9_-]{1,128}$/)
   assert.equal(typeof nextTool, 'function')
   assert.equal(typeof finalText, 'string')
   if (liveRecovery) assert.ok(Number.isSafeInteger(liveRecovery.durationMs) && liveRecovery.durationMs > 0
     && liveRecovery.durationMs <= 40_000, 'Bound the live recovery fixture duration')
   const operations = new Map(), requests = [], failures = []
-  let droppedStep, createCount = 0, interruptCount = 0
+  let droppedStep, createCount = 0, interruptCount = 0, originalCreateIdentity
   const lease = step => `isolated-step-lease-${step}`
   const base = `/api/v3/interactions/${interactionId}`
   const operation = step => `${interactionId}:${step}`
@@ -120,9 +121,15 @@ export async function createAbsStepSubmissionBridge({ interactionId, failAfterTo
           chunks.push(chunk)
         }
         const raw = Buffer.concat(chunks).toString('utf8'), body = JSON.parse(raw)
+        if (allowInterrupt && url.pathname === '/api/v3/interactions/interrupt') {
+          assert.deepEqual(body, originalCreateIdentity, 'Only the exact original controlled interaction can be interrupted')
+          json(response, { status: 'interrupted' })
+          return
+        }
         if (url.pathname === '/api/v3/interactions') {
           assert.equal(++createCount, 1, 'The fixture permits only one original user interaction')
           assert.equal(body.request?.request_context?.interaction_recovery, 'operation_stream_v1')
+          originalCreateIdentity = { threadId: body.threadId, idempotencyKey: body.idempotencyKey }
           stream(response, await model(0))
           return
         }

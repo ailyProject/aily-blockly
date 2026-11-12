@@ -51,13 +51,13 @@ describe('SubappAgentBridgeService dependency materialization', () => {
       const channel = { pending: new Map([['old-runtime', { reject }]]) };
       service.handleMessage(channel, { data: JSON.stringify({
         id: 'old-runtime', ok: false, errorCode: 'SUBAPP_TOOL_METHOD_NOT_FOUND',
-        error: 'Unknown Aily Coder Agent method: coder.library.materialize',
+        error: 'Unknown aily Coder Agent method: coder.library.materialize',
       }) });
     }));
     const error = await service.materializeCoderProjectLibraries('/projects/new-coder').catch((value: any) => value);
     expect(error.code).toBe('CODER_RUNTIME_UPDATE_REQUIRED');
     expect(error.message).toContain('保存工程并重新启动');
-    expect(error.message).toContain('Unknown Aily Coder Agent method: coder.library.materialize');
+    expect(error.message).toContain('Unknown aily Coder Agent method: coder.library.materialize');
     expect(service.releaseSession).toHaveBeenCalledTimes(1);
   });
 });

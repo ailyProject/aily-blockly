@@ -14,13 +14,14 @@ test('recovery copies retain resources and source bytes but never inherit public
     'project.abs': 'unapplied draft', 'project.abs.map.json': 'old map',
     '.aily/abs-sync/committed.json': 'old pointer', '.aily/abs-sync/pending.json': 'pending journal',
     '.aily/data/resource.txt': 'retained resource', 'node_modules/fixture/package.json': '{}',
-    '.aily/project-files.write.lock': 'writer', '.build/aily-workspace.lock': 'owner' };
+    '.aily/project-files.write.lock': 'writer', '.build/aily-workspace.lock': 'owner',
+    '.aily/build-executions/run/project/node_modules/dependency.c': 'execution input' };
   for (const [file, text] of Object.entries(values)) {
     fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
     fs.writeFileSync(path.join(source, file), text);
   }
   copyRecoveryProjectDirectory(source, target);
-  for (const file of ['project.abs', 'project.abs.map.json', '.aily/abs-sync', '.aily/project-files.write.lock', '.build'])
+  for (const file of ['project.abs', 'project.abs.map.json', '.aily/abs-sync', '.aily/project-files.write.lock', '.build', '.aily/build-executions'])
     assert.equal(fs.existsSync(path.join(target, file)), false, file);
   for (const file of ['package.json', 'project.abi', '.aily/data/resource.txt', 'node_modules/fixture/package.json'])
     assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), values[file]);
@@ -74,11 +75,13 @@ test('project copies exclude writer/lifecycle transient files and preserve recov
   const id = '12345678-1234-1234-1234-123456789abc';
   const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
     `.project.abs.map.json.${id}.tmp`, `.project-data-backup.${id}.tmp`, `.abs-sync-${id}.tmp`,
-    `.aily/abs-sync/.abs-sync-${id}.tmp`, `.aily/abs-sync/baselines/.abs-sync-${id}.tmp`];
+    `.aily/abs-sync/.abs-sync-${id}.tmp`, `.aily/abs-sync/baselines/.abs-sync-${id}.tmp`,
+    '.aily/build-executions/run/project/node_modules/dependency.c'];
   const included = ['project.abi', 'project.abs', 'project.abs.map.json', 'project.abi.pre-project-data.bak', 'user.tmp',
     '.aily/abs-sync/recovery.json', '.aily/abs-sync/prepared.json', '.aily/abs-sync/baselines/g1.json',
     '.aily/abs-sync/user.tmp', `nested/.abs-sync-${id}.tmp`, '.aily/project-data-backups/original.abi', 'assets/project-data/ab/resource.bin',
-    'src/user.lock', 'nested/.aily/project-files.write.lock', 'nested/.aily/project-open.lock', `.project.abi.${'a'.repeat(36)}.tmp`];
+    'src/user.lock', 'nested/.aily/project-files.write.lock', 'nested/.aily/project-open.lock',
+    'nested/.aily/build-executions/data.txt', `.project.abi.${'a'.repeat(36)}.tmp`];
   for (const file of [...excluded, ...included]) {
     const full = path.join(source, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
   }
@@ -144,13 +147,16 @@ test('imports the actual project from a single archive wrapper and filters its l
   fs.writeFileSync(path.join(wrapped, 'package.json'), '{}'); fs.writeFileSync(path.join(wrapped, 'project.abi'), 'original');
   fs.writeFileSync(path.join(wrapped, '.aily/project-files.write.lock'), 'source owner');
   const runtimeFiles = ['.workspace-history/snapshot.json', '.temp/cache', '.log/output', '.build/firmware.bin'];
-  for (const file of runtimeFiles) {
+  const privateExecutionFile = '.aily/build-executions/run/project/node_modules/dependency.c';
+  for (const file of [...runtimeFiles, privateExecutionFile]) {
     const full = path.join(wrapped, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
   }
   const target = path.join(parent, 'copy with spaces');
   assert.equal(importProjectDirectory(source, target, true), target);
   assert.equal(fs.readFileSync(path.join(target, 'project.abi'), 'utf8'), 'original');
   assert.equal(fs.existsSync(path.join(target, '.aily/project-files.write.lock')), false);
+  assert.equal(fs.existsSync(path.join(target, '.aily/build-executions')), false);
+  assert.equal(fs.readFileSync(path.join(wrapped, privateExecutionFile), 'utf8'), privateExecutionFile);
   assert.equal(fs.readFileSync(path.join(wrapped, '.aily/project-files.write.lock'), 'utf8'), 'source owner');
   for (const file of runtimeFiles) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
 });
