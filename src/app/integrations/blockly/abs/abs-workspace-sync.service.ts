@@ -56,7 +56,7 @@ import { captureAbsBundledProcedures } from './abs-bundled-procedures';
 import { captureAbsBlockCapabilities } from './abs-block-capabilities';
 import { captureAbsCustomFunctions } from './abs-custom-functions';
 import { captureAbsVariableDeclarations } from './abs-declaration-intents';
-import { prepareAbsNativeReconciliation } from './abs-native-reconciliation';
+import { prepareAbsNativeReconciliation, type AbsNativeExecutor } from './abs-native-reconciliation';
 import { createAbsReconcilerFactory, type AbsReconcileOptions } from './abs-reconciler';
 import type { AbsNativeInstance } from './abs-native-binding';
 import { describePreparedAbsSyntax } from './abs-syntax-advice';
@@ -1367,6 +1367,21 @@ export class AbsWorkspaceSyncService {
       let preparedModels: NonNullable<AbsGenerationValidation['preparedModels']> = [];
       // Unlike assertPreparing, this guard does not capture the short-lived lease.
       let assertRuntimeCurrent = context.assertCurrent;
+      const createNativePreparation = async () => {
+        const replay = this.editor.captureNativeReplay();
+        assertRuntimeCurrent = () => { context.assertCurrent(); replay.assertCurrent(); };
+        const assertNative = () => { assertPreparing(); replay.assertCurrent(); };
+        // The detached realm needs cheap ownership checks during transport.
+        // The full program is checked before execution and before trusting its result.
+        const assertNativeScope = () => { assertRuntimeCurrent(); lease.assertCurrent(); };
+        const { evaluateNativeCandidate } = await import('../../../editors/blockly-editor/services/blockly-native-candidate');
+        const execute = createNativeCandidateRecovery((request, options) =>
+          evaluateNativeCandidate(request, { ...options, assertCurrent: assertNativeScope }), assertNative);
+        const executeWithReplay: AbsNativeExecutor = request =>
+          execute({ ...request, steps: replay.steps, graphics: replay.graphics });
+        return { assertNative, execute: executeWithReplay };
+      };
+      let nativePreparation: Awaited<ReturnType<typeof createNativePreparation>> | undefined;
       let needsNative = false;
       try {
         assertPreparing();
@@ -1403,20 +1418,10 @@ export class AbsWorkspaceSyncService {
           const previous = this.nativeFailures.matching(failureKey);
           if (previous) throw previous;
         }
-        const replay = this.editor.captureNativeReplay();
-        assertRuntimeCurrent = () => { context.assertCurrent(); replay.assertCurrent(); };
-        const assertNative = () => { assertPreparing(); replay.assertCurrent(); };
-        // The realm only sees detached input and cannot access the host workspace.
-        // Keep cheap ownership/runtime checks inside its transport; reconciliation
-        // checks the full host program before and after each isolated execution,
-        // before trusting the result. Do not reserialize it at every iframe event.
-        const assertNativeScope = () => { assertRuntimeCurrent(); lease.assertCurrent(); };
-        const { evaluateNativeCandidate } = await import('../../../editors/blockly-editor/services/blockly-native-candidate');
-        const execute = createNativeCandidateRecovery((request, options) =>
-          evaluateNativeCandidate(request, { ...options, assertCurrent: assertNativeScope }), assertNative);
+        nativePreparation = await createNativePreparation();
+        const { assertNative, execute } = nativePreparation;
         try {
-          const prepared = await prepareAbsNativeReconciliation(reconciler, reconcileOptions,
-            request => execute({ ...request, steps: replay.steps, graphics: replay.graphics }), assertNative);
+          const prepared = await prepareAbsNativeReconciliation(reconciler, reconcileOptions, execute, assertNative);
           ({ candidate, materialized, instances, preparedModels } = prepared);
         } catch (error) {
           // Only detached preparation is recoverable here. No apply/save is replayed.
@@ -1500,19 +1505,19 @@ export class AbsWorkspaceSyncService {
       if (requestPriority && this.editor.captureNativeReplay) {
         // Reconciliation verifies its own draft. The strict merge may retain
         // additional current nodes/models; verify that final target separately.
-        const replay = this.editor.captureNativeReplay();
-        const { evaluateNativeCandidate } = await import('../../../editors/blockly-editor/services/blockly-native-candidate');
+        nativePreparation ??= await createNativePreparation();
+        const { assertNative, execute } = nativePreparation;
         const identities = new Map(candidate.identities.map(item => [item.start, item.id]));
         const pageStates = fullDocument ? fullDocument.pages.filter(page => {
           const old = current.document.pages.find(item => item.id === page.id);
           return page.id === context.scope.pageId || !old || !sameAbsProgram(composeBlocklyPage(current.document, page.id), composeBlocklyPage(fullDocument!, page.id));
         }).map(page => composeBlocklyPage(fullDocument!, page.id)) : [materialized];
         for (const state of pageStates) {
-          const verified = await evaluateNativeCandidate({ steps: replay.steps, graphics: replay.graphics, blocks: [],
+          const verified = await execute({ blocks: [],
             values: await captureAbsNativeValues(state, assertPreparing), verify: { state, contracts: candidate.contracts,
               newRootIds: state.blocks.blocks.filter(block => candidate.added.includes(block.id)).map(block => block.id),
-              ...(preparedModels.length ? { modelDeclarations: preparedModels.map(item => ({ ...item, ownerId: identities.get(item.start)! })) } : {}) } },
-            { assertCurrent: () => { assertPreparing(); replay.assertCurrent(); } });
+              ...(preparedModels.length ? { modelDeclarations: preparedModels.map(item => ({ ...item, ownerId: identities.get(item.start)! })) } : {}) } });
+          assertNative();
           assertAbsReadback(state, normalizeAbsSerializedWorkspace(verified.state), {
             fieldDefinition: (_type, name, id) => candidate.contracts.fields[id]?.[name],
           });
