@@ -4,8 +4,23 @@ import { AilyDataRef, createAilyProjectDataValue } from './project-data.types';
 import { canonicalJsonStringify } from './project-data-codec.registry';
 import * as Blockly from 'blockly';
 import { ProjectDataStore } from './project-data-store';
+import { cloneProjectDataJson } from './project-data-payloads';
 
 describe('generic Project Data payload boundaries', () => {
+  it('copies project payloads through long statement chains without changing JSON semantics', () => {
+    let block: any = { type: 'text', fields: { TEXT: '界' }, data: [undefined, Infinity] };
+    for (let index = 0; index < 3000; index++) block = { type: 'text', next: { block } };
+    const copy = cloneProjectDataJson({ blocks: { blocks: [block] } });
+    let copied = copy.blocks.blocks[0];
+    for (let index = 0; index < 3000; index++) {
+      expect(copied).not.toBe(block);
+      copied = copied.next.block;
+      block = block.next.block;
+    }
+    expect(copied).not.toBe(block);
+    expect(copied.data).toEqual([null, null]);
+    expect(copied.fields).toEqual({ TEXT: '界' });
+  });
   it('preserves canonical bytes, repeated references, sparse arrays and numeric key ordering', () => {
     const shared = { z: '界😀', a: -0 };
     const value = { z: [shared, shared], a: { 10: true, 2: false }, b: new Array(2) };

@@ -1,3 +1,4 @@
+import { cloneBlocklyJson } from '../project-document-json';
 import { isAilyDataRef, isAilyProjectDataValue, ProjectDataError } from './project-data.types';
 
 export interface ProjectDataPayload {
@@ -162,6 +163,6 @@ export function containsProjectDataReference(value: unknown): boolean {
 }
 
 export function cloneProjectDataJson<T>(value: T): T {
-  try { return JSON.parse(JSON.stringify(value)); }
+  try { return cloneBlocklyJson(value); }
   catch (error) { throw new ProjectDataError('corrupt', 'Project document is not serializable JSON.', { cause: String(error) }); }
 }
