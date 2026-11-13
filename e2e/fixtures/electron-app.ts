@@ -38,6 +38,8 @@ type LaunchedAilyElectron = {
 export async function launchAilyElectron(options: {
   environment?: Readonly<Record<string, string>>;
   config?: Readonly<Record<string, unknown>>;
+  /** Serve a frozen build through the real production renderer server. */
+  rendererDirectory?: string;
 } = {}): Promise<LaunchedAilyElectron> {
   assertElectronCanLaunch();
 
@@ -80,8 +82,24 @@ export async function launchAilyElectron(options: {
     if (options.config) {
       await writeFile(path.join(userDataDir, 'config.json'), JSON.stringify(options.config), 'utf8');
     }
+    let entry = '.', serve = Boolean(process.env['AILY_E2E_DEV_URL']);
+    if (options.rendererDirectory) {
+      entry = path.join(userDataDir, 'renderer-bootstrap.cjs'); serve = false;
+      await writeFile(entry, `
+const path = require('node:path');
+const root = ${JSON.stringify(ROOT)}, directory = ${JSON.stringify(path.resolve(options.rendererDirectory))};
+process.env.AILY_APP_VERSION = require(path.join(root, 'package.json')).version;
+const renderer = require(path.join(root, 'electron/packaged-renderer-server'));
+const create = renderer.createPackagedRendererServer;
+renderer.createPackagedRendererServer = options => {
+  const server = create(options);
+  return { ...server, start: options => server.start({ ...options, rootDirectory: directory }) };
+};
+require(path.join(root, 'electron/main.js'));
+`);
+    }
     app = await _electron.launch({
-      args: ['.', ...(process.env['AILY_E2E_DEV_URL'] ? ['--serve'] : []), `--user-data-dir=${userDataDir}`],
+      args: [entry, ...(serve ? ['--serve'] : []), `--user-data-dir=${userDataDir}`],
       cwd: ROOT,
       timeout: 60_000,
       env: {
@@ -94,7 +112,7 @@ export async function launchAilyElectron(options: {
     });
     // The normal dev URL already matches main-process window ownership checks.
     // Redirecting it to itself would loop and prevent any renderer from loading.
-    if (process.env['AILY_E2E_DEV_URL'] && !/^http:\/\/localhost:4200\/?$/.test(process.env['AILY_E2E_DEV_URL'])) {
+    if (!options.rendererDirectory && process.env['AILY_E2E_DEV_URL'] && !/^http:\/\/localhost:4200\/?$/.test(process.env['AILY_E2E_DEV_URL'])) {
       await app.context().route('http://localhost:4200/**', route => route.fulfill({
         status: 302, headers: { location: process.env['AILY_E2E_DEV_URL']! },
       }));

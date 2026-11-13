@@ -2484,7 +2484,16 @@ export class ProjectService {
   }
 
   // Manual save and exit retain their original completion, not an Action timer.
-  async save(path = this.currentProjectPath, _feedbackTimeoutMs?: number, publicationRequest?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult & { path?: string; saveReceipt?: ProjectSaveReceipt }> {
+  save(path = this.currentProjectPath, _feedbackTimeoutMs?: number, publicationRequest?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult & { path?: string; saveReceipt?: ProjectSaveReceipt }> {
+    return this.saveWithPresentation(path, publicationRequest, false);
+  }
+
+  /** Same durable publication as manual save, without foreground progress or success messages. */
+  saveInBackground(path = this.currentProjectPath): ReturnType<ProjectService['save']> {
+    return this.saveWithPresentation(path, undefined, true);
+  }
+
+  private async saveWithPresentation(path: string, publicationRequest: ProjectSaveRequest | undefined, background: boolean): ReturnType<ProjectService['save']> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
     if (this.getProjectMode(path) !== 'coder') {
       try { requireProjectProgramPublication(); }
@@ -2497,7 +2506,7 @@ export class ProjectService {
     const request: ProjectSaveRequest = publicationRequest ?? { version: durable ? 2 : 1, operation: 'project_save',
       requestId: durable ? `pub2-${crypto.randomUUID()}` : `ui-save-${Date.now().toString(36)}-${this.saveRequestSequence}` };
     const response = await this.projectSaveReceipts.execute(path, request, context,
-      this.guardSaveContext(path, context, () => this.saveProjectActual(path, durable ? request : undefined)));
+      this.guardSaveContext(path, context, () => this.saveProjectActual(path, durable ? request : undefined, background)));
     const result = response.result;
     if (!result) return { success: false, path, saveReceipt: response.saveReceipt,
       code: response.code ?? 'PROJECT_SAVE_PUBLICATION_PENDING',
@@ -2507,7 +2516,7 @@ export class ProjectService {
     return { ...result, success, path, saveReceipt: response.saveReceipt };
   }
 
-  private async saveProjectActual(path: string, request?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult & { path?: string }> {
+  private async saveProjectActual(path: string, request?: ProjectSaveRequest, background = false): Promise<ProjectSaveDispatchResult & { path?: string }> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
     if (this.isProjectOpening && this.getProjectMode(path) !== 'coder') {
       return Promise.resolve({
@@ -2533,11 +2542,12 @@ export class ProjectService {
 
     const session = this.dependencyLifecycle.get(path);
     const current = () => this.currentProjectPath === path && this.dependencyLifecycle.get(path) === session && !session?.signal.aborted;
-    if (current()) this.stateSubject.next('saving');
+    if (current() && !background) this.stateSubject.next('saving');
     let outcome: Partial<ProjectSaveOutcome> = {};
     try {
       if (await this.prepareResolvedLibraryChangesForSave(path) && this.getProjectMode(path) !== 'coder') await this.ensureBlocklyLibraryRuntimeReady(path);
-      const result = request ? await this.application.dispatchProjectSave(path, 0, request)
+      const result = background ? await this.application.dispatchProjectSave(path, 0, request, true)
+        : request ? await this.application.dispatchProjectSave(path, 0, request)
         : await this.application.dispatchProjectSave(path, 0);
       if (result?.projectSaved !== undefined) outcome = { ...result };
       if (result?.success !== true) throw Object.assign(new Error(result?.error || '编辑器未确认保存成功'),
@@ -2548,14 +2558,14 @@ export class ProjectService {
         const manifest = await this.getPackageJson();
         if (current()) {
           this.currentPackageData = manifest;
-          this.stateSubject.next('saved');
+          if (!background) this.stateSubject.next('saved');
         }
       }
       return { ...outcome, success: true, path };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('项目保存失败:', message);
-      if (current()) this.stateSubject.next(outcome.projectSaved ? 'saved' : 'error');
+      if (current() && !background) this.stateSubject.next(outcome.projectSaved ? 'saved' : 'error');
       return { ...outcome, success: false, error: message, path,
         ...(typeof (error as { code?: unknown })?.code === 'string' ? { code: (error as { code: string }).code } : {}) };
     }

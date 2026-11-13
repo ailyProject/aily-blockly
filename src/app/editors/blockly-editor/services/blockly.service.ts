@@ -1417,8 +1417,8 @@ export class BlocklyService {
     } catch { return false; }
   }
 
-  acquireWorkspaceEditLease(): BlocklyWorkspaceEditLease {
-    return this.fenceEditLease(this.workspaceEditGate.acquire());
+  acquireWorkspaceEditLease(options: { background?: boolean } = {}): BlocklyWorkspaceEditLease {
+    return this.fenceEditLease(this.workspaceEditGate.acquire(), options);
   }
 
   acquireWorkspaceRecoveryLease(grant: BlocklyWorkspaceRecoveryGrant): BlocklyWorkspaceRecoveryLease {
@@ -1434,17 +1434,17 @@ export class BlocklyService {
     return lease;
   }
 
-  private trackWorkspaceLeaseActivity(lease: BlocklyWorkspaceEditLease): () => void {
+  private trackWorkspaceLeaseActivity(lease: BlocklyWorkspaceEditLease, showActivity = true): () => void {
     this.activeWorkspaceLease = lease;
-    this.setAiWritingActive('workspace-edit-lease', true);
+    if (showActivity) this.setAiWritingActive('workspace-edit-lease', true);
     return () => {
       if (this.activeWorkspaceLease !== lease) return;
       this.activeWorkspaceLease = undefined;
-      this.setAiWritingActive('workspace-edit-lease', false);
+      if (showActivity) this.setAiWritingActive('workspace-edit-lease', false);
     };
   }
 
-  private fenceEditLease<T extends BlocklyWorkspaceEditLease>(lease: T): T {
+  private fenceEditLease<T extends BlocklyWorkspaceEditLease>(lease: T, options: { background?: boolean } = {}): T {
     const workspace = this.workspace;
     let quarantined = false;
     let cleanup = () => undefined;
@@ -1452,10 +1452,12 @@ export class BlocklyService {
     const quarantine = lease.quarantine;
     let releaseActivity = () => {};
     try {
-      cleanup = fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined);
-      workspace?.cancelCurrentGesture?.();
-      workspace?.hideChaff?.();
-      releaseActivity = this.trackWorkspaceLeaseActivity(lease);
+      cleanup = fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined, { allowNavigation: options.background });
+      if (!options.background) {
+        workspace?.cancelCurrentGesture?.();
+        workspace?.hideChaff?.();
+      }
+      releaseActivity = this.trackWorkspaceLeaseActivity(lease, !options.background);
     } catch (error) { cleanup(); release(); throw error; }
     let releasedInput = false;
     const releaseInput = () => {

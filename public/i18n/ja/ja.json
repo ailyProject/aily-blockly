@@ -1086,7 +1086,7 @@
     "PROJECT": {
     "AUTO_SAVE_PENDING": "Unsaved",
     "AUTO_SAVE_SAVING": "Saving…",
-    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_SAVED": "Auto save succeeded",
     "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "AI タスクを実行中です。完了してから名前を付けて保存してください。",
       "OPEN_IN_CODER": "Open in aily coder",

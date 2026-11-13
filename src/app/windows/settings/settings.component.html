@@ -122,7 +122,7 @@
             <div class="right-inner">
               <div class="item">
                 <div><label for="blockly-autosave">{{ 'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE' | translate }}:</label></div>
-                <nz-switch nzId="blockly-autosave" [ngModel]="configData.blockly.autoSave !== false"
+                <nz-switch nzId="blockly-autosave" [ngModel]="configData.blockly.autoSave === true"
                   (ngModelChange)="saveBlocklyPreference('autoSave', $event)"
                   nz-tooltip [nzTooltipTitle]="'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE_HINT' | translate"></nz-switch>
               </div>

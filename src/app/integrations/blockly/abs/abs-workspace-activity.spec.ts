@@ -19,6 +19,26 @@ describe('workspace execution and protected recovery activity', () => {
   afterEach(() => { service.clearAiWaitWriting(); internal.releaseWorkspaceInputFence?.(); root.remove(); });
   const click = () => root.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
+  it('keeps background save leases out of the AI mask and permits canvas navigation', () => {
+    const background = document.createElement('div'); background.className = 'blocklyMainBackground'; root.append(background);
+    const cancel = spyOn(internal._workspace, 'cancelCurrentGesture');
+    const hide = spyOn(internal._workspace, 'hideChaff');
+    const lease = service.acquireWorkspaceEditLease({ background: true });
+    expect(service.aiWriting).toBeFalse(); expect(service.isWorkspaceEditInProgress()).toBeTrue();
+    expect(background.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))).toBeTrue();
+    expect(background.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true }))).toBeTrue();
+    expect(cancel).not.toHaveBeenCalled(); expect(hide).not.toHaveBeenCalled();
+    expect(click()).toBeFalse();
+    lease.release(); expect(service.aiWriting).toBeFalse(); expect(click()).toBeTrue();
+  });
+
+  it('never hides another active writer when a silent save releases', () => {
+    service.setAiWritingActive('other-operation', true);
+    const lease = service.acquireWorkspaceEditLease({ background: true }); lease.release();
+    expect(service.aiWriting).toBeTrue(); service.setAiWritingActive('other-operation', false);
+    expect(service.aiWriting).toBeFalse();
+  });
+
   it('ends a failed writer activity while retaining its fence and grant-bound recovery', () => {
     const changes: boolean[] = []; internal.workspaceRecoveryRequiredSubject.subscribe(value => changes.push(value));
     const lease = service.acquireWorkspaceEditLease();

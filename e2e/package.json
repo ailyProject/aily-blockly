@@ -2,6 +2,7 @@
   "name": "aily-blockly-e2e",
   "private": true,
   "scripts": {
+    "test:project-auto-save": "cd .. && cross-env AILY_E2E_DEV_URL=http://localhost:4200 playwright test -c e2e/project-auto-save.config.ts",
     "test:customer-project-baseline": "cd .. && node e2e/electron/customer-project-baseline.acceptance.mjs",
     "test:issue787-save-restart": "cd .. && node e2e/electron/issue787-save-restart.acceptance.mjs",
     "test:window-restore": "cd .. && node e2e/electron/window-restore.acceptance.mjs",

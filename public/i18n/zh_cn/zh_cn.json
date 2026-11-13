@@ -1234,7 +1234,7 @@
     "PROJECT": {
     "AUTO_SAVE_PENDING": "待保存",
     "AUTO_SAVE_SAVING": "保存中…",
-    "AUTO_SAVE_SAVED": "已保存",
+    "AUTO_SAVE_SAVED": "自动保存成功",
     "AUTO_SAVE_ERROR": "自动保存失败",
         "SAVE_AS_AI_BUSY": "AI 任务正在运行，请等待完成后再另存为。",
       "OPEN_IN_CODER": "使用 aily coder 打开",

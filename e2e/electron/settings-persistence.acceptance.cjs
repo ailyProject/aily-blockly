@@ -22,6 +22,8 @@ process.env.USERPROFILE=profile; process.env.PI_CODING_AGENT_DIR=path.join(profi
 fs.mkdirSync(process.env.AILY_APPDATA_PATH,{recursive:true});
 const config=JSON.parse(fs.readFileSync(path.join(root,'electron/config/config.json')));
 config.onboardingCompleted=true; config.project_path=path.join(profile,'projects'); config.metricsEnabled=false;
+// Legacy profiles without this preference must also start with autosave off.
+delete config.blockly.autoSave;
 fs.writeFileSync(path.join(process.env.AILY_APPDATA_PATH,'config.json'),JSON.stringify(config));
 // Override only the fixture's asset location; production IPC/window code is unchanged.
 const renderer=require(path.join(root,'electron/packaged-renderer-server'));
@@ -54,13 +56,14 @@ async function main() {
     let settings = await openSettings();
     settings.on('pageerror', error => errors.push(error.message));
     await expect(settings.locator('#blockly-autosave')).toBeAttached();
+    await expect(settings.locator('#blockly-autosave')).not.toHaveClass(/ant-switch-checked/);
     await settings.getByText('Zelos', {exact:true}).click();
     await expect(settings.locator('.blockly-save-status')).toContainText(/已自动保存|Saved automatically/);
     const configPath = path.join(profile, 'data/config.json');
     const saved = () => JSON.parse(fs.readFileSync(configPath, 'utf8'));
     assert.equal(saved().blockly.renderer, 'zelos');
     await settings.locator('#blockly-autosave').click();
-    await expect.poll(() => saved().blockly.autoSave).toBe(false);
+    await expect.poll(() => saved().blockly.autoSave).toBe(true);
     await expect(settings.locator('.blockly-save-status')).toContainText(/已自动保存|Saved automatically/);
     await settings.screenshot({path:path.join(output,'settings-saved.png')});
     // Destroy only this isolated test's settings window so reopening reads disk.
@@ -68,9 +71,9 @@ async function main() {
     await expect.poll(() => settings.isClosed()).toBe(true);
     settings = await openSettings();
     await expect.poll(() => settings.evaluate(() => window.ng.getComponent(document.querySelector('app-settings')).configData.blockly.renderer)).toBe('zelos');
-    await expect(settings.locator('#blockly-autosave')).not.toHaveClass(/ant-switch-checked/);
+    await expect(settings.locator('#blockly-autosave')).toHaveClass(/ant-switch-checked/);
     await settings.locator('#blockly-autosave').click();
-    await expect.poll(() => saved().blockly.autoSave).toBe(true);
+    await expect.poll(() => saved().blockly.autoSave).toBe(false);
     assert.deepEqual(errors, []);
     const result = {passed:true,checks:['auto-save setting is visible','select Zelos persists to actual config file','new settings renderer reads Zelos after window destruction','project auto-save toggle persists both states']};
     fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));

@@ -78,6 +78,7 @@ child/aily-builder*
 /tests/.artifacts/
 /tests/out-tsc/
 /tests/test-results/
+/tests/.project-auto-save-*.log
 
 # Playwright E2E
 /renderer
@@ -93,6 +94,8 @@ child/aily-builder*
 /e2e/.results/serial-issues/
 /e2e/.results/settings-persistence/
 /e2e/.results/serial-issues-build.log
+/e2e/.results/project-auto-save-*/
+/e2e/.results/project-auto-save-*.log
 /tests/serial-issues-test.log
 /tests/.results/time-discovery/
 /tests/.results/npm-mutation-queue/

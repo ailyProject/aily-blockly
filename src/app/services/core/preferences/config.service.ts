@@ -2181,7 +2181,7 @@ interface AppConfig {
   devToolPosition?: { x: number; y: number };
 
   blockly: {
-    autoSave?: boolean;
+    autoSave?: boolean; // 工程自动保存，缺省时关闭
     renderer: string; // Blockly渲染器
     sounds?: boolean; // 操作音效，缺省时开启
     viewportRendering?: boolean;

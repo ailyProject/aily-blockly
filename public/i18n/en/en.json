@@ -1238,7 +1238,7 @@
     "PROJECT": {
     "AUTO_SAVE_PENDING": "Unsaved",
     "AUTO_SAVE_SAVING": "Saving…",
-    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_SAVED": "Auto save succeeded",
     "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "An AI task is running. Please wait for it to finish before saving as a new project.",
       "OPEN_IN_CODER": "Open in aily coder",

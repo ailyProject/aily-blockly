@@ -137,12 +137,12 @@ export class AbsWorkspaceSyncService {
   };
   constructor(private readonly editor: BlocklyService, private readonly project: _ProjectService,
     @Optional() private readonly zone?: NgZone) {
-    this.project.setAbsSaveHandler?.(async (path, request) => {
+    this.project.setAbsSaveHandler?.(async (path, request, background) => {
       if (path !== this.project.currentProjectPath) throw new AbsSyncError('ABS_CONTEXT_STALE', 'Save belongs to another project.');
       requireProjectProgramPublication();
       if (request && request.version !== 2) throw new AbsSyncError('PROJECT_SAVE_PROTOCOL_UPGRADE_REQUIRED',
         'The current publisher requires its matching durable protocol. No legacy save was started.');
-      return this.saveDocument(path, request ?? { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' });
+      return this.saveDocument(path, request ?? { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' }, undefined, background);
     });
     this.project.setAbsSaveAsHandler?.(path => this.captureSaveAsSnapshot(path));
     this.project.setAbsRuntimeMutationHandler?.((path, mutate, request) => this.saveDocument(path,
@@ -175,7 +175,7 @@ export class AbsWorkspaceSyncService {
    * The existing operation journal preserves the latest full Working view
    * before mutation; export reuses that same checkpoint and commit kernel. */
   private async saveDocument(path: string, request: ProjectSaveRequest,
-    change?: { runtime: OwnedBlocklyDocumentMutation } | { history: AbsHistoryPublicationRequest<HistoryEnvironmentPlan> }): Promise<ProjectSaveOutcome> {
+    change?: { runtime: OwnedBlocklyDocumentMutation } | { history: AbsHistoryPublicationRequest<HistoryEnvironmentPlan> }, background = false): Promise<ProjectSaveOutcome> {
     requireProjectProgramPublication();
     const prepared = await this.run(async (initialContext, lease, initialStore) => {
       let context = initialContext, store = initialStore;
@@ -287,7 +287,7 @@ export class AbsWorkspaceSyncService {
           throw error;
         }
       }
-    }, true, !!change);
+    }, true, !!change, true, background);
     if ('original' in prepared) {
       const response = nativeSaveObservationResponse(prepared.project, prepared.identity, prepared.original!, prepared.port.executor);
       if (response?.saveReceipt.state === 'completed' && response.result) return response.result as unknown as ProjectSaveOutcome;
@@ -2336,11 +2336,11 @@ export class AbsWorkspaceSyncService {
 
   releaseHistoryNavigation(_token: string): void { /* No cross-request writer lease exists in this protocol. */ }
 
-  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore) => Promise<T>, flush = true, allowPageChange = false, repairLocation = true): Promise<T> {
+  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore) => Promise<T>, flush = true, allowPageChange = false, repairLocation = true, background = false): Promise<T> {
     const context = this.context(allowPageChange); // Before queueing, not when an old task eventually starts.
     return this.editor.runProjectOperation(async () => {
       context.assertCurrent();
-      const lease = this.editor.acquireWorkspaceEditLease();
+      const lease = background ? this.editor.acquireWorkspaceEditLease({ background: true }) : this.editor.acquireWorkspaceEditLease();
       let releaseLayout = () => undefined;
       try {
         releaseLayout = fenceBlocklyWorkspaceBumps(context.workspace);
