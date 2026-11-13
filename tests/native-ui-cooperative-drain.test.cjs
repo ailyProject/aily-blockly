@@ -32,7 +32,7 @@ test('a real host macrotask runs between complete checked UI slices', async () =
   setTimeout(() => { heartbeat = calls.length; }, 0);
   await queue.drainCooperatively(() => { snapshots++; return '{}'; }, async () => { yields++; await hostTurn(); }, () => {});
   assert.deepEqual(calls, Array.from({ length: 20 }, (_, i) => i));
-  assert.equal(heartbeat, 8); assert.equal(yields, 2); assert.equal(snapshots, 21 + yields);
+  assert.equal(heartbeat, 8); assert.equal(yields, 2); assert.equal(snapshots, 2);
 });
 
 test('elapsed CPU slices and stable virtual timer ordering do not use real timer delays', async () => {
@@ -46,16 +46,40 @@ test('elapsed CPU slices and stable virtual timer ordering do not use real timer
   assert.equal(yields, 9);
 });
 
-test('neither an individual task nor an interleaved observer can mutate and later restore persisted meaning', async () => {
-  for (const outside of [false, true]) {
-    let state = 0, calls = 0; const queue = new NativeUiTasks(undefined, () => 0);
-    if (outside) for (let i = 0; i < 8; i++) queue.set(() => { calls++; });
-    else queue.set(() => { state = 1; calls++; });
-    queue.set(() => { state = 0; calls++; });
-    await assert.rejects(queue.drainCooperatively(() => JSON.stringify({ state }), async () => { state = 1; }, () => {}),
-      { code: 'ABS_NATIVE_UI_CONTRACT_CHANGED' });
-    assert.equal(calls, outside ? 8 : 1); assert.equal(queue.hasPending, false);
+test('a phase may restore intermediate state while final persisted changes remain rejected', async () => {
+  for (const restored of [false, true]) {
+    let state = 0, calls = 0;
+    const queue = new NativeUiTasks(undefined, () => 0);
+
+    queue.set(() => { state = 1; calls++; });
+    queue.set(() => { if (restored) state = 0; calls++; });
+
+    const drain = queue.drainCooperatively(() => JSON.stringify({ state }), async () => {}, () => {});
+
+    if (restored) await drain;
+    else {
+      await assert.rejects(drain, { code: 'ABS_NATIVE_UI_CONTRACT_CHANGED' });
+      assert.throws(() => queue.set(() => {}), { code: 'ABS_NATIVE_UI_CONTRACT_CHANGED' });
+    }
+
+    assert.equal(calls, 2);
+    assert.equal(queue.hasPending, false);
   }
+});
+
+test('host-turn changes are checked against the complete phase result', async () => {
+  let state = 0, snapshots = 0;
+  const queue = new NativeUiTasks(undefined, () => 0);
+
+  for (let i = 0; i < 9; i++) queue.set(() => {});
+
+  await assert.rejects(queue.drainCooperatively(() => {
+    snapshots++;
+    return JSON.stringify({ state });
+  }, async () => { state = 1; }, () => {}), { code: 'ABS_NATIVE_UI_CONTRACT_CHANGED' });
+
+  assert.equal(snapshots, 2);
+  assert.equal(queue.hasPending, false);
 });
 
 test('changed guard, disposal and failed scheduler stop the original queue without another callback', async () => {
@@ -77,15 +101,62 @@ test('host yielding does not admit asynchronous callbacks or reset the finite li
   const queue = new NativeUiTasks(undefined, () => 0); let calls = 0, snapshots = 0;
   for (let i = 0; i < 512; i++) queue.set(() => { calls++; });
   await queue.drainCooperatively(() => { snapshots++; return '{}'; }, async () => {}, () => {});
-  assert.equal(calls, 512); assert.equal(snapshots, 513 + 63);
+  assert.equal(calls, 512); assert.equal(snapshots, 2);
   assert.throws(() => queue.set(() => {}), { code: 'ABS_LIMIT' });
 });
 
-test('empty queues do not schedule and original synchronous callers retain C+1 full snapshots', async () => {
+test('empty queues do not schedule and synchronous callers compare the complete phase twice', async () => {
   const empty = new NativeUiTasks();
   await empty.drainCooperatively(() => assert.fail('empty snapshot'), async () => assert.fail('empty yield'), () => {});
   const sync = new NativeUiTasks(); let calls = 0, snapshots = 0;
   for (let i = 0; i < 20; i++) sync.set(() => { calls++; });
   sync.drain(() => { snapshots++; return '{}'; });
-  assert.equal(calls, 20); assert.equal(snapshots, 21);
+  assert.equal(calls, 20); assert.equal(snapshots, 2);
+});
+
+
+test('slow full-workspace reads do not multiply with callback count, yields or nested work', async () => {
+  for (const count of [1, 17, 162]) {
+    let now = 0, snapshots = 0, calls = 0;
+    const queue = new NativeUiTasks(undefined, () => now);
+
+    for (let i = 0; i < count; i++) queue.set(() => {
+      calls++;
+      now += 9;
+      if (i === 0) queue.set(() => { calls++; });
+    });
+
+    await queue.drainCooperatively(() => {
+      snapshots++;
+      now += 150;
+      return JSON.stringify({ blocks: Array.from({ length: 2400 }, (_, id) => ({ id })) });
+    }, async () => {}, () => {});
+
+    assert.equal(calls, count + 1);
+    assert.equal(snapshots, 2);
+  }
+});
+
+test('callback and snapshot failures stay terminal without extra diagnostic snapshots', async () => {
+  for (const failureAt of ['callback', 'initial-read', 'final-read']) {
+    const failure = Error(failureAt);
+    const queue = new NativeUiTasks();
+    let snapshots = 0, calls = 0;
+
+    queue.set(() => {
+      calls++;
+      if (failureAt === 'callback') throw failure;
+    });
+
+    assert.throws(() => queue.drain(() => {
+      snapshots++;
+      if (failureAt === 'initial-read' || (failureAt === 'final-read' && snapshots === 2)) throw failure;
+      return '{}';
+    }), error => error === failure);
+
+    assert.equal(snapshots, failureAt === 'final-read' ? 2 : 1);
+    assert.equal(calls, failureAt === 'initial-read' ? 0 : 1);
+    assert.equal(queue.hasPending, false);
+    assert.throws(() => queue.set(() => {}), error => error === failure);
+  }
 });

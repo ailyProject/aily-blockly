@@ -1,10 +1,11 @@
 import { retainBlocklyHistory } from './blockly-library-history';
+import type { ProjectSaveRequest } from '@domain/project/public-api';
 import { Injectable, Optional } from '@angular/core';
 import { Subscription, merge } from 'rxjs';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyLibraryRuntimeRebuildOptions, BlocklyProjectDocument, BlocklyService } from './blockly.service';
 import { ActionService, NoticeService } from '@core/app-shell/public-api';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
-import { ElectronService, ProjectFilePublicationError } from '@core/platform/public-api';
+import { ElectronService, publishProjectText } from '@core/platform/public-api';
 import {
   projectDataRuntime,
   canonicalProjectJsonStringify,
@@ -14,7 +15,7 @@ import {
   type ProjectSaveOutcome,
 } from '@domain/project/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
-import { isBuildWorkspaceBusyError, isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArtifacts,
+import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts,
   type GeneratedSourcePublicationOptions, type GeneratedSourcePublicationReceipt } from './generated-code-artifacts';
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
@@ -22,11 +23,26 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave, ProjectSaveDataRuntime } from './prepared-project-save';
 import { fenceBlocklyWorkspaceInput, type BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
+import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
+import { AbsOperationJournal, type NativeSaveOperationRef } from '../../../integrations/blockly/abs/abs-operation-journal';
+import type { RuntimePublicationObservation } from '../../../integrations/blockly/abs/abs-runtime-publication-observation';
+import { settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
 import type { AbsLoadNormalizationInput, AbsLoadNormalizationOutcome } from '../../../integrations/blockly/abs/abs-load-normalization';
-import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent } from '@shared/public-api';
+import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent, requireProjectProgramPublication } from '@shared/public-api';
 import { publishAbsRecoveryCopy } from '../../../integrations/blockly/abs/abs-recovery-copy';
+import { readHistoryEnvironment, type HistoryEnvironmentPlan } from '../../../integrations/blockly/history-environment';
+import { isAilyLibraryPackageName } from '@shared/public-api';
+import { settleLinkedProjectEnvironment } from '../../../integrations/blockly/environment-settlement';
 import { describeRuntimeRecovery, runtimeRecoveryInput, runtimeRecoveryLibraries, type RuntimeRecoveryDescription,
   type RuntimeRecoveryRecord } from './blockly-library-runtime-recovery';
+
+export type OwnedBlocklyDocumentMutation = (lease: BlocklyWorkspaceEditLease,
+  assertCurrent: () => void, publication: NativeSaveOperationRef) => Promise<void>;
+export interface BlocklyEnvironmentRuntimeReadback {
+  packageJson: any; boardConfig: any; fingerprint: string; libraryNames?: string[];
+  assertCurrent(): void; acknowledge(): boolean;
+}
+export type BlocklyRuntimeMutationObservation = RuntimePublicationObservation;
 
 const actionFailure = (error: unknown): { error: string; code?: string } => {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
@@ -46,6 +62,71 @@ export class _ProjectService {
   private runtimeRecovery?: RuntimeRecoveryRecord;
   private preprocessSaveGuard?: (path: string) => Promise<() => void>;
   private deferredSaveOutputs?: { timer?: ReturnType<typeof setTimeout> };
+  private environmentRuntimeReader?: (project: string) => Promise<BlocklyEnvironmentRuntimeReadback>;
+
+  setEnvironmentRuntimeReader(reader: (project: string) => Promise<BlocklyEnvironmentRuntimeReadback>): void {
+    this.environmentRuntimeReader = reader;
+  }
+
+  publishEnvironmentMutation(path: string, mutate: (publication: unknown) => Promise<any>, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome> {
+    return this.publishRuntimeMutation(path, async (lease, guard, publication) => {
+      await settleLinkedProjectEnvironment(path, guard); lease.assertCurrent();
+      const result = await mutate(publication);
+      guard(); lease.assertCurrent();
+      if (result?.environment?.status !== 'completed' || result.environment.current !== true || result.candidateApplied !== false) {
+        throw Object.assign(new Error('The original environment change is not verified complete.'),
+          { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN', environment: result?.environment, candidateApplied: false });
+      }
+      const target = this.blocklyService.captureProjectSnapshot(lease).document;
+      await this.rebuildOwnedEnvironment(target, lease, guard, result.environment.requestId);
+    }, request);
+  }
+
+  /** Called only inside the existing publisher, after durable full S1 admission.
+   * No second queue, lease, program writer or model-supplied callback exists. */
+  async restoreHistoryEnvironment(input: HistoryEnvironmentPlan, targetDocument: unknown,
+    lease: BlocklyWorkspaceEditLease, assertCurrent: () => void, publication: NativeSaveOperationRef): Promise<void> {
+    const environment = readHistoryEnvironment(input)!;
+    const project = this.currentProjectPath, host = window['libraryDependencies'];
+    const guard = () => { assertCurrent(); lease.assertCurrent(); if (this.currentProjectPath !== project) throw new Error('History environment project changed.'); };
+    guard();
+    if (!this.environmentRuntimeReader || host?.environmentVersion !== 2 || typeof host.configure !== 'function') {
+      throw Object.assign(new Error('The matching environment publisher/runtime reader is unavailable.'), { code: 'LIBRARY_ENVIRONMENT_UNAVAILABLE' });
+    }
+    await settleLinkedProjectEnvironment(project, guard);
+    const result = await host.configure(project, { ...environment, operation: 'history-environment', programRef: publication });
+    guard();
+    if (result.environment?.status !== 'completed' || result.environment.current !== true || result.candidateApplied !== false) {
+      throw Object.assign(new Error('The original environment outcome is not complete/current; no program was published.'),
+        { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN', environment: result.environment, candidateApplied: false });
+    }
+    await this.rebuildOwnedEnvironment(targetDocument, lease, guard, environment.requestId);
+  }
+
+  private async rebuildOwnedEnvironment(targetDocument: unknown, lease: BlocklyWorkspaceEditLease,
+    guard: () => void, requestId: string): Promise<void> {
+    const project = this.currentProjectPath, host = window['libraryDependencies'];
+    if (!this.environmentRuntimeReader) throw new Error('The matching environment runtime reader is unavailable.');
+    const reader = await this.environmentRuntimeReader(project);
+    guard(); reader.assertCurrent();
+    this.currentPackageData = reader.packageJson;
+    window['packageJson'] = reader.packageJson;
+    this.blocklyService.boardConfig = reader.boardConfig;
+    window['boardConfig'] = reader.boardConfig;
+    this.blocklyService.setToolboxSortOrder(reader.packageJson?.blocklyToolboxOrder);
+    const libraryNames = reader.libraryNames ?? Object.keys({ ...(reader.packageJson?.dependencies || {}), ...(reader.packageJson?.devDependencies || {}),
+      ...(reader.packageJson?.optionalDependencies || {}), ...(reader.packageJson?.peerDependencies || {}) }).filter(isAilyLibraryPackageName);
+    await this.blocklyService.rebuildLibraryRuntimeInPlace({ projectPath: project, packageJson: reader.packageJson, libraryNames },
+      lease, () => { guard(); reader.assertCurrent(); }, targetDocument as BlocklyProjectDocument);
+    guard(); reader.assertCurrent();
+    const verified = await host.observeEnvironment(project, { requestId });
+    guard(); reader.assertCurrent();
+    if (verified.environment?.status !== 'completed' || verified.environment.current !== true
+      || !this.blocklyService.isLibraryRuntimeReady(lease) || !reader.acknowledge()) {
+      throw Object.assign(new Error('Environment/runtime changed before the original program publication.'),
+        { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN', environment: verified.environment, candidateApplied: false });
+    }
+  }
 
   constructor(
     private blocklyService: BlocklyService,
@@ -75,7 +156,7 @@ export class _ProjectService {
     ).subscribe(() => this.blocklyService.projectDirtyState?.invalidate()));
 
     this.actionService.listen('project-save', async action => {
-      try { return await this.save(action.payload.path); }
+      try { return await this.save(action.payload.path, action.payload.saveRequest, action.payload.background === true); }
       catch (error) {
         return { projectSaved: false, generatedCodePublished: false, partial: false,
           ...actionFailure(error) };
@@ -143,6 +224,36 @@ export class _ProjectService {
     }
   }
 
+  /** Read an existing acknowledgement without reading disk or marking Working saved. */
+  readSavedAbiRecipe(project: string): string | undefined {
+    try {
+      const context = this.captureSaveContext(project);
+      context.assertCurrent();
+      const recipe = this.cleanState.readSavedAbiRecipe(this.cleanScope());
+      context.assertCurrent();
+      return recipe;
+    } catch { return undefined; }
+  }
+
+  /** A crash-recovered pre-operation view may contain unsaved edits. Verify
+   * every page without acknowledging those edits as a saved checkpoint. */
+  async rememberRecoveredProject(path: string, diskText: string, source: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease): Promise<void> {
+    const assertCurrent = () => { this.captureSaveContext(path).assertCurrent(); owner.assertCurrent(); };
+    assertCurrent();
+    if (window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== diskText) throw new Error('Project changed during recovery loading.');
+    assertProjectLoadPreserved(this.blocklyService.getProjectAbiForSave(source),
+      this.blocklyService.getProjectAbiForSave(this.blocklyService.getProjectDocument(owner)),
+      workspace => this.blocklyService.getWorkspaceLoadReadbackView(workspace));
+    this.cleanState.clear();
+    const saved = await materializeGenericProjectDataValues(JSON.parse(diskText), {
+      resolve: async <T>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<T>(ref); assertCurrent(); return value; },
+    });
+    assertCurrent();
+    if (window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== diskText) throw new Error('Saved document changed during recovery readback.');
+    this.blocklyService.projectDirtyState?.recover(this.blocklyService.normalizeProjectAbi(saved),
+      this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(this.blocklyService.getProjectDocument(owner))));
+  }
+
   private cleanScope(): readonly unknown[] {
     // Saved content belongs to the editor/data session, not a generator implementation.
     // In-flight queries still capture the generator in captureSaveContext().
@@ -173,6 +284,7 @@ export class _ProjectService {
         }
       };
       let recovery: RuntimeRecoveryRecord | undefined;
+      let operation: { journal: AbsOperationJournal; id: string } | undefined;
       let runtimeChanged = false;
       try {
         await projectDataRuntime.flushPending();
@@ -192,11 +304,16 @@ export class _ProjectService {
         const recoveryPath = `${directory}/library-runtime-${crypto.randomUUID()}.recovery.json`;
         // A detached, materialized document is recoverable even if a new library cannot load it.
         const documentText = JSON.stringify(materialized);
+        const port = await openAbsHostStorage(options.projectPath, assertCurrent);
+        const journal = new AbsOperationJournal(port, options.projectPath);
+        const id = await journal.begin({ kind: 'runtime-rebuild', document: materialized,
+          disk: { abi: sourceFiles.files['project.abi'], abs: sourceFiles.files['project.abs'], map: sourceFiles.files['project.abs.map.json'] } }, assertCurrent);
+        operation = { journal, id };
         fs.writeFileSync(recoveryPath, documentText, { encoding: 'utf8', flag: 'wx' });
         recovery = { project: options.projectPath, path: recoveryPath, documentText, sourceFiles, scope,
           options: { ...options, libraryNames: [...new Set([...options.libraryNames,
             ...Array.from(this.blocklyService.loadedLibraryInfos.values(), item => item.packageName)])] },
-          restoreCheckpoint: this.cleanState.captureCheckpoint() };
+          restoreCheckpoint: this.cleanState.captureCheckpoint(), operation: { id } };
         admit(lease);
         runtimeChanged = true;
         const restoreHistory = retainBlocklyHistory(this.blocklyService.workspace);
@@ -207,11 +324,15 @@ export class _ProjectService {
         // The editor's load/readback boundary preserved content; page hydration may
         // acknowledge native defaults only. Never remember() this unsaved snapshot.
         this.runtimeRecovery = undefined;
+        await journal.restored(id, assertCurrent);
         try { fs.unlinkSync(recoveryPath); } catch (error) { console.warn('Could not remove completed runtime recovery snapshot:', error); }
       } catch (error) {
-        if (!runtimeChanged) throw error;
+        if (!runtimeChanged) {
+          if (operation) await operation.journal.finish(operation.id, assertCurrent);
+          throw error;
+        }
         const message = `Library runtime rebuild failed: ${String((error as Error)?.message || error)}. `
-          + `The complete pre-rebuild snapshot is retained. Inspect project recovery to restore its runtime or save an independent recovery copy; source files and ABS candidate were not changed.`;
+          + `The complete pre-rebuild snapshot is retained. Project recovery restores this same project; source files and ABS candidate were not changed.`;
         try {
           assertCurrent();
           const grant = lease.quarantine(message);
@@ -261,6 +382,52 @@ export class _ProjectService {
       && record.scope.every((value, index) => value === scope[index]);
   }
 
+  /** UI and Agent callers use the same original runtime capability. Waiting
+   * observes an existing attempt; it never creates another rebuild. */
+  async recoverRuntimeInPlace(signal?: AbortSignal): Promise<{ ready: boolean; cancelled?: boolean; code?: string; message?: string }> {
+    const cancelled = () => ({ ready: false, cancelled: true, code: 'PROJECT_RECOVERY_CANCELLED' });
+    if (signal?.aborted) return cancelled();
+    const description = await this.inspectLibraryRuntimeRecovery();
+    if (signal?.aborted) return cancelled();
+    if (!description) return { ready: !this.hasLibraryRuntimeRecovery() };
+    const start = Date.now();
+    let result = await this.recoverLibraryRuntime(description.token, description.requestId, false);
+    while (result.status === 'running' && Date.now() - start < 60_000) {
+      if (signal?.aborted) return cancelled();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      result = await this.recoverLibraryRuntime(description.token, description.requestId, true);
+    }
+    if (signal?.aborted) return cancelled();
+    return result.status === 'completed' && result.value?.ready === true ? { ready: true }
+      : { ready: false, code: result.failure?.code ?? result.value?.failure?.code ?? 'BLOCKLY_RUNTIME_RECOVERY_FAILED',
+        message: result.failure?.message ?? result.value?.failure?.message ?? 'The retained complete runtime did not become ready.' };
+  }
+
+  /** Only the lifecycle's accepted explicit discard invokes this. Archives and
+   * candidate history remain intact; ordinary cancellation never calls it. */
+  async discardRetainedOperation(path: string): Promise<void> {
+    const discard = await this.prepareRetainedDiscard(path);
+    try { await discard.commit(); } finally { discard.dispose(); }
+  }
+
+  async prepareRetainedDiscard(path: string): Promise<{ commit(): Promise<void>; dispose(): void }> {
+    const context = this.captureSaveContext(path);
+    return this.blocklyService.runRecoveryCopyOperation(async () => {
+      context.assertCurrent();
+      let disposed = false;
+      // Navigation may destroy the native editor after its final veto. The
+      // short-lived admission retains only the exact project and operation.
+      const guard = () => {
+        if (disposed || this.currentProjectPath !== path) throw new Error('The accepted recovery discard expired.');
+      };
+      const port = await openAbsHostStorage(path, guard);
+      await settleAbsProjectTransaction(port, path, guard);
+      const journal = new AbsOperationJournal(port, path), retained = await journal.inspect();
+      return { commit: async () => { guard(); if (retained) await journal.finish(retained.id, guard); },
+        dispose: () => { disposed = true; } };
+    });
+  }
+
   async recoverLibraryRuntime(token: string, requestId: string, observe: boolean): Promise<{
     status: 'running' | 'completed' | 'failed' | 'unavailable'; value?: RuntimeRecoveryDescription;
     freshCompletion?: boolean;
@@ -300,6 +467,15 @@ export class _ProjectService {
           if (runtimeRecoveryInput(record) !== input) throw new Error('Runtime dependencies changed during restoration.');
           record.restoreCheckpoint();
           this.currentPackageData = packageJson;
+          // Persist the retained view while the recovery lease can still
+          // validate its owner. Completing recovery ends that lease.
+          if (record.operation) {
+            // Storage capabilities retain their admission guard. The failed
+            // writer's lease has ended; acknowledge with this recovery owner.
+            const port = await openAbsHostStorage(record.project, guard);
+            await new AbsOperationJournal(port, record.project).restored(record.operation.id, guard);
+          }
+          guard();
           // Only the recovery owner can clear this quarantine, after full native readback.
           lease.completeRecovery();
           offered.status = 'completed'; offered.ready = true; delete offered.failure;
@@ -400,12 +576,27 @@ export class _ProjectService {
     };
   }
 
-  private absSaveHandler?: (path: string) => Promise<ProjectSaveOutcome>;
+  private absSaveHandler?: (path: string, request?: ProjectSaveRequest, background?: boolean) => Promise<ProjectSaveOutcome>;
+  private absRuntimeMutationHandler?: (path: string, mutate: OwnedBlocklyDocumentMutation, request?: ProjectSaveRequest) => Promise<ProjectSaveOutcome>;
+  private absRuntimeMutationObserver?: (path: string, publication: NativeSaveOperationRef) => Promise<BlocklyRuntimeMutationObservation>;
   private absSaveAsHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
   private absRecoveryCopyHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
   private absLoadNormalizationHandler?: (input: AbsLoadNormalizationInput) => Promise<AbsLoadNormalizationOutcome>;
 
-  setAbsSaveHandler(handler: (path: string) => Promise<ProjectSaveOutcome>): void { this.absSaveHandler = handler; }
+  setAbsSaveHandler(handler: (path: string, request?: ProjectSaveRequest, background?: boolean) => Promise<ProjectSaveOutcome>): void { this.absSaveHandler = handler; }
+  setAbsRuntimeMutationHandler(handler: NonNullable<_ProjectService['absRuntimeMutationHandler']>): void { this.absRuntimeMutationHandler = handler; }
+  setAbsRuntimeMutationObserver(handler: NonNullable<_ProjectService['absRuntimeMutationObserver']>): void { this.absRuntimeMutationObserver = handler; }
+  observeRuntimeMutation(path: string, publication: NativeSaveOperationRef): Promise<BlocklyRuntimeMutationObservation> {
+    if (!this.absRuntimeMutationObserver) return Promise.reject(Object.assign(new Error('The original publication observer is unavailable.'),
+      { code: 'PROJECT_SAVE_DURABILITY_UNAVAILABLE' }));
+    return this.absRuntimeMutationObserver(path, publication);
+  }
+  publishRuntimeMutation(path: string, mutate: OwnedBlocklyDocumentMutation, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome> {
+    requireProjectProgramPublication();
+    if (!this.absRuntimeMutationHandler) return Promise.reject(Object.assign(new Error('The document publisher is unavailable; the runtime change was not started.'),
+      { code: 'PROJECT_SAVE_DURABILITY_UNAVAILABLE' }));
+    return this.absRuntimeMutationHandler(path, mutate, request);
+  }
   setAbsSaveAsHandler(handler: (path: string) => Promise<BlocklySaveAsSnapshot>): void { this.absSaveAsHandler = handler; }
   setAbsRecoveryCopyHandler(handler: (path: string) => Promise<BlocklySaveAsSnapshot>): void { this.absRecoveryCopyHandler = handler; }
   setAbsLoadNormalizationHandler(handler: (input: AbsLoadNormalizationInput) => Promise<AbsLoadNormalizationOutcome>): void {
@@ -442,9 +633,12 @@ export class _ProjectService {
     return () => { if (this.preprocessSaveGuard === guard) this.preprocessSaveGuard = undefined; };
   }
 
-  async save(path: string): Promise<ProjectSaveOutcome> {
-    const release = await this.pauseBackgroundPreprocess(path);
-    try { return await this.saveProjectAfterPreprocess(path); }
+  async save(path: string, request?: ProjectSaveRequest, background = false): Promise<ProjectSaveOutcome> {
+    // Isolated builds never use this document's mutable generated inputs.
+    // Older hosts keep their existing preprocessing handoff.
+    const context = this.captureSaveContext(path);
+    const release = await (window['builder']?.isolatedBuildExecutionVersion === 1 ? undefined : this.pauseBackgroundPreprocess(path));
+    try { context.assertCurrent(); return await this.saveProjectAfterPreprocess(path, request, background); }
     finally { release?.(); }
   }
 
@@ -452,56 +646,11 @@ export class _ProjectService {
     return this.preprocessSaveGuard?.(path);
   }
 
-  private saveProjectAfterPreprocess(path: string): Promise<ProjectSaveOutcome> {
-    if (this.absSaveHandler) return this.absSaveHandler(path);
-    const context = this.captureSaveContext(path);
-    return this.blocklyService.runProjectOperation(async () => {
-      context.assertCurrent();
-      const abiPath = `${path}/project.abi`;
-      const expectedAbi = window['fs'].existsSync(abiPath) ? window['fs'].readFileSync(abiPath, 'utf8') : null;
-      const lease = this.blocklyService.acquireWorkspaceEditLease();
-      try {
-        await projectDataRuntime.flushPending();
-        context.assertCurrent();
-        const assertContext = () => { context.assertCurrent(); lease.assertCurrent(); };
-        const generated = await this.blocklyService.prepareProjectCode(assertContext, lease);
-        assertContext();
-        const snapshot = this.blocklyService.captureProjectSnapshot(lease);
-        if (generated && generated.revision !== snapshot.revision) throw new Error('Project changed after code preparation; retry saving the latest revision.');
-        const document = snapshot.document;
-        const assertRevision = () => {
-          assertContext();
-          if (this.blocklyService.captureProjectSnapshot(lease).revision !== snapshot.revision) {
-            throw new Error('Project state changed during save preparation; retry saving the latest revision.');
-          }
-        };
-        const prepared = await this.prepareSave(document, assertRevision);
-        const publication = await this.commitPreparedSave(path, prepared, expectedAbi, assertRevision).catch(error => {
-          if (error instanceof ProjectFilePublicationError && error.uncertain && context.isCurrent()) {
-            // Do not overwrite a commit whose acknowledgement was lost, or quarantine a new context.
-            lease.quarantine(error.message);
-          }
-          throw error;
-        });
-        if (publication?.warnings?.length) console.warn('Project ABI committed with host cleanup warnings:', publication.warnings);
-        // ABI is now committed. Later derived-code failures must not imply it was rolled back.
-        try {
-          await window['libraryDependencies']?.save(path);
-          assertRevision();
-          await this.publishPreparedSaveOutputs(path, prepared, generated, assertRevision);
-          const generatedCodePublished = generated?.code !== null && generated?.code !== undefined;
-          return { projectSaved: true, generatedCodePublished, partial: !generatedCodePublished,
-            ...(!generatedCodePublished ? { code: 'PROJECT_CODE_NOT_PUBLISHED', error: generated?.error || 'Project file saved; generated code is not available.' } : {}) };
-        } catch (error) {
-          console.warn('Project ABI is saved; skipped stale derived metadata/code updates:', error);
-          const detail = error instanceof Error ? error.message : String(error);
-          return { projectSaved: true, generatedCodePublished: false, partial: true,
-            code: isBuildWorkspaceBusyError(error) ? 'BUILD_WORKSPACE_BUSY'
-              : isBuildWorkspaceRecoveryRequiredError(error) ? 'BUILD_WORKSPACE_RECOVERY_REQUIRED' : 'PROJECT_CODE_NOT_PUBLISHED',
-            error: `Project file saved, but generated code could not be updated. ${detail}` };
-        }
-      } finally { lease.release(); }
-    });
+  private saveProjectAfterPreprocess(path: string, request?: ProjectSaveRequest, background = false): Promise<ProjectSaveOutcome> {
+    requireProjectProgramPublication();
+    if (this.absSaveHandler) return background ? this.absSaveHandler(path, request, true) : this.absSaveHandler(path, request);
+    return Promise.reject(Object.assign(new Error('The matching document publisher is unavailable; no save was started.'),
+      { code: 'PROJECT_SAVE_DURABILITY_UNAVAILABLE' }));
   }
 
   prepareSave(document: BlocklyProjectDocument, assertCurrent: () => void, runtime?: ProjectSaveDataRuntime): Promise<PreparedBlocklySave> {
@@ -538,12 +687,21 @@ export class _ProjectService {
     this.cleanState.remember(this.cleanScope(), prepared.abiText,
       this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(JSON.parse(prepared.documentText))));
     this.blocklyService.projectDirtyState?.remember(JSON.parse(prepared.documentText));
+    // Navigation can continue during a background save. Reconcile after its
+    // lease releases so a newer viewport is not acknowledged by the old snapshot.
+    this.blocklyService.projectDirtyState?.invalidate();
     try {
+      if (window['builder']?.isolatedBuildExecutionVersion === 1) {
+        // Builds consume their captured inputs in private execution directories.
+        // Saving a document must not acquire an older build's root-output lease.
+        await this.publishUsedLibraryManifest(path, JSON.parse(prepared.documentText), assertCurrent);
+        return await this.publishPreparedCode(path, generated, assertCurrent, options);
+      }
       if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
       this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
       return await this.publishPreparedCode(path, generated, assertCurrent, options);
     } catch (error) {
-      if (isBuildWorkspaceBusyError(error) && generated?.code != null) {
+      if (window['builder']?.isolatedBuildExecutionVersion !== 1 && isBuildWorkspaceBusyError(error) && generated?.code != null) {
         this.deferSaveOutputs(path, prepared, generated, options);
       }
       throw error;
@@ -559,10 +717,12 @@ export class _ProjectService {
    * document is already committed; never save it again or regenerate a draft. */
   private deferSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode,
     options: GeneratedSourcePublicationOptions): void {
+    if (window['builder']?.isolatedBuildExecutionVersion === 1) return;
     const context = this.captureSaveContext(path);
     const pending: NonNullable<_ProjectService['deferredSaveOutputs']> = {};
     this.deferredSaveOutputs = pending;
-    const current = () => this.deferredSaveOutputs === pending && context.isCurrent();
+    const current = () => this.deferredSaveOutputs === pending && context.isCurrent()
+      && window['builder']?.isolatedBuildExecutionVersion !== 1;
     const assertCurrent = () => {
       if (!current() || this.blocklyService.captureProjectSnapshot().revision !== generated.revision
         || window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== prepared.abiText) {
@@ -605,6 +765,21 @@ export class _ProjectService {
       }
     };
     schedule();
+  }
+
+  /** Library usage is canonical project data, independent of generated build outputs. */
+  private async publishUsedLibraryManifest(path: string, document: BlocklyProjectDocument, assertCurrent: () => void): Promise<void> {
+    assertCurrent();
+    const original = window['fs'].readFileSync(`${path}/package.json`, 'utf8');
+    const manifest = JSON.parse(original);
+    const libraries = this.blocklyService.getProjectUsedLibraryManifest(manifest, document);
+    if (JSON.stringify(manifest[AILY_BLOCKLY_USED_LIBRARIES_FIELD]) !== JSON.stringify(libraries)) {
+      manifest[AILY_BLOCKLY_USED_LIBRARIES_FIELD] = libraries;
+      await publishProjectText(path, 'package.json', JSON.stringify(manifest, null, 2), original, assertCurrent);
+    }
+    assertCurrent();
+    this.currentPackageData = manifest;
+    window['packageJson'] = manifest;
   }
 
   private captureSaveContext(path: string) {
@@ -661,6 +836,11 @@ export class _ProjectService {
     // codeSubject leaves the IPC viewer/map on the previous generation until a
     // later UI debounce happens to regenerate. Disk contention must not hide it.
     this.blocklyService.publishPreparedCodeView(generated.code, generated.blockCodeMapText);
+    if (window['builder']?.isolatedBuildExecutionVersion === 1) {
+      // No root sketch, headers or build metadata were published. Local builds
+      // materialize this prepared input in their own execution workspace.
+      return { changed: false, target: 'preview', previewPublished: true, diskPublished: false } as GeneratedSourcePublicationReceipt;
+    }
     // The artifact snapshot is the captured Arduino publication capability.
     // Publish its sketch and headers together, as startup/build already do;
     // otherwise a successful ABS save leaves the on-disk sketch one edit behind.

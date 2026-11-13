@@ -24,12 +24,15 @@ import { retireEmptyProjectModels } from './abs-empty-project-models';
 import { copyAbsBlockForRebuild } from './abs-reconciled-block';
 import { indexAbsBlockActivity } from './abs-block-activity';
 import { inactiveAbsSyntax, samePreservedAbsCall } from './abs-native-preservation';
+import { assertAbsDeletionIntent } from './abs-deletion-intent';
 
 export interface AbsReconcileOptions extends AbsSyntaxOptions {
   /** Share declaration integrity checks only inside a pure synchronous traversal. */
   withSynchronousRead?: <T>(read: () => T) => T;
   /** Exact text-edit provenance, replayed against the immutable generation. */
   sourceEdits?: AbsSourceEdits;
+  /** Host-only admission for an external bound candidate; not a wire option. */
+  requireDeletionEvidence?: boolean;
   /** Pure definitions captured for this runtime session, never a global Blockly lookup. */
   fieldDefinition?: (blockType: string, fieldName: string, blockId?: string) => AbsFieldDefinition | undefined;
   newId?: (node: AbsSyntaxNode) => string;
@@ -308,6 +311,8 @@ async function reconcileDraft(
   getAbsProcedureReferences(candidate, baseline.contracts.procedures);
   const afterIds = indexAbsAbi(candidate);
   identity.assertReferencesPreserved(afterIds);
+  const removed = [...abiBlocks.keys()].filter(id => !afterIds.has(id));
+  if (options.requireDeletionEvidence) assertAbsDeletionIntent(baseline, editedAbs, removed, sourceEdits);
   // Use the same payload traversal as resource externalization: no second ABI graph walker.
   const literals: AbsLiteralBinding[] = [];
   for (const payload of collectProjectDataPayloads(candidate)) {
@@ -317,7 +322,7 @@ async function reconcileDraft(
     if (range) literals.push({ ...range, jsonPointer: payload.jsonPointer });
   }
   return { workspace: candidate, literals, ...(retiredModels.length ? { retiredModels } : {}), ...(defaultIds.size ? { implicitBlockIds: [...defaultIds] } : {}), contracts, identities: [...sources].map(([id, node]) => ({ start: node.start, id })),
-    added, retained, removed: [...abiBlocks.keys()].filter(id => !afterIds.has(id)) };
+    added, retained, removed };
 }
 
 function setJsonMember(target: object, key: string, value: unknown): void {

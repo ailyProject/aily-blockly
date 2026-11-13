@@ -16,14 +16,20 @@ const {
   powerMonitor,
   powerSaveBlocker,
   safeStorage,
+  nativeImage,
+  nativeTheme,
 } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
 const { createCloudProjectOpenQueue, parseCloudProjectOpen } = require('./cloud-project-protocol');
+const { inspectMacosLaunchLocation, showMacosInstallGuide } = require("./macos-launch-location");
+const { createWindowStateController } = require('./window-state');
+const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
+const { createProjectCrashResume } = require('./project-crash-resume');
 const { startCliBridge } = require("./cli-bridge");
-const { routeLiveOperationProject } = require('./live-operation-project-routing');
+const { routeLiveOperationProject, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
 const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
@@ -112,7 +118,7 @@ function getBuildProduct() {
 
 function applyAppIdentity(product) {
   const isCoderProduct = normalizeBuildProduct(product) === 'coder';
-  app.setName(isCoderProduct ? 'Aily Coder' : 'aily blockly');
+  app.setName(isCoderProduct ? 'aily Coder' : 'aily blockly');
   if (isWin32) {
     app.setAppUserModelId(getProductAppId(product));
   }
@@ -1010,7 +1016,7 @@ async function runProjectLibraryOperation(operation, projectPath, request, trans
   try {
     return await librarySessions.run(operation, projectPath, request, transaction);
   } finally {
-    if (operation !== 'status' && !librarySessions.sessions.has(projectLibraries.root(projectPath)) && mainWindow && !mainWindow.isDestroyed()) {
+    if (!['status', 'capabilities', 'observeEnvironment'].includes(operation) && !librarySessions.sessions.has(projectLibraries.root(projectPath)) && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('library-dependencies:changed', { projectPath, ...projectLibraries.status(projectPath) });
     }
   }
@@ -1123,6 +1129,16 @@ function summarizeAppProcessMetrics() {
 
 // === CLI Bridge：供外部 CLI 通过本地回环接口驱动主程序（附加能力） ===
 let cliBridge = null;
+let projectCrashResume = null;
+function projectCrashResumeController() {
+  if (!projectCrashResume && process.env.AILY_APPDATA_PATH) {
+    projectCrashResume = createProjectCrashResume({ stateDirectory: process.env.AILY_APPDATA_PATH,
+      profileKey: path.resolve(app.commandLine.getSwitchValue('user-data-dir') || app.getPath('userData')),
+      onWarning: warning => console.warn('Project crash navigation:', warning) });
+  }
+  return projectCrashResume;
+}
+app.on('quit', () => { projectCrashResume?.clear(); });
 
 /** 导航主窗口到指定 hash（复用 dev/prod 既有加载方式） */
 function navigateMainWindowHash(targetHash) {
@@ -1180,6 +1196,8 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
       return;
     }
 
+    const lifecycleRejection = projectLifecycleRequestRejection(payload?.lifecycle, rendererGeneration);
+    if (lifecycleRejection) { resolve(lifecycleRejection); return; }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
@@ -1311,7 +1329,7 @@ async function handleCliBridgeCommand(action, payload) {
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
-        { path: dir, operation: 'project_open', params: {} },
+        { path: dir, operation: 'project_open', params: {}, ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}) },
         130000,
       );
       return result && typeof result === 'object'
@@ -1332,6 +1350,7 @@ async function handleCliBridgeCommand(action, payload) {
             path: dir,
             operation: 'project_reload',
             params: {},
+            ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
           },
           120000,
         );
@@ -1344,7 +1363,7 @@ async function handleCliBridgeCommand(action, payload) {
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
-        { path: dir, operation: 'project_open', params: {} },
+        { path: dir, operation: 'project_open', params: {}, ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}) },
         130000,
       );
       return result && typeof result === 'object'
@@ -1356,7 +1375,7 @@ async function handleCliBridgeCommand(action, payload) {
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
-        { path: dir || '', operation: 'project_close', params: {} },
+        { path: dir || '', operation: 'project_close', params: {}, ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}) },
         30000,
       );
       return result && typeof result === 'object'
@@ -1450,7 +1469,7 @@ async function handleCliBridgeCommand(action, payload) {
             ? 600000
           : operation === 'project_save' && payload?.params?.chunk === true
             ? 140000
-          : operation === 'abs_recovery' && payload?.params?.action === 'repair'
+          : operation === 'abs_recovery' && ['repair', 'history_publish'].includes(payload?.params?.action)
             ? 120000
           : operation === 'abs_apply' || operation === 'abs_validate' || operation === 'abs_projection' || operation === 'library_runtime_sync' || operation === 'set_board_config' || operation === 'blocks_set_state'
             ? 120000
@@ -1469,6 +1488,7 @@ async function handleCliBridgeCommand(action, payload) {
           path: dir || '',
           operation,
           params: payload && payload.params,
+          ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
         },
         liveOperationTimeoutMs,
       );
@@ -2782,53 +2802,6 @@ async function updateMainWindowWithPendingData() {
   }
 }
 
-function rectsOverlap(a, b) {
-  return !(
-    a.x + a.width <= b.x ||
-    a.x >= b.x + b.width ||
-    a.y + a.height <= b.y ||
-    a.y >= b.y + b.height
-  );
-}
-
-/** Windows：持久化坐标可能落在已移除的显示器上；electron-win-state 不会按当前屏幕校验。macOS 不处理。 */
-function ensureWinStateOnVisibleDisplay(winState) {
-  if (!isWin32) {
-    return;
-  }
-  const s = winState.state;
-  const w = Number(s.width);
-  const h = Number(s.height);
-  const x = Number(s.x);
-  const y = Number(s.y);
-  if (![w, h].every((n) => Number.isFinite(n) && n > 0) || ![x, y].every((n) => Number.isFinite(n))) {
-    return;
-  }
-  const winRect = { x, y, width: w, height: h };
-  const displays = screen.getAllDisplays();
-  const visible = displays.some((d) => rectsOverlap(winRect, d.workArea));
-  if (visible) {
-    return;
-  }
-  const wa = screen.getPrimaryDisplay().workArea;
-  let nw = w;
-  let nh = h;
-  if (nw > wa.width) {
-    nw = wa.width;
-  }
-  if (nh > wa.height) {
-    nh = wa.height;
-  }
-  s.width = nw;
-  s.height = nh;
-  s.x = Math.round(wa.x + Math.max(0, (wa.width - nw) / 2));
-  s.y = Math.round(wa.y + Math.max(0, (wa.height - nh) / 2));
-  try {
-    winState.saveState();
-  } catch (e) {
-    console.warn('修正窗口位置后保存状态失败:', e);
-  }
-}
 
 function createWindow() {
   // 检查是否为首次启动（没有窗口状态记录文件）
@@ -2843,13 +2816,14 @@ function createWindow() {
       cwd: process.env.AILY_APPDATA_PATH,
     },
   });
-  ensureWinStateOnVisibleDisplay(winState);
+  const normalBounds = windowStateController.normalize(winState.state);
+  Object.assign(winState.state, normalBounds);
 
   mainWindow = new BrowserWindow({
-    ...winState.winOptions,
+    ...normalBounds,
     show: false,
-    minWidth: 800,
-    minHeight: 600,
+    minWidth: Math.min(800, normalBounds.width),
+    minHeight: Math.min(600, normalBounds.height),
     frame: false,
     titleBarStyle: isDarwin ? 'hiddenInset' : 'default',
     alwaysOnTop: false,
@@ -2876,18 +2850,20 @@ function createWindow() {
     beginRendererGeneration('did-start-navigation');
   });
 
-  mainWindow.setBounds(winState.state);
+  windowStateController.attach(mainWindow, { bounds: normalBounds, minimum: { width: 800, height: 600 } });
 
   // electron-win-state 未持久化 isMaximized / isFullScreen，关闭前写入 store，供下次 ready-to-show 恢复
   mainWindow.on('close', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      winState.state.isMaximized = mainWindow.isMaximized();
-      winState.state.isFullScreen = mainWindow.isFullScreen();
+      const state = windowStateController.snapshot(mainWindow);
+      Object.assign(winState.state, state.normalBounds);
+      winState.state.isMaximized = state.mode === 'maximized';
+      winState.state.isFullScreen = state.mode === 'fullscreen';
       winState.saveState();
     }
   });
 
-  winState.manage(mainWindow);
+  // Normal bounds are tracked independently from maximized/fullscreen geometry.
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) projectOpenRendererReady = false;
   });
@@ -2896,10 +2872,10 @@ function createWindow() {
 
   // 当页面准备好显示时，再显示窗口（首次启动时最大化）
   mainWindow.once('ready-to-show', () => {
-    if (isFirstLaunch || winState.state.isMaximized) {
+    if (isFirstLaunch || winState.state.isMaximized === true) {
       mainWindow.maximize();
     }
-    if (winState.state.isFullScreen) {
+    if (winState.state.isFullScreen === true) {
       mainWindow.setFullScreen(true);
     }
     mainWindow.show();
@@ -2996,6 +2972,7 @@ function createWindow() {
   registerUpdaterHandlers(mainWindow);
   registerTerminalHandlers(mainWindow);
   windowController = registerWindowHandlers(mainWindow, {
+    windowStateController,
     resolveRendererUrl: resolveAppRendererUrl,
     getRendererGeneration: () => rendererGeneration,
     canCloseMainWindow: () => applicationQuit.canClose(),
@@ -3004,6 +2981,12 @@ function createWindow() {
   if (!libraryDependenciesRegistered) {
     // Register once; the memory belongs to the process, not a renderer generation.
     libraryDependenciesRegistered = true;
+    ipcMain.handle('library-dependencies:capabilities', event => {
+      if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('Library capabilities require the current main frame.');
+      }
+      return librarySessions.capabilities();
+    });
     ipcMain.handle('library-dependencies', async (event, { operation, projectPath, request }) => {
       if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
         throw new Error('Library operations require the current main frame.');
@@ -3337,7 +3320,26 @@ function ensureRosettaIfNeededOnDarwin() {
   }
 }
 
+// 未安装到「应用程序」时只显示安装引导，不初始化内置工具、主窗口或项目。
+let macosInstallGuideWindow = null;
+
+function openMacosInstallGuideIfNeeded() {
+  if (!isDarwin || !app.isPackaged || repairBootstrap) return false;
+  const report = inspectMacosLaunchLocation({
+    platform: process.platform,
+    paths: [process.execPath, app.getAppPath(), process.resourcesPath],
+    appName: app.getName(),
+    product: getBuildProduct(),
+    locale: app.getLocale(),
+  });
+  if (!report.unsafe) return false;
+  macosInstallGuideWindow = showMacosInstallGuide({ BrowserWindow, ipcMain, shell, app, nativeImage, nativeTheme, report });
+  return true;
+}
+
 app.on("ready", async () => {
+  if (openMacosInstallGuideIfNeeded()) return;
+
   // 检查是否是协议启动
   const protocolUrl = process.argv.find(isSupportedProtocolUrl);
 
@@ -3415,6 +3417,13 @@ app.on("ready", async () => {
     return;
   }
 
+  // Preloads inherit this immutable execution address when the renderer is
+  // created. Setting it only after createWindow loses the original main PID.
+  process.env.AILY_LIBRARY_HOST_PID = String(process.pid);
+  if (!repairBootstrap && !pendingFileToOpen && !pendingRoute) {
+    const interrupted = projectCrashResumeController()?.interruptedProject();
+    if (interrupted?.ok && interrupted.project) pendingFileToOpen = interrupted.project;
+  }
   createWindow();
   registerPowerMonitorLifecycle();
 
@@ -3583,6 +3592,10 @@ app.on("will-quit", () => {
 
 // 在 macOS 上，当应用被激活时（如点击 Dock 图标），重新创建窗口
 app.on("activate", async () => {
+  if (macosInstallGuideWindow) {
+    if (!macosInstallGuideWindow.isDestroyed()) macosInstallGuideWindow.focus();
+    return;
+  }
   if (mainWindow === null) {
     // 先加载环境变量
     try {
@@ -3708,6 +3721,21 @@ ipcMain.handle("project-lock-release", (event, data) => {
     }
   }
   return r;
+});
+
+// Navigation records identify the accepted project only. They never select a
+// program version, recover a transaction or open a copy. Reloads retain them.
+ipcMain.handle('project-navigation-active', (event, projectPath) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string'
+    || !path.isAbsolute(projectPath) || !heldProjectLockNormalized
+    || projectLock.normalizeProjectPathLoose(projectPath) !== projectLock.normalizeProjectPathLoose(heldProjectLockNormalized))
+    return { ok: false, reason: 'project-not-owned' };
+  return projectCrashResumeController()?.record(projectPath) ?? { ok: false, reason: 'navigation-storage-unavailable' };
+});
+ipcMain.handle('project-navigation-clear', (event, projectPath) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string' || !path.isAbsolute(projectPath))
+    return { ok: false, reason: 'project-not-owned' };
+  return projectCrashResume?.clear(projectPath) ?? { ok: true, cleared: false };
 });
 
 ipcMain.handle("project-lock-focus", (event, data) => {
@@ -3918,6 +3946,9 @@ ipcMain.on("host-project-context-changed", (event, data = {}) => {
   projectContextState = {
     workspace: rawWorkspace.trim() ? rawWorkspace : null,
     coderWorkspace,
+    serialPort: data.serialPort && typeof data.serialPort.path === 'string'
+      && /^(?:COM\d+|\/dev\/[^\s]+)$/i.test(data.serialPort.path)
+      ? { path: data.serialPort.path, revision: Number(data.serialPort.revision) || 0 } : null,
     version: projectContextState.version + 1,
   };
 

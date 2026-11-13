@@ -8,14 +8,17 @@ import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
 import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { NpmService } from '../../../services/domains/dependencies/public-api';
+import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
 describe('Blockly compile and upload handoff', () => {
-  let originalFs: any, originalPath: any, originalBuilder: any, originalCmd: any;
+  let originalFs: any, originalPath: any, originalBuilder: any, originalCmd: any, originalCloudBuild: any;
   beforeEach(() => {
     originalFs = window['fs']; originalPath = window['path']; originalBuilder = window['builder']; originalCmd = window['cmd'];
+    originalCloudBuild = window['cloudBuild'];
   });
   afterEach(() => {
     window['fs'] = originalFs; window['path'] = originalPath; window['builder'] = originalBuilder; window['cmd'] = originalCmd;
+    window['cloudBuild'] = originalCloudBuild;
   });
 
   function uploadFixture() {
@@ -54,6 +57,138 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.events).toEqual(['upload']);
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
   });
+
+  const firmware = {
+    version: 1, executionId: '11111111-1111-4111-8111-111111111111',
+    buildRequestId: 'prepared-build', inputDigest: 'a'.repeat(64), abiHash: 'sha256:' + 'b'.repeat(64),
+  } as const;
+
+  function exposePreparedExecution(buildInput = firmware) {
+    const inspect = jasmine.createSpy('inspectBuildExecution').and.returnValue({
+      ...firmware, status: 'completed', current: true, buildInput,
+      result: { buildRequestId: firmware.buildRequestId, inputDigest: firmware.inputDigest, buildPath: '/private/.build' },
+    });
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, inspectBuildExecution: inspect });
+    return inspect;
+  }
+
+  it('uses the exact prepared Blockly firmware without compiling again', async () => {
+    const f = uploadFixture(), inspect = exposePreparedExecution();
+    await f.uploader.upload({ projectPath: '/project', port: 'TEST-NO-DEVICE', preparedFirmware: firmware }).catch(() => {});
+    expect(inspect).toHaveBeenCalledWith('/project', firmware.buildRequestId);
+    expect(f.events).toEqual(['upload']);
+    expect(f.builder.build).not.toHaveBeenCalled();
+  });
+
+  for (const stale of ['receipt', 'canvas']) {
+    it(`rejects stale prepared Blockly firmware (${stale}) without a fallback build`, async () => {
+      const f = uploadFixture();
+      exposePreparedExecution(stale === 'receipt' ? { ...firmware, abiHash: 'sha256:' + 'c'.repeat(64) } : firmware);
+      if (stale === 'canvas') f.prepared.code = 'edited after compile';
+      const result = f.uploader.upload({ projectPath: '/project', port: 'TEST-NO-DEVICE', preparedFirmware: firmware });
+      await expectAsync(result).toBeRejectedWith(jasmine.objectContaining({ code: 'BUILD_ARTIFACT_STALE' }));
+      expect(f.events).toEqual([]);
+      expect(f.builder.build).not.toHaveBeenCalled();
+    });
+  }
+
+  function preparedUploadBridge(ports: { name: string; type: string }[]) {
+    uploadFixture();
+    const inspect = exposePreparedExecution();
+    const selectSerialPort = jasmine.createSpy('selectSerialPort').and.resolveTo(ports[0]);
+    const upload = jasmine.createSpy('upload').and.resolveTo({ state: 'done' });
+    const ensureReady = jasmine.createSpy('ensureReady').and.resolveTo(undefined);
+    const bridge = Object.assign(Object.create(BlocklyLiveOperationBridgeService.prototype), {
+      projectService: { currentProjectPath: '/project', isCloudBuild: () => false,
+        captureCurrentProjectGuard: () => () => true, ensureBlocklyLibraryRuntimeReady: ensureReady },
+      blocklyEditor: { getProjectRevisionSnapshot: async () => ({ changed: false }) },
+      serialService: { getSerialPorts: async () => ports, selectSerialPort },
+      uploaderService: { upload },
+    });
+    return { bridge, selectSerialPort, upload, inspect, ensureReady };
+  }
+
+  it('rejects unverified prepared firmware before runtime or port admission', async () => {
+    const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+    f.inspect.and.returnValue(null);
+    await expectAsync(f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'BUILD_ARTIFACT_STALE' }));
+    expect(f.ensureReady).not.toHaveBeenCalled();
+    expect(f.selectSerialPort).not.toHaveBeenCalled();
+    expect(f.upload).not.toHaveBeenCalled();
+  });
+
+  it('keeps the no-port result for verified prepared firmware', async () => {
+    const f = preparedUploadBridge([]);
+    expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toEqual(jasmine.objectContaining({ ok: false, code: 'serial_port_not_found', ports: [] }));
+    expect(f.selectSerialPort).not.toHaveBeenCalled();
+    expect(f.upload).not.toHaveBeenCalled();
+  });
+
+  it('reports the prepared firmware reference only after confirmed upload', async () => {
+    const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+    expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toEqual(jasmine.objectContaining({ ok: true, preparedFirmware: firmware }));
+    expect(f.upload).toHaveBeenCalledOnceWith('/project', 'COM99', { preparedFirmware: firmware });
+    f.upload.and.resolveTo({ state: 'warn' });
+    expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toEqual(jasmine.objectContaining({ ok: false, code: 'PREPARED_FIRMWARE_UPLOAD_UNCONFIRMED' }));
+  });
+
+  it('reports prepared firmware support and the active project build backend', async () => {
+    const { bridge } = preparedUploadBridge([]);
+    const isCloudBuild = jasmine.createSpy('isCloudBuild').and.returnValue(true);
+    bridge.projectService.isCloudBuild = isCloudBuild;
+    bridge.themeService = { theme: () => 'dark', getBlocklyThemeId: () => 'default' };
+    bridge.configService = { data: {}, getApplicationName: () => 'aily',
+      getDevelopmentModePreference: () => 'blockly', isCoderEnabled: () => false };
+    bridge.electronService = { applicationVersion: '1.0.0' };
+    const cloud = await bridge.executeAppInfo();
+    expect(cloud.capabilities.projectPreparedFirmwareUpload).toBe(1);
+    expect(cloud.capabilities.projectCloudFirmwareReuse).toBe(1);
+    expect(cloud.lifecycle.sourceProject).toBe('/project');
+    expect(cloud.runtime.compileBackend).toBe('cloud');
+    isCloudBuild.and.returnValue(false);
+    expect((await bridge.executeAppInfo()).runtime.compileBackend).toBe('local');
+  });
+
+  it('forwards cloud firmware reuse and returns proof only on completion', async () => {
+    const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+    f.bridge.projectService.isCloudBuild = () => true;
+    expect(await f.bridge.executeProjectUpload({ reuseCloudFirmware: true }))
+      .toEqual(jasmine.objectContaining({ ok: true, reuseCloudFirmware: true }));
+    expect(f.upload).toHaveBeenCalledOnceWith('/project', 'COM99', { reuseCloudFirmware: true });
+  });
+
+  for (const reusable of [true, false]) {
+    it(`handles cloud firmware reuse (reusable=${reusable}) without compiling`, async () => {
+      const f = uploadFixture();
+      Object.assign(f.project, { isCloudBuild: () => true, getProjectDependencySession: () => ({}),
+        assertProjectDependencySession() {} });
+      f.builder.waitForUploadPreprocess = async () => {};
+      f.builder.canReuseBuildForUpload = jasmine.createSpy('canReuseBuild').and.resolveTo(reusable);
+      f.uploader.prepareCloudUploader = jasmine.createSpy('prepareCloudUploader').and.resolveTo('legacy');
+      const authorizeDevice = jasmine.createSpy('authorizeDevice').and.resolveTo(undefined);
+      if (!reusable) {
+        f.uploader.serialService.currentPortInfo = { type: 'ble' };
+        f.uploader.uploaderBleService = { authorizeDevice };
+      }
+      window['cloudBuild'] = { artifactPath: async () => '/current-cloud-artifact' };
+      const result = f.uploader.upload({ projectPath: '/project', port: 'TEST-NO-DEVICE', reuseCloudFirmware: true });
+      if (reusable) {
+        await result.catch(() => {});
+        expect(f.events).toEqual(['upload']);
+      } else {
+        await expectAsync(result).toBeRejectedWith(jasmine.objectContaining({ code: 'BUILD_ARTIFACT_STALE' }));
+        expect(f.events).toEqual([]);
+        expect(authorizeDevice).not.toHaveBeenCalled();
+        expect(f.uploader.prepareCloudUploader).not.toHaveBeenCalled();
+      }
+      expect(f.builder.canReuseBuildForUpload).toHaveBeenCalledTimes(1);
+      expect(f.builder.build).not.toHaveBeenCalled();
+    });
+  }
 
   for (const changed of ['code', 'inputs-or-firmware', 'config-reset']) {
     it(`rebuilds before upload after ${changed}`, async () => {

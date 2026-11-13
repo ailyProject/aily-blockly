@@ -28,6 +28,7 @@ const {UiService} = load('src/app/services/core/app-shell/ui.service.ts', {
 function auth(state, loggedIn = false, invalidating = false) {
   const value = Object.create(AuthService.prototype);
   value.isLoggedInSubject = {value: loggedIn};
+  value.userInfoSubject = {value: null};
   value.authInitializationStateSubject = {value: state};
   value.authSessionInvalidating = invalidating;
   return value;

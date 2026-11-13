@@ -9,8 +9,8 @@ export interface AbsLoadNormalizationInput {
   readonly persistedText: string;
   readonly expected: {
     readonly disk: AbsDiskSnapshot;
-    readonly pointerHash: string;
-    readonly generation: string;
+    readonly pointerHash: string | null;
+    readonly generation: string | null;
   };
   readonly assertCurrent: () => void;
 }
@@ -53,9 +53,8 @@ export function matchesAbsLoadNormalizationReadback(
 
 export function deferredAbsLoadNormalization(project: string, code: string): AbsLoadNormalizationDeferred {
   return { status: 'DEFERRED', code, recovery: { tool: 'project_recover', arguments: { action: 'inspect', project },
-    guidance: 'The original ABI, ABS, map and any unapplied draft were retained. Inspect this exact project once; '
-      + 'use the current preserving repair or independent fork offered by the tool. Do not delete locks/maps, '
-      + 'apply the old draft implicitly or retry unchanged writes.' } };
+    guidance: 'The system retained the original source and any unapplied draft in this project. '
+      + 'Resume the original recovery request here; preserve later edits and do not apply the old draft implicitly.' } };
 }
 
 /** Host-only preparation. Neither domain output nor caller-supplied hashes are
@@ -73,13 +72,15 @@ export async function prepareAbsLoadNormalization(
     const store = new AbsBaselineStore(port, { projectKey: projectPath, pageId: '' });
     const disk = await store.captureDisk(); assertCurrent();
     const committed = await store.inspectCommitted(); assertCurrent();
-    if (!committed) return { outcome: deferredAbsLoadNormalization(projectPath, 'ABS_LOAD_NORMALIZATION_UNVERIFIED') };
+    if (!committed && (disk.abs !== null || disk.map !== null))
+      return { outcome: deferredAbsLoadNormalization(projectPath, 'ABS_LOAD_NORMALIZATION_UNVERIFIED') };
     const input: AbsLoadNormalizationInput = Object.freeze({ projectPath,
       originalContent: normalization.originalContent, persistedText: normalization.persistedText,
-      expected: Object.freeze({ disk: Object.freeze({ ...disk }), pointerHash: committed.pointerHash,
-        generation: committed.projection.map.generation }), assertCurrent });
+      expected: Object.freeze({ disk: Object.freeze({ ...disk }), pointerHash: committed?.pointerHash ?? null,
+        generation: committed?.projection.map.generation ?? null }), assertCurrent });
     preparedLoads.add(input);
-    const proof = await verifyAbsLoadNormalization(store, input, committed.projection.map.scope);
+    const proof = await verifyAbsLoadNormalization(store, input, committed?.projection.map.scope
+      ?? { projectKey: projectPath, pageId: '' });
     assertCurrent();
     if (!proof) {
       preparedLoads.delete(input);
@@ -97,7 +98,7 @@ export async function prepareAbsLoadNormalization(
 export async function verifyAbsLoadNormalization(
   store: AbsBaselineStore, input: AbsLoadNormalizationInput,
   scope: AbsProjection['map']['scope'],
-): Promise<{ baseline: AbsProjection } | null> {
+): Promise<{ baseline: AbsProjection | null } | null> {
   input.assertCurrent();
   if (!preparedLoads.has(input) || input.projectPath !== scope.projectKey) return null;
   try {
@@ -105,6 +106,11 @@ export async function verifyAbsLoadNormalization(
     input.assertCurrent();
     if (absJson(await store.captureDisk()) !== absJson(input.expected.disk)) return null;
     const committed = await store.inspectCommitted(); input.assertCurrent();
+    if (!committed && input.expected.pointerHash === null && input.expected.generation === null
+      && input.expected.disk.abs === null && input.expected.disk.map === null
+      && input.expected.disk.abi === input.originalContent) {
+      return { baseline: null };
+    }
     if (!committed || committed.pointerHash !== input.expected.pointerHash
       || committed.projection.map.generation !== input.expected.generation
       || absJson(committed.projection.map.scope) !== absJson(scope)) return null;

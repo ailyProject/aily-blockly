@@ -25,7 +25,6 @@ import { ActBtnComponent } from '../act-btn/act-btn.component';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component';
-import { runtimeRecoveryDialogData, saveRuntimeRecoveryCopy } from '../unsave-dialog/runtime-recovery-copy';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Router } from '@angular/router';
 import { ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
@@ -43,7 +42,6 @@ import {
   type UiAutomationCommandResult,
   type UiAutomationMenuItem,
   type UiAutomationMenuListOptions,
-  HOST_EXIT_REQUIRES_USER_REASON,
   mainMenuAutomationRejection,
 } from '@integration/automation/public-api';
 import {
@@ -61,6 +59,7 @@ import {
   type LinuxBoardSshSettings,
 } from '@integration/device/public-api';
 import { ConnectorSettingDialogComponent } from '../connector-setting-dialog/connector-setting-dialog.component';
+import { ProjectAutoSave, type AutoSaveState } from './project-auto-save';
 
 interface NetworkOtaTarget {
   id: string;
@@ -126,6 +125,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   isMacFullScreen = false;
   private unsubscribeFullScreenChanged?: () => void;
   private unsubscribeMaximizeChanged?: () => void;
+  private unsubscribeWindowStateChanged?: () => void;
   private unsubscribeCloseRequest?: () => void;
   private bleDevicesSubscription?: Subscription;
   private appStoreSubscription?: Subscription;
@@ -167,6 +167,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   hasUnsavedProjectChanges = false;
+  autoSaveState: AutoSaveState = '';
+  autoSaveError = '';
+  private autoSave?: ProjectAutoSave;
   private unsavedSubscriptions = new Subscription();
   private unsavedCheckTimer?: ReturnType<typeof setTimeout>;
   private coderUnsavedPoll?: ReturnType<typeof setInterval>;
@@ -174,7 +177,47 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private unsavedCheckRunning = false;
 
   private watchProjectUnsavedState(): void {
+    this.autoSave = new ProjectAutoSave({
+      project: () => this.projectService.currentProjectPath,
+      enabled: () => this.configService.data?.blockly?.autoSave === true
+        && this.router.url.includes('/main/blockly-editor'),
+      ready: () => !this.destroyed && !this.projectSavingFromUi && !this.projectSavingAs
+        && !this.projectConflictResolving && !this.unsaveDialogOpen
+        && !this.blocklyService.aiWriting && !this.blocklyService.aiWaitWriting
+        && !this.blocklyService.isWorkspaceEditBlocked()
+        && !this.blocklyService.workspace?.isDragging()
+        && !this.projectService.isProjectTransitionInProgress(this.projectService.currentProjectPath)
+        && !this.projectService.isProjectDependencyPreparationInProgress(this.projectService.currentProjectPath)
+        && ['loaded', 'saved'].includes(this.projectService.stateSubject.value),
+      dirty: () => this.projectService.hasUnsavedChanges(),
+      save: path => this.projectService.saveInBackground(path),
+      state: (state, error) => this.ngZone.run(() => {
+        this.autoSaveState = state; this.autoSaveError = error || ''; this.cd.markForCheck();
+        if (state === 'saved' || state === 'error') {
+          this.uiService.updateFooterState({ state: state === 'saved' ? 'done' : 'error',
+            text: this.translate.instant(state === 'saved' ? 'PROJECT.AUTO_SAVE_SAVED' : 'PROJECT.AUTO_SAVE_ERROR'),
+            timeout: state === 'saved' ? 3000 : 10000 });
+        }
+      }),
+    });
+    this.unsavedSubscriptions.add(this.blocklyService.projectDirtyState.activity.subscribe(() => this.autoSave?.edited()));
+    this.unsavedSubscriptions.add(this.projectService.libraryChangesChanged.subscribe(() => {
+      // Saving dependencies also broadcasts clean status. That acknowledgement
+      // must not obsolete the in-flight save or start another idle save.
+      if (this.projectService.hasCachedLibraryChanges()) this.autoSave?.edited();
+    }));
+    let enabled = this.configService.data?.blockly?.autoSave === true;
+    this.unsavedSubscriptions.add(this.configService.configReloaded$.subscribe(() => {
+      const next = this.configService.data?.blockly?.autoSave === true;
+      if (next === enabled) return;
+      enabled = next;
+      this.autoSave?.cancel();
+      if (next && (this.blocklyService.projectDirtyState.changed.value || this.projectService.hasCachedLibraryChanges())) {
+        this.autoSave?.edited();
+      }
+    }));
     this.unsavedSubscriptions.add(this.projectService.currentProjectPath$.subscribe(() => {
+      this.autoSave?.cancel();
       this.setProjectUnsaved(false);
       this.scheduleUnsavedCheck();
     }));
@@ -474,7 +517,16 @@ export class HeaderComponent implements OnInit, OnDestroy {
     if (this.electronService.isElectron) {
       // 初始化窗口最大化状态缓存
       this._isWindowFullScreen = this.electronService.isWindowFullScreen();
+      this.isMacFullScreen = window['iWindow'].getState?.()?.fullScreen ?? false;
 
+      this.unsubscribeWindowStateChanged = window['iWindow'].onStateChanged?.((state) => {
+        if (this.destroyed) return;
+        this.ngZone.run(() => {
+          this._isWindowFullScreen = state.canRestore;
+          this.isMacFullScreen = state.fullScreen;
+          this.cd.detectChanges();
+        });
+      });
       // 监听窗口全屏状态变化
       this.unsubscribeFullScreenChanged = this.electronService.onWindowFullScreenChanged((isFullScreen: boolean) => {
         this.isMacFullScreen = isFullScreen;
@@ -486,7 +538,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
       // 监听窗口最大化状态变化（用于更新图标）
       this.unsubscribeMaximizeChanged = this.electronService.onWindowMaximizeChanged((isMaximized: boolean) => {
-        this._isWindowFullScreen = isMaximized;
+        this._isWindowFullScreen = this.electronService.isWindowFullScreen();
         // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
         setTimeout(() => {
           this.cd.detectChanges();
@@ -649,6 +701,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         const identity = this.headerMenuAutomationIdentity(item, index);
         const id = parentId ? `${parentId}/${identity}` : identity;
         const children = item.children?.length ? serialize(item.children, id) : [];
+        const rejection = mainMenuAutomationRejection(item.action, id);
         const entry: UiAutomationMenuItem = {
           id,
           label: this.translate.instant(item.name || item.action || id),
@@ -659,9 +712,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
           enabled: item.disabled !== true,
           visible,
           dangerous: item.action === 'app-exit',
-          automationBlocked: item.action === 'app-exit',
-          ...(item.action === 'app-exit'
-            ? { automationBlockedReason: HOST_EXIT_REQUIRES_USER_REASON }
+          automationBlocked: !!rejection,
+          ...(rejection
+            ? { automationBlockedReason: String(rejection['reason']) }
             : {}),
           mayPrompt: ['project-new', 'project-open', 'recent-project-open', 'project-close']
             .includes(item.action || ''),
@@ -1276,19 +1329,24 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const unchanged = this.projectService.captureCurrentProjectGuard();
     this.projectSavingFromUi = true;
     try {
+      if (this.projectService.hasBlocklyRuntimeRecovery?.(path)
+        && !await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false;
       // Observe the original save task until it settles. A feedback deadline
       // cannot prove that persistence failed or release this UI submission.
       const saved = await this.projectService.save(path);
       if (!unchanged()) return false;
-      if (saved?.success === true) return true;
       // The editable document is committed. Its derived outputs are queued
       // until the active build releases ownership; this is not a failed save.
-      if (saved?.projectSaved === true && saved?.code === 'BUILD_WORKSPACE_BUSY') return true;
+      if (saved?.success === true || (saved?.projectSaved === true && saved?.code === 'BUILD_WORKSPACE_BUSY')) {
+        if (this.autoSaveState === 'error') {
+          this.autoSaveState = 'saved'; this.autoSaveError = ''; this.cd.markForCheck();
+        }
+        return true;
+      }
       const resolved = await this.resolveSaveConflictFromUi(path, saved);
       if (resolved !== undefined) return resolved && unchanged();
       if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
-        await this.offerRuntimeRecoveryCopyFromUi(path);
-        return false; // A recovery copy does not acknowledge saving this source.
+        return await this.saveRestoredBlocklyProjectFromUi(path, unchanged);
       }
       this.message.error(saved?.error || '编辑器未确认保存成功');
       return false;
@@ -1297,30 +1355,37 @@ export class HeaderComponent implements OnInit, OnDestroy {
       const resolved = await this.resolveSaveConflictFromUi(path, error);
       if (resolved !== undefined) return resolved && unchanged();
       if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
-        await this.offerRuntimeRecoveryCopyFromUi(path);
-        return false;
+        return await this.saveRestoredBlocklyProjectFromUi(path, unchanged);
       }
       this.message.error(error instanceof Error ? error.message : String(error));
       return false;
     } finally { this.projectSavingFromUi = false; }
   }
 
-  private async saveRuntimeRecoveryCopyFromUi(path: string): Promise<boolean> {
-    if (this.projectSavingAs) return false;
-    this.projectSavingAs = true;
-    try { return await saveRuntimeRecoveryCopy(this.projectService, path, () => this.selectSaveAsFolder(), this.message); }
-    finally { this.projectSavingAs = false; }
+  private async restoreBlocklyRuntimeFromUi(path: string, unchanged: () => boolean): Promise<boolean> {
+    if (!unchanged()) return false;
+    if (!this.projectService.hasBlocklyRuntimeRecovery?.(path)) return true;
+    let restored;
+    try { restored = await this.projectService.recoverBlocklyRuntimeInPlace(path); }
+    catch (error) {
+      if (unchanged()) this.message.error(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    if (!unchanged()) return false;
+    if (restored.ready) return true;
+    if (!restored.cancelled) this.message.error(restored.message || '工程尚未恢复，完整内容已保留。');
+    return false;
   }
 
-  private async offerRuntimeRecoveryCopyFromUi(path: string): Promise<void> {
-    const accepted = await this.ngZone.run(() => new Promise<boolean>(resolve => {
-      this.unsaveDialogOpen = true;
-      const modal = this.modal.create({ nzTitle: null, nzFooter: null, nzClosable: false,
-        nzBodyStyle: { padding: '0' }, nzWidth: '430px', nzContent: UnsaveDialogComponent,
-        nzData: runtimeRecoveryDialogData() });
-      modal.afterClose.subscribe(result => { this.unsaveDialogOpen = false; resolve(result?.result === 'recovery-copy'); });
-    }));
-    if (accepted) await this.saveRuntimeRecoveryCopyFromUi(path);
+  /** Only a known native recovery admits one new save; lost save replies are
+   * observed by their original receipt and never enter this branch. */
+  private async saveRestoredBlocklyProjectFromUi(path: string, unchanged: () => boolean): Promise<boolean> {
+    if (!await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false;
+    const saved = await this.projectService.save(path);
+    if (!unchanged()) return false;
+    if (saved?.success || saved?.projectSaved) return true;
+    this.message.error(saved?.error || '工程已恢复，但保存尚未完成。');
+    return false;
   }
 
   private async resolveSaveConflictFromUi(path: string, failure: unknown): Promise<boolean | undefined> {
@@ -1644,19 +1709,21 @@ export class HeaderComponent implements OnInit, OnDestroy {
     window['iWindow'].minimize();
   }
 
-  maximize() {
-    if (window['iWindow'].isMaximized()) {
-      window['iWindow'].unmaximize();
-    } else {
-      window['iWindow'].maximize();
-    }
-    // 立即更新缓存状态，避免 UI 延迟
-    this._isWindowFullScreen = window['iWindow'].isMaximized();
+  async maximize() {
+    try {
+      const result = await window['iWindow'].toggleMaximize();
+      if (this.destroyed) return;
+      if (result.state) this._isWindowFullScreen = result.state.canRestore;
+      if (!result.success) console.error('Window state change failed:', result.error);
+      this.cd.detectChanges();
+    } catch (error) { console.error('Window state change failed:', error); }
   }
 
   ngOnDestroy() {
     this.destroyed = true;
+    this.unsubscribeWindowStateChanged?.();
     this.unsavedSubscriptions?.unsubscribe();
+    this.autoSave?.dispose();
     clearTimeout(this.unsavedCheckTimer);
     clearInterval(this.coderUnsavedPoll);
     this.clearPartitionInstallNotice();
@@ -1865,6 +1932,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const unchanged = this.projectService.captureCurrentProjectGuard();
     let checkError: string | undefined;
     let runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
+    if (runtimeRecovery) {
+      try { if (!await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false; }
+      catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); return false; }
+      runtimeRecovery = false;
+    }
     // 检查项目是否有未保存的更改
     try {
       if (!runtimeRecovery && !await this.projectService.hasUnsavedChanges()) return unchanged();
@@ -1874,7 +1946,18 @@ export class HeaderComponent implements OnInit, OnDestroy {
       }
       checkError = (error instanceof Error ? error.message : String(error)) || '编辑器未返回有效保存状态。';
       runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
-      if (action !== 'close' && !runtimeRecovery) {
+      if (runtimeRecovery) {
+        try {
+          if (!await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false;
+          if (!await this.projectService.hasUnsavedChanges()) return unchanged();
+          checkError = undefined;
+        } catch (recoveryError) {
+          this.message.error(recoveryError instanceof Error ? recoveryError.message : String(recoveryError));
+          return false;
+        }
+        runtimeRecovery = false;
+      }
+      if (action !== 'close' && !runtimeRecovery && checkError) {
         this.message.error(`无法确认保存状态：${checkError}`);
         return false;
       }
@@ -1900,7 +1983,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         },
         nzWidth: '350px',
         nzContent: UnsaveDialogComponent,
-        nzData: runtimeRecovery ? runtimeRecoveryDialogData(true) : checkError ? {
+        nzData: checkError ? {
           title: '无法确认保存状态',
           text: '无法确认项目是否有未保存的更改。跳过保存将关闭项目，并丢弃尚未保存的更改。',
           detail: checkError,
@@ -1922,10 +2005,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
           return;
         }
         switch (result.result) {
-          case 'recovery-copy':
-            try { resolve(await this.saveRuntimeRecoveryCopyFromUi(path) && unchanged()); }
-            catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); resolve(false); }
-            break;
           case 'save':
             if (checkError) { resolve(false); return; }
             // 保存项目并继续
@@ -1946,6 +2025,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
             // navigation. Only the lifecycle owner may discard dependencies,
             // after the departing Blockly editor has been disposed.
             if (!quitting) { resolve(unchanged()); return; }
+            try {
+              await this.projectService.acknowledgeBlocklyRecoveryDiscard?.(path);
+              if (!unchanged()) { resolve(false); return; }
+            } catch (error) {
+              this.message.error(error instanceof Error ? error.message : String(error));
+              resolve(false);
+              return;
+            }
             try {
               await this.projectService.discardLibraryChangesBeforeQuit();
               resolve(unchanged());
@@ -2243,21 +2330,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
         const configChanged = coder
           ? await this.coderBoardConfig.select(projectPath, subItem)
-          : await persistBoardConfigSelection(this.projectService, subItem);
+          : (await this.projectService.applyBoardConfiguration(subItem)).changed;
         const shouldRunEffects = shouldRunBoardConfigSelectionEffects(
           configChanged,
           subItem,
         );
         if (!shouldRunEffects) {
           return;
-        }
-
-        if (!coder && subItem.extra?.refreshRuntimeBoardConfig) {
-          await this.projectService.refreshRuntimeBoardConfig();
-        }
-
-        if (!coder && configChanged && subItem.extra?.syncPinConfig) {
-          await this.projectService.syncBoardPinConfig(subItem);
         }
 
         if (subItem.extra?.selectAction === 'flash-softdevice') {

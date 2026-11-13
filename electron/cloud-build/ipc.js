@@ -196,7 +196,9 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
         upload?.controller.abort();session?.controller.abort(); result = !!(upload||session);
       } else throw new Error('Unknown cloud build operation.');
       return { ok: true, result };
-    } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error), ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}) } }; }
+    } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
+      ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
+      ...(typeof error.logComplete === 'boolean' ? { logComplete: error.logComplete } : {}) } }; }
   };
   ipcMain.handle('cloud-build', (event, payload) => {
     const operation = handle(event, payload);

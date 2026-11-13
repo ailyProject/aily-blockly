@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "./project-auto-save.spec.ts",
+    "./blockly-preference-save.spec.ts",
+    "../src/app/main-window/components/header/header-unsaved-title.spec.ts",
+    "../src/app/main-window/components/footer/footer-status.spec.ts",
+    "../src/app/services/domains/project/project-background-save.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-workspace-activity.spec.ts",
+    "../src/app/editors/blockly-editor/services/blockly-project-dirty-state.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

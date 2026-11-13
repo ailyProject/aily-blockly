@@ -49,7 +49,7 @@ function createBuilderConfig(plan, baseConfig) {
   const product = plan.product;
   const coderAssociations = plan.buildProduct === 'coder' ? {
     fileAssociations: [
-      { ext: 'aci', name: 'Aily Coder Project', role: 'Editor', mimeType: 'application/x-aily-coder-project' },
+      { ext: 'aci', name: 'aily Coder Project', role: 'Editor', mimeType: 'application/x-aily-coder-project' },
       { ext: 'ino', name: 'Arduino Sketch', role: 'Editor', mimeType: 'text/x-arduino', rank: 'Alternate' },
     ],
   } : {};
@@ -82,9 +82,9 @@ function createBuilderConfig(plan, baseConfig) {
     }],
     protocols: (baseConfig.protocols || []).map((protocol) => ({
       ...protocol,
-      ...(protocol?.name === 'Aily Blockly OAuth'
+      ...(protocol?.name === 'aily Blockly OAuth'
         ? {
-          name: plan.buildProduct === 'coder' ? 'Aily Coder OAuth' : protocol.name,
+          name: plan.buildProduct === 'coder' ? 'aily Coder OAuth' : protocol.name,
           schemes: getProductAuthConfig(plan.buildProduct).protocols,
         }
         : {}),

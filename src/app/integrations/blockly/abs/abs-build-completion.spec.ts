@@ -1,10 +1,12 @@
 import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
+import { Injector } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ActionService } from '@core/app-shell/public-api';
 import { BuilderService } from '@domain/build/public-api';
 import { BlocklyBuildAdapter } from '../../build/blockly-build.adapter';
 import { runProjectBuild } from '../project-build-operation';
 import { buildCancelledResult } from '@domain/build/public-api';
+import { _BuilderService } from '../../../editors/blockly-editor/services/builder.service';
 
 describe('active Blockly compilation completion', () => {
   function fixture() {
@@ -58,28 +60,46 @@ describe('active Blockly compilation completion', () => {
 describe('Blockly build execution adapter', () => {
   function fixture() {
     const actions = new ActionService(), project: any = { currentProjectPath: '/isolated' };
-    const editor = { build: jasmine.createSpy('editorBuild').and.callFake(async (_graph, _id, checkpoint) => {
+    const rootEditor = { build: jasmine.createSpy('rootEditorBuild').and.resolveTo({ state: 'done', text: 'wrong root executor' }) };
+    const editor = { build: jasmine.createSpy('mountedEditorBuild').and.callFake(async (_graph, _id, checkpoint) => {
       checkpoint.startedAt = 123;
       return { state: 'done', text: 'compiled' };
-    }) };
-    const injector = { get: jasmine.createSpy('get').and.returnValue(editor) };
-    const adapter = new BlocklyBuildAdapter(actions, project, injector as any);
-    return { adapter, actions, project, editor, injector };
+    }), cancel: jasmine.createSpy('mountedEditorCancel') };
+    // Match the actual Angular scopes: _BuilderService is provided in root,
+    // while BlocklyEditorComponent supplies its own mounted instance. A root
+    // injector cannot be used as an alias for that component's executor.
+    const rootInjector = Injector.create({ providers: [{ provide: _BuilderService, useValue: rootEditor }] });
+    const componentInjector = Injector.create({ parent: rootInjector,
+      providers: [{ provide: _BuilderService, useValue: editor }] });
+    const mounted = componentInjector.get(_BuilderService);
+    const adapter = new BlocklyBuildAdapter(actions, project);
+    const mount = () => {
+      const stopBuild = actions.listen('compile-begin', async action => {
+        const checkpoint: any = {};
+        try {
+          const result = await mounted.build(action.payload?.graphSemanticRevision, action.payload?.requestId, checkpoint);
+          return { success: true, result, checkpoint };
+        } catch (result) { return { success: false, result, checkpoint }; }
+      }, 'builder-compile-begin');
+      const stopCancel = actions.listen('compile-cancel', action => mounted.cancel(action.payload?.requestId), 'builder-compile-cancel');
+      return () => { stopBuild(); stopCancel(); };
+    };
+    return { adapter, actions, project, editor, rootEditor, rootInjector, componentInjector, mounted, mount };
   }
 
   it('does not instantiate an unmounted editor or compile a replacement project', async () => {
     const f = fixture();
     expect(f.adapter.isAvailable()).toBeFalse();
     await expectAsync(f.adapter.build({ projectPath: '/isolated' })).toBeRejectedWithError(/no longer active/);
-    expect(f.injector.get).not.toHaveBeenCalled();
-    const stop = f.actions.listen('compile-begin', () => undefined, 'builder-compile-begin');
+    expect(f.rootEditor.build).not.toHaveBeenCalled(); expect(f.editor.build).not.toHaveBeenCalled();
+    const stop = f.mount();
     f.project.currentProjectPath = '/replacement';
     await expectAsync(f.adapter.build({ projectPath: '/isolated' })).toBeRejectedWithError(/no longer active/);
-    expect(f.injector.get).not.toHaveBeenCalled(); stop();
+    expect(f.rootEditor.build).not.toHaveBeenCalled(); expect(f.editor.build).not.toHaveBeenCalled(); stop();
   });
 
   for (const failure of [false, true]) it(`preserves the exact editor outcome, checkpoint and scoped request (failure=${failure})`, async () => {
-    const f = fixture(), stop = f.actions.listen('compile-begin', () => undefined, 'builder-compile-begin');
+    const f = fixture(), stop = f.mount();
     const result = { state: failure ? 'error' : 'done', text: 'actual outcome', fullStdErr: 'actual diagnostics' };
     f.editor.build.and.callFake(async (graph, id, checkpoint) => {
       expect(graph).toBe('a'.repeat(64)); expect(id).toBe('owned-request');
@@ -88,8 +108,38 @@ describe('Blockly build execution adapter', () => {
     });
     const completed = await f.adapter.build({ projectPath: '/isolated', graphSemanticRevision: 'a'.repeat(64), requestId: 'owned-request' });
     expect(completed.success).toBe(!failure); expect(completed.result).toBe(result);
-    expect(completed.checkpoint).toEqual({ startedAt: 123, inputCapturedAt: 456 }); stop();
+    expect(completed.checkpoint).toEqual({ startedAt: 123, inputCapturedAt: 456 });
+    expect(f.editor.build).toHaveBeenCalledTimes(1); expect(f.rootEditor.build).not.toHaveBeenCalled(); stop();
   });
+
+  it('rejects a handler that unmounts after admission without compiling through a root fallback', async () => {
+    const f = fixture(), stop = f.mount(), dispatch = f.actions.dispatch.bind(f.actions);
+    spyOn(f.actions, 'dispatch').and.callFake((type, payload, feedback, timeoutMs, options) => {
+      stop(); dispatch(type, payload, feedback, timeoutMs, options);
+    });
+    await expectAsync(f.adapter.build({ projectPath: '/isolated', requestId: 'unmounted-request' })).toBeRejected();
+    expect(f.editor.build).not.toHaveBeenCalled(); expect(f.rootEditor.build).not.toHaveBeenCalled();
+  });
+
+  it('waits for and cancels the mounted component executor instead of its independent root provider', fakeAsync(() => {
+    const f = fixture(), stop = f.mount(), cancelled = buildCancelledResult('user stopped this build');
+    expect(f.rootInjector.get(_BuilderService)).not.toBe(f.componentInjector.get(_BuilderService));
+    let rejectBuild!: (reason: any) => void, completion: any;
+    f.editor.build.and.callFake((_graph, id, checkpoint) => {
+      expect(id).toBe('component-owned-request'); checkpoint.startedAt = 123;
+      return new Promise((_resolve, reject) => { rejectBuild = reject; });
+    });
+    f.editor.cancel.and.callFake(id => { if (id === 'component-owned-request') rejectBuild(cancelled); });
+    f.adapter.build({ projectPath: '/isolated', requestId: 'component-owned-request' }).then(result => { completion = result; });
+    flushMicrotasks();
+    expect(f.editor.build).toHaveBeenCalledTimes(1); expect(f.rootEditor.build).not.toHaveBeenCalled();
+    tick(600001); flushMicrotasks();
+    expect(completion).toBeUndefined();
+    f.actions.dispatch('compile-cancel', { requestId: 'component-owned-request' }); flushMicrotasks();
+    expect(f.editor.cancel).toHaveBeenCalledOnceWith('component-owned-request');
+    expect(completion).toEqual({ success: false, result: cancelled, checkpoint: { startedAt: 123 } });
+    expect(f.rootEditor.build).not.toHaveBeenCalled(); stop();
+  }));
 });
 
 describe('build failure reporting', () => {
@@ -113,6 +163,7 @@ describe('build failure reporting', () => {
     const content = JSON.parse(String(result.content));
     expect(content.message).toBe(`${notStarted ? '编译未开始' : '编译失败'}: actual reason`);
     if (notStarted) expect(result.metadata?.['buildOutcome']).toBe('not-started');
-    else expect(content.errors).toContain('invalid code');
+    else expect((result.metadata?.['buildResult'] as any)?.fullStdErr).toContain('invalid code');
+    expect(content.errors).toBeUndefined();
   });
 });

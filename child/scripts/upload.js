@@ -1,12 +1,13 @@
 const fs = require('fs');
 const path = require('path');
-const { resolvePlatformResourceRoots } = require('./platform-resource-roots');
+const { resolvePlatformResourceRoots, resolveBoardResourceDirectory } = require('./platform-resource-roots');
 const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const { selectFirmwareFile } = require('./firmware-selection');
 const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
 const { resolveBuiltinUploader } = require('./builtin-uploaders');
+const { findUploadToolDependency, findPinnedUploadToolDirectories, isToolExecutableInDirectory } = require('./upload-tool-version');
 
 // 简单的日志工具
 const logger = {
@@ -376,6 +377,13 @@ async function main() {
 
     try {
         // 1. 路径准备
+        if (config.buildExecution) {
+            const selected = require('./build-execution-workspace').resolveBuildExecution(config.buildExecution.logicalProjectPath);
+            if (!selected || selected.currentProjectPath !== currentProjectPath || selected.buildPath !== buildPath
+                || selected.buildRequestId !== config.buildExecution.buildRequestId || selected.inputDigest !== config.buildExecution.inputDigest) {
+                throw new Error('BUILD_ARTIFACT_STALE: Upload does not belong to the current completed build execution.');
+            }
+        }
         const tempPath = path.join(currentProjectPath, '.temp');
         // const buildPath = path.join(tempPath, 'build');
         const resources = resolvePlatformResourceRoots(appDataPath);
@@ -451,8 +459,8 @@ async function main() {
         let fullSdkPath = '';
         Object.entries(boardDependencies || {}).forEach(([key, version]) => {
             if (key.startsWith('@aily-project/sdk-')) {
-                const sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
-                fullSdkPath = path.join(sdkPath, sdk);
+                const name = key.replace(/^@aily-project\/sdk-/, '');
+                fullSdkPath = resolveBoardResourceDirectory(sdkPath, 'sdk', name, version);
             }
         });
         if (config.sdkDirectory) fullSdkPath = config.sdkDirectory;
@@ -739,31 +747,34 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
 
     // 2. 查找工具可执行文件
     const toolName = paramList[0];
+    const toolExecutable = toolName.replace(/^"|"$/g, '');
     let commandPath = toolName;
+    let pinnedToolDirectory;
     const builtinUploader = restrictToolSearch
         ? await resolveBuiltinUploader(toolName, builtinToolsPath || toolsPath, { platform, sdkIdentity })
         : null;
     if (builtinUploader) commandPath = builtinUploader;
 
-    if (!skipToolResolve && !builtinUploader) {
-        let toolVersion = toolDependencies[toolName];
-        
-        if (!toolVersion) {
-            // 模糊匹配
-            const matchedTool = Object.keys(toolDependencies).find(key => {
-                return key.toLowerCase().includes(toolName.toLowerCase());
-            });
-            if (matchedTool) {
-                toolVersion = toolDependencies[matchedTool];
+    const pinnedTool = builtinUploader ? null : findUploadToolDependency(toolExecutable, toolDependencies);
+    const toolFileName = path.basename(toolExecutable) + (platform === 'win32' && !/\.exe$/i.test(toolExecutable) ? '.exe' : '');
+    if (pinnedTool) {
+        const directories = findPinnedUploadToolDirectories(toolsPath, pinnedTool.tool, pinnedTool.version);
+        for (const directory of directories) {
+            const executable = skipToolResolve && path.isAbsolute(toolExecutable)
+                ? (isToolExecutableInDirectory(toolExecutable, directory) ? toolName : '')
+                : await findFile(directory, toolFileName);
+            if (executable) {
+                pinnedToolDirectory = directory;
+                commandPath = executable;
+                break;
             }
         }
+        if (!pinnedToolDirectory) {
+            throw new Error(`无法使用烧录工具 ${pinnedTool.tool}@${pinnedTool.version}: ${toolName}`);
+        }
+    } else if (!skipToolResolve && !builtinUploader) {
+        commandPath = await findFile(toolsPath, toolFileName);
 
-        const isWindows = platform === 'win32';
-        const toolFileName = toolName + (isWindows ? '.exe' : '');
-        
-        commandPath = await findFile(toolsPath, toolFileName, toolVersion);
-        // console.log("Command Path: ", commandPath);
-        
         // 如果在 toolsPath 中未找到，尝试从 PATH 环境变量中查找
         if (!commandPath && !restrictToolSearch && process.env.PATH) {
             const pathDirs = process.env.PATH.split(path.delimiter);
@@ -781,6 +792,20 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
         }
     }
 
+    // SDK uploaders can delegate to another tool by passing its full path.
+    if (skipToolResolve) {
+        for (const argument of paramList.slice(1)) {
+            const executable = argument.replace(/^--[^=]+=/, '').replace(/^"|"$/g, '');
+            if (!path.isAbsolute(executable)) continue;
+            const dependency = findUploadToolDependency(executable, toolDependencies);
+            if (!dependency) continue;
+            const directories = findPinnedUploadToolDirectories(toolsPath, dependency.tool, dependency.version);
+            if (!directories.some(directory => isToolExecutableInDirectory(executable, directory))) {
+                throw new Error(`无法使用烧录工具 ${dependency.tool}@${dependency.version}: ${executable}`);
+            }
+        }
+    }
+
     // 3. 处理 ${'filename'} 格式的文件路径参数
     for (let i = 1; i < paramList.length; i++) {
         const param = paramList[i];
@@ -793,7 +818,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
             let findRes = '';
             
             if (!['bin', 'elf', 'hex', 'eep', 'img', 'uf2'].includes(ext)) {
-                findRes = await findFile(toolsPath, fileName);
+                findRes = await findFile(pinnedToolDirectory || toolsPath, fileName);
                 if (!findRes) {
                     findRes = await findFile(path.join(sdkPath, 'tools'), fileName);
                 }
@@ -881,7 +906,7 @@ function selectUploadFirmwareFile(files, pattern, inventory, buildPath) {
 }
 
 // 递归查找文件
-async function findFile(basePath, pattern, version = '') {
+async function findFile(basePath, pattern) {
     if (!fs.existsSync(basePath)) return '';
 
     const files = await findFilesRecursive(basePath);
@@ -896,11 +921,6 @@ async function findFile(basePath, pattern, version = '') {
     }
 
     if (matchedFiles.length === 0) return '';
-
-    if (version && matchedFiles.length > 1) {
-        const versionMatched = matchedFiles.find(f => f.includes(version));
-        if (versionMatched) return versionMatched;
-    }
 
     // 优先返回路径最短的，或者按某种规则排序
     return matchedFiles[0];

@@ -21,6 +21,7 @@ import type { AbsProjection } from '../../../integrations/blockly/abs/abs-state'
 import { nativeFieldOrder } from '../../../integrations/blockly/abs/abs-native-field-order';
 import { nativeLoadedStateView, withNativeStateLoading } from './blockly-native-state-loading';
 import { beginNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { BlocklyCommentLoading } from './blockly-comment-loading';
 import { loadAbsWorkspaceInChunks } from '../../../integrations/blockly/abs/abs-chunk-loader';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { adaptLegacyDhtRuntimeState } from './blockly-legacy-dht-runtime';
@@ -162,7 +163,10 @@ export class BlocklyService {
   private readonly projectOperations = new SerialOperationQueue();
   private readonly projectRevision = new BlocklyProjectRevision();
   private readonly projectCodePreparation = new BlocklyProjectCodePreparation();
-  private readonly workspaceEditGate = new BlocklyWorkspaceEditGate();
+  private readonly workspaceRecoveryRequiredSubject = new BehaviorSubject<boolean>(false);
+  readonly workspaceRecoveryRequired$ = this.workspaceRecoveryRequiredSubject.asObservable();
+  private readonly workspaceEditGate = new BlocklyWorkspaceEditGate(required => this.workspaceRecoveryRequiredSubject.next(required));
+  private activeWorkspaceLease?: BlocklyWorkspaceEditLease;
   private readonly pageReferenceContracts = new AbsReferenceContractCache();
   private releaseWorkspaceInputFence?: () => void;
   private documentMetadata: Record<string, unknown> = {};
@@ -222,6 +226,11 @@ export class BlocklyService {
       this.functionView = null;
       this.functionViewSubject.next(emptyBlocklyFunctionView());
       this.releaseWorkspaceInputFence?.();
+      if (this.activeWorkspaceLease) {
+        this.activeWorkspaceLease = undefined;
+        this.setAiWritingActive('workspace-edit-lease', false);
+      }
+      this.clearAiWaitWriting();
       this.workspaceEditGate.reset();
       this.projectRevision.invalidate();
       this.projectDirtyState?.reset();
@@ -357,6 +366,8 @@ export class BlocklyService {
   aiExecutionActive$ = this._aiExecutionActive.asObservable();
   private readonly aiExecutionActiveSources = new Set<string>();
   private _aiWaitWriting = new BehaviorSubject<boolean>(false);
+  private aiWaitWritingTimer?: ReturnType<typeof setTimeout>;
+  private aiWaitWritingGeneration = 0;
   /** 短暂的“等待写入”提示态，不等于 AI 执行中。 */
   aiWaitWriting$ = this._aiWaitWriting.asObservable();
   /**
@@ -1022,18 +1033,28 @@ export class BlocklyService {
   }
 
   /** Initial opens can yield while the existing edit lease fences incomplete
-   * topology. Synchronous edits, rollback and page transactions keep their
-   * existing atomic loader. Publish readiness only after complete readback. */
+   * topology. Publish readiness only after complete native readback. */
   async loadProjectDocumentForOpen(document: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease,
     assertCurrent: () => void): Promise<void> {
+    return this.loadProjectDocumentSettled(document, owner, assertCurrent);
+  }
+
+  /** Open/rebuild/recovery share one completion boundary; no partial native
+   * projection is persisted or announced while core comments are settling. */
+  async loadProjectDocumentSettled(document: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease,
+    assertCurrent: () => void, rootOrder?: readonly string[]): Promise<void> {
     const workspace = this.workspace;
     const check = () => { assertCurrent(); owner.assertCurrent(); };
     check();
     this.applyProjectDocument(normalizeBlocklyOwnership(document, captureBlocklyRootClassifier(null, Blockly.Blocks)), false);
-    await this.loadActivePageIntoWorkspace(owner, undefined, async state => {
+    await this.loadActivePageIntoWorkspace(owner, rootOrder, async state => {
+      const comments = new BlocklyCommentLoading(Blockly, workspace);
       if (collectProjectBlocks(state).length < 1000) {
         Blockly.Events.disable();
-        try { this.loadWorkspaceJson(state, false, owner); }
+        try {
+          comments.run(() => this.loadWorkspaceJson(state, false, owner));
+          await comments.finish(check);
+        }
         finally { Blockly.Events.enable(); }
         return;
       }
@@ -1042,11 +1063,12 @@ export class BlocklyService {
       const fields = beginNativeFieldDependencies(Blockly, workspace);
       try {
         await loadAbsWorkspaceInChunks(workspaceJson, workspace, undefined, check,
-          block => nativeFieldOrder(block, definitions), definitions.withSynchronousLoad);
+          block => nativeFieldOrder(block, definitions), load => comments.run(() => definitions.withSynchronousLoad ? definitions.withSynchronousLoad(load) : load()));
         check();
         fields.finish();
         captureCustomFunctionRegistration(Blockly.Blocks)?.prepareSerialization(workspace, true);
         this.functionView?.loaded();
+        await comments.finish(check);
       } finally { fields.dispose(); Blockly.Events.enable(); }
       // The canvas is mounted again now. Restore the saved zoom/pan before
       // yielding a paint; otherwise large projects flash at the default scale.
@@ -1055,7 +1077,7 @@ export class BlocklyService {
       // reference contracts. The caller still holds the input/transaction lease.
       await new Promise<void>(resolve => setTimeout(resolve, 0));
       check();
-    });
+    }, check);
     check();
   }
 
@@ -1072,6 +1094,16 @@ export class BlocklyService {
     );
     this.applyProjectDocument(restored, false);
     this.loadActivePageIntoWorkspace(owner, rootOrder);
+  }
+
+  async restoreProjectWorkspaceSnapshotSettled(snapshot: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease,
+    assertCurrent: () => void, rootOrder?: readonly string[]): Promise<void> {
+    this.assertWorkspaceEditAvailable(owner);
+    const current = this.getStoredProjectDocument();
+    if (snapshot.activePageId !== current.activePageId) throw new Error('Cannot restore a workspace snapshot onto a different page.');
+    const restored = replaceBlocklyPageWorkspace(current, current.activePageId, composeBlocklyPage(snapshot, current.activePageId),
+      captureBlocklyRootClassifier(null, Blockly.Blocks));
+    await this.loadProjectDocumentSettled(restored, owner, assertCurrent, rootOrder);
   }
 
   assertWorkspaceSharedChange(snapshot: BlocklyProjectDocument, workspace: any, owner?: BlocklyWorkspaceEditLease): void {
@@ -1376,44 +1408,66 @@ export class BlocklyService {
 
   isWorkspaceEditBlocked(): boolean { return this.workspaceEditGate.blocked; }
   isWorkspaceEditInProgress(): boolean { return this.workspaceEditGate.busy; }
-  isLibraryRuntimeReady(): boolean { return this.generatorRuntime.isReady() && !this.workspaceEditGate.blocked; }
+  isWorkspaceRecoveryRequired(): boolean { return this.workspaceEditGate.recoveryRequired; }
+  isLibraryRuntimeReady(owner?: BlocklyWorkspaceEditLease): boolean {
+    if (!owner) return this.generatorRuntime.isReady() && !this.workspaceEditGate.blocked;
+    try {
+      owner.assertCurrent(); this.workspaceEditGate.assertAvailable(owner);
+      return this.generatorRuntime.isReady() && !this.workspaceEditGate.recoveryRequired;
+    } catch { return false; }
+  }
 
-  acquireWorkspaceEditLease(): BlocklyWorkspaceEditLease {
-    return this.fenceEditLease(this.workspaceEditGate.acquire());
+  acquireWorkspaceEditLease(options: { background?: boolean } = {}): BlocklyWorkspaceEditLease {
+    return this.fenceEditLease(this.workspaceEditGate.acquire(), options);
   }
 
   acquireWorkspaceRecoveryLease(grant: BlocklyWorkspaceRecoveryGrant): BlocklyWorkspaceRecoveryLease {
     const retainedFence = this.releaseWorkspaceInputFence;
     const lease = this.workspaceEditGate.acquireRecovery(grant);
     const complete = lease.completeRecovery;
+    const release = lease.release;
+    const releaseActivity = this.trackWorkspaceLeaseActivity(lease);
     // The failed writer already owns a retained input fence. Do not stack a
     // second fence per recovery attempt or release it on an unverified failure.
     lease.completeRecovery = () => { complete(); retainedFence?.(); };
+    lease.release = () => { try { releaseActivity(); } finally { release(); } };
     return lease;
   }
 
-  private fenceEditLease<T extends BlocklyWorkspaceEditLease>(lease: T): T {
+  private trackWorkspaceLeaseActivity(lease: BlocklyWorkspaceEditLease, showActivity = true): () => void {
+    this.activeWorkspaceLease = lease;
+    if (showActivity) this.setAiWritingActive('workspace-edit-lease', true);
+    return () => {
+      if (this.activeWorkspaceLease !== lease) return;
+      this.activeWorkspaceLease = undefined;
+      if (showActivity) this.setAiWritingActive('workspace-edit-lease', false);
+    };
+  }
+
+  private fenceEditLease<T extends BlocklyWorkspaceEditLease>(lease: T, options: { background?: boolean } = {}): T {
     const workspace = this.workspace;
     let quarantined = false;
     let cleanup = () => undefined;
     const release = lease.release;
     const quarantine = lease.quarantine;
+    let releaseActivity = () => {};
     try {
-      cleanup = fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined);
-      workspace?.cancelCurrentGesture?.();
-      workspace?.hideChaff?.();
-      this.setAiWritingActive('workspace-edit-lease', true);
+      cleanup = fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined, { allowNavigation: options.background });
+      if (!options.background) {
+        workspace?.cancelCurrentGesture?.();
+        workspace?.hideChaff?.();
+      }
+      releaseActivity = this.trackWorkspaceLeaseActivity(lease, !options.background);
     } catch (error) { cleanup(); release(); throw error; }
     let releasedInput = false;
     const releaseInput = () => {
       if (releasedInput) return;
       releasedInput = true;
       cleanup();
-      this.setAiWritingActive('workspace-edit-lease', false);
       if (this.releaseWorkspaceInputFence === releaseInput) this.releaseWorkspaceInputFence = undefined;
     };
     this.releaseWorkspaceInputFence = releaseInput;
-    lease.release = () => { try { if (!quarantined) releaseInput(); } finally { release(); } };
+    lease.release = () => { try { releaseActivity(); if (!quarantined) releaseInput(); } finally { release(); } };
     lease.quarantine = reason => {
       try { lease.assertCurrent(); } catch { return; } // Never quarantine a replacement workspace.
       quarantined = true;
@@ -1582,6 +1636,7 @@ export class BlocklyService {
 
   async retryLibrary(libPackageName: string, projectPath: string): Promise<boolean> {
     const libPackagePath = this.blocklyLibraryPackageService.getPackagePath(projectPath, libPackageName);
+    const workspace = this.workspace, generator = getActiveProjectGenerator();
     const projectDocument = this.getProjectDocument();
     try {
       await this.loadLibrary(libPackageName, projectPath);
@@ -1602,7 +1657,7 @@ export class BlocklyService {
     const displayName = this.getLibraryToolboxDisplayName(librarySnapshot, libPackageName);
     if (this.loadedLibraries.has(libPackagePath)) {
       // Replace instances created from the failed library's display definitions.
-      this.loadProjectDocument(projectDocument, false);
+      await this.reloadLibraryProjectDocument(projectDocument, workspace, generator);
       this.requestCodeViewerRefresh(true);
       this.noticeService.update({
         title: '库加载成功',
@@ -1760,13 +1815,14 @@ export class BlocklyService {
   /** Rebuild only successful libraries in a fresh realm: a failed classic script
    * may already have registered helpers, extensions, listeners or const bindings. */
   private async recoverLibraryRuntime(projectPath: string): Promise<void> {
+    const workspace = this.workspace;
     const projectDocument = this.getProjectDocument();
     const libraryNames = Array.from(this.loadedLibraryInfos.values(), info => info.packageName);
     const wasRebuilding = this.rebuildingLibraryRuntime;
     const wasReady = this.generatorRuntime.isReady();
     this.rebuildingLibraryRuntime = true;
     try {
-      this.generatorRuntime.rebuild({ projectPath });
+      const generator = this.generatorRuntime.rebuild({ projectPath });
       this.clearLoadedLibraryStateForRuntimeRebuild(true);
       for (const libraryName of libraryNames) {
         await this.loadLibraryInternal(libraryName, projectPath,
@@ -1777,12 +1833,35 @@ export class BlocklyService {
       }
       if (!wasRebuilding) {
         this.refreshToolboxFromContents();
-        this.loadProjectDocument(projectDocument, false);
+        await this.reloadLibraryProjectDocument(projectDocument, workspace, generator);
         if (wasReady) this.generatorRuntime.markReady(projectPath);
       }
     } finally {
       this.rebuildingLibraryRuntime = wasRebuilding;
     }
+  }
+
+  /** The user-facing failed-library retry also replaces native blocks. Keep it
+   * behind the same settled readback boundary as an explicit runtime rebuild. */
+  private async reloadLibraryProjectDocument(document: BlocklyProjectDocument, workspace: Blockly.WorkspaceSvg,
+    generator: ReturnType<typeof getActiveProjectGenerator>): Promise<void> {
+    const owner = this.acquireWorkspaceEditLease();
+    const check = () => {
+      owner.assertCurrent();
+      if (workspace !== this.workspace || generator !== getActiveProjectGenerator()) {
+        throw new Error('Project or runtime changed during library recovery; stopped replacing the workspace.');
+      }
+    };
+    let replacing = false;
+    try {
+      check();
+      assertProjectLoadPreserved(document, this.getProjectDocument(owner));
+      replacing = true;
+      await this.loadProjectDocumentSettled(document, owner, check);
+    } catch (error) {
+      if (replacing) owner.quarantine(`Library recovery readback failed: ${String(error)}`);
+      throw error;
+    } finally { owner.release(); }
   }
 
   private restoreFailedLibraryDisplay(libraryPath: string): void {
@@ -2091,7 +2170,7 @@ export class BlocklyService {
       this.refreshToolboxFromContents();
       // Recreate block instances so extensions/callbacks owned by the old
       // iframe Realm cannot survive through the in-place runtime swap.
-      this.loadProjectDocument(projectDocument, true, owner);
+      await this.loadProjectDocumentSettled(projectDocument, owner, assertRuntimeCurrent);
       assertCurrent(); owner.assertCurrent();
       assertProjectLoadPreserved(projectDocument, this.getProjectDocument(owner),
         workspace => this.getWorkspaceLoadReadbackView(workspace));
@@ -3108,7 +3187,7 @@ export class BlocklyService {
   }
 
   private loadActivePageIntoWorkspace(owner?: BlocklyWorkspaceEditLease, rootOrder?: readonly string[],
-    load?: (state: any) => Promise<void>): void | Promise<void> {
+    load?: (state: any) => Promise<void>, assertCurrent?: () => void): void | Promise<void> {
     const activePage = this.getActivePage();
     if (!activePage || !this.workspace) {
       return;
@@ -3126,8 +3205,13 @@ export class BlocklyService {
       workspaceJson.blocks.blocks = rootOrder.map(id => roots.get(id));
     }
     if (load) return load(workspaceJson).then(() => {
+      assertCurrent?.();
       owner?.assertCurrent();
-      this.finishActivePageLoad(before, activePage, owner);
+      this.restoreWorkspaceViewState(activePage.viewState);
+      const settled = this.getProjectDocument(owner);
+      assertProjectLoadPreserved(before, settled, state => this.getWorkspaceLoadReadbackView(state));
+      assertCurrent?.();
+      this.finishActivePageLoad(before, activePage, owner, settled, assertCurrent);
     });
     try {
       Blockly.Events.disable();
@@ -3141,12 +3225,18 @@ export class BlocklyService {
     this.finishActivePageLoad(before, activePage, owner);
   }
 
-  private finishActivePageLoad(before: BlocklyProjectDocument, activePage: BlocklyPageSnapshot, owner?: BlocklyWorkspaceEditLease) {
+  private finishActivePageLoad(before: BlocklyProjectDocument, activePage: BlocklyPageSnapshot, owner?: BlocklyWorkspaceEditLease,
+    settled?: BlocklyProjectDocument, assertCurrent?: () => void) {
     this.selectedBlockSubject.next(null);
     this.selectedBlockIdsSubject.next([]);
     this.closeWorkspaceBlockSearch();
     this.restoreWorkspaceViewState(activePage.viewState);
-    this.persistActiveWorkspaceToState(owner);
+    if (settled) {
+      this.capturePageReferenceContract(settled, owner);
+      this.applyProjectDocument(settled, false);
+      assertProjectLoadPreserved(before, this.getStoredProjectDocument(), state => this.getWorkspaceLoadReadbackView(state));
+    } else this.persistActiveWorkspaceToState(owner);
+    assertCurrent?.();
     this.projectPageHydrated?.next({ before, after: this.getStoredProjectDocument() });
     this.mountExternalToolbox();
     this.loadLibraryFinishedLoadingSubject.next();
@@ -3200,14 +3290,23 @@ export class BlocklyService {
       return true;
     }
     if (this.aiWaiting) {
+      this.clearAiWaitWriting();
+      const generation = this.aiWaitWritingGeneration;
       this.aiWaitWriting = true;
-      setTimeout(() => {
-        if (!this.aiWriting) {
-          this.aiWaitWriting = false;
-        }
+      this.aiWaitWritingTimer = setTimeout(() => {
+        if (generation !== this.aiWaitWritingGeneration) return;
+        this.aiWaitWritingTimer = undefined;
+        this.aiWaitWriting = false;
       }, 2000);
     }
     return this.aiWaiting;
+  }
+
+  clearAiWaitWriting(): void {
+    this.aiWaitWritingGeneration = (this.aiWaitWritingGeneration ?? 0) + 1;
+    clearTimeout(this.aiWaitWritingTimer);
+    this.aiWaitWritingTimer = undefined;
+    if (this._aiWaitWriting) this.aiWaitWriting = false;
   }
 
   // ==================== Block-to-Code 查询 API ====================

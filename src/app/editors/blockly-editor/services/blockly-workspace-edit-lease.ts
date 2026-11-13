@@ -22,8 +22,10 @@ export class BlocklyWorkspaceEditGate {
   private epoch = 0;
   private grant?: BlocklyWorkspaceRecoveryGrant;
   private recovering?: BlocklyWorkspaceEditLease;
+  constructor(private readonly recoveryChanged: (required: boolean) => void = () => {}) {}
   get blocked(): boolean { return !!this.active || !!this.tainted; }
   get busy(): boolean { return !!this.active; }
+  get recoveryRequired(): boolean { return !!this.tainted; }
 
   assertAvailable(owner?: BlocklyWorkspaceEditLease): void {
     if (this.tainted && (!owner || owner !== this.recovering || owner !== this.active)) {
@@ -51,6 +53,7 @@ export class BlocklyWorkspaceEditGate {
         throw new BlocklyEditError('BLOCKLY_EDIT_STALE', 'Recovery ownership changed.');
       }
       this.tainted = undefined; this.grant = undefined; this.recovering = undefined;
+      this.recoveryChanged(false);
     };
     return lease;
   }
@@ -65,7 +68,9 @@ export class BlocklyWorkspaceEditGate {
       release: () => { if (this.active === lease) this.active = undefined; if (this.recovering === lease) this.recovering = undefined; },
       quarantine: reason => {
         if (epoch !== this.epoch || this.active !== lease) return;
+        const wasTainted = this.recoveryRequired;
         this.tainted = reason || '工作区恢复未完成；请查询宿主提供的受保护恢复动作。';
+        if (!wasTainted) this.recoveryChanged(true);
         return this.grant ??= Object.freeze({}) as BlocklyWorkspaceRecoveryGrant;
       },
     };
@@ -73,7 +78,11 @@ export class BlocklyWorkspaceEditGate {
     return lease;
   }
 
-  reset(): void { this.epoch++; this.active = undefined; this.tainted = undefined; this.grant = undefined; this.recovering = undefined; }
+  reset(): void {
+    const wasTainted = this.recoveryRequired;
+    this.epoch++; this.active = undefined; this.tainted = undefined; this.grant = undefined; this.recovering = undefined;
+    if (wasTainted) this.recoveryChanged(false);
+  }
 }
 
 /** Input fence only: never changes block flags or workspace.readOnly, which affect serialization. */
@@ -94,7 +103,7 @@ export function fenceBlocklyWorkspaceInput(root: Element | undefined, options: {
     const key = event as KeyboardEvent;
     // Saving is admitted by the project coordinator, not Blockly editing.
     // Keep Ctrl/Cmd+S reachable so a quarantined canvas can offer its complete
-    // recovery copy; do not pass delete, undo, paste or other editing shortcuts.
+    // recovery of the current view; do not pass delete, undo, paste or other editing shortcuts.
     if ((key.ctrlKey || key.metaKey) && !key.altKey && !key.shiftKey && key.key?.toLowerCase() === 's') return;
     const target = event.target as Node | null;
     if (target === document || target === document.body || (target && root.contains(target))) block(event);

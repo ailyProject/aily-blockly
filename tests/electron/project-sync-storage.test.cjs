@@ -12,6 +12,27 @@ const project = () => {
 };
 const guard = () => undefined;
 const request = root => ({ projectPath: root, fileName: 'project.abi', expectedHash: null, content: 'single writer' });
+
+test('operation snapshot and discovery metadata survive reopening with exact conditional writes', async () => {
+  const root = project(); let store = await openProjectSyncStorage(root, guard);
+  const snapshot = JSON.stringify({ version: 1, document: { pages: [{ content: 'complete' }] }, candidate: 'unapplied' });
+  await store.withLock(async storage => {
+    assert.equal(await storage.replace('recoveries/operation-original.json', null, snapshot), true);
+    assert.equal(await storage.replace('operation.json', null, 'pending-operation'), true);
+    assert.equal(await storage.replace('lineage.json', null, 'relationship-only'), true);
+  });
+  store = await openProjectSyncStorage(root, guard);
+  assert.equal(await store.read('recoveries/operation-original.json'), snapshot);
+  assert.equal(await store.read('operation.json'), 'pending-operation');
+  await store.withLock(async storage => {
+    assert.equal(await storage.replace('operation.json', hash('different-operation'), null), false);
+    await assert.rejects(storage.replace('recoveries/operation-original.json', hash(snapshot), 'overwrite'), /immutable/);
+    await assert.rejects(storage.replace('lineage.json', hash('relationship-only'), null), /Invalid conditional/);
+    assert.equal(await storage.replace('operation.json', hash('pending-operation'), null), true);
+  });
+  assert.equal(await store.read('operation.json'), null);
+  assert.equal(await store.read('lineage.json'), 'relationship-only');
+});
 after(() => { for (const root of roots) {
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   assert.ok(path.basename(root).startsWith('aily-sync-storage-'));
@@ -52,10 +73,12 @@ test('write access is callback-scoped, not shared with concurrent callers or usa
 
 test('all keys are confined and immutable baselines/public mirrors cannot be deleted or overwritten', async () => {
   const root = project(); const store = await openProjectSyncStorage(root, guard);
-  for (const key of ['../outside', 'baselines/../outside', 'baselines\\x.json', 'project.abi:stream', 'C:/x', 'package.json', 'baselines/', 'baselines/..json']) {
+  for (const key of ['../outside', 'baselines/../outside', 'baselines\\x.json', 'project.abi:stream', 'C:/x', 'baselines/', 'baselines/..json']) {
     await assert.rejects(store.read(key), { code: 'ABS_STORAGE_KEY_INVALID' });
   }
   await store.withLock(async locked => {
+    assert.equal(await locked.read('package.json'), null, 'The project manifest is an existing readonly input');
+    await assert.rejects(locked.replace('package.json', null, '{}'), { code: 'ABS_STORAGE_WRITE_INVALID' });
     await locked.replace('baselines/g.json', null, 'one');
     assert.equal(await locked.replace('baselines/g.json', null, 'two'), false);
     await assert.rejects(locked.replace('baselines/g.json', hash('one'), 'two'), { code: 'ABS_STORAGE_WRITE_INVALID' });

@@ -3,10 +3,28 @@ import { AbsSyncError } from './abs-state';
 import { AbsSymbols } from './abs-symbols';
 import { resolveAbsFieldValue, readAbsFieldToken } from './abs-field-values';
 import { AbsGenerationToolsService } from './abs-generation-tools.service';
-import { createAbsProjection } from './abs-identity-map';
+import { createAbsProjection, hashAbsText } from './abs-identity-map';
 import { reconcileAbs } from './abs-reconciler';
 import { assertAbsProtectedBlocks } from './abs-import-policy';
 import { parseAbsSyntax } from './abs-syntax';
+
+/** Exercise the current preparation adapter. The coordinator double throws;
+ * it never issues candidate authority, a validation receipt or a publication. */
+async function failedCurrentPreparation(requestId: string, prepare: () => unknown, source = '# ABS Schema: 2\n') {
+  const validate = jasmine.createSpy('validateGeneration').and.callFake(prepare);
+  const sync = {
+    bindWorkingCandidate: async (_source: string, request: unknown) => request,
+    validateGeneration: validate,
+    describeNativeCandidateFailure: async () => undefined,
+  };
+  const result = await new AbsGenerationToolsService(sync as any).execute('abs_validate', {
+    version: 2, requestId, abs: source,
+    workingCandidate: { version: 1, id: '12345678-1234-1234-1234-123456789abc', revisionHash: 'a'.repeat(64) },
+    candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).length },
+  }, source);
+  expect(validate).toHaveBeenCalledTimes(1);
+  return result as any;
+}
 
 describe('ABS actionable diagnostic contract', () => {
   it('sanitizes runtime resource evidence without losing build hashes or status', () => {
@@ -26,10 +44,9 @@ describe('ABS actionable diagnostic contract', () => {
 
   it('preserves resource failure evidence through the tool boundary without a success receipt', async () => {
     const resource = { url: 'http://localhost/blockly/runtime/native-candidate.js', status: 404, expectedHash: 'a'.repeat(64) };
-    const sync = { exportGeneration: async () => { throw new AbsSyncError('ABS_NATIVE_ASSET_UNAVAILABLE',
-      'Cannot load runtime', undefined, [], { reason: 'http-status', resource, hint: 'Repair the host asset service; retain ABS.' }); } };
-    const result: any = await new AbsGenerationToolsService(sync as any).execute('abs_projection', {
-      version: 2, requestId: 'native-asset-diagnostic-request', expectedAbiHash: 'sha256:' + 'a'.repeat(64),
+    const result = await failedCurrentPreparation('native-asset-diagnostic-request', async () => {
+      throw new AbsSyncError('ABS_NATIVE_ASSET_UNAVAILABLE', 'Cannot load runtime', undefined, [],
+        { reason: 'http-status', resource, hint: 'Repair the host asset service; retain ABS.' });
     });
     expect(result.ok).toBeFalse(); expect(result.receipt).toBeUndefined();
     expect(result.diagnostic.resource).toEqual(resource);
@@ -49,12 +66,9 @@ describe('ABS actionable diagnostic contract', () => {
     }
   });
   it('preserves protected-root errors through the actual tool boundary without leaking private IDs', async () => {
-    const sync = { exportGeneration: async () => assertAbsProtectedBlocks(
+    const result = await failedCurrentPreparation('protected-root-request', async () => assertAbsProtectedBlocks(
       { blocks: { blocks: [{ type: 'arduino_global', id: 'private-root', deletable: false }] } },
-      { blocks: { blocks: [] } }) };
-    const result: any = await new AbsGenerationToolsService(sync as any).execute('abs_projection', {
-      version: 2, requestId: 'protected-root-request', expectedAbiHash: 'sha256:' + 'a'.repeat(64),
-    }, 'arduino_setup()');
+      { blocks: { blocks: [] } }), 'arduino_setup()');
     expect(result.ok).toBeFalse();
     expect(result.code).toBe('ABS_PROTECTED_BLOCK_MISSING');
     expect(result.diagnostic.blockType).toBe('arduino_global');
@@ -83,7 +97,7 @@ describe('ABS actionable diagnostic contract', () => {
     expect(() => assertAbsProtectedBlocks({ blocks: { blocks: [root] } }, { blocks: { blocks: [root] } })).not.toThrow();
   });
   it('preserves the identity reason and specific recovery guidance through the wire boundary', async () => {
-    const sync = { exportGeneration: async () => {
+    const result = await failedCurrentPreparation('identity-diagnostic-request', async () => {
       throw new AbsSyncError('ABS_IDENTITY_AMBIGUOUS', 'Identity is ambiguous', { start: 4, end: 8 }, [], {
         blockType: 'step', reason: 'indistinguishable-relocation', received: 2,
         hint: 'Preserve call tokens; changing literals or querying block_info cannot repair identity.',
@@ -91,9 +105,6 @@ describe('ABS actionable diagnostic contract', () => {
           baselineRanges: [{ start: 5, end: 9 }], candidateRanges: [{ start: 4, end: 8 }, { start: 11, end: 15 }],
           replacedBaselineRanges: [{ start: 5, end: 9 }] },
       });
-    } };
-    const result: any = await new AbsGenerationToolsService(sync as any).execute('abs_projection', {
-      version: 2, requestId: 'identity-diagnostic-request', expectedAbiHash: 'sha256:' + 'a'.repeat(64),
     }, 'abc\nstep()');
     expect(result.ok).toBeFalse(); expect(result.receipt).toBeUndefined();
     expect(result.diagnostic.reason).toBe('indistinguishable-relocation');
@@ -117,12 +128,9 @@ describe('ABS actionable diagnostic contract', () => {
     expect(baseline.workspace.blocks.blocks[0].fields!['PIN']).toBe('D0');
   });
   it('returns a failed tool result with line/column and no success receipt', async () => {
-    const sync = { exportGeneration: async () => {
+    const result = await failedCurrentPreparation('test-diagnostic-request', async () => {
       throw new AbsSyncError('ABS_FIELD_OPTION_INVALID', 'Wrong pin', { start: 4, end: 5 }, [],
         { blockType: 'device', field: 'PIN', received: 3, allowedValues: ['D3'] });
-    } };
-    const result: any = await new AbsGenerationToolsService(sync as any).execute('abs_projection', {
-      version: 2, requestId: 'test-diagnostic-request', expectedAbiHash: 'sha256:' + 'a'.repeat(64),
     }, 'abc\n3');
     expect(result.ok).toBeFalse(); expect(result.code).toBe('ABS_FIELD_OPTION_INVALID');
     expect(result.location).toEqual({ line: 2, column: 1 });

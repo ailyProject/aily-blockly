@@ -42,7 +42,7 @@ function catalogEntry(version, archive) {
     version,
     namespace: 'AILY_CHAT',
     titleKey: 'AILY_CHAT.NAME',
-    app: { name: 'Aily Chat', enabled: true },
+    app: { name: 'aily Chat', enabled: true },
     update: { download: 'background', install: 'next-launch' },
     dist: {
       tarball: `https://packages.example.test/${version}.tgz`,
@@ -58,7 +58,7 @@ function stateEntry(version) {
     version,
     namespace: 'AILY_CHAT',
     titleKey: 'AILY_CHAT.NAME',
-    app: { name: 'Aily Chat', enabled: true },
+    app: { name: 'aily Chat', enabled: true },
   }
 }
 

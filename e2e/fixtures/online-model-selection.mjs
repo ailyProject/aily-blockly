@@ -111,7 +111,7 @@ export function resolveOnlineModelPreset(payload, requestedModel) {
   return { id, provider: 'aily-services', label: entry.display_name }
 }
 
-export async function selectOnlineModelFromUi(frame, preset) {
+export async function selectOnlineModelFromUi(frame, preset, { catalogTimeoutMs = 5000 } = {}) {
   if (!preset) return undefined
   const chip = frame.locator('.composer-model-chip')
   assert.equal(await chip.count(), 1, 'Use the normal single composer model selector')
@@ -119,7 +119,7 @@ export async function selectOnlineModelFromUi(frame, preset) {
   const menu = frame.locator('.popup-menu-model')
   await menu.waitFor({ state: 'visible', timeout: 5000 })
   const label = menu.locator('.popup-menu-label strong').filter({ hasText: exactText(preset.label) })
-  await label.first().waitFor({ state: 'visible', timeout: 5000 })
+  await label.first().waitFor({ state: 'visible', timeout: catalogTimeoutMs })
   assert.equal(await label.count(), 1, 'The requested model must have one exact visible UI label')
   const button = label.locator('xpath=ancestor::button[1]')
   assert.equal(await button.isEnabled(), true, 'Do not select a disabled model')

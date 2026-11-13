@@ -1,6 +1,7 @@
 import { isBuildWorkspaceBusyError, type GeneratedSourcePublicationReceipt } from '../../../editors/blockly-editor/services/generated-code-artifacts';
 
 export interface AbsDerivedOutputs { published: boolean; code?: string; error?: string;
+  target?: 'preview' | 'disk'; previewPublished?: boolean; diskPublished?: boolean;
   sourceArchive?: GeneratedSourcePublicationReceipt['sourceArchive'] }
 type PreparedCode = { code: string | null; error?: string };
 
@@ -26,4 +27,14 @@ export function describeAbsDerivedOutputs(prepared?: PreparedCode | null, public
     error: [generationError, publicationError].filter(value => value !== undefined).join('\n'),
   } : {}) };
   return { output, warnings };
+}
+
+export function attachAbsDerivedPublication(report: ReturnType<typeof describeAbsDerivedOutputs>, receipt: GeneratedSourcePublicationReceipt | void) {
+  if (report.output && receipt) {
+    if (receipt.target) report.output.target = receipt.target;
+    if (receipt.previewPublished !== undefined) report.output.previewPublished = receipt.previewPublished;
+    if (receipt.diskPublished !== undefined) report.output.diskPublished = receipt.diskPublished;
+    if (receipt.sourceArchive) report.output.sourceArchive = receipt.sourceArchive;
+  }
+  return report;
 }

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/integrations/blockly/abs/abs-workspace-sync.service.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-working-candidate-bridge.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-saved-abi-recipe.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-edit-provenance.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-identity-matcher.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-deletion-intent.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

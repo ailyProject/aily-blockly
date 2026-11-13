@@ -35,7 +35,7 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
     }
     async function live(entry) {
         assertOwner(entry);
-        const result = await querySource(entry.root);
+        const result = await querySource(entry.logicalRoot);
         assertOwner(entry);
         const state = result?.source;
         if (result?.ok !== true || !state || key(fs.realpathSync(state.projectPath)) !== entry.key
@@ -95,13 +95,15 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
             if (key(fs.realpathSync(config.currentProjectPath)) !== key(root) || config.recordProjectDelivery !== true
                 || !config.sourceCapture) throw fault('Full delivery recording/source capture is required.');
             captures.confirmBuildSource(config);
+            const logicalRoot = config.execution
+                ? require(path.join(childRoot, 'scripts/build-execution-workspace.js')).recordFor(config).store.root : root;
             if (config.sourceCapture.mode === 'blockly' && !config.sourceCapture.workspace) throw fault('Blockly source capture is missing.');
             if (records.size >= 32) {
                 const older = [...records.values()].find(item => item.state !== 'running');
                 if (!older) throw fault('Too many pending delivery records.');
                 records.delete(older.key);
             }
-            const entry = { key: key(root), root, sender, generation: owner.generation, config,
+            const entry = { key: key(logicalRoot), root, logicalRoot, sender, generation: owner.generation, config,
                 requestDigest: hash(JSON.stringify(config)), handle: `${epoch}:${randomUUID()}`, state: 'running' };
             records.set(entry.key, entry);
             try { entry.activationId = await live(entry); }
@@ -128,6 +130,8 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
                 const before = sources.captureProjectSources(entry.config);
                 if (before.digest !== entry.receipt.value.project.digest) throw fault('Project source/configuration changed.');
                 await live(entry);
+                if (entry.config.execution && !require(path.join(childRoot, 'scripts/build-execution-workspace.js'))
+                    .canReuseBuildExecution({ ...entry.config, currentProjectPath: entry.logicalRoot })) throw fault('Logical project inputs or selected execution changed.');
                 captures.confirmBuildSource(entry.config);
                 sources.confirmProjectSources(before, entry.config);
                 const current = files(entry);

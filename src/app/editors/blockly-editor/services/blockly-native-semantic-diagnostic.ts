@@ -50,7 +50,7 @@ function context(snapshot: any, path: readonly string[]): { blockId?: string; bl
 
 /** Bounded data-only context, never a receipt, retry authority or full snapshot. */
 export function nativeSemanticChange(before: string, after: string, phase: 'initialization' | 'ui',
-  message = 'Native deferred UI task changed persisted state, structure or field constraints'): AbsSyncError {
+  message = 'Native deferred UI phase changed persisted state, structure or field constraints'): AbsSyncError {
   const diagnostic: AbsDiagnostic = { reason: 'native-ui-semantic-change', phase,
     hint: 'Preserve ABS and source. Unchanged chunk, reload or apply cannot repair this deterministic native contract failure. Retry only after the reported cause is corrected.' };
   const text = (value: string, limit = 256) => {

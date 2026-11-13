@@ -121,20 +121,26 @@
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.BLOCKLY' | translate }}</h2>
             <div class="right-inner">
               <div class="item">
+                <div><label for="blockly-autosave">{{ 'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE' | translate }}:</label></div>
+                <nz-switch nzId="blockly-autosave" [ngModel]="configData.blockly.autoSave === true"
+                  (ngModelChange)="saveBlocklyPreference('autoSave', $event)"
+                  nz-tooltip [nzTooltipTitle]="'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE_HINT' | translate"></nz-switch>
+              </div>
+              <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_THEME' | translate }}:</div>
-                <nz-radio-group [(ngModel)]="configData.blockly.renderer" [nzSize]="'small'" nzButtonStyle="solid">
+                <nz-radio-group [ngModel]="configData.blockly.renderer" (ngModelChange)="saveBlocklyPreference('renderer', $event)" [nzSize]="'small'" nzButtonStyle="solid">
                   <label nz-radio-button nzValue="thrasos">Thrasos</label>
                   <label nz-radio-button nzValue="zelos">Zelos</label>
                 </nz-radio-group>
               </div>
               <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_MINIMAP' | translate }}:</div>
-                <nz-switch [(ngModel)]="configData.blockly.minimap"></nz-switch>
+                <nz-switch [ngModel]="configData.blockly.minimap" (ngModelChange)="saveBlocklyPreference('minimap', $event)"></nz-switch>
               </div>
               <div class="item">
                 <div><label for="blockly-sounds-enabled">{{ 'SETTINGS.FIELDS.BLOCKLY_SOUNDS' | translate }}:</label></div>
                 <nz-switch nzId="blockly-sounds-enabled" [ngModel]="configData.blockly.sounds !== false"
-                  (ngModelChange)="configData.blockly.sounds = $event"></nz-switch>
+                  (ngModelChange)="saveBlocklyPreference('sounds', $event)"></nz-switch>
               </div>
               <!-- <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.FLYOUT_AUTO_CLOSE' | translate }}:</div>
@@ -366,6 +372,11 @@
       </ngx-simplebar>
     </div>
     <div class="window-footer">
+      @if (!coderProduct) {
+      <p class="blockly-save-status" role="status" aria-live="polite" aria-atomic="true" [class.save-error]="blocklySaveState === 'error'">
+        {{ ('SETTINGS.FIELDS.BLOCKLY_SETTINGS_' + (blocklySaveState === 'saving' ? 'SAVING' : blocklySaveState === 'saved' ? 'SAVED' : blocklySaveState === 'error' ? 'SAVE_FAILED' : 'AUTO_SAVE')) | translate }}
+      </p>
+      }
       <div class="btns">
         <button nz-button nzType="default" (click)="cancel()">{{ 'SETTINGS.BUTTONS.CANCEL' | translate }}</button>
         <button nz-button nzType="primary" [nzLoading]="applying" [disabled]="cloudConnectionChecking || cloudConnectionSaving" (click)="apply()">{{ 'SETTINGS.BUTTONS.APPLY' |

@@ -176,7 +176,7 @@ test('native primary archive rejects an inner directory link without writing out
   const external = path.join(f.root, 'external'); fs.mkdirSync(external); fs.mkdirSync(path.join(f.target, '.aily'));
   fs.symlinkSync(external, path.join(f.target, '.aily', 'recovery-primary'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => createNativeRepairPrimary({ project: f.target, sourceProject: f.repair, requestId: nested.requestId,
-    targetAbiHash: hash(nested.text) }, receipt, nested.result), /directory identity changed or is linked/);
+    targetAbiHash: hash(nested.text) }, receipt, nested.result), { code: 'PROJECT_FILE_UNSAFE_PATH' });
   assert.deepEqual(fs.readdirSync(external), []);
 });
 test('fork policy is native exact-source only; ordinary host behavior remains same-host', () => {

@@ -51,14 +51,14 @@ export class FooterComponent implements OnDestroy {
   }
 
   changeState(e: ActionState) {
-    this.actionData = e;
+    clearTimeout(this.timer);
+    this.actionData = { ...e };
     this.cd.detectChanges();
     // 默认超时设置10秒, warn 和 error 不超时 
-    if (!this.actionData.timeout && this.actionData.state === 'loading' || this.actionData.state === 'done') {
+    if (!this.actionData.timeout && ['loading', 'done'].includes(this.actionData.state)) {
       this.actionData.timeout = 10000;
     }
     if (this.actionData.timeout) {
-      clearTimeout(this.timer);
       this.timer = setTimeout(() => {
         this.actionData = null;
         this.cd.detectChanges();

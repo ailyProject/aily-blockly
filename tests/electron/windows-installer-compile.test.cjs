@@ -15,12 +15,12 @@ for (const product of ['blockly', 'coder']) {
   test(`${product} Windows installer and uninstaller compile with production hooks`, { timeout: 180000 }, async () => {
     await fs.mkdir(outputRoot, { recursive: true });
     const directory = await fs.mkdtemp(path.join(outputRoot, `${product}-`));
-    const productName = `Aily ${product} Shortcut Compile Test`;
+    const productName = `aily ${product} Shortcut Compile Test`;
     await fs.mkdir(path.join(directory, 'payload/resources'), { recursive: true });
     await fs.writeFile(path.join(directory, 'payload', `${productName}.exe`), 'MZ compilation fixture');
     await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({
       name: `aily-${product}-shortcut-compile-test`, version: '1.0.1',
-      description: 'NSIS compilation fixture only', author: 'Aily', main: 'main.js',
+      description: 'NSIS compilation fixture only', author: 'aily', main: 'main.js',
     }));
     const plan = createBuildPlan(['--product', product], require('../../electron/config/config.json'));
     const config = createBuilderConfig(plan, require('../../package.json').build);

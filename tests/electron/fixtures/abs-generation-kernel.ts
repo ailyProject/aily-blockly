@@ -5,3 +5,4 @@ export { AbsBaselineStore, absBaselineKey } from '../../../src/app/integrations/
 export { absJson, createAbsProjection, hashAbsText } from '../../../src/app/integrations/blockly/abs/abs-identity-map';
 export { reconcileAbs } from '../../../src/app/integrations/blockly/abs/abs-reconciler';
 export { openAbsHostStorage } from '../../../src/app/integrations/blockly/abs/abs-host-storage';
+export { AbsCandidateJournal } from '../../../src/app/integrations/blockly/abs/abs-candidate-journal';

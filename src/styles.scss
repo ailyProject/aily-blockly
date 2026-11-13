@@ -94,6 +94,14 @@ img {
   }
 }
 
+.project-coder-conversion-modal .project-conversion-warning {
+  color: #ff4d4f;
+}
+
+[data-theme="light"] .project-coder-conversion-modal .project-conversion-warning {
+  color: var(--aily-color-error, #c02020);
+}
+
 .library-publish-modal {
   .ant-modal-content {
     background: transparent !important;

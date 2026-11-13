@@ -22,6 +22,15 @@ describe('host feedback background chat report', () => {
 
   afterEach(() => { window['subWindow'] = previousSubWindow; });
 
+  it('opens a reusable independent feedback window when the desktop host is available', () => {
+    window['subWindow'].open = jasmine.createSpy('open');
+    ui.openWindow = jasmine.createSpy('openWindow');
+    ui.openFeedback({ feedbackType: 'library' });
+    expect(ui.openWindow).toHaveBeenCalledOnceWith(jasmine.objectContaining({ path: 'feedback',
+      data: { feedbackType: 'library' }, alwaysOnTop: false, windowClass: 'builtin' }));
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('opens the original dialog immediately while upload is pending and coexists with cancel', () => {
     const afterClose = new Subject();
     create.and.returnValue({ afterClose });

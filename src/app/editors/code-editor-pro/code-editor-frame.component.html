@@ -1,6 +1,6 @@
 <div class="code-editor-pro">
     @for (projectPath of coderEmbedSrc ? [coderFrameProjectPath] : []; track projectPath) {
-    <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="Aily Coder"
+    <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="aily Coder"
         [src]="coderEmbedSrc" (load)="onCoderEmbedFrameLoad()"></iframe>
     }
     <app-coder-loading

@@ -47,6 +47,28 @@ describe('native read-only media snapshot and shared generator projection', () =
   };
   afterEach(() => expect(document.querySelector('[data-blockly-native-candidate]')).toBeNull());
 
+  it('gives the exact import target when a registered U8g2 or TFT field rejects a quoted value', async () => {
+    for (const entry of [cases[0], cases[2], cases[3]]) {
+      const input = await fixture(entry);
+      const argument = input.abs.split('native_media(')[1].slice(0, -1);
+      const quoted = { ...input, abs: '# ABS Schema: 2\nnative_media(' + JSON.stringify(argument) + ')' };
+      await expectAsync(run(quoted)).toBeRejectedWith(jasmine.objectContaining({
+        code: 'ABS_GENERATION_FAILED',
+        message: jasmine.stringMatching(/Native field did not retain requested value: PAYLOAD.*project_media_import.*"blockType":"native_media","fieldName":"PAYLOAD".*absExpression or absArgument unchanged/),
+      }));
+    }
+  });
+
+  it('keeps the ordinary rejection for fields unsupported by the importer', async () => {
+    const input = await fixture(cases[1]);
+    const argument = input.abs.split('native_media(')[1].slice(0, -1);
+    const quoted = { ...input, abs: '# ABS Schema: 2\nnative_media(' + JSON.stringify(argument) + ')' };
+    await expectAsync(run(quoted)).toBeRejectedWith(jasmine.objectContaining({
+      code: 'ABS_GENERATION_FAILED',
+      message: 'Native field did not retain requested value: PAYLOAD.',
+    }));
+  });
+
   it('binds empty audio and roundtrips it without undefined optional paths', async () => {
     const audio = { schemaVersion: 1, encoding: 'mp3-cbr-v1', sampleRate: 16000, channels: 1,
       bitRate: 16, duration: 0, trimStart: 0, trimEnd: 0, outputDuration: 0 };

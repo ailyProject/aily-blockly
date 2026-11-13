@@ -7,6 +7,25 @@ const OMIT = new Set(['node_modules', '.git', '.aily', '.temp', '.build', '.log'
   'project.abi', 'project.abs', 'project.abs.map.json', 'project.aci', 'package-lock.json',
   'npm-shrinkwrap.json', '.DS_Store']);
 const SOURCE_FILE = /\.(?:ino|pde|c|cc|cpp|cxx|h|hpp|hh|hxx|s)$/i;
+const GENERATED_HEADER = /^(?:variables|objects)_[a-zA-Z0-9_-]+-[a-f0-9]{8}\.h$/;
+
+function validateGeneratedSource(value) {
+  if (!value || typeof value.code !== 'string' || !value.code.trim()
+    || !(value.artifacts === null || Array.isArray(value.artifacts))
+    || !Array.isArray(value.macros)) throw new Error('无效的 Blockly 生成源码快照');
+  const names = new Set();
+  let bytes = Buffer.byteLength(value.code);
+  for (const artifact of value.artifacts || []) {
+    if (!artifact || !GENERATED_HEADER.test(artifact.fileName) || names.has(artifact.fileName)
+      || typeof artifact.content !== 'string' || typeof artifact.sourceTag !== 'string') {
+      throw new Error('无效的 Blockly 生成声明文件');
+    }
+    names.add(artifact.fileName); bytes += Buffer.byteLength(artifact.content);
+  }
+  if (bytes > 128 * 1024 * 1024) throw new Error('Blockly 生成源码超出转换大小限制');
+  if (!value.macros.every(item => Array.isArray(item) && item.length === 1 && typeof item[0] === 'string'
+    && !/[\r\n\0]/.test(item[0]))) throw new Error('无效的 Blockly 生成宏配置');
+}
 
 /** Turn Arduino tabs into the same persistent src/main.cpp workspace as a new Coder project. */
 function convertSketchSources(sketch, entry) {
@@ -62,18 +81,25 @@ function convertSketchSources(sketch, entry) {
 }
 
 /** Reserve a sibling project and copy source inputs, never the Blockly runtime or build cache. */
-function convertBlocklyProjectToCoder(sourcePath, entryPath) {
+function convertBlocklyProjectToCoder(sourcePath, entryPath, generatedSource) {
+  if (generatedSource !== undefined) {
+    if (entryPath !== undefined) throw new Error('不能同时指定 Arduino 主文件和 Blockly 生成源码');
+    validateGeneratedSource(generatedSource);
+  }
   const source = fs.realpathSync(sourcePath);
   const manifest = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
   if (manifest.type === 'coder' || !fs.existsSync(path.join(source, 'project.abi'))) {
     throw new Error('请选择 Blockly 项目');
   }
   if (manifest.devmode && manifest.devmode !== 'arduino') throw new Error('仅支持转换 Arduino 项目');
-  const entry = fs.realpathSync(entryPath || path.join(source, '.temp', 'sketch', 'sketch.ino'));
-  const relativeEntry = path.relative(source, entry);
-  if (!relativeEntry || relativeEntry === '..' || relativeEntry.startsWith(`..${path.sep}`)
-    || path.isAbsolute(relativeEntry) || !/\.ino$/i.test(entry) || !fs.statSync(entry).isFile()) {
-    throw new Error('Arduino 主文件必须位于 Blockly 项目中');
+  let entry;
+  if (generatedSource === undefined) {
+    entry = fs.realpathSync(entryPath || path.join(source, '.temp', 'sketch', 'sketch.ino'));
+    const relativeEntry = path.relative(source, entry);
+    if (!relativeEntry || relativeEntry === '..' || relativeEntry.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativeEntry) || !/\.ino$/i.test(entry) || !fs.statSync(entry).isFile()) {
+      throw new Error('Arduino 主文件必须位于 Blockly 项目中');
+    }
   }
 
   let target;
@@ -85,7 +111,9 @@ function convertBlocklyProjectToCoder(sourcePath, entryPath) {
   }
   try {
     const copyInputs = (from, to) => fs.cpSync(from, to, { recursive: true,
-      filter: file => !OMIT.has(path.basename(file)) && !isProjectWriterTransient(path.relative(source, file)) });
+      filter: file => !OMIT.has(path.basename(file)) && !isProjectWriterTransient(path.relative(source, file))
+        && !(generatedSource !== undefined && generatedSource.artifacts !== null
+          && path.dirname(file) === path.join(source, 'src') && GENERATED_HEADER.test(path.basename(file))) });
     for (const item of fs.readdirSync(source)) {
       if (!OMIT.has(item) && item !== 'src' && item !== 'package.json' && !SOURCE_FILE.test(item)) {
         copyInputs(path.join(source, item), path.join(target, item));
@@ -94,7 +122,11 @@ function convertBlocklyProjectToCoder(sourcePath, entryPath) {
     const sketch = path.join(target, 'sketch');
     fs.mkdirSync(sketch, { recursive: true });
     // Includes, secondary tabs and generated declarations travel with the entry.
-    if (path.dirname(entry) !== source) copyInputs(path.dirname(entry), sketch);
+    if (generatedSource !== undefined) {
+      entry = path.join(sketch, 'sketch.ino');
+      fs.writeFileSync(entry, generatedSource.code);
+      manifest.MACROS = generatedSource.macros;
+    } else if (path.dirname(entry) !== source) copyInputs(path.dirname(entry), sketch);
     else {
       for (const item of fs.readdirSync(source, { withFileTypes: true })) {
         if (item.isFile() && (SOURCE_FILE.test(item.name) || /\.csv$/i.test(item.name))) {
@@ -103,6 +135,11 @@ function convertBlocklyProjectToCoder(sourcePath, entryPath) {
       }
     }
     if (fs.existsSync(path.join(source, 'src'))) copyInputs(path.join(source, 'src'), path.join(sketch, 'src'));
+    for (const artifact of generatedSource?.artifacts || []) {
+      const file = path.join(sketch, 'src', artifact.fileName);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, artifact.content, { flag: 'wx' });
+    }
     fs.rmSync(path.join(sketch, 'package.json'), { force: true });
     fs.mkdirSync(path.join(sketch, 'libraries'), { recursive: true });
     convertSketchSources(sketch, entry);
@@ -139,7 +176,7 @@ function convertBlocklyProjectToCoder(sourcePath, entryPath) {
       }
     }
     for (const field of ['cloudId', 'codeHash', 'buildInfo', 'blocklyToolboxOrder', 'ailyBlocklyUsedLibraries',
-      'coderBoardTemplateDependencies', 'arduinoSketch']) delete manifest[field];
+      'coderBoardTemplateDependencies', 'arduinoSketch', 'ailyGeneratorMacros']) delete manifest[field];
     manifest.name = path.basename(target).toLowerCase().replace(/[^a-z0-9._-]/g, '-') || 'coder-project';
     manifest.nickname = `${manifest.nickname || path.basename(source)} (Coder)`;
     manifest.private = true;

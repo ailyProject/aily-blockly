@@ -9,8 +9,10 @@ const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, p
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
-const { compileWithArchiveRecovery } = require('./builder-archive-recovery');
+const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
+const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
+const { captureBlocklyCompileSource } = require('./compile-source');
 
 // 简单的日志工具
 const logger = {
@@ -74,7 +76,9 @@ async function main() {
 
     let workspace;
     try {
+        if (config.execution) recordFor(config);
         workspace = acquireBuildWorkspace(currentProjectPath, 'compile');
+        startBuildExecution(config, workspace);
         confirmBuildSource(config);
         invalidateBuildDelivery(currentProjectPath);
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
@@ -150,6 +154,7 @@ async function main() {
         workspace.assertOwned();
         confirmBuildSource(config);
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
+        const materializedSource = !isAilyCode ? captureBlocklyCompileSource(config, compileSourcePath) : undefined;
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
         const uploadInputs = !isAilyCode ? captureBlocklyUploadInputs(config) : null;
 
@@ -218,18 +223,23 @@ async function main() {
                 );
             }
         }
-        if (projectSnapshot) args.push('--record-build-inputs', '--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
-
-        if (!projectSnapshot && (isDevelopmentEnvironment() || process.env.AILY_E2E === '1')) {
-            args.push('--generate-archive-cloud-cache');
-        }
+        if (projectSnapshot) args.push('--record-build-inputs');
+        const archive = builderArchiveOptions({
+            execution: config.execution,
+            projectPath: currentProjectPath,
+            recordsProjectDelivery: !!projectSnapshot,
+            isAilyCode,
+            verifiedLocalArchiveCache: capabilities.verifiedLocalArchiveCache,
+            generateLegacy: isDevelopmentEnvironment() || process.env.AILY_E2E === '1'
+        });
+        args.push(...archive.args);
 
         /** @type {{ cwd: string, shell: boolean, stdio: string[], env?: NodeJS.ProcessEnv }} */
         const spawnOpts = {
             cwd: currentProjectPath,
             shell: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: workspace.builderEnvironment('compile')
+            env: { ...workspace.builderEnvironment('compile'), ...archive.env }
         };
 
         if (frameworkOutputDir) {
@@ -242,9 +252,11 @@ async function main() {
         logger.log(`执行编译: ${builderCommand} ${args.join(' ')}`);
 
         const startedAt = new Date();
+        if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
         const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
+            if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
             if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
         const { exitCode, signal, spawnError, output } = attempt;
@@ -252,6 +264,7 @@ async function main() {
         workspace.assertBuilderIdle();
         let deliveryError = null;
         try {
+            if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
@@ -264,6 +277,7 @@ async function main() {
         } catch (error) {
             deliveryError = error;
             invalidateBuildDelivery(currentProjectPath);
+            if (!isAilyCode) invalidateBlocklyUploadState(currentProjectPath);
             output.push(`\n[BUILD_DELIVERY_ERROR] ${formatFatalError(error)}\n`);
         }
         writeBuilderCompileReport(
@@ -302,7 +316,13 @@ async function main() {
     } finally {
         // Only the acquiring host releases, after preprocess/compiler close and
         // delivery/report completion. A rejected contender never owns cleanup.
-        if (workspace) workspace.release();
+        try {
+            if (workspace) workspace.release();
+        } catch (error) {
+            finishBuildExecution(config, false);
+            throw error;
+        }
+        finishBuildExecution(config, !!workspace && process.exitCode !== 1);
     }
 }
 
