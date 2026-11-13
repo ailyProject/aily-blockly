@@ -1295,7 +1295,7 @@ async function handleCliBridgeCommand(action, payload) {
             ? 600000
           : operation === 'project_save' && payload?.params?.chunk === true
             ? 140000
-          : operation === 'abs_recovery' && ['repair', 'history_publish'].includes(payload?.params?.action)
+          : operation === 'abs_recovery' && ['repair', 'history_publish', 'observe_apply'].includes(payload?.params?.action)
             ? 120000
           : operation === 'abs_apply' || operation === 'abs_validate' || operation === 'abs_projection' || operation === 'library_runtime_sync' || operation === 'set_board_config' || operation === 'blocks_set_state'
             ? 120000
