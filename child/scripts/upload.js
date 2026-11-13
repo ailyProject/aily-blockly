@@ -7,7 +7,7 @@ const ailyCodeProject = require('./aily-code-project');
 const { selectFirmwareFile } = require('./firmware-selection');
 const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
 const { resolveBuiltinUploader } = require('./builtin-uploaders');
-const { findUploadToolDependency, findPinnedUploadToolDirectories, isToolExecutableInDirectory } = require('./upload-tool-version');
+const { findUploadToolDependency, findPinnedUploadToolDirectories, resolveToolExecutableInDirectory } = require('./upload-tool-version');
 
 // 简单的日志工具
 const logger = {
@@ -759,13 +759,14 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
     const toolFileName = path.basename(toolExecutable) + (platform === 'win32' && !/\.exe$/i.test(toolExecutable) ? '.exe' : '');
     if (pinnedTool) {
         const directories = findPinnedUploadToolDirectories(toolsPath, pinnedTool.tool, pinnedTool.version);
+        const usePreparedPath = skipToolResolve && path.isAbsolute(toolExecutable);
         for (const directory of directories) {
-            const executable = skipToolResolve && path.isAbsolute(toolExecutable)
-                ? (isToolExecutableInDirectory(toolExecutable, directory) ? toolName : '')
+            const executable = usePreparedPath
+                ? resolveToolExecutableInDirectory(toolExecutable, directory, platform)
                 : await findFile(directory, toolFileName);
             if (executable) {
                 pinnedToolDirectory = directory;
-                commandPath = executable;
+                commandPath = usePreparedPath ? toolName.replace(toolExecutable, () => executable) : executable;
                 break;
             }
         }
@@ -794,15 +795,18 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
 
     // SDK uploaders can delegate to another tool by passing its full path.
     if (skipToolResolve) {
-        for (const argument of paramList.slice(1)) {
+        for (let i = 1; i < paramList.length; i++) {
+            const argument = paramList[i];
             const executable = argument.replace(/^--[^=]+=/, '').replace(/^"|"$/g, '');
             if (!path.isAbsolute(executable)) continue;
             const dependency = findUploadToolDependency(executable, toolDependencies);
             if (!dependency) continue;
             const directories = findPinnedUploadToolDirectories(toolsPath, dependency.tool, dependency.version);
-            if (!directories.some(directory => isToolExecutableInDirectory(executable, directory))) {
+            const resolved = directories.map(directory => resolveToolExecutableInDirectory(executable, directory, platform)).find(Boolean);
+            if (!resolved) {
                 throw new Error(`无法使用烧录工具 ${dependency.tool}@${dependency.version}: ${executable}`);
             }
+            paramList[i] = argument.replace(executable, () => resolved);
         }
     }
 

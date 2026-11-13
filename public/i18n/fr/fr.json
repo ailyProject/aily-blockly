@@ -1085,8 +1085,8 @@
     },
     "PROJECT": {
     "AUTO_SAVE_PENDING": "Unsaved",
-    "AUTO_SAVE_SAVING": "Saving…",
-    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_SAVING": "Auto saving…",
+    "AUTO_SAVE_SAVED": "Auto save succeeded",
     "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "Une tâche IA est en cours. Attendez sa fin avant d’enregistrer le projet sous un autre nom.",
       "OPEN_IN_CODER": "Open in aily coder",

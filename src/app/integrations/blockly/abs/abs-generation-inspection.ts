@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, AbsDiskSnapshot } from './abs-baseline-store';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { ABS_PROJECTION_VERSION, AbsIdentityMap, AbsSyncError } from './abs-state';
@@ -14,7 +15,7 @@ export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsId
   else {
     if (baseline.map.projectionVersion !== ABS_PROJECTION_VERSION) issues.push('ABS_PROJECTION_UPGRADE_REQUIRED');
     if (absJson(baseline.map.scope) !== absJson(scope)) issues.push('ABS_SCOPE_INVALID');
-    if (disk.map !== absJson(baseline.map)) issues.push('ABS_MAP_INVALID');
+    if (disk.map !== absMapJson(baseline.map)) issues.push('ABS_MAP_INVALID');
     if (disk.abs !== baseline.abs) issues.push('ABS_SOURCE_CONFLICT');
   }
   if (disk.abi === null) issues.push('ABS_SAVED_ABI_REQUIRED');

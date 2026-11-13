@@ -41,7 +41,7 @@ for (const extra of ['000-ai-output.bin', 'backup/old.bin', 'Blink.ino.bin', 'ba
         const future = new Date(Date.now() + 3600000);
         fs.utimesSync(path.join(f.root, extra), future, future);
         await assert.rejects(f.parse(), error => /FIRMWARE_AMBIGUOUS/.test(error.message)
-            && error.message.includes(extra) && error.message.includes('sketch.bin'));
+            && error.message.includes(path.join(f.root, extra)) && error.message.includes(path.join(f.root, 'sketch.bin')));
     });
 }
 

@@ -1,3 +1,4 @@
+import { stringifyProjectJson } from '@domain/project/project-document-json';
 import type { BlocklyProjectDocument } from './blockly.service';
 import { ProjectFilePublicationPort, publishProjectText } from '@core/platform/public-api';
 import {
@@ -13,7 +14,7 @@ export async function prepareBlocklySave(
   assertCurrent: () => void, runtime: ProjectSaveDataRuntime = projectDataRuntime,
 ): Promise<PreparedBlocklySave> {
   assertCurrent();
-  const documentText = JSON.stringify(document);
+  const documentText = stringifyProjectJson(document);
   const candidate = saveShape(JSON.parse(documentText));
   const { document: abi } = await externalizeGenericProjectDataValues(candidate, {
     put: async request => {
@@ -31,7 +32,7 @@ export async function prepareBlocklySave(
   const validation = await store.validateReferences(store.collectReferences(abi));
   assertCurrent();
   if (!validation.valid) throw new Error(`Project data validation failed: ${validation.issues.map(issue => issue.error).join('; ')}`);
-  return Object.freeze({ documentText, abiText: JSON.stringify(abi) });
+  return Object.freeze({ documentText, abiText: stringifyProjectJson(abi) });
 }
 
 /** The host owns temporary files, the project lock, byte CAS and the commit acknowledgement. */

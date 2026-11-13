@@ -1,4 +1,4 @@
-import { readAbsSingleQuotedToken } from '@shared/public-api';
+import { readAbsSingleQuotedToken } from '@shared/abs/abs-json-tokens';
 import { AbsSyncError } from './abs-state';
 
 /** Field semantics are supplied by definitions/runtime, never guessed from names. */

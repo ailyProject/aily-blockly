@@ -19,6 +19,39 @@ describe('lightweight project title dirty state', () => {
   });
   afterEach(()=>state.reset());
 
+  it('emits activity for every changed viewport, including after a saved idle period', fakeAsync(() => {
+    const activity = jasmine.createSpy('activity'); state.activity.subscribe(activity);
+    state.viewport('one', document.pages[0].viewState);
+    state.invalidate(); tick(200);
+    expect(activity).not.toHaveBeenCalled();
+    for (const scrollX of [10, 20, 30]) {
+      document.pages[0].viewState.scrollX = scrollX;
+      state.viewport('one', document.pages[0].viewState);
+    }
+    expect(activity).toHaveBeenCalledTimes(3);
+    state.viewport('one', document.pages[0].viewState);
+    expect(activity).toHaveBeenCalledTimes(3);
+    state.remember(document); state.invalidate(); tick(5000);
+    expect(state.changed.value).toBeFalse(); expect(activity).toHaveBeenCalledTimes(3);
+    document.pages[0].viewState.scrollX = 40;
+    state.viewport('one', document.pages[0].viewState);
+    expect(activity).toHaveBeenCalledTimes(4); expect(state.changed.value).toBeTrue();
+  }));
+
+  it('starts idle saving only for changed model snapshots, not hydration or save readbacks', fakeAsync(() => {
+    const activity = jasmine.createSpy('activity'); state.activity.subscribe(activity);
+    state.acceptHydration(fixture()); state.invalidate(); tick(200);
+    expect(activity).not.toHaveBeenCalled();
+    document.pages[1].title = 'Renamed'; state.invalidate(); tick(200);
+    expect(activity).toHaveBeenCalledTimes(1);
+    state.invalidate(); tick(200);
+    expect(activity).toHaveBeenCalledTimes(1);
+    document.pages[1].title = 'Renamed again'; state.invalidate(); tick(200);
+    expect(activity).toHaveBeenCalledTimes(2);
+    state.remember(document); state.invalidate(); tick(5000);
+    expect(activity).toHaveBeenCalledTimes(2); expect(state.changed.value).toBeFalse();
+  }));
+
   it('keeps recovered unsaved content dirty until a real saved checkpoint is acknowledged', () => {
     const saved = fixture(); document.pages[0].content.blocks.blocks[0].fields.TEXT = 'recovered';
     state.recover(saved, document); expect(state.changed.value).toBeTrue();

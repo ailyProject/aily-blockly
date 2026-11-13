@@ -1085,8 +1085,8 @@
     },
     "PROJECT": {
     "AUTO_SAVE_PENDING": "Unsaved",
-    "AUTO_SAVE_SAVING": "Saving…",
-    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_SAVING": "Auto saving…",
+    "AUTO_SAVE_SAVED": "Auto save succeeded",
     "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "AI 작업이 실행 중입니다. 완료된 후 다른 이름으로 저장해 주세요.",
       "OPEN_IN_CODER": "Open in aily coder",

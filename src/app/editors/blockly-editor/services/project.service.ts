@@ -156,7 +156,7 @@ export class _ProjectService {
     ).subscribe(() => this.blocklyService.projectDirtyState?.invalidate()));
 
     this.actionService.listen('project-save', async action => {
-      try { return await this.save(action.payload.path, action.payload.saveRequest); }
+      try { return await this.save(action.payload.path, action.payload.saveRequest, action.payload.background === true); }
       catch (error) {
         return { projectSaved: false, generatedCodePublished: false, partial: false,
           ...actionFailure(error) };
@@ -576,14 +576,14 @@ export class _ProjectService {
     };
   }
 
-  private absSaveHandler?: (path: string, request?: ProjectSaveRequest) => Promise<ProjectSaveOutcome>;
+  private absSaveHandler?: (path: string, request?: ProjectSaveRequest, background?: boolean) => Promise<ProjectSaveOutcome>;
   private absRuntimeMutationHandler?: (path: string, mutate: OwnedBlocklyDocumentMutation, request?: ProjectSaveRequest) => Promise<ProjectSaveOutcome>;
   private absRuntimeMutationObserver?: (path: string, publication: NativeSaveOperationRef) => Promise<BlocklyRuntimeMutationObservation>;
   private absSaveAsHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
   private absRecoveryCopyHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
   private absLoadNormalizationHandler?: (input: AbsLoadNormalizationInput) => Promise<AbsLoadNormalizationOutcome>;
 
-  setAbsSaveHandler(handler: (path: string, request?: ProjectSaveRequest) => Promise<ProjectSaveOutcome>): void { this.absSaveHandler = handler; }
+  setAbsSaveHandler(handler: (path: string, request?: ProjectSaveRequest, background?: boolean) => Promise<ProjectSaveOutcome>): void { this.absSaveHandler = handler; }
   setAbsRuntimeMutationHandler(handler: NonNullable<_ProjectService['absRuntimeMutationHandler']>): void { this.absRuntimeMutationHandler = handler; }
   setAbsRuntimeMutationObserver(handler: NonNullable<_ProjectService['absRuntimeMutationObserver']>): void { this.absRuntimeMutationObserver = handler; }
   observeRuntimeMutation(path: string, publication: NativeSaveOperationRef): Promise<BlocklyRuntimeMutationObservation> {
@@ -633,12 +633,12 @@ export class _ProjectService {
     return () => { if (this.preprocessSaveGuard === guard) this.preprocessSaveGuard = undefined; };
   }
 
-  async save(path: string, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome> {
+  async save(path: string, request?: ProjectSaveRequest, background = false): Promise<ProjectSaveOutcome> {
     // Isolated builds never use this document's mutable generated inputs.
     // Older hosts keep their existing preprocessing handoff.
     const context = this.captureSaveContext(path);
     const release = await (window['builder']?.isolatedBuildExecutionVersion === 1 ? undefined : this.pauseBackgroundPreprocess(path));
-    try { context.assertCurrent(); return await this.saveProjectAfterPreprocess(path, request); }
+    try { context.assertCurrent(); return await this.saveProjectAfterPreprocess(path, request, background); }
     finally { release?.(); }
   }
 
@@ -646,9 +646,9 @@ export class _ProjectService {
     return this.preprocessSaveGuard?.(path);
   }
 
-  private saveProjectAfterPreprocess(path: string, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome> {
+  private saveProjectAfterPreprocess(path: string, request?: ProjectSaveRequest, background = false): Promise<ProjectSaveOutcome> {
     requireProjectProgramPublication();
-    if (this.absSaveHandler) return this.absSaveHandler(path, request);
+    if (this.absSaveHandler) return background ? this.absSaveHandler(path, request, true) : this.absSaveHandler(path, request);
     return Promise.reject(Object.assign(new Error('The matching document publisher is unavailable; no save was started.'),
       { code: 'PROJECT_SAVE_DURABILITY_UNAVAILABLE' }));
   }
@@ -687,6 +687,9 @@ export class _ProjectService {
     this.cleanState.remember(this.cleanScope(), prepared.abiText,
       this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(JSON.parse(prepared.documentText))));
     this.blocklyService.projectDirtyState?.remember(JSON.parse(prepared.documentText));
+    // Navigation can continue during a background save. Reconcile after its
+    // lease releases so a newer viewport is not acknowledged by the old snapshot.
+    this.blocklyService.projectDirtyState?.invalidate();
     try {
       if (window['builder']?.isolatedBuildExecutionVersion === 1) {
         // Builds consume their captured inputs in private execution directories.
@@ -832,11 +835,12 @@ export class _ProjectService {
     // Save/ABS publication owns this exact prepared snapshot too. Updating only
     // codeSubject leaves the IPC viewer/map on the previous generation until a
     // later UI debounce happens to regenerate. Disk contention must not hide it.
-    this.blocklyService.publishPreparedCodeView(generated.code, generated.blockCodeMapText);
+    const previewPublished = options.publishPreview?.() !== false;
+    if (previewPublished) this.blocklyService.publishPreparedCodeView(generated.code, generated.blockCodeMapText);
     if (window['builder']?.isolatedBuildExecutionVersion === 1) {
       // No root sketch, headers or build metadata were published. Local builds
       // materialize this prepared input in their own execution workspace.
-      return { changed: false, target: 'preview', previewPublished: true, diskPublished: false } as GeneratedSourcePublicationReceipt;
+      return { changed: false, target: 'preview', previewPublished, diskPublished: false } as GeneratedSourcePublicationReceipt;
     }
     // The artifact snapshot is the captured Arduino publication capability.
     // Publish its sketch and headers together, as startup/build already do;

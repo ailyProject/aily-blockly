@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store';
 import { openAbsHostStorage } from './abs-host-storage';
 import { absJson } from './abs-identity-map';
@@ -29,7 +30,7 @@ export async function readSavedProjectProgram(project: string, assertCurrent: ()
     if (selected) return { version: 1, source: 'committed', generation: selected.projection.map.generation,
       pointerHash: selected.pointerHash, packageText,
       files: { 'project.abi': selected.abi, 'project.abs': selected.projection.abs,
-        'project.abs.map.json': absJson(selected.projection.map) } };
+        'project.abs.map.json': absMapJson(selected.projection.map) } };
     if (await access.read('prepared.json') !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING',
       'The original first publication must settle before an export can select saved source.');
     const disk = await store.captureDisk(access);

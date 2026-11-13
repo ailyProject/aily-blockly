@@ -998,7 +998,7 @@ export class SettingsComponent implements OnDestroy {
         data: { path: this.configData.project_path },
       });
       window['ipcRenderer'].send('setting-changed', { action: 'devmode-changed', data: this.configData.devmode });
-      window['ipcRenderer'].send('setting-changed', { action: 'blockly-autosave-changed', data: this.configData.blockly.autoSave !== false });
+      window['ipcRenderer'].send('setting-changed', { action: 'blockly-autosave-changed', data: this.configData.blockly.autoSave === true });
       // 保存完毕后关闭窗口
       this.uiService.closeWindow();
     } finally {

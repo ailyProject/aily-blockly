@@ -170,8 +170,10 @@ describe('NpmService shared dependency operations', () => {
       options.onOutput({ type: 'close', code: 0, streamId: 'platform' });
       expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.progress)).toEqual([1, 10, 20, 60, 90]);
       expect(service.logService.update.calls.allArgs().map(([log]: any[]) => [log.title, log.detail])).toEqual([
-        [`${name}@5.3.0`, 'Download progress: 20%'], [`${name}@5.3.0`, 'Download progress: 40%'],
-        [`${name}@5.3.0`, 'Extraction progress: 20%'], [`${name}@5.3.0`, '解压进度: 80%'],
+        [`${name}@5.3.0`, 'Download progress: 20% [######------------------------]'],
+        [`${name}@5.3.0`, 'Download progress: 40% [############------------------]'],
+        [`${name}@5.3.0`, 'Extraction progress: 20% [######------------------------]'],
+        [`${name}@5.3.0`, '解压进度: 80% [########################------]'],
       ]);
       const logs = service.logService.update.calls.allArgs().map(([log]: any[]) => log);
       expect(logs[0].mergeKey).toBe(logs[1].mergeKey);
@@ -220,7 +222,22 @@ describe('NpmService shared dependency operations', () => {
     }
     const logs = service.logService.update.calls.allArgs().map(([log]: any[]) => log);
     expect(new Set(logs.map(log => log.mergeKey)).size).toBe(3);
-    expect(logs.every(log => log.detail === 'Download progress: 25%')).toBeTrue();
+    expect(logs.every(log => log.detail === 'Download progress: 25% [########----------------------]')).toBeTrue();
+  });
+
+  it('shows actual percentages as hash bars without losing size, language or an existing package bar', () => {
+    expect(service.formatDependencyProgressBar('下载进度: 50% (8.00MB / 16.00MB)', 50))
+      .toBe('下载进度: 50% [###############---------------] (8.00MB / 16.00MB)');
+    expect(service.formatDependencyProgressBar('Download progress: 0% (0.00MB / 16.00MB)', 0))
+      .toBe('Download progress: 0% [------------------------------] (0.00MB / 16.00MB)');
+    expect(service.formatDependencyProgressBar('Extraction progress: 100%', 100))
+      .toBe('Extraction progress: 100% [##############################]');
+    expect(service.formatDependencyProgressBar('下载进度: 33.3% (1MB / 3MB)', 33.3))
+      .toBe('下载进度: 33.3% [##########--------------------] (1MB / 3MB)');
+    for (const value of ['下载进度: 50% [##########..........]', 'Download progress: 0% [--------------------]'])
+      expect(service.formatDependencyProgressBar(value, 50)).toBe(value);
+    expect(service.formatDependencyProgressBar('Download complete: esp32@3.3.1.7z (16MB)', 100))
+      .toBe('Download complete: esp32@3.3.1.7z (16MB) [##############################] 100%');
   });
 
   it('reports an already installed package as complete without reinstalling it', async () => {

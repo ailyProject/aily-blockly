@@ -205,9 +205,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       : this.injector.get(AbsWorkspaceSyncService).prepareCopy();
   }
 
-  dispatchProjectSave(path: string, timeoutMs: number, request?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult> {
+  dispatchProjectSave(path: string, timeoutMs: number, request?: ProjectSaveRequest, background = false): Promise<ProjectSaveDispatchResult> {
     return new Promise((resolve) => {
-      this.actionService.dispatch('project-save', { path, ...(request ? { saveRequest: request } : {}) }, (result) => {
+      this.actionService.dispatch('project-save', { path, ...(request ? { saveRequest: request } : {}), ...(background ? { background: true } : {}) }, (result) => {
         const outcome = result.data;
         if (outcome?.code === 'ACTION_HANDLER_UNAVAILABLE') {
           resolve({ success: false, code: 'PROJECT_SAVE_HANDLER_UNAVAILABLE', projectSaved: false,

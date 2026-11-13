@@ -49,7 +49,7 @@ export interface ProjectApplicationPort {
   prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
   /** A zero feedback budget retains the original editor completion. Transport
    * observers use the domain receipt, never cancel or replay this save. */
-  dispatchProjectSave(path: string, timeoutMs: number, request?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult>;
+  dispatchProjectSave(path: string, timeoutMs: number, request?: ProjectSaveRequest, background?: boolean): Promise<ProjectSaveDispatchResult>;
   observeProjectPublication?(path: string, request: ProjectSaveRequest, originalTargetPid?: number): Promise<ProjectSaveReceiptResponse | null>;
   inspectBlocklyConflict?(path: string): Promise<ProjectConflictOffer>;
   resolveBlocklyConflict?(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution>;

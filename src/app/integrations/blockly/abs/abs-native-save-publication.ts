@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, absBaselineKey, type AbsSyncStorageAccess, type AbsSyncStoragePort } from './abs-baseline-store';
 import { generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
@@ -122,7 +123,7 @@ export class NativeSavePublications {
     if (!resolved) return false;
     const pointer = await this.port.read('committed.json'), disk = await resolved.store.captureDisk();
     if (await hash(pointer) === resolved.ancestor.pointerHash && (disk.abi !== resolved.abi
-      || disk.abs !== resolved.ancestor.projection.abs || disk.map !== absJson(resolved.ancestor.projection.map))) return false;
+      || disk.abs !== resolved.ancestor.projection.abs || disk.map !== absMapJson(resolved.ancestor.projection.map))) return false;
     await this.port.withLock(async access => {
       await this.original(ref, access);
       if (await access.read(stageKey(ref.operationId)) !== staged.text || await access.read('committed.json') !== pointer
@@ -142,7 +143,7 @@ export class NativeSavePublications {
     const output = await this.output(staged, access);
     if (!output || await hash(committedPointer) !== output.ancestor.pointerHash
       || !same(await output.store.captureDisk(access), original.disk) || output.abi !== original.disk.abi
-      || output.ancestor.projection.abs !== original.disk.abs || absJson(output.ancestor.projection.map) !== original.disk.map)
+      || output.ancestor.projection.abs !== original.disk.abs || absMapJson(output.ancestor.projection.map) !== original.disk.map)
       throw nativeSaveError('Unchanged save output differs from the retained original source.');
     guard(); await this.immutable(access, proofKey(ref.operationId), absJson({
       ...this.proof(ref, staged, output.ancestor.pointerHash, 'unchanged'), stageHash: await hashAbsText(staged.text),
@@ -215,7 +216,7 @@ export class NativeSavePublications {
     }
     const pointer = await this.port.read('committed.json'), disk = await output.store.captureDisk();
     if (await hash(pointer) === proof.committedHash && (disk.abi !== output.abi || disk.abs !== output.ancestor.projection.abs
-      || disk.map !== absJson(output.ancestor.projection.map))) return pending();
+      || disk.map !== absMapJson(output.ancestor.projection.map))) return pending();
     if (await this.port.read('committed.json') !== pointer) return pending();
     const current = await hash(pointer) === proof.committedHash && await this.port.read('prepared.json') === null;
     const result: NativeSaveResultFacts = final?.result ?? { projectSaved: true, generatedCodePublished: false, partial: true,

@@ -1,6 +1,8 @@
+import { cloneProjectJson } from '@domain/project/project-document-json';
+import { absMapJson } from './abs-map-json';
 import { captureAbsAbiRecipe, deriveAbsAbi } from './abs-abi-derivation';
 import { decodeAbsState } from './abs-full-state';
-import { absJson, assertCurrentAbsProjection, createAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
+import { absJson, assertCurrentAbsProjection, createAbsProjection, reconstructAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
 import type { ProjectStorageAttachment, ProjectStorageExecutor, ProjectStorageExecutorObservation } from '@shared/project-sync-storage-bridge';
@@ -85,7 +87,27 @@ const hashNullable = (text: string | null) => text === null ? Promise.resolve(nu
 /** Immutable baseline storage and recoverable mirror publication, independent of Blockly/Angular. */
 export class AbsBaselineStore {
   private readonly scope: AbsIdentityMap['scope'];
-  constructor(private readonly port: AbsSyncStoragePort, scope: AbsIdentityMap['scope']) { this.scope = { ...scope }; }
+  // Used only inside one private background worker. Every hit still reads and
+  // compares exact immutable file bytes; live source CAS and scope checks remain mandatory.
+  private readonly verified = new Map<string, { text: string; record: GenerationRecord; pointer: GenerationPointer }>();
+  constructor(private readonly port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], private readonly reuseVerifiedRecords = false) {
+    this.scope = { ...scope };
+  }
+  private async rememberVerified(generation: string, text: string, record: GenerationRecord) {
+    const pointer: GenerationPointer = { schemaVersion: 1, generation, hash: await hashAbsText(text) };
+    if (this.reuseVerifiedRecords) {
+      // Callers cannot mutate verified evidence. Worker responses are detached JSON.
+      const pending: any[] = [record, pointer];
+      while (pending.length) {
+        const value = pending.pop();
+        if (!value || typeof value !== 'object' || Object.isFrozen(value)) continue;
+        pending.push(...Object.values(value)); Object.freeze(value);
+      }
+      if (this.verified.size >= 2) this.verified.delete(this.verified.keys().next().value!);
+      this.verified.set(generation, { text, record, pointer });
+    }
+    return { record, pointer };
+  }
 
   async captureDisk(storage: Pick<AbsSyncStorageAccess, 'read'> = this.port): Promise<AbsDiskSnapshot> {
     const [abi, abs, map] = await Promise.all([storage.read(ABI), storage.read(ABS), storage.read(MAP)]);
@@ -94,7 +116,7 @@ export class AbsBaselineStore {
 
   /** Creates a generation only. Does not publish ABS, mark it ready, or save ABI. */
   async stage(input: AbsGenerationInput, expectedCommitted?: string | null): Promise<string> {
-    input = JSON.parse(absJson(input));
+    input = cloneProjectJson(input);
     this.assertScope(input.projection);
     await validateAbsProjection(input.projection);
     const generation = input.projection.map.generation;
@@ -129,10 +151,11 @@ export class AbsBaselineStore {
         context: { generation, baselineRef, scope, savedAbiHash },
         abiRecipe: abi === null ? null : captureAbsAbiRecipe(projection, abi) });
       const existing = await storage.read(key);
-      if (existing === content) return;
+      if (existing === content) { if (this.reuseVerifiedRecords) await this.rememberVerified(generation, content, record); return; }
       if (existing !== null || !await storage.replace(key, null, content)) {
         throw new AbsSyncError('ABS_GENERATION_EXISTS', 'An immutable generation cannot be overwritten.');
       }
+      if (this.reuseVerifiedRecords) await this.rememberVerified(generation, content, record);
     });
     return generation;
   }
@@ -163,7 +186,7 @@ export class AbsBaselineStore {
       if (!successor) this.assertScope(record.projection);
       else if (absJson(successor.projection.map.scope) !== absJson(record.projection.map.scope)) {
         const retainedDraft = successor.draftBaseGeneration === pointer.generation
-          && successor.inputMap === absJson(record.projection.map) && successor.mode === 'import'
+          && successor.inputMap === absMapJson(record.projection.map) && successor.mode === 'import'
           && typeof successor.abi === 'string' && await hashNullable(successor.abi) === successor.expected.abi;
         if (successor.metadataOnly !== true && !retainedDraft || successor.projection.abs !== record.projection.abs
           || successor.projection.map.scope.pageId !== record.projection.map.scope.pageId) {
@@ -175,8 +198,8 @@ export class AbsBaselineStore {
         if (!migrated || record.projection.map.scope.pageId !== this.scope.pageId) break;
         if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Intent ancestry changed during location recovery.');
         const projection = record.projection;
-        return createAbsProjection(projection.workspace, { document: projection.document, contracts: projection.contracts,
-          generation, baselineRef: projection.map.baselineRef, savedAbiHash: projection.map.savedAbiHash, scope: this.scope });
+        return reconstructAbsProjection(projection.workspace, { document: projection.document, contracts: projection.contracts,
+          generation, baselineRef: projection.map.baselineRef, savedAbiHash: projection.map.savedAbiHash, scope: this.scope }, projection.abs);
       }
       if (record.previousPointer === undefined || await hashNullable(record.previousPointer) !== record.previousCommitted) break;
       successor = record; text = record.previousPointer;
@@ -325,7 +348,7 @@ export class AbsBaselineStore {
       || this.scope.pageId && selected.projection.map.scope.pageId !== this.scope.pageId) {
       throw new AbsSyncError('ABS_MAP_REPAIR_UNPROVEN', 'No complete saved source proves this map cache.');
     }
-    const map = absJson(selected.projection.map), generation = selected.projection.map.generation;
+    const map = absMapJson(selected.projection.map), generation = selected.projection.map.generation;
     return this.port.withLock(async storage => {
       assertCurrent();
       const pointer = await storage.read(COMMITTED), disk = await this.captureDisk(storage);
@@ -434,7 +457,7 @@ export class AbsBaselineStore {
     const action = absJson(hashes) === absJson(record.expected) ? 'abandon' : 'recover';
     if (action === 'recover' && (record.mode === 'import' ? disk.abi !== record.abi : hashes.abi !== record.expected.abi)) return null;
     if (![[disk.abs, record.projection.abs, hashes.abs, record.expected.abs],
-      [disk.map, absJson(record.projection.map), hashes.map, record.expected.map]].every(([current, output, actual, expected]) => current === output || actual === expected)) return null;
+      [disk.map, absMapJson(record.projection.map), hashes.map, record.expected.map]].every(([current, output, actual, expected]) => current === output || actual === expected)) return null;
     const scope = record.projection.map.scope;
     const token = await hashAbsText(absJson({ version: 1, action, scope,
       generation: pointer.generation, preparedHash: await hashAbsText(prepared), baselineHash: pointer.hash,
@@ -528,7 +551,7 @@ export class AbsBaselineStore {
     if (committed !== pointerText && await hashNullable(committed) !== record.previousCommitted) {
       return this.result(storage, record, 'CONFLICT', 'Committed generation changed.');
     }
-    const outputMap = absJson(record.projection.map);
+    const outputMap = absMapJson(record.projection.map);
     // Precheck BOTH mirrors so an already conflicting map does not cause an ABS write.
     for (const [key, expected, output] of [[ABS, record.expected.abs, record.projection.abs], [MAP, record.expected.map, outputMap]]) {
       const current = await storage.read(key!);
@@ -563,7 +586,7 @@ export class AbsBaselineStore {
     return {
       status, generation: record.projection.map.generation,
       abiSaved: record.mode === 'import' && disk.abi === record.abi,
-      absMirrored: disk.abs === record.projection.abs, mapPublished: disk.map === absJson(record.projection.map),
+      absMirrored: disk.abs === record.projection.abs, mapPublished: disk.map === absMapJson(record.projection.map),
       ...(error ? { error } : {}),
     };
   }
@@ -585,13 +608,18 @@ export class AbsBaselineStore {
   private async readGeneration(storage: Pick<AbsSyncStorageAccess, 'read'>, generation: string, inspection = false): Promise<{ record: GenerationRecord; pointer: GenerationPointer }> {
     const text = await storage.read(absBaselineKey(generation));
     if (text === null) throw new AbsSyncError('ABS_BASELINE_MISSING', 'Immutable ABS/ABI baseline is missing.');
+    const verified = this.verified.get(generation);
+    if (verified?.text === text) {
+      if (!inspection) this.assertScope(verified.record.projection);
+      return { record: verified.record, pointer: verified.pointer };
+    }
     let record: GenerationRecord;
     try {
       const stored = JSON.parse(text);
       if (stored.schemaVersion === 2) {
         const decoded = await decodeAbsState(stored.snapshot);
-        const projection = await createAbsProjection(decoded.workspace, { ...stored.context,
-          document: decoded.document, contracts: decoded.contracts });
+        const projection = await reconstructAbsProjection(decoded.workspace, { ...stored.context,
+          document: decoded.document, contracts: decoded.contracts }, stored.snapshot);
         if (projection.abs !== stored.snapshot) throw new Error('Complete snapshot is not canonical.');
         const { snapshot, context, abiRecipe, ...journal } = stored;
         record = { ...journal, schemaVersion: 1, projection,
@@ -621,7 +649,7 @@ export class AbsBaselineStore {
       await this.assertDraftArchive(record);
     } catch (error) { throw new AbsSyncError('ABS_BASELINE_CORRUPT', String(error)); }
     if (!inspection) this.assertScope(record.projection);
-    return { record, pointer: { schemaVersion: 1, generation, hash: await hashAbsText(text) } };
+    return this.rememberVerified(generation, text, record);
   }
   private parsePointer(text: string): GenerationPointer {
     try {

@@ -177,7 +177,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private watchProjectUnsavedState(): void {
     this.autoSave = new ProjectAutoSave({
       project: () => this.projectService.currentProjectPath,
-      enabled: () => this.configService.data?.blockly?.autoSave !== false
+      enabled: () => this.configService.data?.blockly?.autoSave === true
         && this.router.url.includes('/main/blockly-editor'),
       ready: () => !this.destroyed && !this.projectSavingFromUi && !this.projectSavingAs
         && !this.projectConflictResolving && !this.unsaveDialogOpen
@@ -188,14 +188,39 @@ export class HeaderComponent implements OnInit, OnDestroy {
         && !this.projectService.isProjectDependencyPreparationInProgress(this.projectService.currentProjectPath)
         && ['loaded', 'saved'].includes(this.projectService.stateSubject.value),
       dirty: () => this.projectService.hasUnsavedChanges(),
-      save: path => this.projectService.save(path),
+      save: path => this.projectService.saveInBackground(path),
+      busy: busy => this.ngZone.run(() => {
+        if (busy) this.uiService.updateFooterState({ owner: 'project-auto-save', state: 'doing',
+          text: this.translate.instant('PROJECT.AUTO_SAVE_SAVING') });
+        else if (!['saved', 'error'].includes(this.autoSaveState))
+          this.uiService.updateFooterState({ owner: 'project-auto-save', state: '', text: '' });
+      }),
       state: (state, error) => this.ngZone.run(() => {
         this.autoSaveState = state; this.autoSaveError = error || ''; this.cd.markForCheck();
+        if (!state) this.uiService.updateFooterState({ owner: 'project-auto-save', state: '', text: '' });
+        if (state === 'saved' || state === 'error') {
+          this.uiService.updateFooterState({ owner: 'project-auto-save', state: state === 'saved' ? 'done' : 'error',
+            text: this.translate.instant(state === 'saved' ? 'PROJECT.AUTO_SAVE_SAVED' : 'PROJECT.AUTO_SAVE_ERROR'),
+            timeout: state === 'saved' ? 3000 : 10000 });
+        }
       }),
     });
-    this.unsavedSubscriptions.add(merge(this.blocklyService.projectDirtyState.activity,
-      this.projectService.libraryChangesChanged, this.configService.configReloaded$)
-      .subscribe(() => this.autoSave?.edited()));
+    this.unsavedSubscriptions.add(this.blocklyService.projectDirtyState.activity.subscribe(() => this.autoSave?.edited()));
+    this.unsavedSubscriptions.add(this.projectService.libraryChangesChanged.subscribe(() => {
+      // Saving dependencies also broadcasts clean status. That acknowledgement
+      // must not obsolete the in-flight save or start another idle save.
+      if (this.projectService.hasCachedLibraryChanges()) this.autoSave?.edited();
+    }));
+    let enabled = this.configService.data?.blockly?.autoSave === true;
+    this.unsavedSubscriptions.add(this.configService.configReloaded$.subscribe(() => {
+      const next = this.configService.data?.blockly?.autoSave === true;
+      if (next === enabled) return;
+      enabled = next;
+      this.autoSave?.cancel();
+      if (next && (this.blocklyService.projectDirtyState.changed.value || this.projectService.hasCachedLibraryChanges())) {
+        this.autoSave?.edited();
+      }
+    }));
     this.unsavedSubscriptions.add(this.projectService.currentProjectPath$.subscribe(() => {
       this.autoSave?.cancel();
       this.setProjectUnsaved(false);

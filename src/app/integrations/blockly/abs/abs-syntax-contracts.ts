@@ -1,7 +1,7 @@
 import type { AbsAbiWorkspace, AbsProjectionContracts } from './abs-state';
 import type { AbsArgumentDefinition, AbsSyntaxOptions } from './abs-syntax';
 import { indexAbsAbi } from './abs-abi-index';
-import { canonicalJsonStringify } from '@domain/project/public-api';
+import { canonicalJsonStringify } from '@domain/project/project-data/project-data-codec.registry';
 
 /** A type may use positional syntax only when all captured instances agree.
  * Never borrow one dynamic instance's order/options for a different shape.

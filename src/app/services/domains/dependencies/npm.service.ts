@@ -225,6 +225,18 @@ export class NpmService {
     return progress;
   }
 
+  private formatDependencyProgressBar(detail: string, percent: number): string {
+    // Older package scripts already include their own character bar.
+    if (/\[[# .-]+\]/.test(detail)) return detail;
+    const filled = Math.round(Math.max(0, Math.min(100, percent)) * 30 / 100);
+    const bar = `[${'#'.repeat(filled)}${'-'.repeat(30 - filled)}]`;
+    const prefix = /^((?:下载进度|Download progress|解压进度|Extract(?:ion)? progress)[:：]?\s*\d+(?:\.\d+)?%)/i;
+    if (prefix.test(detail)) return detail.replace(prefix, `$1 ${bar}`);
+    // Completion replaces the same download row, so retain its full bar.
+    if (/^(下载完成|Download complete)[:：]/i.test(detail)) return `${detail} ${bar} 100%`;
+    return detail;
+  }
+
   private boardDependencyCommandOutput(progress: BoardDependencyInstallProgress): (output: CmdOutput) => void {
     progress.commandOutput = true;
     const pending = { stdout: '', stderr: '' };
@@ -237,7 +249,7 @@ export class NpmService {
       // aggregate progress; log merging must never combine different packages.
       this.logService.update({
         title: `${progress.name}${progress.version ? `@${progress.version}` : ''}`,
-        detail, state: 'doing',
+        detail: this.formatDependencyProgressBar(detail, parsed.percent), state: 'doing',
         mergeKey: `platform:${progress.session?.projectSessionId ?? ''}:${progress.name}@${progress.version ?? ''}:${parsed.phase}`,
       });
     };

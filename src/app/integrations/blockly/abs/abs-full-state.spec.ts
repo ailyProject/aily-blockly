@@ -1,5 +1,6 @@
-import { createAbsProjection, absJson, validateAbsProjection } from './abs-identity-map';
-import { assertAbsStateUnchanged, decodeAbsState, splitAbsState } from './abs-full-state';
+import { absMapJson } from './abs-map-json';
+import { createAbsProjection, absJson, validateAbsProjection, indexAbsAbi, reconstructAbsProjection } from './abs-identity-map';
+import { assertAbsStateUnchanged, decodeAbsState, splitAbsState, encodeAbsState } from './abs-full-state';
 import { AbsAbiWorkspace } from './abs-state';
 
 const workspace = (): AbsAbiWorkspace => ({ blocks: { languageVersion: 0, blocks: [{
@@ -20,6 +21,43 @@ async function projection() {
 }
 
 describe('complete ABS project state', () => {
+  it('copies only each node residual instead of repeatedly cloning all descendants', async () => {
+    let root: any;
+    for (let i = 0; i < 128; i++) root = { type: 'statement', id: 'b' + i,
+      fields: {}, ...(root ? { next: { block: root } } : {}) };
+    const page = { blocks: { blocks: [root] } }, bytes = absJson(page).length;
+    const parse = spyOn(JSON, 'parse').and.callThrough();
+    const projected = await createAbsProjection(page, { document: page, generation: 'chain', baselineRef: 'baselines/chain.json',
+      scope: { projectKey: 'p', pageId: 'one' }, savedAbiHash: null });
+    const parsed = parse.calls.allArgs().reduce((sum, args) => sum + String(args[0]).length, 0);
+    expect(parsed).toBeLessThan(bytes * 8);
+    expect(absJson((await decodeAbsState(projected.abs)).workspace)).toBe(absJson(page));
+  });
+  it('decodes long statement chains without a recursive builder', async () => {
+    let root: any = { type: 'statement', id: 'tail' };
+    for (let i = 0; i < 1200; i++) root = { type: 'statement', id: 'b' + i, next: { block: root } };
+    const page = { blocks: { blocks: [{ type: 'root', id: 'root', inputs: { DO: { block: root } } }] } };
+    const projection = await createAbsProjection(page, { document: page, generation: 'deep', baselineRef: 'baselines/deep.json',
+      scope: { projectKey: 'p', pageId: 'one' }, savedAbiHash: null,
+      contracts: { fields: { root: {} }, syntax: { root: [{ kind: 'statementInput', name: 'DO' }] } } });
+    expect(absJson((await decodeAbsState(projection.abs)).workspace)).toBe(absJson(page));
+  });
+  it('stores node residuals in linear preorder and verifies legacy complete snapshots byte-for-byte', async () => {
+    const current = await projection(), body = splitAbsState(current.abs).program;
+    const index = indexAbsAbi(current.workspace);
+    const blocks = new Map(current.map.nodes.map(node => [node.astPath, index.get(node.blockId)!]));
+    const legacy = await encodeAbsState(body, current.document, blocks, current.contracts, current.workspace, true);
+    expect(JSON.parse(splitAbsState(current.abs).state!).version).toBe(2);
+    expect(Array.isArray(JSON.parse(splitAbsState(current.abs).state!).nodes)).toBeTrue();
+    const decoded = await decodeAbsState(legacy);
+    const restored = await reconstructAbsProjection(decoded.workspace, { ...current.map,
+      document: decoded.document, contracts: decoded.contracts }, legacy);
+    expect(restored.map.projectionVersion).toBe('abs-v2.preview.7');
+    expect(restored.abs).toBe(legacy); await validateAbsProjection(restored);
+    expect(absJson(decoded.document)).toBe(absJson(current.document));
+    expect((await createAbsProjection(decoded.workspace, { ...current.map,
+      document: decoded.document, contracts: decoded.contracts })).map.projectionVersion).toBe('abs-v2.preview.8');
+  });
   it('restores comments, dormant shadows, protection, disabled reasons, pages and opaque state exactly', async () => {
     const original = await projection();
     const decoded = await decodeAbsState(original.abs);
@@ -33,7 +71,7 @@ describe('complete ABS project state', () => {
     const decoded = await decodeAbsState(original.abs);
     const restored = await createAbsProjection(decoded.workspace, { ...original.map, document: decoded.document, contracts: decoded.contracts });
     expect(restored.abs).toBe(original.abs);
-    expect(absJson(restored.map)).toBe(absJson(original.map));
+    expect(absMapJson(restored.map)).toBe(absMapJson(original.map));
   });
   it('uses the project document as the sole owner of shared model state', async () => {
     const page = workspace();

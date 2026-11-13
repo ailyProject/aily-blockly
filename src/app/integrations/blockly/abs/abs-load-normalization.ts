@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { isDeferredProjectDataNormalization, type DeferredProjectDataNormalization } from '@domain/project/public-api';
 import { AbsBaselineStore, type AbsDiskSnapshot, type AbsSyncStoragePort } from './abs-baseline-store';
 import { absJson, hashAbsText } from './abs-identity-map';
@@ -117,7 +118,7 @@ export async function verifyAbsLoadNormalization(
     const baseline = committed.projection, expected = input.expected.disk;
     const recipe = await store.readDerivedAbi(baseline.map.generation); input.assertCurrent();
     if (recipe === null || recipe !== input.originalContent || expected.abi !== recipe
-      || expected.abs !== baseline.abs || expected.map !== absJson(baseline.map)
+      || expected.abs !== baseline.abs || expected.map !== absMapJson(baseline.map)
       || await hashAbsText(absJson(JSON.parse(recipe))) !== baseline.map.savedAbiHash) return null;
     input.assertCurrent();
     if (absJson(await store.captureDisk()) !== absJson(expected)) return null;
