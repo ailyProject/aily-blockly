@@ -188,23 +188,39 @@ export class LibManagerService {
     libraryList: PackageInfo[] | null | undefined,
     boardType: string | null | undefined,
   ): PackageInfo[] {
-    const normalizedBoardType = typeof boardType === 'string' ? boardType.trim() : '';
-
     return (Array.isArray(libraryList) ? libraryList : []).filter(lib => {
       if (lib.spec !== true) {
         return true;
       }
 
-      // Linux 库使用具体 board type；旧 Arduino 库没有 type 时继续兼容 compatibility.core。
-      const compatibleBoardTypes = Array.isArray(lib.compatibility?.type)
-        ? lib.compatibility.type
-        : Array.isArray(lib.compatibility?.core)
-          ? lib.compatibility.core
-          : [];
-
-      return normalizedBoardType !== ''
-        && compatibleBoardTypes.includes(normalizedBoardType);
+      return this.matchesBoardCompatibility(lib.compatibility, boardType);
     });
+  }
+
+  matchesBoardCompatibility(
+    compatibility: PackageInfo['compatibility'],
+    boardType: string | null | undefined,
+    boardCore?: string | null,
+  ): boolean {
+    const normalize = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+    const targetType = normalize(boardType);
+
+    // Explicit types identify individual boards, including Linux boards.
+    // An empty type list must not silently fall back to a broader core list.
+    if (Array.isArray(compatibility?.type)) {
+      return targetType !== ''
+        && compatibility.type.some(type => normalize(type) === targetType);
+    }
+
+    // Legacy core lists contain both core families and complete board types.
+    // Match from the selected board towards its family, on colon boundaries.
+    const normalizeLegacy = (value: unknown) => normalize(value).replace(/^aily:/, '');
+    const target = normalizeLegacy(targetType || boardCore);
+    return target !== '' && Array.isArray(compatibility?.core)
+      && compatibility.core.some(core => {
+        const declared = normalizeLegacy(core);
+        return declared !== '' && (target === declared || target.startsWith(declared + ':'));
+      });
   }
 
   mergeInstalledLibraries(

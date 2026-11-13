@@ -379,25 +379,7 @@ export class LibManagerComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    // 检查库兼容性
-    // console.log('当前开发板内核：', this.projectService.currentBoardConfig.core.replace('aily:', ''));
-    // console.log('当前库兼容内核：', JSON.stringify(lib.compatibility.core));
-    // if (!await this.checkCompatibility(lib.compatibility.core, this.projectService.currentBoardConfig.core.replace('aily:', ''))) {
-    //   return;
-    // }
-    // 处理 core 字符串，去掉第一个以 ':' 分割的部分
-    const boardConfig = this.projectService.currentBoardConfig;
-    const boardType = typeof boardConfig?.type === 'string' ? boardConfig.type.trim() : '';
-    const boardCore = typeof boardConfig?.core === 'string'
-      ? boardConfig.core.split(':').slice(1).join(':')
-      : '';
-    // Linux 库按 board.type 校验；旧 Arduino 库未声明 type 时继续按 core 校验。
-    const hasBoardTypeCompatibility = Array.isArray(lib.compatibility?.type);
-    const compatibility = hasBoardTypeCompatibility
-      ? lib.compatibility?.type
-      : lib.compatibility?.core;
-    const compatibilityTarget = hasBoardTypeCompatibility ? boardType : boardCore;
-    if (!await this.checkCompatibility(compatibility, compatibilityTarget)) {
+    if (!await this.checkCompatibility(lib.compatibility, this.projectService.currentBoardConfig)) {
       return;
     }
 
@@ -601,18 +583,21 @@ export class LibManagerComponent implements AfterViewInit, OnDestroy {
       || this.blocklyService.isLibraryPackageNameUsedByCurrentProject(lib.name);
   }
 
-  async checkCompatibility(libCompatibility, boardCore): Promise<boolean> {
-    // 检查项目是否有未保存的更改
-    if (!libCompatibility || libCompatibility.length == 0 || libCompatibility.includes(boardCore)) {
+  async checkCompatibility(
+    compatibility: PackageInfo['compatibility'],
+    board: { type?: string; core?: string } | null | undefined,
+  ): Promise<boolean> {
+    const libCompatibility = Array.isArray(compatibility?.type)
+      ? compatibility.type
+      : compatibility?.core;
+    // Unconstrained packages remain installable. Declared constraints use the
+    // same matching rule as visibility, without shortening the board identity.
+    if (!Array.isArray(libCompatibility) || libCompatibility.length === 0
+        || this.libManagerService.matchesBoardCompatibility(compatibility, board?.type, board?.core)) {
       return true;
     }
-    // 遍历libCompatibility，判断每个元素是否包含boardCore
-    for (let i = 0; i < libCompatibility.length; i++) {
-      const element = libCompatibility[i];
-      if (element.includes(boardCore)) {
-        return true;
-      }
-    }
+
+    const boardCore = board?.type || board?.core || '';
 
     return new Promise<boolean>((resolve) => {
       const modalRef = this.modal.create({
