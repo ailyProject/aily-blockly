@@ -1,7 +1,8 @@
-import { createProjectDataMarker } from '@domain/project/public-api';
+import { absMapJson } from './abs-map-json';
+import { createProjectDataMarker } from '@domain/project/project-data/project-data.types';
 import { AbsBaselineStore, absBaselineKey, type AbsSyncStoragePort } from './abs-baseline-store';
 import { decodeAbsState } from './abs-full-state';
-import { absJson, createAbsProjection, hashAbsText } from './abs-identity-map';
+import { absJson, reconstructAbsProjection, hashAbsText } from './abs-identity-map';
 import { sameAbsProgram } from './abs-program-state';
 import { AbsSyncError, type AbsIdentityMap } from './abs-state';
 import { inspectAbsGeneration } from './abs-generation-inspection';
@@ -33,8 +34,8 @@ async function source(port: AbsSyncStoragePort, project: string) {
     const saved = JSON.parse(disk.abi), marked = { ...document, $ailyProjectData: createProjectDataMarker() };
     if (!sameAbsProgram(saved, document) && !sameAbsProgram(saved, marked)) return null;
     const generation = crypto.randomUUID(), scope = { projectKey: project, pageId: document.activePageId };
-    const projection = await createAbsProjection(decoded.workspace, { document, contracts: decoded.contracts, scope, generation,
-      baselineRef: absBaselineKey(generation), savedAbiHash: await hashAbsText(absJson(saved)) });
+    const projection = await reconstructAbsProjection(decoded.workspace, { document, contracts: decoded.contracts, scope, generation,
+      baselineRef: absBaselineKey(generation), savedAbiHash: await hashAbsText(absJson(saved)) }, disk.abs);
     // Decoding retained state alone is not proof the public body was committed.
     if (projection.abs !== disk.abs) return null;
     return { store: new AbsBaselineStore(port, scope), disk, projection, committed };
@@ -50,15 +51,15 @@ async function source(port: AbsSyncStoragePort, project: string) {
 async function committedSource(port: AbsSyncStoragePort, project: string, lookup: AbsBaselineStore,
   healthy: NonNullable<Awaited<ReturnType<AbsBaselineStore['inspectCommitted']>>>) {
   const disk = await lookup.captureDisk();
-  if (disk.abi === null || disk.abs === null || disk.map !== absJson(healthy.projection.map)) return null;
+  if (disk.abi === null || disk.abs === null || disk.map !== absMapJson(healthy.projection.map)) return null;
   const abi = await lookup.readDerivedAbi(healthy.projection.map.generation);
   if (abi === null) return null;
   try { if (!sameAbsProgram(JSON.parse(disk.abi), JSON.parse(abi))) return null; }
   catch (error) { if (error instanceof SyntaxError) return null; throw error; }
   const generation = crypto.randomUUID(), previous = healthy.projection;
   const scope = { projectKey: project, pageId: previous.map.scope.pageId };
-  const projection = await createAbsProjection(previous.workspace, { document: previous.document, contracts: previous.contracts,
-    generation, baselineRef: absBaselineKey(generation), scope, savedAbiHash: await hashAbsText(absJson(JSON.parse(disk.abi))) });
+  const projection = await reconstructAbsProjection(previous.workspace, { document: previous.document, contracts: previous.contracts,
+    generation, baselineRef: absBaselineKey(generation), scope, savedAbiHash: await hashAbsText(absJson(JSON.parse(disk.abi))) }, previous.abs);
   if (projection.abs !== previous.abs) return null;
   return { store: new AbsBaselineStore(port, scope), disk, projection, committed: await port.read('committed.json'),
     ...(disk.abs !== previous.abs ? { draftBaseGeneration: previous.map.generation } : {}) };
@@ -84,7 +85,7 @@ async function classifyRecovery(port: AbsSyncStoragePort, project: string) {
       catch { damaged = true; }
     }
     if (damaged && abi !== null) return { kind: 'primary' as const, lookup, healthy, disk, abi };
-    if (!damaged && !competing && disk.map === absJson(healthy.projection.map)) {
+    if (!damaged && !competing && disk.map === absMapJson(healthy.projection.map)) {
       return { kind: 'current' as const, lookup, healthy, disk };
     }
   }

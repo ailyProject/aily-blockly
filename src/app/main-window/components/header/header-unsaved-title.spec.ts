@@ -76,7 +76,10 @@ describe('project title unsaved marker', () => {
     expect(h.view.projectService.saveInBackground).not.toHaveBeenCalled();
     tick(1); expect(h.view.projectService.saveInBackground).toHaveBeenCalledOnceWith('/project');
     expect(h.view.autoSaveState).toBe('saved');
-    expect(h.view.uiService.updateFooterState).toHaveBeenCalledOnceWith({ state: 'done', text: 'PROJECT.AUTO_SAVE_SAVED', timeout: 3000 });
+    expect(h.view.uiService.updateFooterState.calls.allArgs()).toEqual([
+      [{ owner: 'project-auto-save', state: 'doing', text: 'PROJECT.AUTO_SAVE_SAVING' }],
+      [{ owner: 'project-auto-save', state: 'done', text: 'PROJECT.AUTO_SAVE_SAVED', timeout: 3000 }],
+    ]);
     h.pan(20); tick(6000);
     expect(h.view.projectService.saveInBackground).toHaveBeenCalledTimes(1);
     h.pan(30); tick(2000);
@@ -95,7 +98,10 @@ describe('project title unsaved marker', () => {
     });
     h.pan(10); tick(2000);
     expect(h.view.autoSaveState).toBe('saved');
-    expect(h.view.uiService.updateFooterState).toHaveBeenCalledOnceWith({ state: 'done', text: 'PROJECT.AUTO_SAVE_SAVED', timeout: 3000 });
+    expect(h.view.uiService.updateFooterState.calls.allArgs()).toEqual([
+      [{ owner: 'project-auto-save', state: 'doing', text: 'PROJECT.AUTO_SAVE_SAVING' }],
+      [{ owner: 'project-auto-save', state: 'done', text: 'PROJECT.AUTO_SAVE_SAVED', timeout: 3000 }],
+    ]);
     tick(6000); expect(h.view.projectService.saveInBackground).toHaveBeenCalledTimes(1); h.dispose();
   }));
 

@@ -1466,10 +1466,17 @@ export class BlocklyService {
       cleanup();
       if (this.releaseWorkspaceInputFence === releaseInput) this.releaseWorkspaceInputFence = undefined;
     };
+    if (options.background) lease.allowUserEdits = () => { lease.assertCurrent(); releaseInput(); };
     this.releaseWorkspaceInputFence = releaseInput;
     lease.release = () => { try { releaseActivity(); if (!quarantined) releaseInput(); } finally { release(); } };
     lease.quarantine = reason => {
       try { lease.assertCurrent(); } catch { return; } // Never quarantine a replacement workspace.
+      if (releasedInput) {
+        // An uncertain commit retains the normal recovery fence, even after
+        // a background snapshot allowed newer user input.
+        cleanup = fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined);
+        releasedInput = false; this.releaseWorkspaceInputFence = releaseInput;
+      }
       quarantined = true;
       return quarantine(reason);
     };

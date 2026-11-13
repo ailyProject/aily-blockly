@@ -18,4 +18,15 @@ describe('footer transient save status', () => {
     tick(1000); footer.changeState({ state: 'doing', text: 'Building' }); tick(10000);
     expect(footer.actionData.text).toBe('Building');
   }));
+  it('clears only the background save that owns the status', fakeAsync(() => {
+    const footer = fixture();
+    footer.changeState({ owner: 'project-auto-save', state: 'doing', text: 'Auto saving' });
+    tick(15000); expect(footer.actionData.state).toBe('doing');
+    footer.changeState({ owner: 'project-auto-save', state: '', text: '' });
+    expect(footer.actionData).toBeNull();
+    footer.changeState({ state: 'doing', text: 'Building' });
+    footer.changeState({ owner: 'project-auto-save', state: '', text: '' });
+    expect(footer.actionData.text).toBe('Building');
+  }));
+
 });

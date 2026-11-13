@@ -51,7 +51,10 @@ export class FooterComponent implements OnDestroy {
   }
 
   changeState(e: ActionState) {
+    const clear = e.owner && !e.state && !e.text;
+    if (clear && this.actionData?.owner !== e.owner) return;
     clearTimeout(this.timer);
+    if (clear) { this.actionData = null; this.cd.detectChanges(); return; }
     this.actionData = { ...e };
     this.cd.detectChanges();
     // 默认超时设置10秒, warn 和 error 不超时 

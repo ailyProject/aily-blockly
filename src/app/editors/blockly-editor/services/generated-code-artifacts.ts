@@ -6,7 +6,7 @@ interface ArduinoGeneratedArtifactSource {
   getGeneratedArtifacts(): readonly ArduinoGeneratedArtifact[];
 }
 
-export interface GeneratedSourcePublicationOptions { readonly preserveSuperseded?: true }
+export interface GeneratedSourcePublicationOptions { readonly preserveSuperseded?: true; readonly publishPreview?: () => boolean }
 
 export interface GeneratedSourcePublicationReceipt {
   changed: boolean;

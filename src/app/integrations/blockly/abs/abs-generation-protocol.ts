@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsPreparedVariable, AbsVariableCreation, assertAbsVariableCreations, planAbsVariableCreations } from './abs-variable-intents';
@@ -122,5 +123,5 @@ export function readGenerationApplyValidation(input: any): AbsGenerationValidati
 export async function generationEvidence(projection: AbsProjection, abi: string | null): Promise<AbsGenerationEvidence> {
   return { binding: { generation: projection.map.generation, scope: { ...projection.map.scope },
     abiHash: abi === null ? null : await hashAbsText(abi), absHash: projection.map.baseAbsHash,
-    mapHash: await hashAbsText(absJson(projection.map)) }, absBytes: new TextEncoder().encode(projection.abs).byteLength };
+    mapHash: await hashAbsText(absMapJson(projection.map)) }, absBytes: new TextEncoder().encode(projection.abs).byteLength };
 }

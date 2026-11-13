@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store';
 import { AbsOperationJournal } from './abs-operation-journal';
 import { AbsApplicationJournal } from './abs-application-journal';
@@ -56,7 +57,7 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
       && await store.isMetadataOnlyContinuation(original.committed, original.disk.abi);
     const savedAbi = current ? await store.readDerivedAbi(current.projection.map.generation) : null;
     const completeMirrors = !!current && disk.abi !== null && disk.abi === savedAbi
-      && disk.abs === current.projection.abs && disk.map === absJson(current.projection.map);
+      && disk.abs === current.projection.abs && disk.map === absMapJson(current.projection.map);
     // The same-root restart path retires an obsolete view once a later complete
     // save won. A location change must retain that newer source too; it is never
     // proof that the old unknown application/request succeeded.
@@ -76,7 +77,7 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
     const after = await store.inspectCommitted(), afterDisk = await store.captureDisk(), afterPointer = await port.read('committed.json');
     if (!after || !afterPointer || after.projection.map.scope.projectKey !== project || after.projection.map.scope.pageId !== scope.pageId
       || afterDisk.abi !== disk.abi || await store.readDerivedAbi(after.projection.map.generation) !== disk.abi
-      || afterDisk.abs !== after.projection.abs || afterDisk.map !== absJson(after.projection.map)
+      || afterDisk.abs !== after.projection.abs || afterDisk.map !== absMapJson(after.projection.map)
       || afterPointer !== committed && !await store.isMetadataOnlyContinuation(committed, disk.abi!)) {
       throw new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN', 'Location recovery no longer matches its preserved complete source. No retained view was applied.');
     }

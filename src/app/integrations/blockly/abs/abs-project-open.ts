@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { createProjectDataMarker } from '@domain/project/public-api';
 import { AbsBaselineStore, AbsSyncStoragePort, absBaselineKey } from './abs-baseline-store';
 import { absJson, createAbsProjection, hashAbsText } from './abs-identity-map';
@@ -80,7 +81,7 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
         || await hashAbsText((await storage.read('committed.json'))!) !== committed!.pointerHash) {
         throw new AbsSyncError('ABS_DISK_CONFLICT', 'Project changed during cache restoration.');
       }
-      for (const [key, before, value] of [['project.abi', expected.abi, abi], ['project.abs.map.json', expected.map, absJson(baseline.map)]]) {
+      for (const [key, before, value] of [['project.abi', expected.abi, abi], ['project.abs.map.json', expected.map, absMapJson(baseline.map)]]) {
         assertCurrent();
         if (before !== value && !await storage.replace(key!, before === null ? null : await hashAbsText(before!), value!)) {
           throw new AbsSyncError('ABS_DISK_CONFLICT', 'Derived cache changed during restoration.');

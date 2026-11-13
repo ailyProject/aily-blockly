@@ -835,11 +835,12 @@ export class _ProjectService {
     // Save/ABS publication owns this exact prepared snapshot too. Updating only
     // codeSubject leaves the IPC viewer/map on the previous generation until a
     // later UI debounce happens to regenerate. Disk contention must not hide it.
-    this.blocklyService.publishPreparedCodeView(generated.code, generated.blockCodeMapText);
+    const previewPublished = options.publishPreview?.() !== false;
+    if (previewPublished) this.blocklyService.publishPreparedCodeView(generated.code, generated.blockCodeMapText);
     if (window['builder']?.isolatedBuildExecutionVersion === 1) {
       // No root sketch, headers or build metadata were published. Local builds
       // materialize this prepared input in their own execution workspace.
-      return { changed: false, target: 'preview', previewPublished: true, diskPublished: false } as GeneratedSourcePublicationReceipt;
+      return { changed: false, target: 'preview', previewPublished, diskPublished: false } as GeneratedSourcePublicationReceipt;
     }
     // The artifact snapshot is the captured Arduino publication capability.
     // Publish its sketch and headers together, as startup/build already do;

@@ -1,3 +1,4 @@
+import { decodeAbsMap, absMapJson } from './abs-map-json';
 import { AbsSyncError, type AbsProjection, type AbsIdentityMap } from './abs-state';
 import { absJson, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import type { AbsProjectAttachment, AbsSyncStoragePort } from './abs-baseline-store';
@@ -29,7 +30,7 @@ export async function workingCandidateKey(ref: WorkingCandidateRef) {
 }
 export async function workingCandidateBinding(baseline: AbsProjection) {
   return { generation: baseline.map.generation, scope: baseline.map.scope, abiHash: baseline.map.baseAbiHash,
-    absHash: baseline.map.baseAbsHash, mapHash: await hashAbsText(absJson(baseline.map)) };
+    absHash: baseline.map.baseAbsHash, mapHash: await hashAbsText(absMapJson(baseline.map)) };
 }
 export async function readCandidateObject(ref: ObjectRef, read: (hash: string) => Promise<string | null>): Promise<string> {
   if (!object(ref) || !rawHash(ref.hash) || !Number.isSafeInteger(ref.bytes) || ref.bytes < 0) fail('Invalid History object reference.');
@@ -145,7 +146,7 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
   }
   if (previous !== source) fail('Submitted source differs from its exact revision.');
   let document: any, map: any, contracts: any;
-  try { document = JSON.parse(documentText); map = JSON.parse(mapText); contracts = JSON.parse(contractsText); }
+  try { document = JSON.parse(documentText); map = decodeAbsMap(JSON.parse(mapText)); contracts = JSON.parse(contractsText); }
   catch { return fail('Frozen candidate projection is not JSON.'); }
   if (map.scope?.projectKey !== scope.projectKey || typeof map.scope?.pageId !== 'string'
     || record.scope.kind === 'pages' && !record.scope.pageIds.includes(map.scope.pageId)) fail('Frozen candidate projection belongs to another project/page.');

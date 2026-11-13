@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { splitAbsState } from './abs-full-state';
 import { AbsBaselineStore, absBaselineKey, AbsSyncStoragePort } from './abs-baseline-store';
 import { absJson, createAbsProjection, fingerprintAbsNodes, hashAbsText, indexAbsSyntax, validateAbsProjection } from './abs-identity-map';
@@ -31,7 +32,7 @@ describe('previous ABS projection inspection and explicit upgrade', () => {
     const record = absJson({ schemaVersion: 1, mode: 'export', projection: baseline, inputAbs: null, abi: null,
       previousCommitted: null, expected: { abi: await hashAbsText(absJson(workspace)), abs: null, map: null } });
     files = new Map([[absBaselineKey('previous'), record], ['project.abs', abs], ['project.abi', absJson(workspace)],
-      ['project.abs.map.json', absJson(baseline.map)],
+      ['project.abs.map.json', absMapJson(baseline.map)],
       ['committed.json', absJson({ schemaVersion: 1, generation: 'previous', hash: await hashAbsText(record) })]]);
     const access = { read: async (key: string) => files.get(key) ?? null, replace: async (key: string, expected: string | null, content: string | null) => {
       const before = files.get(key);
@@ -69,7 +70,7 @@ describe('previous ABS projection inspection and explicit upgrade', () => {
     expect(save).not.toHaveBeenCalled();
     expect(files.get('project.abi')).toBe(originalAbi);
     expect(files.get(absBaselineKey('previous'))).toBe(originalRecord);
-    expect((await store.loadCommitted())!.map.projectionVersion).toBe('abs-v2.preview.7');
+    expect((await store.loadCommitted())!.map.projectionVersion).toBe('abs-v2.preview.8');
   });
 
   it('does not offer upgrade when ABS has unapplied edits or a pending journal exists', async () => {
