@@ -5,7 +5,7 @@ import type { AbsDiagnostic } from './abs-diagnostics';
 
 export const ABS_SCHEMA_HEADER = '# ABS Schema: 2';
 // Projection algorithm identifier, independent of the production wire protocol version.
-export const ABS_PROJECTION_VERSION = 'abs-v2.preview.7';
+export const ABS_PROJECTION_VERSION = 'abs-v2.preview.8';
 
 /** Restrictions may be added by ABS; omission never unlocks retained blocks. */
 export type AbsBlockProtection = Partial<Record<'deletable' | 'movable' | 'editable', false>>;

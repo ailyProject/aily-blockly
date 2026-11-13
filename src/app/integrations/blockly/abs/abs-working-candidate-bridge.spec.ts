@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 import { AbsGenerationToolsService } from './abs-generation-tools.service';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
@@ -34,7 +35,7 @@ describe('R3 Working candidate real bridge receipt composition', () => {
       owner: { sessionId: 'original-session', intentAnchorId: 'original-intent' },
       project: { logicalId: (await hashAbsText(project)).slice(7), attachment },
       scope: { kind: 'pages', pageIds: ['main'] }, base: {
-        document: await put(absJson(projection.document)), abs: await put(projection.abs), map: await put(absJson(projection.map)),
+        document: await put(absJson(projection.document)), abs: await put(projection.abs), map: await put(absMapJson(projection.map)),
         contracts: await put(absJson(projection.contracts)), published: null }, source: await put(projection.abs),
       derivation: { kind: 'capture' }, intent: { anchorId: 'original-intent' } };
     const stored = await put(absJson(record));

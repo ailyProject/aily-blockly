@@ -14,14 +14,14 @@ interface NodeState {
   next?: Record<string, unknown>;
 }
 interface FullState {
-  version: 1;
+  version: 1 | 2;
   programHash: string;
   document: unknown;
   workspace?: AbsAbiWorkspace;
   workspacePage?: string;
   syntax: AbsAbiWorkspace;
   roots: Array<{ location: Array<string | number>; path: string }>;
-  nodes: Record<string, NodeState>;
+  nodes: Record<string, NodeState> | NodeState[];
   contracts: AbsProjectionContracts;
 }
 const invalid = (message: string): never => { throw new AbsSyncError('ABS_STATE_INVALID', message); };
@@ -42,11 +42,15 @@ export function assertAbsStateUnchanged(candidate: string, baseline: string): vo
 }
 
 export async function encodeAbsState(program: string, document: unknown,
-  blocks: ReadonlyMap<string, AbsAbiBlock>, contracts: AbsProjectionContracts, workspace: AbsAbiWorkspace): Promise<string> {
-  const nodes: Record<string, NodeState> = Object.create(null);
+  blocks: ReadonlyMap<string, AbsAbiBlock>, contracts: AbsProjectionContracts, workspace: AbsAbiWorkspace, legacyPaths = false): Promise<string> {
+  // Preorder already belongs to the readable program. Repeating every full
+  // ancestor path here makes long chains quadratic in bytes as well as time.
+  const nodes: FullState['nodes'] = legacyPaths ? Object.create(null) : [];
   for (const { node, path } of indexAbsSyntax(parseAbsSyntax(program, absSyntaxOptions(workspace, contracts)))) {
     const original = blocks.get(path) ?? invalid('Visible block is missing from the renderer.');
-    const { type, fields, inputs, next, extraState, ...attributes } = JSON.parse(absJson(original)) as AbsAbiBlock;
+    // Each descendant has its own entry. Copying the whole remaining subtree
+    // before discarding its links makes long statement chains quadratic.
+    const { type, fields, inputs, next, extraState, ...attributes } = original;
     const residual: NodeState = { attributes };
     if (fields !== undefined) residual.fields = Object.fromEntries(Object.entries(fields)
       .filter(([key, value]) => absJson(value) !== absJson(node.fields[key]?.value)));
@@ -58,7 +62,8 @@ export async function encodeAbsState(program: string, document: unknown,
       return [name, { ...(kind ? { kind } : {}), edge }];
     }));
     if (next !== undefined) { const { block, ...edge } = next; residual.next = edge; }
-    nodes[path] = residual;
+    if (Array.isArray(nodes)) nodes.push(JSON.parse(absJson(residual)));
+    else nodes[path] = JSON.parse(absJson(residual));
   }
   const roots: FullState['roots'] = [];
   const rootBlocks = new Map([...blocks].filter(([path]) => /^\/blocks\/\d+$/.test(path))
@@ -86,7 +91,7 @@ export async function encodeAbsState(program: string, document: unknown,
     if (!page) return invalid('The composed workspace differs from its complete project document.');
     workspaceState = { workspacePage: page.id };
   } else workspaceState = { workspace: { ...workspace, blocks: { ...workspace.blocks, blocks: [] } } };
-  const state: FullState = { ...workspaceState, syntax, version: 1, programHash: await hashAbsText(program), document: skeleton, roots, nodes, contracts };
+  const state: FullState = { ...workspaceState, syntax, version: legacyPaths ? 1 : 2, programHash: await hashAbsText(program), document: skeleton, roots, nodes, contracts };
   return program + MARKER + absJson(state);
 }
 
@@ -96,30 +101,35 @@ export async function decodeAbsState(source: string): Promise<{ document: unknow
   if (text === null) return invalid('ABS has no complete project state.');
   let state: FullState;
   try { state = JSON.parse(text); } catch { return invalid('Malformed project state JSON.'); }
-  if (state?.version !== 1 || state.programHash !== await hashAbsText(program)
-    || !Array.isArray(state.roots) || !state.nodes || typeof state.nodes !== 'object' || !state.contracts?.fields) {
+  if (![1, 2].includes(state?.version) || state.programHash !== await hashAbsText(program)
+    || !Array.isArray(state.roots) || !state.nodes || typeof state.nodes !== 'object'
+    || Array.isArray(state.nodes) !== (state.version === 2) || !state.contracts?.fields) {
     return invalid('Incomplete or edited ABS snapshot; apply the draft against its baseline first.');
   }
   const used = new Set<string>();
-  const build = (node: AbsSyntaxNode, path: string): AbsAbiBlock => {
-    if (!Object.hasOwn(state.nodes, path) || used.has(path)) return invalid('Missing or duplicate block state.');
+  const built = new Map<string, AbsAbiBlock>();
+  const syntaxRoots = parseAbsSyntax(program, state.syntax ? absSyntaxOptions(state.syntax, state.contracts) : {});
+  const entries = indexAbsSyntax(syntaxRoots);
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const { node, path } = entries[index], key = state.version === 2 ? index : path;
+    if (!Object.hasOwn(state.nodes, key) || used.has(path)) return invalid('Missing or duplicate block state.');
     used.add(path);
-    const residual = state.nodes[path];
+    const residual: NodeState = Array.isArray(state.nodes) ? state.nodes[index] : state.nodes[path];
     const block = { ...residual.attributes, type: node.type } as AbsAbiBlock;
     if (residual.fields !== undefined) block.fields = { ...Object.fromEntries(Object.entries(node.fields).map(([key, token]) => [key, token.value])), ...residual.fields };
     if (Object.hasOwn(node, 'extraState')) block.extraState = node.extraState;
     if (residual.inputs !== undefined) block.inputs = Object.fromEntries(Object.entries(residual.inputs).map(([name, input]) => {
       const child = node.inputs[name];
       if (!!child !== !!input.kind) return invalid('Input state does not match the readable program.');
-      return [name, { ...input.edge, ...(child ? { [input.kind!]: build(child, absInputPath(path, name)) } : {}) }];
+      return [name, { ...input.edge, ...(child ? { [input.kind!]: built.get(absInputPath(path, name)) ?? invalid('Missing input block state.') } : {}) }];
     }));
     if (residual.next !== undefined) {
       if (!node.next) return invalid('Next block is missing.');
-      block.next = { ...residual.next, block: build(node.next, `${path}/next`) };
+      block.next = { ...residual.next, block: built.get(`${path}/next`) ?? invalid('Missing next block state.') };
     }
-    return block;
-  };
-  const roots = parseAbsSyntax(program, state.syntax ? absSyntaxOptions(state.syntax, state.contracts) : {}).map((node, index) => build(node, `/blocks/${index}`));
+    built.set(path, block);
+  }
+  const roots = syntaxRoots.map((_, index) => built.get(`/blocks/${index}`)!);
   if (used.size !== Object.keys(state.nodes).length) return invalid('Unused block state.');
   const document: any = state.document;
   const restored = new Set<number>();

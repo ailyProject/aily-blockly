@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { restoreAbsProjectCaches } from './abs-project-open';
 import { AbsBaselineStore, absBaselineKey } from './abs-baseline-store';
 import { createAbsProjection, hashAbsText, absJson } from './abs-identity-map';
@@ -21,7 +22,7 @@ describe('complete ABS cache restoration',()=>{
  it('regenerates deleted ABI/map exactly from the sole ABS snapshot',async()=>{
  const base=await save('one'),snapshot=files.get('project.abs');files.delete('project.abi');files.delete('project.abs.map.json');
  expect(await restoreAbsProjectCaches(port,'project',()=>{})).toBe(base.abi);
- expect(files.get('project.abs')).toBe(snapshot);expect(files.get('project.abs.map.json')).toBe(absJson(base.projection.map));
+ expect(files.get('project.abs')).toBe(snapshot);expect(files.get('project.abs.map.json')).toBe(absMapJson(base.projection.map));
  });
  it('opens copied complete state without silently rebinding its private generation',async()=>{
  const base=await save('one'),pointer=files.get('committed.json');

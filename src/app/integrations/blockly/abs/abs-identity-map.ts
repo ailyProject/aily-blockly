@@ -1,5 +1,6 @@
-import { encodeAbsState } from './abs-full-state';
-import { assertNoOversizedInlineValues } from '@domain/project/public-api';
+import { absMapJson } from './abs-map-json';
+import { encodeAbsState, splitAbsState } from './abs-full-state';
+import { assertNoOversizedInlineValues } from '@domain/project/project-data/project-data-policy';
 import { absJson } from './abs-json';
 export { absJson } from './abs-json';
 import { parseAbsSyntax } from './abs-syntax';
@@ -153,6 +154,15 @@ export async function createAbsProjection(workspace: AbsAbiWorkspace, context: A
   return buildAbsProjection(workspace, context, ABS_PROJECTION_VERSION);
 }
 
+/** Verify an immutable complete snapshot using its original state encoding.
+ * New exports always use the current version, including after opening a legacy project. */
+export function reconstructAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjectionContext, source: string): Promise<AbsProjection> {
+  const state = splitAbsState(source).state;
+  const version = state === null ? undefined : JSON.parse(state).version;
+  if (![1, 2].includes(version)) throw new AbsSyncError('ABS_STATE_INVALID', 'Unsupported complete snapshot encoding.');
+  return buildAbsProjection(workspace, context, version === 1 ? 'abs-v2.preview.7' : ABS_PROJECTION_VERSION);
+}
+
 /** Historical rendering is available for verification only, never as an export API. */
 async function buildAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjectionContext, projectionVersion: string): Promise<AbsProjection> {
   context = { ...context, scope: { ...context.scope } };
@@ -173,9 +183,9 @@ async function buildAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjec
     if (group) group.push(reference); else procedureReferences.set(reference.blockId, [reference]);
   }
   const previous = projectionVersion === 'abs-v2.preview.3';
-  const completeState = projectionVersion === ABS_PROJECTION_VERSION;
+  const completeState = [ABS_PROJECTION_VERSION, 'abs-v2.preview.7'].includes(projectionVersion);
   const { abs: program, blockAtPath, symbolAtPath } = renderAbs(snapshot, contracts, symbols, projectionVersion);
-  const abs = completeState ? await encodeAbsState(program, document, blockAtPath, contracts, snapshot) : program;
+  const abs = completeState ? await encodeAbsState(program, document, blockAtPath, contracts, snapshot, projectionVersion === 'abs-v2.preview.7') : program;
   const entries = indexAbsSyntax(parseAbsSyntax(abs, previous ? {} : absSyntaxOptions(snapshot, contracts)));
   const fingerprints = await fingerprintAbsNodes(entries);
   const [baseAbiHash, pageAbiHash, baseAbsHash, contractsHash] = await Promise.all([
@@ -205,14 +215,14 @@ async function buildAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjec
 
 /** A sidecar is only an index. Recompute its associations from the retained host snapshot. */
 export function assertCurrentAbsProjection(baseline: AbsProjection): void {
-  if (baseline.map.projectionVersion !== ABS_PROJECTION_VERSION) {
+  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.7'].includes(baseline.map.projectionVersion)) {
     throw new AbsSyncError('ABS_PROJECTION_UPGRADE_REQUIRED', 'Inspect and explicitly re-export this previous projection; never apply it with new syntax offsets.');
   }
 }
 
 export async function validateAbsProjection(baseline: AbsProjection, allowPreviousForRecovery = false): Promise<void> {
   const version = baseline.map.projectionVersion;
-  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.3', 'abs-v2.preview.4', 'abs-v2.preview.5', 'abs-v2.preview.6'].includes(version)) {
+  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.3', 'abs-v2.preview.4', 'abs-v2.preview.5', 'abs-v2.preview.6', 'abs-v2.preview.7'].includes(version)) {
     throw new AbsSyncError('ABS_PROJECTION_UNSUPPORTED', 'Unsupported immutable projection version.');
   }
   if (!allowPreviousForRecovery) assertCurrentAbsProjection(baseline);
@@ -225,7 +235,7 @@ export async function validateAbsProjection(baseline: AbsProjection, allowPrevio
     if (!(error instanceof AbsSyncError)) throw error;
     throw new AbsSyncError('ABS_MAP_INVALID', 'Immutable baseline cannot reconstruct its project state.');
   }
-  if (expected.abs !== baseline.abs || absJson(expected.map) !== absJson(baseline.map)) {
+  if (expected.abs !== baseline.abs || absMapJson(expected.map) !== absMapJson(baseline.map)) {
     throw new AbsSyncError('ABS_MAP_INVALID', 'Identity map does not match its immutable baseline.');
   }
 }

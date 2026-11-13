@@ -7,6 +7,17 @@
     "../src/app/main-window/components/footer/footer-status.spec.ts",
     "../src/app/services/domains/project/project-background-save.spec.ts",
     "../src/app/integrations/blockly/abs/abs-workspace-activity.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-abi-derivation.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-baseline-store.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-baseline-recovery.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-serialized-workspace.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-map-json.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-background.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-projection-upgrade.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-saved-abi-recipe.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-snapshot-guard.spec.ts",
+    "../src/app/services/domains/project/project-document-json.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-full-state.spec.ts",
     "../src/app/editors/blockly-editor/services/blockly-project-dirty-state.spec.ts",
     "../src/**/*.d.ts"
   ]

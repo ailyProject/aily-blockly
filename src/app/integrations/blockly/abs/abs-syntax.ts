@@ -1,4 +1,4 @@
-import { readAbsJsonToken, readAbsSingleQuotedToken } from '@shared/public-api';
+import { readAbsJsonToken, readAbsSingleQuotedToken } from '@shared/abs/abs-json-tokens';
 import { readAbsFieldToken } from './abs-field-values';
 import { ABS_SCHEMA_HEADER, AbsSyntaxNode, AbsSyncError } from './abs-state';
 import { bindAbsSyntax, type AbsRawNode, type AbsRawValue, type AbsSyntaxOptions } from './abs-syntax-binding';

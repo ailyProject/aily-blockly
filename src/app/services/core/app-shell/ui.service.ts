@@ -987,6 +987,8 @@ export interface ToolOpts {
 }
 
 export interface ActionState {
+  /** Scoped clears cannot dismiss another operation's footer status. */
+  owner?: string;
   text: string;
   desc?: string;
   state?: 'done' | 'doing' | 'error' | 'warn' | 'loading' | string,

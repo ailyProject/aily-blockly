@@ -17,6 +17,19 @@ describe('project idle autosave (#495)', () => {
     expect(h.state.calls.mostRecent().args[0]).toBe('saving');
     finish({ success: true }); flushMicrotasks(); expect(h.state.calls.mostRecent().args[0]).toBe('saved'); h.auto.dispose();
   }));
+  it('keeps the spinner active across new edits and stops it when the captured save settles', fakeAsync(() => {
+    let complete!: (result: any) => void;
+    const busy = jasmine.createSpy('busy'), state = jasmine.createSpy('state');
+    const save = jasmine.createSpy('save').and.returnValue(new Promise(resolve => { complete = resolve; }));
+    const auto = new ProjectAutoSave({ project: () => '/a', enabled: () => true, ready: () => true,
+      dirty: async () => true, save, state, busy });
+    auto.edited(); tick(2000); expect(busy.calls.allArgs()).toEqual([[true]]);
+    auto.edited(); tick(1000); expect(busy.calls.allArgs()).toEqual([[true]]);
+    complete({ success: true }); flushMicrotasks();
+    expect(busy.calls.allArgs()).toEqual([[true], [false]]);
+    expect(state.calls.mostRecent().args[0]).toBe('pending');
+    auto.dispose();
+  }));
   it('defers while busy and cancels an obsolete project or disabled setting', fakeAsync(() => {
     const h = setup(); h.value.ready = false; h.auto.edited(); tick(2000); expect(h.save).not.toHaveBeenCalled();
     h.value.path = '/b'; tick(2000); expect(h.save).not.toHaveBeenCalled();

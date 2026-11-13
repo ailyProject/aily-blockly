@@ -6,6 +6,8 @@ export class BlocklyEditError extends Error {
 
 export interface BlocklyWorkspaceEditLease {
   assertCurrent(): void;
+  /** Release the short capture fence; publication still owns the writer gate. */
+  allowUserEdits?(): void;
   release(): void;
   quarantine(reason: string): BlocklyWorkspaceRecoveryGrant | void;
 }

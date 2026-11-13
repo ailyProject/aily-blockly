@@ -26,12 +26,21 @@ function findPinnedUploadToolDirectories(toolsPath, tool, version) {
         .filter(directory => fs.statSync(directory, { throwIfNoEntry: false })?.isDirectory());
 }
 
-function isToolExecutableInDirectory(command, directory) {
-    if (!path.isAbsolute(command) || !fs.statSync(command, { throwIfNoEntry: false })?.isFile()) return false;
-    // Preprocessing can use a read-only or short-path view of the same payload.
-    const relative = path.relative(fs.realpathSync(directory), fs.realpathSync(command));
-    return Boolean(relative) && relative !== '..' && !relative.startsWith('..' + path.sep)
-        && !path.isAbsolute(relative);
+function resolveToolExecutableInDirectory(command, directory, platform = process.platform) {
+    if (!path.isAbsolute(command)) return '';
+    // Arduino recipes can omit .exe on Windows. Resolve the actual file before
+    // checking its version directory, and execute that same validated path.
+    const candidates = platform === 'win32' && !path.extname(command)
+        ? [command, command + '.exe'] : [command];
+    const toolDirectory = fs.realpathSync(directory);
+    for (const candidate of candidates) {
+        if (!fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) continue;
+        // Preprocessing can use a read-only or short-path view of the same payload.
+        const relative = path.relative(toolDirectory, fs.realpathSync(candidate));
+        if (relative && relative !== '..' && !relative.startsWith('..' + path.sep)
+            && !path.isAbsolute(relative)) return candidate;
+    }
+    return '';
 }
 
-module.exports = { findUploadToolDependency, findPinnedUploadToolDirectories, isToolExecutableInDirectory };
+module.exports = { findUploadToolDependency, findPinnedUploadToolDirectories, resolveToolExecutableInDirectory };

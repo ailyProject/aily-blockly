@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, absBaselineKey, type AbsSyncStoragePort } from './abs-baseline-store';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { generationEvidence } from './abs-generation-protocol';
@@ -18,9 +19,9 @@ export async function readLegacyCandidateCapture(port: AbsSyncStoragePort, proje
   if (scope?.projectKey !== project || typeof scope?.pageId !== 'string' || !scope.pageId) return invalid();
   const store = new AbsBaselineStore(port, scope), projection = await store.load(legacy.generation);
   if (projection.map.generation !== legacy.generation || projection.map.baseAbsHash !== legacy.absHash
-    || await hashAbsText(absJson(projection.map)) !== `sha256:${legacy.mapHash}`) return invalid();
+    || await hashAbsText(absMapJson(projection.map)) !== `sha256:${legacy.mapHash}`) return invalid();
   const abi = await store.readDerivedAbi(legacy.generation);
-  return { version: 1, document: absJson(projection.document), abs: projection.abs, map: absJson(projection.map),
+  return { version: 1, document: absJson(projection.document), abs: projection.abs, map: absMapJson(projection.map),
     contracts: absJson(projection.contracts), scope: { kind: 'pages', pageIds: [scope.pageId] }, attachment: port.attachment,
     published: (await generationEvidence(projection, abi)).binding, publishedObservation: { status: 'captured' },
     working: { revision: 0 } };

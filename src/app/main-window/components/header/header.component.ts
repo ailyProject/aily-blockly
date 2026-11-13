@@ -191,10 +191,17 @@ export class HeaderComponent implements OnInit, OnDestroy {
         && ['loaded', 'saved'].includes(this.projectService.stateSubject.value),
       dirty: () => this.projectService.hasUnsavedChanges(),
       save: path => this.projectService.saveInBackground(path),
+      busy: busy => this.ngZone.run(() => {
+        if (busy) this.uiService.updateFooterState({ owner: 'project-auto-save', state: 'doing',
+          text: this.translate.instant('PROJECT.AUTO_SAVE_SAVING') });
+        else if (!['saved', 'error'].includes(this.autoSaveState))
+          this.uiService.updateFooterState({ owner: 'project-auto-save', state: '', text: '' });
+      }),
       state: (state, error) => this.ngZone.run(() => {
         this.autoSaveState = state; this.autoSaveError = error || ''; this.cd.markForCheck();
+        if (!state) this.uiService.updateFooterState({ owner: 'project-auto-save', state: '', text: '' });
         if (state === 'saved' || state === 'error') {
-          this.uiService.updateFooterState({ state: state === 'saved' ? 'done' : 'error',
+          this.uiService.updateFooterState({ owner: 'project-auto-save', state: state === 'saved' ? 'done' : 'error',
             text: this.translate.instant(state === 'saved' ? 'PROJECT.AUTO_SAVE_SAVED' : 'PROJECT.AUTO_SAVE_ERROR'),
             timeout: state === 'saved' ? 3000 : 10000 });
         }

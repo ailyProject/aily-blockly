@@ -10,12 +10,18 @@ export async function seedPlatform(project: string, target: string, seed = proce
   const pkg = JSON.parse(await readFile(path.join(project, 'package.json'), 'utf8'));
   const board = Object.keys(pkg.dependencies).find(name => name.includes('/board-'))!;
   const dependencies = JSON.parse(await readFile(path.join(project, 'node_modules', board, 'package.json'), 'utf8')).boardDependencies;
+  const seededPackages: Record<string, unknown> = {};
   for (const [name, version] of Object.entries(dependencies)) {
     const packageDirectory = path.join('node_modules', name);
     const metadata = path.join(seed, packageDirectory, 'package.json');
-    expect(JSON.parse(await readFile(metadata, 'utf8')).version).toBe(version);
-    await mkdir(path.join(target, packageDirectory), { recursive: true });
-    await copyFile(metadata, path.join(target, packageDirectory, 'package.json'));
+    // Current versioned resources are installed directly under sdk/tools and
+    // deliberately have no legacy top-level npm package. Never invent one.
+    try {
+      expect(JSON.parse(await readFile(metadata, 'utf8')).version).toBe(version);
+      await mkdir(path.join(target, packageDirectory), { recursive: true });
+      await copyFile(metadata, path.join(target, packageDirectory, 'package.json'));
+      seededPackages[name] = version;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const kind = name.includes('/sdk-') ? 'sdk' : 'tools';
     const short = name.replace(/^@aily-project\/(sdk|compiler|tool)-/, '');
     const assetName = short === 'idf_esp32s3' ? 'esp32-arduino-libs' : short;
@@ -36,6 +42,6 @@ export async function seedPlatform(project: string, target: string, seed = proce
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     manifest = {name: 'aily-e2e-platform-seed', private: true};
   }
-  manifest.dependencies = {...manifest.dependencies, ...dependencies};
+  manifest.dependencies = {...manifest.dependencies, ...seededPackages};
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 }

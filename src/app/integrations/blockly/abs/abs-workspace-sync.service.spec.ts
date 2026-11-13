@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { decodeAbsState, splitAbsState } from './abs-full-state';
 import * as Blockly from 'blockly';
 import { NgZone } from '@angular/core';
@@ -3793,7 +3794,7 @@ describe('v2 actual workspace generation coordinator', () => {
     });
     record.projection.map.projectionVersion = 'abs-v2.preview.3';
     disk.set('project.abs', record.projection.abs);
-    disk.set(key, absJson(record)); disk.set('project.abs.map.json', absJson(record.projection.map));
+    disk.set(key, absJson(record)); disk.set('project.abs.map.json', absMapJson(record.projection.map));
     const pointer = JSON.parse(disk.get('committed.json')!); pointer.hash = await hashAbsText(disk.get(key)!);
     disk.set('committed.json', absJson(pointer));
     const originalAbi = disk.get('project.abi'), originalState = absJson(nativeState()), originalRecord = disk.get(key);
@@ -3803,7 +3804,7 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(plain.code).toBe('ABS_PROJECTION_UPGRADE_REQUIRED');
     const upgraded = await rebind(tools, diagnosis.diagnostics.rebind.token);
     expect(upgraded.ok).withContext(JSON.stringify(upgraded)).toBeTrue();
-    expect(JSON.parse(disk.get('project.abs.map.json')!).projectionVersion).toBe('abs-v2.preview.7');
+    expect(JSON.parse(disk.get('project.abs.map.json')!).projectionVersion).toBe('abs-v2.preview.8');
     expect(disk.get(key)).toBe(originalRecord); expect(disk.get('project.abi')).toBe(originalAbi);
     expect(absJson(nativeState())).toBe(originalState); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
     expect((await inspect(tools)).diagnostics.status).toBe('ready');

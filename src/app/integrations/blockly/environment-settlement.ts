@@ -1,3 +1,4 @@
+import { absMapJson } from './abs/abs-map-json';
 import { openAbsHostStorage } from './abs/abs-host-storage';
 import { settleAbsProjectTransaction } from './abs/abs-project-restart';
 import { observeRuntimePublication } from './abs/abs-runtime-publication-observation';
@@ -27,7 +28,7 @@ export async function inspectEnvironmentSuccessor(io: AbsSyncStoragePort, projec
     if (!owner) {
       const selected = await store.readCommittedSnapshot();
       if (!selected || selected.projection.map.scope.projectKey !== root || selected.abi !== disk.abi
-        || selected.projection.abs !== disk.abs || absJson(selected.projection.map) !== disk.map) return undefined;
+        || selected.projection.abs !== disk.abs || absMapJson(selected.projection.map) !== disk.map) return undefined;
       owner = { kind: 'complete-published-successor' };
     }
     const hash = (text: string | null) => text === null ? Promise.resolve(null) : hashAbsText(text);

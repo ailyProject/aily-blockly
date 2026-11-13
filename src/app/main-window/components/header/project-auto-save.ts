@@ -12,6 +12,7 @@ export class ProjectAutoSave {
     ready: () => boolean;
     dirty: () => Promise<boolean>;
     save: (path: string) => Promise<{ success: boolean; projectSaved?: boolean; code?: string; error?: string }>;
+    busy?: (busy: boolean) => void;
     state: (state: AutoSaveState, error?: string) => void;
   }) {}
 
@@ -34,6 +35,7 @@ export class ProjectAutoSave {
       return;
     }
     this.running = true;
+    this.hooks.busy?.(true);
     try {
       const dirty = await this.hooks.dirty();
       if (!this.current(path, revision)) return;
@@ -48,6 +50,6 @@ export class ProjectAutoSave {
       if (this.current(path, revision)) this.hooks.state(saved ? 'saved' : 'error', saved ? undefined : result.error);
     } catch (error) {
       if (this.current(path, revision)) this.hooks.state('error', error instanceof Error ? error.message : String(error));
-    } finally { this.running = false; }
+    } finally { this.running = false; this.hooks.busy?.(false); }
   }
 }

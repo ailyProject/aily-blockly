@@ -1,3 +1,4 @@
+import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store';
 import { assertGenerationValidation, generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
@@ -137,7 +138,7 @@ export class AbsApplicationJournal {
     const abi = await store.readDerivedAbi(binding.generation);
     if (absJson(await generationEvidence(committed.projection, abi)) !== absJson(record.outcome.evidence)) return false;
     if (currentPointer !== null && await hashAbsText(currentPointer) === committed.pointerHash
-      && (disk.abi !== abi || disk.abs !== committed.projection.abs || disk.map !== absJson(committed.projection.map))) return false;
+      && (disk.abi !== abi || disk.abs !== committed.projection.abs || disk.map !== absMapJson(committed.projection.map))) return false;
     await this.port.withLock(async storage => {
       assertCurrent();
       if (absJson(await store.captureDisk(storage)) !== absJson(disk)
@@ -204,7 +205,7 @@ export class AbsApplicationJournal {
       if (absJson(await generationEvidence(committed.projection, historicalAbi)) !== absJson(staged.outcome.evidence)
         || await this.port.read('committed.json') !== committedPointer) return unknown('ABS_APPLY_OBSERVATION_PENDING');
       if (committedPointer !== null && await hashAbsText(committedPointer) === committed.pointerHash
-        && (currentDisk.abi !== historicalAbi || currentDisk.abs !== committed.projection.abs || currentDisk.map !== absJson(committed.projection.map))) return unknown('ABS_APPLY_OBSERVATION_PENDING');
+        && (currentDisk.abi !== historicalAbi || currentDisk.abs !== committed.projection.abs || currentDisk.map !== absMapJson(committed.projection.map))) return unknown('ABS_APPLY_OBSERVATION_PENDING');
       proof = { project: this.project, operationId: index.operationId, stageHash: await hashAbsText(stagedText), committedHash: committed.pointerHash };
     }
     if (proof.stageHash !== await hashAbsText(stagedText) || proof.project !== this.project || proof.operationId !== index.operationId) throw fail('Original committed result proof changed.');
@@ -213,7 +214,7 @@ export class AbsApplicationJournal {
     if (absJson(await generationEvidence(projection, abi)) !== absJson(staged.outcome.evidence)) throw fail('Original saved document readback differs from its result.');
     const disk = await store.captureDisk(), pointer = await this.port.read('committed.json');
     const current = pointer !== null && await hashAbsText(pointer) === proof.committedHash && disk.abi === abi
-      && disk.abs === projection.abs && disk.map === absJson(projection.map) && await this.port.read('prepared.json') === null;
+      && disk.abs === projection.abs && disk.map === absMapJson(projection.map) && await this.port.read('prepared.json') === null;
     assertCurrent();
     let outcome = staged.outcome;
     const finalText = await this.port.read(resultKey(index.operationId));
