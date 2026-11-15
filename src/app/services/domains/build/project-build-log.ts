@@ -12,6 +12,7 @@ export interface ProjectBuildLogReference {
 }
 
 export interface ProjectBuildLog {
+  readonly requestId: string;
   append(text: string): void;
   markIncomplete(reason: string): void;
   run<T extends object>(operation: () => Promise<T>): Promise<T & { buildLog: ProjectBuildLogReference }>;
@@ -52,7 +53,7 @@ export async function createProjectBuildLog(project: string, requestedId?: strin
   };
   const finish = () => finished ??= { version: 1, requestId, project, ...(path ? { path } : {}),
     complete: !failure && !incomplete, ...(failure || incomplete ? { error: failure || incomplete } : {}) };
-  return { append,
+  return { requestId, append,
     markIncomplete(reason: string) {
       incomplete ??= reason;
       append(`\n[Incomplete log capture] ${reason}\n`);

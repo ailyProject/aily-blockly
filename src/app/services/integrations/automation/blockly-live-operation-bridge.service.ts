@@ -676,18 +676,19 @@ export class BlocklyLiveOperationBridgeService {
             }
           };
           try {
-            check();
-            const port = await openAbsHostStorage(source, check);
-            await settleAbsProjectTransaction(port, source, check);
-            const operation = await new AbsOperationJournal(port, source).inspect();
-            if (!operation) await recoverAbsProjectOperation(port, source, check);
-            if (await port.read('committed.json') !== null || await port.read('project.abs.map.json') !== null) {
-              const repaired = await recoverAbsBaseline(port, source, check);
-              if (repaired.changed && operation) await new AbsOperationJournal(port, source).reanchorSource(operation.id, check);
-              await restoreAbsProjectCaches(port, source, check);
-            }
-            if (operation) await recoverAbsProjectOperation(port, source, check);
-            return await this.projectService.recoverFailedBlocklyProject(params['requestId']);
+            return await this.projectService.recoverFailedBlocklyProject(params['requestId'], false, undefined, async () => {
+              check();
+              const port = await openAbsHostStorage(source, check);
+              await settleAbsProjectTransaction(port, source, check);
+              const operation = await new AbsOperationJournal(port, source).inspect();
+              if (!operation) await recoverAbsProjectOperation(port, source, check);
+              if (await port.read('committed.json') !== null || await port.read('project.abs.map.json') !== null) {
+                const repaired = await recoverAbsBaseline(port, source, check);
+                if (repaired.changed && operation) await new AbsOperationJournal(port, source).reanchorSource(operation.id, check);
+                await restoreAbsProjectCaches(port, source, check);
+              }
+              if (operation) await recoverAbsProjectOperation(port, source, check);
+            });
           } catch (error) { return { ok: false, operation: payload.operation, project: source, recoveryState: 'failed',
             code: (error as any)?.code ?? 'PROJECT_RECOVERY_LOAD_FAILED', message: error instanceof Error ? error.message : String(error) }; }
         }
@@ -1446,6 +1447,7 @@ export class BlocklyLiveOperationBridgeService {
       code: toolResult.metadata?.['code'],
       result: toolResult.metadata?.['buildResult'],
       ...(toolResult.metadata?.['buildResult']?.['buildInput'] ? { buildInput: toolResult.metadata['buildResult']['buildInput'] } : {}),
+      ...(toolResult.metadata?.['buildResult']?.['buildSource'] ? { buildSource: toolResult.metadata['buildResult']['buildSource'] } : {}),
       ...(toolResult.metadata?.['buildResult']?.['buildLog'] ? { buildLog: toolResult.metadata['buildResult']['buildLog'] } : {}),
       toolResult,
     };

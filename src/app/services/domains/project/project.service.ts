@@ -76,6 +76,7 @@ import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRe
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
 import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, type ProjectSaveReceiptResponse } from './project-save-receipts';
 import { ProjectRecoveryRequests } from './project-recovery-request';
+import { withCurrentProjectRecoveryStatus } from './project-recovery-status';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 import { readManagedLibraryEnvironment, type ManagedLibraryEnvironmentReference } from './project-managed-library-environment';
@@ -2664,12 +2665,24 @@ export class ProjectService {
   /** Same-project recovery owns its own exact request. A lost response can only
    * observe that request; it cannot replay navigation or apply an AI candidate. */
   recoverFailedBlocklyProject(requestId: string, observe = false,
-    recoverReadyProject?: () => Promise<Record<string, any>>): Promise<Record<string, any>> {
+    recoverReadyProject?: () => Promise<Record<string, any>>,
+    prepareRecovery?: () => Promise<void>): Promise<Record<string, any>> {
     const path = this.currentProjectPath;
     if (!/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
+    const currentResult = (task: Promise<Record<string, any>>) => task.then(result => {
+      const sameProject = this.currentProjectPath === path;
+      const status = this.getBlocklyProjectLoadStatus(path);
+      const generation = this.electronService?.currentRendererGeneration;
+      return withCurrentProjectRecoveryStatus(result, {
+        version: 1, project: path, sameProject, ready: sameProject && status.ready,
+        projectSessionId: sameProject ? projectDataRuntime.getSessionToken() : null,
+        ...(Number.isSafeInteger(generation) ? { rendererGeneration: generation } : {}),
+        loadStatus: { ...status, project: path, ready: sameProject && status.ready },
+      });
+    });
     const receipts = this.failedLoadRecoveries ??= new Map();
     const original = receipts.get(requestId);
-    if (original) return original.path === path ? original.task : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    if (original) return original.path === path ? currentResult(original.task) : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
     const task = (async () => {
       const receipt = { version: 2, requestId, action: 'recover_project', candidateApplied: false };
       const current = () => {
@@ -2686,6 +2699,8 @@ export class ProjectService {
         if (previous.result) return { ...previous.result, recoveryObservation: { durable: true, resultKnown: true } };
         if (observe || previous.started || !await journal.begin(requestId)) return unknown();
         owned = true;
+        await prepareRecovery?.();
+        current();
         const result = await (async () => {
         if (recoverReadyProject) {
           const result = await recoverReadyProject();
@@ -2725,7 +2740,7 @@ export class ProjectService {
       }
     })();
     if (!observe) receipts.set(requestId, { path, task });
-    return task;
+    return currentResult(task);
   }
 
   /** Native bootstrap is available only in the exact same-build child created

@@ -1370,6 +1370,8 @@ export class _BuilderService {
     this.buildCancellation = cancellation;
     const requestLog = await createProjectBuildLog(requestedProjectPath, requestId);
     this.activeBuildLog = requestLog;
+    const unavailableCloudSource = () => ({ version: 1, kind: 'cloud-build-source', status: 'unavailable',
+      project: requestedProjectPath, buildRequestId: requestLog.requestId, reason: 'build-not-completed' });
     try {
     const outcome = await requestLog.run(async () => {
     let capturedCode: string | undefined;
@@ -2027,16 +2029,18 @@ export class _BuilderService {
     });
     });
     const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, requestId);
-    return { ...outcome, ...(buildInput ? { buildInput } : {}) };
+    return { ...outcome, ...(buildInput ? { buildInput } : {}),
+      ...(cloudBuild && !(outcome as any).buildSource ? { buildSource: unavailableCloudSource() } : {}) };
     } catch (error) {
       const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, requestId);
       if (buildInput && error && typeof error === 'object') Object.assign(error, { buildInput });
+      if (cloudBuild && error && typeof error === 'object') Object.assign(error, { buildSource: unavailableCloudSource() });
       throw error;
     } finally { if (this.activeBuildLog === requestLog) this.activeBuildLog = undefined; }
     }
 
   /** 复用 Blockly 的构建生命周期；传输、签名校验和产物发布由桌面主进程负责。 */
-  private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void): Promise<ActionState> {
+  private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void): Promise<ActionState & { buildSource?: Record<string, unknown> }> {
     const requestLog = this.activeBuildLog;
     const bridge = window['cloudBuild'];
     if (!bridge?.run || !bridge?.cancel || !bridge?.onProgress) throw new Error('Cloud compilation bridge is unavailable.');
@@ -2059,7 +2063,8 @@ export class _BuilderService {
       this.safeUpdateNotice({ title: this.buildNoticeTitle(boardName), text: this.t('PREPARING_TITLE'),
         state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(requestId) });
       const dependencySession = this.projectService.getProjectDependencySession(config.currentProjectPath);
-      const result = await runCloudBuildWithProgress({ requestId, config, settings, profileDigest: profile.profileDigest, action: 'compile' }, bridge, {
+      const result = await runCloudBuildWithProgress({ requestId, buildRequestId: requestLog?.requestId || requestId,
+        config, settings, profileDigest: profile.profileDigest, action: 'compile' }, bridge, {
         prepareTool: async tool => {
           assertCurrent();
           await this.npmService.installCloudUploadTool(tool, dependencySession);
@@ -2091,7 +2096,10 @@ export class _BuilderService {
       if (result?.success !== true || result?.state !== 'done') throw new Error(result?.text || 'Cloud compilation failed.');
       const seconds = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
       return { state: 'done', text: result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
-        : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds }), desc: result.artifactPath };
+        : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds }), desc: result.artifactPath,
+        buildSource: result.buildSource || { version: 1, kind: 'cloud-build-source', status: 'unavailable',
+          project: config.currentProjectPath, buildRequestId: requestLog?.requestId || requestId,
+          reason: 'host-source-binding-unavailable' } };
     } finally {
       await this.cloudCancelPromise;
       if (this.activeCloudRequestId === requestId) this.activeCloudRequestId = null;

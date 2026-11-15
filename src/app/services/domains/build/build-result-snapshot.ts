@@ -21,6 +21,7 @@ export interface BuildResultSnapshot {
   buildRequestId?: string;
   buildLog?: ProjectBuildLogReference;
   buildInput?: BuildInput;
+  buildSource?: Record<string, unknown>;
   code?: 'BUILD_CANCELLED';
   buildOutcome?: 'cancelled';
 }
@@ -29,8 +30,8 @@ export interface BuildResultSnapshot {
 export function persistBuildResult(
   projectPath: string,
   success: boolean,
-  result?: { state?: string; text?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput },
-  error?: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput },
+  result?: { state?: string; text?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput; buildSource?: Record<string, unknown> },
+  error?: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput; buildSource?: Record<string, unknown> },
   checkpoint?: BuildCheckpoint,
   source: BuildResultSnapshot['source'] = 'system',
 ): void {
@@ -45,6 +46,7 @@ export function persistBuildResult(
     message: result?.text || error?.text || error?.message || '',
     fullStdErr: result?.fullStdErr || error?.fullStdErr || '',
     ...(result?.buildInput || error?.buildInput ? { buildInput: result?.buildInput || error?.buildInput } : {}),
+    ...(result?.buildSource || error?.buildSource ? { buildSource: result?.buildSource || error?.buildSource } : {}),
     ...(result?.buildLog || error?.buildLog ? {
       buildLog: result?.buildLog || error?.buildLog,
       buildRequestId: (result?.buildLog || error?.buildLog)!.requestId,

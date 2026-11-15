@@ -33,6 +33,7 @@ interface CloudBuildRunResult {
   artifactPath?: string;
   fullStdErr?: string;
   logComplete?: boolean;
+  buildSource?: Record<string, unknown>;
 }
 
 interface CloudBuildProgressBridge {
