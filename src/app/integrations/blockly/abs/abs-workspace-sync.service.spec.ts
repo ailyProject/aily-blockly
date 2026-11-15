@@ -3734,6 +3734,32 @@ describe('v2 actual workspace generation coordinator', () => {
     disk.set('project.abi', absJson(abi));
     return { tools: new AbsGenerationToolsService(service), observation: await programDriftInput(), original };
   };
+  for (const removed of ['project.abs', 'project.abi', 'project.abs.map.json']) {
+    it(`Native entry removal restores ${removed} from actual Working without loading raw siblings`, async () => {
+      const { tools } = await seedProgramDrift();
+      disk.delete(removed);
+      if (removed === 'project.abi') {
+        const diagnosis = await inspect(tools);
+        expect(diagnosis.diagnostics.repair).toBeUndefined();
+      }
+      const observation = await programDriftInput();
+      const before = { abi: disk.get('project.abi') ?? null, abs: disk.get('project.abs') ?? null,
+        map: disk.get('project.abs.map.json') ?? null };
+      const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+        action: 'reconcile_program', observation });
+      expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+      expect(result.publication.status).toBe('COMMITTED');
+      expect(result.candidateApplied).toBeFalse();
+      expect(result.requiresReload).toBeFalse();
+      expect(roots().getFieldValue('TEXT')).toBe('before');
+      expect(disk.get('project.abs')).toContain('TEXT="before"');
+      expect(disk.get('project.abi')).not.toContain('must not enter Working');
+      const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
+      expect(archive.disk).toEqual(before);
+      expect(archive.programDrift).toEqual(observation);
+      expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(disk.get('project.abs')!));
+    });
+  }
   it('Native program drift repairs actual Working through tools admission and preserves every original mirror', async () => {
     const { tools, observation } = await seedProgramDrift();
     const before = { abi: disk.get('project.abi'), abs: disk.get('project.abs'), map: disk.get('project.abs.map.json') };

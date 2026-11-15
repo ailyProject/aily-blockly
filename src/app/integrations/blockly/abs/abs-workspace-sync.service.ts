@@ -1958,7 +1958,7 @@ export class AbsWorkspaceSyncService {
       const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions,
         () => { context.assertCurrent(); lease.assertCurrent(); });
       const readiness = await inspectAbsDraft(inspection, snapshot.document, runtime);
-      const offer = await describeAbsRepair({ ...inspection, diagnostics: readiness }, snapshot.document, runtime.contracts);
+      const offer = await describeAbsRepair({ ...inspection, diagnostics: readiness }, snapshot.document, runtime.contracts, observation);
       guard();
       if (!offer) throw new AbsSyncError('ABS_PROGRAM_DRIFT_UNAVAILABLE', 'The current project does not offer a preserving Working repair.');
       // Recheck after inspection and before entering the existing archival and
@@ -2002,7 +2002,7 @@ export class AbsWorkspaceSyncService {
         } catch (error) { if ((error as any)?.code !== 'ABS_RECOVERY_ARCHIVE_MISSING') throw error; }
       }
       const readiness = await inspectAbsDraft(inspection, snapshot.document, runtime);
-      const offer = await describeAbsRepair({ ...inspection, diagnostics: readiness }, snapshot.document, runtime.contracts);
+      const offer = await describeAbsRepair({ ...inspection, diagnostics: readiness }, snapshot.document, runtime.contracts, programDrift);
       guard();
       if (!offer || token !== offer.token) throw new AbsSyncError('ABS_REPAIR_STALE', 'Repair token no longer matches the inspected inputs and canvas. Inspect again.');
       const generation = crypto.randomUUID();
