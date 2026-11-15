@@ -5,6 +5,7 @@ import { decodeAbsState } from './abs-full-state';
 import { absJson, assertCurrentAbsProjection, createAbsProjection, reconstructAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
+import type { AbsProgramDriftObservation } from './abs-program-drift';
 import type { ProjectStorageAttachment, ProjectStorageExecutor, ProjectStorageExecutorObservation } from '@shared/project-sync-storage-bridge';
 export type AbsProjectAttachment = ProjectStorageAttachment;
 export type AbsStorageExecutor = ProjectStorageExecutor;
@@ -224,7 +225,8 @@ export class AbsBaselineStore {
 
   /** Exact originals are durable before any replacement of user-visible mirrors. */
   async archiveRepair(generation: string, expected: AbsDiskSnapshot, pointerHash: string,
-    workspace: string, repairToken: string, assertCurrent: () => void, resolution?: AbsViewResolutionRecord): Promise<AbsRecoveryArchive> {
+    workspace: string, repairToken: string, assertCurrent: () => void, resolution?: AbsViewResolutionRecord,
+    programDrift?: AbsProgramDriftObservation): Promise<AbsRecoveryArchive> {
     absBaselineKey(generation);
     resolution = resolution && { ...resolution };
     if (resolution && (!/^sha256:[a-f0-9]{64}$/.test(resolution.token) || resolution.token !== repairToken
@@ -245,7 +247,8 @@ export class AbsBaselineStore {
         throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Original baseline changed before archival.');
       }
       const content = absJson({ schemaVersion: 1, generation, authority: 'workspace', repairToken, scope: this.scope,
-        disk: expected, committed: { pointer, baseline }, workspace, ...(resolution ? { resolution } : {}) });
+        disk: expected, committed: { pointer, baseline }, workspace, ...(resolution ? { resolution } : {}),
+        ...(programDrift ? { programDrift } : {}) });
       const key = `recoveries/${generation}.json`;
       assertCurrent();
       if (!await storage.replace(key, null, content)) throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_CONFLICT', 'Repair archive already exists.');

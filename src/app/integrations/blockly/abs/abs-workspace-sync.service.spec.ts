@@ -3719,6 +3719,97 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(restored.draft.abs).not.toBe(result.abs);
   });
 
+  const programDriftInput = async () => {
+    const capture = await service.captureWorkingCandidate();
+    const keys = ['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json', 'prepared.json'];
+    const hashes = await Promise.all(keys.map(key => disk.has(key) ? hashAbsText(disk.get(key)!) : null));
+    return { version: 1, attachment: capture.attachment, workingRevision: capture.working.revision,
+      expected: Object.fromEntries(['abiHash', 'absHash', 'mapHash', 'committedHash', 'preparedHash'].map((key, i) => [key, hashes[i]])) };
+  };
+  const seedProgramDrift = async () => {
+    disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+    const original = await baseline();
+    disk.set('project.abs', original.source.replace('TEXT="before"', 'TEXT="preserved external intent"'));
+    const abi = JSON.parse(disk.get('project.abi')!); abi.externalWriter = 'must not enter Working';
+    disk.set('project.abi', absJson(abi));
+    return { tools: new AbsGenerationToolsService(service), observation: await programDriftInput(), original };
+  };
+  it('Native program drift repairs actual Working through tools admission and preserves every original mirror', async () => {
+    const { tools, observation } = await seedProgramDrift();
+    const before = { abi: disk.get('project.abi'), abs: disk.get('project.abs'), map: disk.get('project.abs.map.json') };
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+    expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+    expect(result.candidateApplied).toBeFalse(); expect(result.receipt.appliedRevision).toBeUndefined();
+    expect(roots().getFieldValue('TEXT')).toBe('before');
+    expect(disk.get('project.abs')).toContain('TEXT="before"');
+    expect(disk.get('project.abi')).not.toContain('must not enter Working');
+    const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
+    expect(archive.disk).toEqual(before); expect(archive.programDrift).toEqual(observation);
+    expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(disk.get('project.abs')!));
+    const retired: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'repair', authority: 'workspace', token: 'sha256:' + 'a'.repeat(64) });
+    expect(retired.code).toBe('ABS_PROTOCOL_REQUIRED');
+  });
+  it('Native program drift rejects stale Working revision or physical attachment without any program writes', async () => {
+    const { tools, observation: original } = await seedProgramDrift();
+    for (const changed of ['attachment', 'working']) {
+      const observation = JSON.parse(absJson(original));
+      if (changed === 'working') roots().setFieldValue('new native owner', 'TEXT');
+      else observation.attachment = { ...observation.attachment, identity: { ...observation.attachment.identity, ino: '999' } };
+      const before = [...disk];
+      const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+      expect(result.ok).toBeFalse(); expect(result.code).toBe('ABS_PROGRAM_DRIFT_STALE');
+      expect([...disk]).toEqual(before);
+    }
+  });
+  it('Native program drift rejects a later canonical writer and malformed witnesses before source replacement', async () => {
+    const { tools, observation } = await seedProgramDrift();
+    disk.set('project.abs', disk.get('project.abs')! + '\n# current independent writer');
+    let before = [...disk];
+    const stale: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+    expect(stale.code).toBe('ABS_PROGRAM_DRIFT_STALE'); expect([...disk]).toEqual(before);
+    before = [...disk];
+    const invalid: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program' });
+    expect(invalid.ok).toBeFalse(); expect(invalid.code).toBe('ABS_PROGRAM_DRIFT_STALE'); expect([...disk]).toEqual(before);
+  });
+  it('Native program drift interrupted after archival never replaces source or applies the external draft', async () => {
+    const { tools, observation } = await seedProgramDrift();
+    const before = ['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json'].map(key => [key, disk.get(key)]);
+    editor.prepareProjectCode.and.callFake(async () => { gate.reset(); throw new Error('user_stop'); });
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+    expect(result.ok).toBeFalse(); expect(result.candidateApplied).not.toBeTrue();
+    expect(['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json'].map(key => [key, disk.get(key)])).toEqual(before);
+    const archive = [...disk].filter(([key]) => /^recoveries\/[A-Za-z0-9_-]+\.json$/.test(key)).map(([, text]) => JSON.parse(text)).find(value => value.programDrift);
+    expect(archive.disk.abs).toContain('preserved external intent'); expect(roots().getFieldValue('TEXT')).toBe('before');
+  });
+  it('Native program drift resumes the exact committed Working request without replaying its application', async () => {
+    enableNative();
+    disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+    await baseline();
+    const capture = await service.captureWorkingCandidate(),
+      source = capture.abs.replace('TEXT="before"', 'TEXT="candidate A"'),
+      ref = await retainWorkingCandidate(capture, source),
+      request: any = { version: 2, requestId: crypto.randomUUID(), workingCandidate: ref,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } },
+      validation = await service.validateGeneration(source, await service.bindWorkingCandidate(source, request)),
+      applied = await service.applyGeneration(source, validation.base.generation, {}, validation);
+    expect(applied.publication.status).toBe('COMMITTED');
+    const original = await service.observeApplication(request.requestId);
+    const rawDraft = disk.get('project.abs')!.replace('TEXT="candidate A"', 'TEXT="preserved later requested edit"');
+    disk.set('project.abs', rawDraft);
+    const observation = { ...await programDriftInput(), sourceRef: ref, originalRequestId: request.requestId },
+      tools = new AbsGenerationToolsService(service),
+      result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+    expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+    expect(result.candidateApplied).toBeFalse();
+    const settled = await service.observeApplication(request.requestId);
+    expect(settled.receipt).toEqual(original.receipt);
+    expect(settled.applicationObservation.current).toBeFalse();
+    expect(roots().getFieldValue('TEXT')).toBe('candidate A');
+    const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
+    expect(archive.disk.abs).toBe(rawDraft); expect(archive.programDrift.originalRequestId).toBe(request.requestId);
+    expect(archive.programDrift.sourceRef).toEqual(ref);
+  });
+
   it('R2 reuses a completed repair after a lost reply without rewriting the original archive', async () => {
     const { tools, source: originalSource } = await wireBase(); const source = originalSource + '\n# retained exact draft';
     disk.set('project.abs', source); disk.set('project.abs.map.json', 'broken');

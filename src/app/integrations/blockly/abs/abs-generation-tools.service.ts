@@ -82,6 +82,14 @@ export class AbsGenerationToolsService {
         }
         if (params['action'] === 'history_inspect') return { ...reply, ...await this.sync.inspectHistoryProgram() };
         if (params['action'] === 'restore_program_map') return { ...reply, ...await this.sync.restoreProgramMap(params['observation']) };
+        if (params['action'] === 'reconcile_program') {
+          const result = await this.sync.reconcileProgramDrift(params['observation']);
+          return { ...reply, ...result, project: result.evidence?.binding.scope.projectKey ?? requestedProject,
+            ok: result.publication.status === 'COMMITTED' && result.requiresReload === false && !!result.evidence,
+            authority: 'workspace', candidateApplied: false,
+            receipt: { ...reply.receipt, authority: 'workspace', output: result.evidence,
+              recoveryArchive: result.recoveryArchive, candidateApplied: false } };
+        }
         if (params['action'] === 'history_publish') return { ...reply, ...await this.sync.publishHistoryProgram(params) };
         if (params['action'] === 'history_observe') return { ...reply, ...await this.sync.observeHistoryProgram(params, params['originalTargetPid']) };
         if (params['action'] === 'observe_state') return { ...reply, ...await this.sync.observeBlockState(params['state'], params['originalTargetPid']) };

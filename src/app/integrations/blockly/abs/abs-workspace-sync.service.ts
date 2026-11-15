@@ -5,6 +5,7 @@ import { readAbsHistoryPublication, historyPublicationIdentity, historyPublicati
   type AbsHistoryPublicationRequest, type AbsObservedProgramPublication } from './abs-history-publication';
 import { mergeAbsHistoryDocument } from './abs-history-document';
 import { restoreObservedProgramMap } from './abs-derived-map-recovery';
+import { assertProgramDriftObservation, type AbsProgramDriftObservation } from './abs-program-drift';
 import type { HistoryEnvironmentPlan } from '../history-environment';
 import { settleLinkedProjectEnvironment } from '../environment-settlement';
 import { observeRuntimePublication } from './abs-runtime-publication-observation';
@@ -1937,9 +1938,39 @@ export class AbsWorkspaceSyncService {
     return this.run((context, lease, store) => this.repairInContext(context, lease, store, token));
   }
 
+  /** Internal preserving reconciliation of an observed disk drift. The live
+   * canvas is the source; old application requests are only readonly lineage. */
+  reconcileProgramDrift(input: unknown): Promise<AbsWorkspaceSyncOutcome> {
+    return this.run(async (context, lease, store) => {
+      const snapshot = this.editor.captureProjectSnapshot(lease);
+      const guard = this.atRevision(context.assertCurrent, lease, snapshot);
+      const assertCurrent = () => { guard(); };
+      const port = await openAbsHostStorage(context.path, assertCurrent);
+      const observation = await assertProgramDriftObservation(port, snapshot.revision, input, assertCurrent);
+      if (observation.originalRequestId) {
+        const original = await new AbsApplicationJournal(port, context.path).observe(observation.originalRequestId, assertCurrent);
+        if (original.result.publication?.status !== 'COMMITTED'
+          || absJson(original.result.receipt?.workingCandidate) !== absJson(observation.sourceRef)) {
+          throw new AbsSyncError('ABS_PROGRAM_DRIFT_STALE', 'The original committed application does not bind this exact candidate.');
+        }
+      }
+      const inspection = await inspectAbsGeneration(store, context.scope);
+      const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions,
+        () => { context.assertCurrent(); lease.assertCurrent(); });
+      const readiness = await inspectAbsDraft(inspection, snapshot.document, runtime);
+      const offer = await describeAbsRepair({ ...inspection, diagnostics: readiness }, snapshot.document, runtime.contracts);
+      guard();
+      if (!offer) throw new AbsSyncError('ABS_PROGRAM_DRIFT_UNAVAILABLE', 'The current project does not offer a preserving Working repair.');
+      // Recheck after inspection and before entering the existing archival and
+      // transactional publisher. Its exact three-file/head CAS stays intact.
+      await assertProgramDriftObservation(port, guard().revision, observation, assertCurrent);
+      return this.repairInContext(context, lease, store, offer.token, undefined, undefined, undefined, observation);
+    }, true, false, false);
+  }
+
   private async repairInContext(context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease,
     store: AbsBaselineStore, token: string, resolution?: AbsViewResolutionRecord, onCommit?: () => void,
-    assertInspectedView?: () => unknown): Promise<AbsWorkspaceSyncOutcome> {
+    assertInspectedView?: () => unknown, programDrift?: AbsProgramDriftObservation): Promise<AbsWorkspaceSyncOutcome> {
       const inspection = await inspectAbsGeneration(store, context.scope);
       assertInspectedView?.();
       let snapshot = this.editor.captureProjectSnapshot(lease);
@@ -1976,7 +2007,7 @@ export class AbsWorkspaceSyncService {
       if (!offer || token !== offer.token) throw new AbsSyncError('ABS_REPAIR_STALE', 'Repair token no longer matches the inspected inputs and canvas. Inspect again.');
       const generation = crypto.randomUUID();
       const archive = await store.archiveRepair(generation, inspection.disk, inspection.committed!.pointerHash,
-        absJson(snapshot.document), resolution?.token ?? token, guard, resolution);
+        absJson(snapshot.document), resolution?.token ?? token, guard, resolution, programDrift);
       guard();
       const generated = await this.withViewChecks(() => this.editor.prepareProjectCode(context.assertCurrent, lease));
       context.assertCurrent();
