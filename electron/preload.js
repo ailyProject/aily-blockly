@@ -1046,6 +1046,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   // 安全存储 API
   safeStorage: createSafeStorageBridge(ipcRenderer),
+  hubClientLogin: {
+    ready: () => ipcRenderer.invoke('hub-client-ready'),
+    confirm: input => ipcRenderer.invoke('hub-client-confirm', input),
+    finish: state => ipcRenderer.invoke('hub-client-finish', state),
+    onAuthorize: callback => {
+      const listener = (_event, data) => callback(data);
+      ipcRenderer.on('hub-client-authorize', listener);
+      return () => ipcRenderer.removeListener('hub-client-authorize', listener);
+    },
+  },
   // 窗口缩放 API
   webFrame: {
     setZoomLevel: (level) => webFrame.setZoomLevel(level),

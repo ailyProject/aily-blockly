@@ -85,6 +85,12 @@ declare global {
       }) => void): () => void;
     };
     electronAPI: {
+      hubClientLogin?: {
+        ready(): Promise<boolean>;
+        confirm(input: { state: string; account: string }): Promise<boolean>;
+        finish(state: string): Promise<boolean>;
+        onAuthorize(callback: (request: { state: string; code_challenge: string; redirect_uri: string; expiresAt?: number }) => void): () => void;
+      };
       SerialPort: {
         list: () => Promise<any[]>;
         create: (options: any) => any;

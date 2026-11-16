@@ -140,6 +140,16 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disk-cache-size', '104857600');
 const PROTOCOLS = getProductAuthConfig(getBuildProduct()).protocols;
 const isSupportedProtocolUrl = url => isProductProtocolUrl(getBuildProduct(), url);
+const { isHubBrowserLogin, forwardHubBrowserLogin, hasHubBrowserOwner, createHubBrowserBridge } = require('./hub-browser-login');
+const hubBrowserDevelopment = !app.isPackaged;
+let hubBrowserBridge;
+let pendingHubBrowserLogin;
+const hubBrowserLaunch = process.argv.find(value => isHubBrowserLogin(value, getBuildProduct()));
+if (hubBrowserLaunch && hasHubBrowserOwner(getBuildProduct())) {
+  forwardHubBrowserLogin(hubBrowserLaunch, getBuildProduct(), { development: hubBrowserDevelopment })
+    .then(() => app.exit(0), () => app.exit(1));
+  return;
+}
 
 // Hub desktop handoffs are local, short-lived and independent of Console/OAuth.
 const hubDesktopRequests = new Map();
@@ -786,7 +796,7 @@ function handleCommandLineArgs(argv, cwd = process.cwd()) {
 handleCommandLineArgs(process.argv);
 
 function protocolLogValue(value) {
-  if (typeof value === 'string' && /^(abis|acis|ailyblockly|ailycoder):\/\/auth\/hub(?:[?#]|$)/i.test(value)) return '[Hub desktop handoff]';
+  if (typeof value === 'string' && /^(abis|acis|ailyblockly|ailycoder):\/\/auth\/hub(?:\/login)?(?:[?#]|$)/i.test(value)) return '[Hub desktop handoff]';
   // Download URLs may contain signed query parameters; keep them out of application logs.
   return typeof value === 'string' && /^(abis|acis|ailyblockly|ailycoder):\/\/project\/import(?:[?#]|$)/i.test(value)
     ? '[project import]' : value;
@@ -798,6 +808,16 @@ const cloudProjectOpenQueue = createCloudProjectOpenQueue(
 );
 
 function handleProtocol(url) {
+  if (isHubBrowserLogin(url, getBuildProduct())) {
+    try {
+      if (hubBrowserBridge) {
+        void hubBrowserBridge.ready.then(() => forwardHubBrowserLogin(url, getBuildProduct(), { development: hubBrowserDevelopment }))
+          .catch(() => console.warn('Hub client login request unavailable'));
+      }
+      else pendingHubBrowserLogin = url;
+    } catch { console.warn('Invalid Hub client login request'); }
+    return;
+  }
   console.log('收到协议链接:', protocolLogValue(url));
 
   try {
@@ -2842,6 +2862,14 @@ function createWindow() {
     },
   });
 
+  hubBrowserBridge = createHubBrowserBridge({ window: mainWindow, ipcMain, dialog,
+    product: getBuildProduct(), development: hubBrowserDevelopment });
+  void hubBrowserBridge.ready.catch(() => console.warn('Hub client login transport unavailable'));
+  if (pendingHubBrowserLogin) {
+    try { hubBrowserBridge.accept(pendingHubBrowserLogin); } catch { console.warn('Invalid Hub client login request'); }
+    pendingHubBrowserLogin = undefined;
+  }
+  mainWindow.once('closed', () => { hubBrowserBridge?.close(); hubBrowserBridge = undefined; });
   registerWebBluetoothChooser(mainWindow);
   mainWindow.webContents.on('did-start-navigation', (details) => {
     if (!shouldBeginRendererGeneration(details)) {

@@ -4,6 +4,7 @@ import { CommonModule } from '@angular/common';
 import { ConfigService, TranslationService, ThemeService } from '@core/preferences/public-api';
 import { SubappManagerService } from '@integration/subapps/public-api';
 import { BuildSourceQueryService } from './integrations/build/build-source-query.service';
+import { HubClientLoginService } from './services/integrations/hub/hub-client-login.service';
 
 @Component({
   selector: 'app-root',
@@ -20,10 +21,12 @@ export class AppComponent implements OnInit, AfterViewInit {
   private themeService = inject(ThemeService);
   private subappManager = inject(SubappManagerService);
   private buildSourceQuery = inject(BuildSourceQueryService);
+  private hubClientLogin = inject(HubClientLoginService);
 
   async ngOnInit() {
     this.buildSourceQuery.initialize();
     await this.configService.init();
+    this.hubClientLogin.initialize();
     this.title = this.configService.getApplicationName();
     document.title = this.title;
     this.themeService.init();

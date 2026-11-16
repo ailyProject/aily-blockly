@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": ["../src/app/services/integrations/hub/hub-client-login.service.spec.ts", "../src/app/services/integrations/hub/hub-navigation.service.spec.ts", "../src/**/*.d.ts"]
+}
