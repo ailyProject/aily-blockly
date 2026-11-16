@@ -1319,7 +1319,7 @@ export class AbsWorkspaceSyncService {
       const expected = await store.captureDisk();
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover or explicitly abandon the pending generation first.');
       const fixed = binding?.workingCandidate ? await readWorkingCandidate(binding.workingCandidate,
-        await openAbsHostStorage(context.path, context.assertCurrent), context.scope, source) : undefined;
+        await openAbsHostStorage(context.path, context.assertCurrent), context.scope, source, store) : undefined;
       const published = await store.readCommittedSnapshot(), committed = published?.projection ?? null;
       if (committed && !fixed) assertCurrentAbsProjection(committed);
       if (!fixed && !committed) throw new AbsSyncError('ABS_BASELINE_MISSING', 'An authoritative committed generation is required.');
@@ -1392,6 +1392,7 @@ export class AbsWorkspaceSyncService {
       const reconcileOptions: AbsReconcileOptions = {
         withSynchronousRead: readDefinitions,
         sourceEdits: fixed?.sourceEdits ?? binding?.sourceEdits,
+        ...(fixed?.readonlyStateOrigin !== undefined ? { readonlyStateOrigin: fixed.readonlyStateOrigin } : {}),
         requireDeletionEvidence: !!binding,
         prepareExtraState: functionSyntax.prepareExtraState,
         declaration: captureAbsVariableDeclarations(context.definitions, shapes.get),
@@ -1513,7 +1514,7 @@ export class AbsWorkspaceSyncService {
           if (draftBase.map.scope.pageId !== candidatePageId) throw new AbsSyncError('ABS_DOCUMENT_MERGE_CONFLICT',
             'A retained public draft belongs to another page; both immutable sources are preserved.', undefined, [], { reason: 'public-draft-page-identity', field: '/pages' });
           const draft = await this.reconcile(draftBase, expected.abs, absJson({ runtimeRevision: context.runtimeRevision, session: context.session }))
-            .draft({ ...reconcileOptions, sourceEdits: undefined, requireDeletionEvidence: false });
+            .draft({ ...reconcileOptions, sourceEdits: undefined, readonlyStateOrigin: undefined, requireDeletionEvidence: false });
           const user = await prepareAbsReconciledResources(expected.abs, draft, assertPreparing);
           currentWorkspace = mergeAbsRequestWorkspace(draftBase.workspace, currentWorkspace, user.workspace);
           historyContracts = { ...rollback.contracts,

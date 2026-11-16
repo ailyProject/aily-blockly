@@ -250,6 +250,24 @@ export class AbsBaselineStore {
     return (await this.readGeneration(this.port, generation, true)).record.abi;
   }
 
+  /** Read only this exact accepted candidate input, never an arbitrary draft or
+   * historical state. Its normalized output remains the semantic authority. */
+  async readAcceptedAuthorInput(generation: string): Promise<string | null> {
+    const accepted = await this.inspectCommittedAncestor(generation);
+    if (!accepted) return null;
+    const loaded = await this.readGeneration(this.port, generation);
+    const record = loaded.record, author = record.authorSource;
+    if (accepted.pointerHash !== await hashAbsText(absJson(loaded.pointer))
+      || accepted.projection.abs !== record.projection.abs || accepted.abi !== record.abi)
+      throw new AbsSyncError('ABS_BASELINE_STALE', 'The exact accepted input changed during observation.');
+    if (record.workspaceMode !== 'project-v1' || record.mode !== 'import' || record.authorIntent !== 'candidate'
+      || author?.disposition !== 'accepted' || typeof record.inputAbs !== 'string') return null;
+    if (author.hash !== author.inputHash || author.hash !== record.expected.abs
+      || await hashAbsText(record.inputAbs) !== author.hash)
+      throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'The exact accepted author input hash changed.');
+    return record.inputAbs;
+  }
+
   async readArchivedDraft(generation: string) {
     const { record } = await this.readGeneration(this.port, generation);
     const initial = !record.draftBaseGeneration && record.previousCommitted === null && record.expected.map === null

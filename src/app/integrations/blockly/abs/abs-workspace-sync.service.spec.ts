@@ -6,6 +6,8 @@ import 'blockly/blocks';
 import '../../../editors/blockly-editor/components/blockly/plugins/block-plus-minus/src/index.js';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { AbsBaselineStore, AbsSyncStoragePort, AbsSyncStorageAccess, absBaselineKey } from './abs-baseline-store';
+import { readWorkingCandidate } from './abs-working-candidate';
+import { acceptedInputFormattingEdits } from './abs-accepted-input-edits';
 import { absJson, createAbsProjection, hashAbsText, indexAbsSyntax } from './abs-identity-map';
 import { parseAbsSyntax } from './abs-syntax';
 import { normalizeAbsSerializedWorkspace } from './abs-serialized-workspace';
@@ -217,7 +219,8 @@ describe('v2 actual workspace generation coordinator', () => {
     if (Blockly.Extensions.isRegistered('native_commit_extension')) Blockly.Extensions.unregister('native_commit_extension');
   });
 
-  const retainWorkingCandidate = async (capture: any, source: string) => {
+  const retainWorkingCandidate = async (capture: any, source: string,
+    authored?: { source: string; edits: Array<{ start: number; end: number; text: string }> }) => {
     const put = async (text: string) => {
       const hash = (await hashAbsText(text)).slice(7); disk.set(`history-objects/${hash}`, text);
       return { hash, bytes: new TextEncoder().encode(text).byteLength };
@@ -228,11 +231,16 @@ describe('v2 actual workspace generation coordinator', () => {
     const original: any = { version: 1, kind: 'agent', id, owner: { sessionId: 'actual-pi-session', intentAnchorId: 'user-entry-1' },
       project: { logicalId: (await hashAbsText(capture.attachment.root)).slice(7), attachment: capture.attachment },
       scope: capture.scope, base, source: base.abs, derivation: { kind: 'capture' }, intent: { anchorId: 'user-entry-1' } };
-    const origin = { version: 1 as const, id, revisionHash: (await put(absJson(original))).hash };
-    const start = capture.abs.indexOf('TEXT="before"');
+    let origin = { version: 1 as const, id, revisionHash: (await put(absJson(original))).hash };
+    if (authored) origin = { ...origin, revisionHash: (await put(absJson({ ...original, parent: origin,
+      source: await put(authored.source), derivation: { kind: 'replace', mapping: 'unresolved' } }))).hash };
+    const initial = authored?.source ?? capture.abs;
+    const start = initial.indexOf('TEXT="before"');
     expect(start).toBeGreaterThanOrEqual(0);
-    const edits = [{ start, end: start + 'TEXT="before"'.length, text: 'TEXT="candidate A"' }];
-    expect(source).toBe(capture.abs.slice(0, start) + edits[0].text + capture.abs.slice(edits[0].end));
+    const edits = authored?.edits ?? [{ start, end: start + 'TEXT="before"'.length, text: 'TEXT="candidate A"' }];
+    let replay = initial;
+    for (const edit of [...edits].reverse()) replay = replay.slice(0, edit.start) + edit.text + replay.slice(edit.end);
+    expect(source).toBe(replay);
     const revision = { ...original, parent: origin, source: await put(source),
       derivation: { kind: 'splices', edits: await put(absJson(edits)) } };
     return { version: 1 as const, id, revisionHash: (await put(absJson(revision))).hash };
@@ -4825,6 +4833,190 @@ describe('v2 actual workspace generation coordinator', () => {
 
   describe('project-v1 author tree', () => {
     const select = () => disk.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
+    const captureWithUnchangedAuthorState = async (repeated = 0) => {
+      const replay = enableNative();
+      let options: [string, string][] = [['Port A', 'A'], ['Port B', 'B']];
+      Blockly.Blocks['abs_origin_port'] = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldDropdown(() => options), 'PORT');
+      } };
+      registeredTypes.push('abs_origin_port'); editor.workspace.newBlock('abs_origin_port', 'origin-port');
+      for (let index = 0; index < repeated; index++) {
+        const print = editor.workspace.newBlock('text_print', `repeat-print-${index}`);
+        const text = editor.workspace.newBlock('text', `repeat-text-${index}`); text.setFieldValue('same repeated message', 'TEXT');
+        print.getInput('TEXT').connection.connect(text.outputConnection);
+      }
+      const old = await baseline(); select();
+      options = [['Port A with pins', 'A'], ['Port B with pins', 'B']];
+      replay.steps.push({ kind: 'definitions', definitions: [
+        { type: 'abs_origin_port', message0: '%1', args0: [{ type: 'field_dropdown', name: 'PORT', options }] },
+        { type: 'text_print', message0: '%1', args0: [{ type: 'input_value', name: 'TEXT' }], previousStatement: null, nextStatement: null },
+        { type: 'text', message0: '%1', args0: [{ type: 'field_input', name: 'TEXT', text: '' }], output: 'String' },
+      ] }, { kind: 'script', label: 'state-origin-current-runtime', source: `
+        Arduino.forBlock.abs_origin_port = () => '';
+        Arduino.forBlock.text = block => [JSON.stringify(block.getFieldValue('TEXT')), 0];
+        Arduino.forBlock.text_print = block => 'print(' + Arduino.valueToCode(block, 'TEXT', 0) + ');\\n';
+      ` });
+      const capture = await service.captureWorkingCandidate(), author = old.source;
+      expect(capture.authorSource?.text).toBe(author);
+      expect(splitAbsState(capture.abs).program).toBe(splitAbsState(author).program);
+      expect(splitAbsState(capture.abs).state).not.toBe(splitAbsState(author).state);
+      const start = author.indexOf('\n# @project-state:'), text = '\ntext_print(TEXT=text(TEXT="verified state origin"))\n';
+      expect(start).toBeGreaterThan(0);
+      const source = author.slice(0, start) + text + author.slice(start);
+      const ref = await retainWorkingCandidate(capture, source, { source: author, edits: [{ start, end: start, text }] });
+      const request = async (candidate = ref, bytes = source) => service.bindWorkingCandidate(bytes, {
+        version: 2, requestId: crypto.randomUUID(), workingCandidate: candidate,
+        candidate: { hash: await hashAbsText(bytes), bytes: new TextEncoder().encode(bytes).byteLength },
+      } as any);
+      return { capture, author, source, ref, request };
+    };
+    it('S3 readonly state origin retains the exact accepted author through fresh dropdown labels and first print validate apply save', async () => {
+      const f = await captureWithUnchangedAuthorState();
+      // The project-v1 Pi editor publishes its authored bytes before apply.
+      disk.set('project.abs', f.source); const before = [...disk];
+      const validation = await service.validateGeneration(f.source, await f.request());
+      expect(validation.candidate.hash).toBe(await hashAbsText(f.source)); expect([...disk]).toEqual(before);
+      const applied = await service.applyGeneration(f.source, validation.base.generation, {}, validation);
+      expect(applied.publication.status).toBe('COMMITTED'); expect(applied.acceptedSource?.authorSource.pending).toBeFalse();
+      expect(disk.get('project.abs')).toBe(f.source);
+      const prints = editor.workspace.getAllBlocks(false).filter(block => block.type === 'text_print');
+      expect(prints.length).toBe(1); expect(prints[0].getInputTargetBlock('TEXT').getFieldValue('TEXT')).toBe('verified state origin');
+      expect(editor.workspace.getBlockById('origin-port').getFieldValue('PORT')).toBe('A');
+      expect(roots().isDeletable()).toBeFalse(); expect(roots().data).toBe('opaque');
+      const saved: any = await project.save(scope.projectKey); expect(saved.publication.status).toBe('COMMITTED');
+      const state = JSON.parse(splitAbsState((await service.inspectHistoryProgram()).abs).state!);
+      expect(state.contracts.fields['origin-port'].PORT.options[0]).toEqual(['Port A with pins', 'A']);
+      expect(validation.candidate.hash).toBe(await hashAbsText(f.source)); expect(gate.busy).toBeFalse();
+    });
+    it('S3 readonly state origin refuses altered state or unverifiable identity instead of trusting a replacement parent', async () => {
+      const f = await captureWithUnchangedAuthorState(), sourceState = splitAbsState(f.source).state!;
+      const changes = [
+        (state: any) => { state.contracts.fields['origin-port'].PORT.options[0][1] = 'forged-value'; },
+        (state: any) => { state.nodes[0].attributes.deletable = true; },
+      ];
+      for (const change of changes) {
+        const state = JSON.parse(sourceState); change(state);
+        const source = f.source.replace(sourceState, absJson(state));
+        const ref = await retainWorkingCandidate(f.capture, source, { source: f.author,
+          edits: [{ start: 0, end: f.author.length, text: source }] });
+        await expectAsync(service.validateGeneration(source, await f.request(ref, source)))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+      }
+      for (const published of [null, { ...f.capture.published, absHash: `sha256:${'f'.repeat(64)}` },
+        { ...f.capture.published, generation: 'missing-accepted-origin' }]) {
+        const ref = await retainWorkingCandidate({ ...f.capture, published }, f.source, { source: f.author,
+          edits: [{ start: 0, end: f.author.length, text: f.source }] });
+        await expectAsync(service.validateGeneration(f.source, await f.request(ref)))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+      }
+      const record = JSON.parse(disk.get(`history-objects/${f.ref.revisionHash}`)!), sourceKey = `history-objects/${record.source.hash}`;
+      const original = disk.get(sourceKey)!; disk.set(sourceKey, original + ' ');
+      await expectAsync(f.request()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_CANDIDATE_OBJECT_INVALID' }));
+      disk.set(sourceKey, original);
+      await expectAsync(f.request({ ...f.ref, revisionHash: 'f'.repeat(64) }))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_CANDIDATE_OBJECT_INVALID' }));
+      const request = await f.request(); request.candidate.hash = `sha256:${'e'.repeat(64)}`;
+      await expectAsync(service.validateGeneration(f.source, request)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_STALE' }));
+      expect(disk.get('project.abs')).toBe(f.author); expect(roots().getFieldValue('TEXT')).toBe('before'); expect(gate.busy).toBeFalse();
+    });
+    it('S3 source continuation bridges only verified state replacements before tracked edits with repeated calls', async () => {
+      const f = await captureWithUnchangedAuthorState(14), store = new AbsBaselineStore(port, scope);
+      const fixed = await readWorkingCandidate(f.ref, port, scope, f.source, store);
+      expect(fixed.sourceEdits).toBeDefined(); expect(fixed.readonlyStateOrigin).toBe(f.author);
+      const publishReplacement = async (source: string) => {
+        const record = JSON.parse(disk.get(`history-objects/${f.ref.revisionHash}`)!);
+        const sourceHash = (await hashAbsText(source)).slice(7); disk.set(`history-objects/${sourceHash}`, source);
+        const next = absJson({ ...record, parent: f.ref,
+          source: { hash: sourceHash, bytes: new TextEncoder().encode(source).byteLength }, derivation: { kind: 'replace', mapping: 'unresolved' } });
+        const revisionHash = (await hashAbsText(next)).slice(7); disk.set(`history-objects/${revisionHash}`, next);
+        return { ...f.ref, revisionHash };
+      };
+      const rewritten = f.source.replace('TEXT="before"', 'TEXT="untracked rewrite"'), rewrittenRef = await publishReplacement(rewritten);
+      expect((await readWorkingCandidate(rewrittenRef, port, scope, rewritten, store)).sourceEdits).toBeUndefined();
+      const omitted = f.source.replace('text_print(TEXT=text(TEXT="same repeated message"))', ''), omittedRef = await publishReplacement(omitted);
+      expect(omitted).not.toBe(f.source);
+      expect((await readWorkingCandidate(omittedRef, port, scope, omitted, store)).sourceEdits).toBeUndefined();
+      await expectAsync(service.validateGeneration(omitted, await f.request(omittedRef, omitted)))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DELETION_INTENT_REQUIRED' }));
+      disk.set('project.abs', f.source);
+      const validation = await service.validateGeneration(f.source, await f.request());
+      const applied = await service.applyGeneration(f.source, validation.base.generation, {}, validation);
+      expect(applied.publication.status).toBe('COMMITTED');
+      for (let index = 0; index < 14; index++) {
+        expect(editor.workspace.getBlockById(`repeat-print-${index}`)).not.toBeNull();
+        expect(editor.workspace.getBlockById(`repeat-text-${index}`).getFieldValue('TEXT')).toBe('same repeated message');
+      }
+      expect(editor.workspace.getAllBlocks(false).filter(block => block.type === 'text_print').length).toBe(15);
+      expect(disk.get('project.abs')).toBe(f.source); expect(gate.busy).toBeFalse();
+    });
+    it('S3 source continuation accepts two consecutive authored inputs while each normalized output stays the only Working base', async () => {
+      const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
+      disk.set('project.abs', f.source);
+      const firstValidation = await service.validateGeneration(f.source, await f.request());
+      const first = await service.applyGeneration(f.source, firstValidation.base.generation, {}, firstValidation);
+      expect(first.publication.status).toBe('COMMITTED'); expect(await store.readAcceptedAuthorInput(first.evidence!.binding.generation)).toBe(f.source);
+      const firstPrint = editor.workspace.getAllBlocks(false).find(block => block.type === 'text_print')!.id;
+      const capture = await service.captureWorkingCandidate(), start = f.source.indexOf('\n# @project-state:');
+      expect(capture.published?.generation).toBe(first.evidence!.binding.generation);
+      expect(splitAbsState(capture.abs).state).not.toBe(splitAbsState(f.source).state);
+      const label = f.source.indexOf('verified state origin'), edits = [
+        { start: label, end: label + 'verified state origin'.length, text: 'first print edited' },
+        { start, end: start, text: '\ntext_print(TEXT=text(TEXT="second authored print"))\n' },
+      ];
+      let source = f.source; for (const edit of [...edits].reverse()) source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+      const stateStart = start + '\n# @project-state:'.length, lineEnd = f.source.indexOf('\n', stateStart), stateEnd = lineEnd < 0 ? f.source.length : lineEnd;
+      const variants = [
+        [...edits, { start: stateStart, end: stateEnd, text: splitAbsState(capture.abs).state! }],
+        [edits[0], { start, end: stateEnd, text: edits[1].text }],
+      ];
+      for (const trace of variants) {
+        let candidate = f.source; for (const edit of [...trace].reverse()) candidate = candidate.slice(0, edit.start) + edit.text + candidate.slice(edit.end);
+        const candidateRef = await retainWorkingCandidate(capture, candidate, { source: f.source, edits: trace });
+        expect((await readWorkingCandidate(candidateRef, port, scope, candidate, store)).sourceEdits).toBeDefined();
+      }
+      const ref = await retainWorkingCandidate(capture, source, { source: f.source, edits });
+      disk.set('project.abs', source);
+      const validation = await service.validateGeneration(source, await f.request(ref, source));
+      expect(validation.candidate.hash).toBe(await hashAbsText(source));
+      const second = await service.applyGeneration(source, validation.base.generation, {}, validation);
+      expect(second.publication.status).toBe('COMMITTED'); expect(second.evidence!.binding.generation).not.toBe(first.evidence!.binding.generation);
+      expect(editor.workspace.getBlockById(firstPrint).getInputTargetBlock('TEXT').getFieldValue('TEXT')).toBe('first print edited');
+      expect(editor.workspace.getAllBlocks(false).filter(block => block.type === 'text_print').length).toBe(2);
+      expect(await store.readAcceptedAuthorInput(second.evidence!.binding.generation)).toBe(source);
+      expect(disk.get('project.abs')).toBe(source);
+      const saved: any = await project.save(scope.projectKey); expect(saved.publication.status).toBe('COMMITTED');
+      const frozen = JSON.parse(disk.get(`history-objects/${ref.revisionHash}`)!);
+      expect(disk.get(`history-objects/${frozen.source.hash}`)).toBe(source);
+      expect(validation.workingCandidate).toEqual(ref); expect(validation.candidate.hash).toBe(await hashAbsText(source));
+      expect(gate.busy).toBeFalse();
+    });
+    it('S3 source continuation rejects uncommitted or noncandidate input and corrupted accepted author hashes', async () => {
+      const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
+      disk.set('project.abs', f.source);
+      const validation = await service.validateGeneration(f.source, await f.request());
+      const applied = await service.applyGeneration(f.source, validation.base.generation, {}, validation), generation = applied.evidence!.binding.generation;
+      expect(await store.readAcceptedAuthorInput(generation)).toBe(f.source);
+      const accepted = (await store.inspectCommittedAncestor(generation))!.projection;
+      expect(acceptedInputFormattingEdits(accepted, f.source)).toBeDefined();
+      const program = splitAbsState(f.source).program, lines = program.split('\n'), root = lines.findIndex(line => line.startsWith('abs_sync_root(')),
+        portLine = lines.findIndex(line => line.startsWith('abs_origin_port('));
+      [lines[root], lines[portLine]] = [lines[portLine], lines[root]];
+      for (const changed of [f.source.replace('verified state origin', 'different value'),
+        f.source.replace('abs_origin_port(PORT=A)', 'abs_origin_port(PORT=B)'),
+        f.source.replace('\nabs_origin_port(PORT=A)', '\n    abs_origin_port(PORT=A)'),
+        f.source.replace(program, lines.join('\n'))]) {
+        expect(changed).not.toBe(f.source); expect(acceptedInputFormattingEdits(accepted, changed)).toBeUndefined();
+      }
+      const key = absBaselineKey(generation), recordText = disk.get(key)!, record = JSON.parse(recordText), pointer = disk.get('committed.json')!;
+      disk.set('committed.json', record.previousPointer);
+      expect(await store.readAcceptedAuthorInput(generation)).toBeNull(); disk.set('committed.json', pointer);
+      const saved: any = await project.save(scope.projectKey);
+      expect(await store.readAcceptedAuthorInput(saved.evidence.binding.generation)).toBeNull();
+      record.authorSource.hash = `sha256:${'f'.repeat(64)}`; disk.set(key, absJson(record));
+      await expectAsync(store.readAcceptedAuthorInput(generation)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+      disk.set(key, recordText); expect(await store.readAcceptedAuthorInput(generation)).toBe(f.source);
+      expect(gate.busy).toBeFalse();
+    });
     it('S3 History preserves both clean and dirty author bytes while only the accepted Working follows undo redo', async () => {
       await baseline(); select();
       const first: any = await project.save(scope.projectKey), sourceA = (await service.inspectHistoryProgram()).abs;
