@@ -66,6 +66,7 @@ import {
 } from './project-root-path';
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 import { deriveProjectPackageName } from './project-package-name';
+import { findReusableBlocklyBoardTemplate } from './blockly-project-template';
 import { projectSaveOutcomeError, type ProjectSaveOutcome, type ProjectSaveAsOutcome, type ProjectRecoveryCopyOptions } from './project-save-outcome';
 import { isProjectConflictChoice, isProjectConflictOffer, isProjectConflictResolution,
   type ProjectConflictChoice, type ProjectConflictOffer, type ProjectConflictResolution } from './project-conflict';
@@ -1598,10 +1599,13 @@ export class ProjectService {
         'node_modules',
         boardPackageName,
       );
-      const reusableTemplate = isCoderTemplate && isAilyBoardPackageName(boardPackageName)
-        ? findReusableCoderBoardTemplate(boardPackagePath, {
-          name: boardPackageName, version: newProjectData.board.version,
-        }, window['path'], window['fs'])
+      const selectedBoard = { name: boardPackageName, version: newProjectData.board.version };
+      const reusableTemplate = isAilyBoardPackageName(boardPackageName)
+        ? isCoderTemplate
+          ? findReusableCoderBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
+          : templateDirectory === 'template'
+            ? findReusableBlocklyBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
+            : undefined
         : undefined;
 
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
@@ -1622,10 +1626,10 @@ export class ProjectService {
       }
 
       stage = 'board-template';
-      const coderTemplate = reusableTemplate ?? (isCoderTemplate
+      const creationTemplate = reusableTemplate ?? (isCoderTemplate
         ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
         : undefined);
-      const templatePath = coderTemplate?.templatePath
+      const templatePath = creationTemplate?.templatePath
         ?? window['path'].join(boardPackagePath, templateDirectory);
       if (!window['fs'].existsSync(templatePath)) {
         throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
@@ -1634,7 +1638,7 @@ export class ProjectService {
       if (isCoderTemplate) {
         window['fs'].mkdirSync(projectPath);
         copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
-          useDefaultSource: coderTemplate?.useDefaultSource === true,
+          useDefaultSource: creationTemplate?.useDefaultSource === true,
         });
       } else {
         // 复制 Blockly 模板文件到项目目录
