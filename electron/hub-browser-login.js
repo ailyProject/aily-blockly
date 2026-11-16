@@ -120,11 +120,16 @@ function createHubBrowserBridge({ window, ipcMain, WebContentsView, consentPrese
   };
   contents.on('did-start-navigation', resetRenderer);
   ipcMain.handle('hub-client-ready', event => { if (!ownFrame(event)) return false; rendererReady = true; deliver(); return true; });
+  ipcMain.handle('hub-client-theme', (event, theme) => {
+    if (!ownFrame(event) || !['light', 'dark'].includes(theme)) return false;
+    consent.setTheme?.(theme); return true;
+  });
   ipcMain.handle('hub-client-confirm', async (event, input) => {
     if (!ownFrame(event) || !active || confirming || input?.state !== active.state
       || typeof input.account !== 'string' || !input.account.trim() || input.account.length > 512) return false;
     confirming = true; const current = active;
     try {
+      if (['light', 'dark'].includes(input.theme)) consent.setTheme?.(input.theme);
       const approved = await consent.confirm({ account: input.account,
         origin: new URL(current.redirect_uri).origin, expiresAt: current.expiresAt });
       return approved === true && active === current && current.expiresAt > Date.now() && ownFrame(event);
@@ -139,7 +144,7 @@ function createHubBrowserBridge({ window, ipcMain, WebContentsView, consentPrese
     if (closed) return; closed = true;
     consent.cancel();
     window.removeListener('focus', activate); contents.removeListener('did-start-navigation', resetRenderer);
-    for (const name of ['hub-client-ready', 'hub-client-confirm', 'hub-client-finish']) ipcMain.removeHandler(name);
+    for (const name of ['hub-client-ready', 'hub-client-theme', 'hub-client-confirm', 'hub-client-finish']) ipcMain.removeHandler(name);
     try { fs.unlinkSync(filename); } catch {}
     if (server.listening) server.close();
   } };

@@ -18,6 +18,8 @@ function fixture() {
       this.options = options; this.visible = false;
       this.webContents = new EventEmitter(); this.webContents.mainFrame = {};
       this.webContents.destroyed = false;
+      this.webContents.messages = [];
+      this.webContents.send = (...message) => this.webContents.messages.push(message);
       this.webContents.isDestroyed = () => this.webContents.destroyed;
       this.webContents.close = () => { this.webContents.destroyed = true; this.webContents.emit('destroyed'); };
       this.webContents.focused = false;
@@ -101,4 +103,18 @@ test('closing the host removes the pending card and its IPC handlers', async () 
   f.window.destroyed = true; f.window.emit('closed');
   assert.equal(await pending, false); assert.equal(f.views[0].webContents.isDestroyed(), true);
   assert.equal(f.handlers.size, 0); assert.equal(f.window.listenerCount('resize'), 0);
+});
+
+test('the initial and live themes follow the host and stop updating after the popup closes', async t => {
+  const f = fixture(); t.after(() => f.presenter.cancel()); f.presenter.setTheme('light');
+  const pending = f.presenter.confirm(input()), view = f.views[0];
+  assert.ok(view.options.webPreferences.additionalArguments.includes('--aily-hub-theme=light'));
+  assert.equal(f.handlers.get(view.channels().data)(view.event()).theme, 'light');
+  f.presenter.setTheme('dark');
+  assert.equal(f.handlers.get(view.channels().data)(view.event()).theme, 'dark');
+  assert.equal(view.webContents.messages.at(-1)[1], 'dark');
+  const count = view.webContents.messages.length; f.presenter.setTheme('invalid');
+  assert.equal(view.webContents.messages.length, count);
+  f.presenter.cancel(); assert.equal(await pending, false); f.presenter.setTheme('light');
+  assert.equal(view.webContents.messages.length, count);
 });

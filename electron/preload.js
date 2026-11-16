@@ -1048,6 +1048,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   safeStorage: createSafeStorageBridge(ipcRenderer),
   hubClientLogin: {
     ready: () => ipcRenderer.invoke('hub-client-ready'),
+    setTheme: theme => ipcRenderer.invoke('hub-client-theme', theme),
     confirm: input => ipcRenderer.invoke('hub-client-confirm', input),
     finish: state => ipcRenderer.invoke('hub-client-finish', state),
     onAuthorize: callback => {

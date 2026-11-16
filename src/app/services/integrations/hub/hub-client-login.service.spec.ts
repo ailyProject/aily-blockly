@@ -3,7 +3,7 @@ import { setServerUrl } from '../../../configs/api.config';
 import { HubClientLoginService } from './hub-client-login.service';
 
 describe('Hub browser login with client confirmation', () => {
-  let service: HubClientLoginService, listener: (request: any) => void, auth: any, http: any, bridge: any, electron: any, previous: any;
+  let service: HubClientLoginService, listener: (request: any) => void, auth: any, http: any, bridge: any, electron: any, previous: any, theme: any;
   const settle = () => new Promise(resolve => setTimeout(resolve, 0));
   const request = (state = 's'.repeat(43)) => ({ state, code_challenge: 'c'.repeat(43), redirect_uri: 'https://hub.aily.pro/auth/callback' });
   beforeEach(() => {
@@ -13,13 +13,15 @@ describe('Hub browser login with client confirmation', () => {
       getAuthCredentialGeneration: jasmine.createSpy().and.returnValue(1), requestLogin: jasmine.createSpy(),
       isLoggedIn$: new BehaviorSubject(true), loginDialogRequest$: new BehaviorSubject({ requestId: 1 }) };
     bridge = { ready: jasmine.createSpy().and.resolveTo(true), confirm: jasmine.createSpy().and.resolveTo(true),
+      setTheme: jasmine.createSpy().and.resolveTo(true),
       finish: jasmine.createSpy().and.resolveTo(true), onAuthorize: (fn: any) => { listener = fn; return () => {}; } };
     window.electronAPI = { hubClientLogin: bridge } as any;
     http = { get: jasmine.createSpy().and.returnValue(of({ status: 200, data: { id: 'b', nickname: '账号 B', email: 'b@example.test' } })),
       post: jasmine.createSpy().and.callFake((_url: string, body: any) => of({ status: 200,
         data: { redirect_url: `https://hub.aily.pro/auth/callback?code=code-b&state=${body.state}` } })) };
     electron = { openUrl: jasmine.createSpy() };
-    service = new HubClientLoginService(auth, http, electron, { run: (fn: any) => fn() } as any); service.initialize();
+    theme = { theme: jasmine.createSpy().and.returnValue('dark'), themeChanged$: new Subject() };
+    service = new HubClientLoginService(auth, http, electron, { run: (fn: any) => fn() } as any, theme); service.initialize();
   });
   afterEach(() => { service.ngOnDestroy(); window.electronAPI = previous; setServerUrl('https://api.aily.pro'); });
 
@@ -27,7 +29,7 @@ describe('Hub browser login with client confirmation', () => {
     let approve!: (value: boolean) => void;
     bridge.confirm.and.returnValue(new Promise(resolve => { approve = resolve; }));
     listener(request()); await settle();
-    expect(bridge.confirm).toHaveBeenCalledOnceWith({ state: 's'.repeat(43), account: '账号 B · b@example.test' });
+    expect(bridge.confirm).toHaveBeenCalledOnceWith({ state: 's'.repeat(43), account: '账号 B · b@example.test', theme: 'dark' });
     expect(http.post).not.toHaveBeenCalled(); expect(electron.openUrl).not.toHaveBeenCalled();
     approve(true); await settle();
     expect(http.post.calls.mostRecent().args[2].headers.Authorization).toBe('Bearer token-b');
@@ -95,5 +97,14 @@ describe('Hub browser login with client confirmation', () => {
     listener(request()); await settle(); auth.loginDialogRequest$.next(null); await settle();
     expect(bridge.confirm).not.toHaveBeenCalled(); expect(http.post).not.toHaveBeenCalled();
     expect(new URL(electron.openUrl.calls.mostRecent().args[0]).searchParams.get('error')).toBe('access_denied');
+  });
+
+  it('uses the application theme and follows theme changes until the service is destroyed', async () => {
+    expect(bridge.setTheme).toHaveBeenCalledWith('dark');
+    theme.theme.and.returnValue('light'); theme.themeChanged$.next('light');
+    expect(bridge.setTheme.calls.mostRecent().args[0]).toBe('light');
+    listener(request()); await settle(); expect(bridge.confirm.calls.mostRecent().args[0].theme).toBe('light');
+    service.ngOnDestroy(); bridge.setTheme.calls.reset(); theme.themeChanged$.next('dark');
+    expect(bridge.setTheme).not.toHaveBeenCalled();
   });
 });

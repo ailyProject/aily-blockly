@@ -26,6 +26,7 @@ async function main() {
     const { contextBridge, ipcRenderer } = require('electron');
     contextBridge.exposeInMainWorld('fixture', {
       ready: () => ipcRenderer.invoke('hub-client-ready'),
+      theme: mode => ipcRenderer.invoke('hub-client-theme', mode),
       request: account => ipcRenderer.invoke('fixture-request', account),
       receive: callback => { ipcRenderer.on('hub-client-authorize', async (_event, request) => {
         const account = await ipcRenderer.invoke('fixture-account');
@@ -37,12 +38,14 @@ async function main() {
     });
   `);
   fs.writeFileSync(path.join(source, 'index.html'), `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>客户端授权验证</title>
-    <style>body{font:16px system-ui;padding:28px;color:#172033;background:#f7f9fc}h1{font-size:24px}button{font:inherit;border:1px solid #d5deeb;border-radius:8px;padding:10px 16px;background:white;cursor:pointer;margin:8px 6px 8px 0}button:hover{background:#eaf3ff;border-color:#1268e8;color:#1268e8}#result{padding:16px;background:white;border-radius:8px}</style>
+    <style>body{font:16px system-ui;padding:28px;color:#172033;background:#f7f9fc}h1{font-size:24px}button{font:inherit;border:1px solid #d5deeb;border-radius:8px;padding:10px 16px;background:white;cursor:pointer;margin:8px 6px 8px 0}button:hover{background:#eaf3ff;border-color:#1268e8;color:#1268e8}#result{padding:16px;background:white;border-radius:8px}#theme{position:fixed;right:24px;top:20px}html[data-theme=dark] body{background:#2b2d30;color:#fff}html[data-theme=dark] button,html[data-theme=dark] #result{background:#323437;color:#ccc;border-color:#444}</style>
     <h1>客户端授权验证</h1><p>隔离测试账号，不读取真实账号或用户目录。</p><p id="account">当前账号：测试账号 A</p>
-    <button id="switch">切换为测试账号 B</button><button id="start">请求项目广场登录</button><p id="result">等待发起</p>
-    <script>let account='测试账号 A';window.fixture.receive(allowed=>document.querySelector('#result').textContent=allowed?'已允许登录':'已取消登录');
+    <button id="theme">切换浅色主题</button><button id="switch">切换为测试账号 B</button><button id="start">请求项目广场登录</button><p id="result">等待发起</p>
+    <script>let account='测试账号 A',theme='dark';document.documentElement.dataset.theme=theme;
+    document.querySelector('#theme').onclick=()=>{theme=theme==='dark'?'light':'dark';document.documentElement.dataset.theme=theme;window.fixture.theme(theme);document.querySelector('#theme').textContent=theme==='dark'?'切换浅色主题':'切换深色主题';};
+    window.fixture.receive(allowed=>document.querySelector('#result').textContent=allowed?'已允许登录':'已取消登录');
     document.querySelector('#switch').onclick=()=>{account='测试账号 B';document.querySelector('#account').textContent='当前账号：'+account;};
-    document.querySelector('#start').onclick=()=>window.fixture.request(account);window.fixture.ready();</script></html>`);
+    document.querySelector('#start').onclick=()=>window.fixture.request(account);window.fixture.ready();window.fixture.theme(theme);</script></html>`);
   fs.writeFileSync(path.join(source, 'main.cjs'), `
     const { app, BrowserWindow, WebContentsView, ipcMain } = require('electron');
     const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');

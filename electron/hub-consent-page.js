@@ -1,3 +1,7 @@
+function applyTheme(theme) { document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark'; }
+applyTheme(window.hubConsent.theme);
+const removeThemeListener = window.hubConsent.onTheme(applyTheme);
+window.addEventListener('unload', removeThemeListener, { once: true });
 const allow = document.getElementById('allow');
 const cancel = document.getElementById('cancel');
 const close = document.getElementById('close');
@@ -13,6 +17,7 @@ close.addEventListener('click', () => decide(false));
 document.addEventListener('keydown', event => { if (event.key === 'Escape') decide(false); });
 window.hubConsent.read().then(data => {
   if (!data || Date.now() >= data.expiresAt) throw new Error('授权请求已过期，请从项目广场重新登录。');
+  applyTheme(data.theme);
   const [name, ...email] = data.account.split(' · ');
   document.getElementById('account-name').textContent = name;
   document.getElementById('account-email').textContent = email.join(' · ');

@@ -2,7 +2,8 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, NgZone, OnDestroy } from '@angular/core';
 import { AuthService } from '@core/auth/public-api';
 import { ElectronService } from '@core/platform/public-api';
-import { firstValueFrom, filter, map, merge, take, timeout } from 'rxjs';
+import { ThemeService } from '@core/preferences/public-api';
+import { firstValueFrom, filter, map, merge, take, timeout, Subscription } from 'rxjs';
 import { getServerUrl } from '../../../configs/api.config';
 
 interface ClientLoginRequest { state: string; code_challenge: string; redirect_uri: string; expiresAt?: number; }
@@ -12,12 +13,17 @@ export class HubClientLoginService implements OnDestroy {
   private removeListener?: () => void;
   private active = false;
   private destroyed = false;
-  constructor(private auth: AuthService, private http: HttpClient, private electron: ElectronService, private zone: NgZone) {}
+  private themeSubscription?: Subscription;
+  constructor(private auth: AuthService, private http: HttpClient, private electron: ElectronService, private zone: NgZone,
+    private theme: ThemeService) {}
   private get bridge() { return window.electronAPI?.hubClientLogin; }
 
   initialize(): void {
     if (this.removeListener || !this.bridge) return;
     this.removeListener = this.bridge.onAuthorize(request => this.zone.run(() => { void this.authorize(request); }));
+    const synchronizeTheme = (theme: 'light' | 'dark') => { void this.bridge?.setTheme?.(theme).catch(() => false); };
+    this.themeSubscription = this.theme.themeChanged$.subscribe(synchronizeTheme);
+    synchronizeTheme(this.theme.theme());
     void this.bridge.ready();
   }
 
@@ -51,7 +57,7 @@ export class HubClientLoginService implements OnDestroy {
       if (identity.status !== 200 || identity.data?.id !== account || !current() || await this.auth.getToken2() !== token) throw new Error('account_changed');
       const user = identity.data;
       const approved = await this.bridge?.confirm({ state: request.state,
-        account: [user.nickname || user.id, user.email].filter(Boolean).join(' · ').slice(0, 512) });
+        account: [user.nickname || user.id, user.email].filter(Boolean).join(' · ').slice(0, 512), theme: this.theme.theme() });
       if (!approved || !current() || await this.auth.getToken2() !== token) throw new Error('cancelled');
       const result = await firstValueFrom(this.http.post<{ status: number; data: { redirect_url: string } }>(
         `${api}/api/v1/auth/hub/authorize`, { client_id: 'aily-hub', redirect_uri: request.redirect_uri,
@@ -74,5 +80,5 @@ export class HubClientLoginService implements OnDestroy {
     }
   }
 
-  ngOnDestroy(): void { this.destroyed = true; this.removeListener?.(); }
+  ngOnDestroy(): void { this.destroyed = true; this.removeListener?.(); this.themeSubscription?.unsubscribe(); }
 }

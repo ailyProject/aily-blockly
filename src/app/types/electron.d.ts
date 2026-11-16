@@ -87,7 +87,8 @@ declare global {
     electronAPI: {
       hubClientLogin?: {
         ready(): Promise<boolean>;
-        confirm(input: { state: string; account: string }): Promise<boolean>;
+        confirm(input: { state: string; account: string; theme?: 'light' | 'dark' }): Promise<boolean>;
+        setTheme?(theme: 'light' | 'dark'): Promise<boolean>;
         finish(state: string): Promise<boolean>;
         onAuthorize(callback: (request: { state: string; code_challenge: string; redirect_uri: string; expiresAt?: number }) => void): () => void;
       };

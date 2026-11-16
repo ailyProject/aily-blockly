@@ -4,7 +4,12 @@ const { randomBytes } = require('node:crypto');
 // Keep the consent document isolated while presenting it inside the host window.
 function createHubConsentPresenter({ window, WebContentsView, ipcMain }) {
   let dismiss;
+  let theme = 'dark', publishTheme;
   return {
+    setTheme(mode) {
+      if (mode !== 'light' && mode !== 'dark') return;
+      theme = mode; publishTheme?.(mode);
+    },
     confirm({ account, origin, expiresAt }) {
       dismiss?.();
       if (window.isDestroyed()) return Promise.resolve(false);
@@ -15,7 +20,7 @@ function createHubConsentPresenter({ window, WebContentsView, ipcMain }) {
         const consent = new WebContentsView({
           webPreferences: {
             preload: path.join(__dirname, 'hub-consent-preload.js'),
-            additionalArguments: [`--aily-hub-consent=${id}`],
+            additionalArguments: [`--aily-hub-consent=${id}`, `--aily-hub-theme=${theme}`],
             contextIsolation: true, nodeIntegration: false, sandbox: true,
             webSecurity: true, partition: `hub-consent-${id}`,
           },
@@ -43,7 +48,7 @@ function createHubConsentPresenter({ window, WebContentsView, ipcMain }) {
           ipcMain.removeListener(decisionChannel, decide);
           window.removeListener('resize', layout);
           window.removeListener('closed', cancel);
-          if (dismiss === cancel) dismiss = undefined;
+          if (dismiss === cancel) { dismiss = undefined; publishTheme = undefined; }
           const restoreFocus = !contents.isDestroyed() && contents.isFocused();
           if (!window.isDestroyed()) window.contentView.removeChildView(consent);
           if (!contents.isDestroyed()) contents.close();
@@ -55,7 +60,8 @@ function createHubConsentPresenter({ window, WebContentsView, ipcMain }) {
         const timer = setTimeout(cancel, Math.max(0, Math.min(expiresAt - Date.now(), 120_000)));
         timer.unref?.();
         dismiss = cancel;
-        ipcMain.handle(dataChannel, event => ownFrame(event) ? { account, origin, expiresAt } : null);
+        publishTheme = mode => { if (!settled && !contents.isDestroyed()) contents.send(`hub-consent:${id}:theme`, mode); };
+        ipcMain.handle(dataChannel, event => ownFrame(event) ? { account, origin, expiresAt, theme } : null);
         ipcMain.on(decisionChannel, decide);
         contents.setWindowOpenHandler(() => ({ action: 'deny' }));
         contents.on('will-navigate', event => event.preventDefault());

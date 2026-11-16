@@ -9,14 +9,14 @@ const makeUrl = (state = 's'.repeat(43), callback = 'https://hub.aily.pro/auth/c
   `${product}://auth/hub/login?` + new URLSearchParams({ state, code_challenge: 'c'.repeat(43), redirect_uri: callback });
 
 function fixture(directory, response = 1) {
-  const window = new EventEmitter(), contents = new EventEmitter(), handlers = new Map(), messages = [], dialogs = [];
+  const window = new EventEmitter(), contents = new EventEmitter(), handlers = new Map(), messages = [], dialogs = [], themes = [];
   contents.mainFrame = {}; contents.send = (...args) => messages.push(args);
   Object.assign(window, { webContents: contents, isDestroyed: () => false, show() { throw new Error('Main window must not be raised'); }, focus() { throw new Error('Main window must not be focused'); } });
   const ipcMain = { handle: (name, handler) => handlers.set(name, handler), removeHandler: name => handlers.delete(name) };
-  const consentPresenter = { confirm: async options => { dialogs.push(options); return response === 1; }, cancel() {} };
+  const consentPresenter = { confirm: async options => { dialogs.push(options); return response === 1; }, cancel() {}, setTheme: theme => themes.push(theme) };
   const bridge = createHubBrowserBridge({ window, ipcMain, consentPresenter, product: 'blockly', development: true, directory });
   const event = { sender: contents, senderFrame: contents.mainFrame };
-  return { bridge, messages, dialogs, window, call: (name, input, e = event) => handlers.get(name)(e, input) };
+  return { bridge, messages, dialogs, themes, window, call: (name, input, e = event) => handlers.get(name)(e, input) };
 }
 
 test('client protocol accepts only fixed products, PKCE and trusted callbacks', () => {
@@ -100,4 +100,13 @@ test('a full document navigation invalidates an active request until the new ren
   assert.equal(await f.call('hub-client-confirm', { state: 's'.repeat(43), account: 'Account B' }), false);
   assert.equal(f.bridge.accept(makeUrl('x'.repeat(43))), true); assert.equal(f.messages.length, 1);
   f.call('hub-client-ready'); assert.equal(f.messages.length, 2);
+});
+
+test('only the host main frame can synchronize a supported application theme', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-client-test-')), f = fixture(directory);
+  t.after(() => { f.bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  await f.bridge.ready;
+  assert.equal(f.call('hub-client-theme', 'light', { sender: f.window.webContents, senderFrame: {} }), false);
+  assert.equal(f.call('hub-client-theme', 'invalid'), false); assert.deepEqual(f.themes, []);
+  assert.equal(f.call('hub-client-theme', 'light'), true); assert.deepEqual(f.themes, ['light']);
 });
