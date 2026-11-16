@@ -73,6 +73,7 @@ const PROJECT_MUTATIONS = new Set([
 // Backup/observation and environment-only operations are not program writers.
 function publishesProjectProgram(payload: BlocklyLiveOperationPayload): boolean {
   const { operation, params = {} } = payload;
+  if (operation === 'abs_protocol') return params['action'] === 'prepare_workspace_migration';
   if (['project_save', 'blocks_tidy', 'abs_apply', 'board_switch', 'set_board_config'].includes(operation || '')) return true;
   if (operation === 'abs_projection') return params['publish'] !== false;
   if (operation === 'blocks_set_state') return params['action'] !== 'inspect';
@@ -400,7 +401,8 @@ export class BlocklyLiveOperationBridgeService {
       && this.projectService.hasSavedRecoveryTarget?.(recoveryPath)
       && this.projectService.getBlocklyProjectLoadStatus(recoveryPath).ready === false;
     if (journalReopen || recoveryInspection || candidateBackup || runtimeRecovery || recoveryDependencyReload || (!PROJECT_MUTATIONS.has(payload.operation || '')
-      && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update'))) return execute();
+      && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update')
+      && !(payload.operation === 'abs_protocol' && payload.params?.['action'] === 'prepare_workspace_migration'))) return execute();
     const projectPath = payload.path || this.projectService.currentProjectPath;
     if (this.projectService.isProjectTransitionInProgress(projectPath)
       && !(this.projectService.isLibraryMutationInProgress(projectPath)

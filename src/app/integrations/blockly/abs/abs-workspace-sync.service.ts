@@ -337,16 +337,41 @@ export class AbsWorkspaceSyncService {
       ...(acceptedSource ? { acceptedSource } : {}) };
   }
 
-  /** Runtime-only transition. Preparation is read-only; the final selection is
-   * one original project FIFO/editor lease plus the native publication lock. */
+  /** Runtime readiness boundary under the original project FIFO/editor lease.
+   * Unlike static discovery, it may publish a pristine project's first saved
+   * baseline; final mode selection also requires the native publication lock. */
   prepareWorkspaceModeMigration() {
-    return this.run(async (context, lease) => {
-      const working = this.editor.captureProjectSnapshot(lease), check = this.atRevision(context.assertCurrent, lease, working);
+    return this.run(async (context, lease, store) => {
+      let working = this.editor.captureProjectSnapshot(lease);
+      let check = this.atRevision(context.assertCurrent, lease, working);
       const guard = () => { check(); };
       const port = await openAbsHostStorage(context.path, guard);
-      const migration = await captureWorkspaceMigrationProof(port, working, guard); guard();
       const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard, port); guard();
       if (!protocol.ok) return protocol;
+      const accepted = await store.readCommittedSnapshot();
+      const pending = await store.inspectPending(), journal = await new AbsOperationJournal(port, context.path).inspect(); guard();
+      const deferred = (reason: 'saved-program-unavailable' | 'source-projection-present' | 'publication-pending' | 'saved-working-differs') =>
+        ({ ...protocol, migrationDeferred: { version: 1 as const, reason } });
+      if (pending || journal) return deferred('publication-pending');
+      if (accepted?.abi === null) return deferred('saved-program-unavailable');
+      if (!accepted) {
+        const disk = await store.captureDisk(); guard();
+        const reason = disk.abi === null ? 'saved-program-unavailable'
+          : disk.abs !== null || disk.map !== null ? 'source-projection-present'
+          : absJson(this.editor.normalizeProjectAbi(JSON.parse(disk.abi))) !== absJson(this.editor.normalizeProjectAbi(working.document))
+            ? 'saved-working-differs' : undefined;
+        if (reason) return deferred(reason);
+        // Only a pristine saved canvas can establish its first accepted state.
+        // Reuse the normal publisher under this same FIFO lease; no draft exists
+        // to replace and the original disk preimage is checked again at commit.
+        const initialized = await this.exportInContext(context, lease, store, { initialize: true, save: true },
+          { expected: disk, generation: null }); guard();
+        if (initialized.publication.status !== 'COMMITTED') throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_PENDING',
+          'The first accepted publication must settle before workspace migration.');
+        working = this.editor.captureProjectSnapshot(lease);
+        check = this.atRevision(context.assertCurrent, lease, working);
+      }
+      const migration = await captureWorkspaceMigrationProof(port, working, guard); guard();
       return { ...protocol, migration };
     }, false, true, false, false, true);
   }

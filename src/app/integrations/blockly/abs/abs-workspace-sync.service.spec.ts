@@ -4831,6 +4831,56 @@ describe('v2 actual workspace generation coordinator', () => {
     });
   });
 
+  describe('S4 default project authoring readiness', () => {
+    const savedCanvas = () => disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+    it('bootstraps only a pristine saved canvas through the existing publisher before preparing migration', async () => {
+      savedCanvas(); const originalAbi = disk.get('project.abi'), root = roots();
+      const prepared = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue(); expect('migration' in prepared).toBeTrue();
+      expect('migrationDeferred' in prepared).toBeFalse();
+      const committed = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(committed).not.toBeNull(); expect(committed!.abi).toBe(disk.get('project.abi'));
+      expect(absJson(JSON.parse(disk.get('project.abi')!))).toBe(originalAbi); expect(disk.get('project.abs')).toContain('TEXT="before"');
+      expect(disk.has('workspace-mode.json')).toBeFalse();
+      expect(roots()).toBe(root); expect(root.isDeletable()).toBeFalse(); expect(root.data).toBe('opaque');
+      expect(gate.busy).toBeFalse();
+    });
+    it('defers existing source projections and a dirty canvas without changing their original files', async () => {
+      savedCanvas();
+      for (const [key, bytes] of [['project.abs', '# preserved original draft'], ['project.abs.map.json', '{"old":"map"}']]) {
+        disk.set(key, bytes); const before = [...disk];
+        const prepared = await service.prepareWorkspaceModeMigration();
+        expect(prepared.ok).toBeTrue();
+        expect((prepared as any).migrationDeferred).toEqual({ version: 1, reason: 'source-projection-present' });
+        expect([...disk]).toEqual(before); disk.delete(key);
+      }
+      roots().setFieldValue('unsaved current view', 'TEXT'); const before = [...disk];
+      const dirty = await service.prepareWorkspaceModeMigration();
+      expect((dirty as any).migrationDeferred).toEqual({ version: 1, reason: 'saved-working-differs' });
+      expect([...disk]).toEqual(before); expect(roots().getFieldValue('TEXT')).toBe('unsaved current view');
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(gate.busy).toBeFalse();
+    });
+    it('keeps verified readiness deferrals distinct from corrupt metadata and failed publications', async () => {
+      savedCanvas(); await baseline();
+      const store = new AbsBaselineStore(port, scope), current = (await store.readCommittedSnapshot())!;
+      const projection = await createAbsProjection(current.projection.workspace, { document: current.projection.document,
+        contracts: current.projection.contracts, generation: 's4-export-only', baselineRef: absBaselineKey('s4-export-only'),
+        scope, savedAbiHash: current.projection.map.savedAbiHash });
+      await store.stage({ projection, mode: 'export', abi: null, inputAbs: current.projection.abs, expected: await store.captureDisk() });
+      await store.commit('s4-export-only', () => {}, async () => { throw Error('An export must not write ABI'); });
+      const before = [...disk];
+      const unavailable = await service.prepareWorkspaceModeMigration();
+      expect((unavailable as any).migrationDeferred).toEqual({ version: 1, reason: 'saved-program-unavailable' });
+      expect([...disk]).toEqual(before);
+      disk.set('committed.json', '{"broken":true}'); const corrupt = [...disk];
+      await expectAsync(service.prepareWorkspaceModeMigration()).toBeRejected(); expect([...disk]).toEqual(corrupt);
+      disk.clear(); savedCanvas(); failWrite = 'prepared.json';
+      await expectAsync(service.prepareWorkspaceModeMigration()).toBeRejectedWithError('injected write failure');
+      expect(disk.has('workspace-mode.json')).toBeFalse(); expect(disk.has('project.abs')).toBeFalse();
+      expect(gate.busy).toBeFalse();
+    });
+  });
+
   describe('project-v1 author tree', () => {
     const select = () => disk.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
     const captureWithUnchangedAuthorState = async (repeated = 0) => {
