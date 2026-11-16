@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { routeLiveOperationProject } = require('../../electron/live-operation-project-routing');
 
 // Exercise the production selector without launching the application or a build.
 const main = fs.readFileSync(path.join(__dirname, '../../electron/main.js'), 'utf8');
@@ -31,6 +32,7 @@ test('the receipt selector does not broaden unrelated project or ABS requests', 
 test('new recovery operations have scoped budgets without extending inspection or ordinary save', () => {
   assert.equal(timeout('project_fork'), 300000);
   assert.equal(timeout('abs_recovery', { action: 'repair' }), 120000);
+  assert.equal(timeout('abs_recovery', { action: 'observe_apply' }), 120000);
   assert.equal(timeout('abs_recovery', { action: 'inspect' }), 12000);
   assert.equal(timeout('project_save'), 12000);
 });
@@ -40,7 +42,7 @@ const source = ts.createSourceFile('main.js', main, ts.ScriptTarget.Latest, true
 const handler = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'handleCliBridgeCommand');
 assert.ok(handler, 'production CLI handler exists');
 const invoke = (result, operation, params = {}) => vm.runInNewContext(`(${handler.getText(source)})`, {
-  path, getOpenedProjectPathFromWindow: () => 'D:/isolated', requestMainWindow: async () => result,
+  path, routeLiveOperationProject, getOpenedProjectPathFromWindow: () => 'D:/isolated', requestMainWindow: async () => result,
 })('blockly-live-operation', { path: 'D:/isolated', operation, params });
 
 for (const errorCode of ['RENDERER_RESPONSE_TIMEOUT', 'RENDERER_REQUEST_CANCELLED', 'RENDERER_UNAVAILABLE', 'RENDERER_NOT_READY']) {
