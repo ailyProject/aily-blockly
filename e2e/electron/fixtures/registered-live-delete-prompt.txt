@@ -1,0 +1,16 @@
+请在当前项目做一次已登记临时 ABS 的真实删除验证。不要修改主工作区，不应用、不导入、不保存、不编译或烧录，也不要新建项目/切换会话。只操作下列唯一临时文件。
+
+先执行下面一条准备命令，从本项目真实 project.abs 复制到临时源，不生成或整写 ABS：
+```powershell
+{{REGISTERED_SETUP}}
+```
+接着用 tool_load 加载 abs_export，并调用 abs_export，project 为 {{PROJECT}}，outFile 精确为 {{REGISTERED_ALIAS}}。这一步需要正常登记候选，不能用只读预览代替，不能修改 SDK、History 或 checkpoint。用 Pi read 只读取该别名开头 6 行，避免重复读取整个大文件。随后只用一次 Pi edit，在原第一行后增加下面一行注释，保留其余所有字节；不要整写或修改主源码：
+原第一行：{{REGISTERED_FIRST_LINE}}
+新增注释：{{REGISTERED_MARKER}}
+
+之后仅执行一次下面的删除命令，删除后用 Pi read 同一路径确认不存在。若工具异常自行停止并说明具体事实，不绕过保护，也不重新创建该文件。
+```powershell
+{{REGISTERED_COMMAND}}
+```
+
+保留系统已有的不可变原稿，不清理 History/backup，不让我手动恢复、重开项目或换会话。
