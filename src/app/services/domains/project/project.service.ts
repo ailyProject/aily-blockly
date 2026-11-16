@@ -164,7 +164,8 @@ type ProjectCreationStage = 'validation' | 'board-install' | 'board-template' | 
 
 type ProjectCreationResult =
   | { ok: true; projectPath: string }
-  | { ok: false; stage: ProjectCreationStage; error: string; npmExitCode?: number };
+  | { ok: false; stage: ProjectCreationStage; error: string; npmExitCode?: number;
+      projectPath?: string; partialMutation?: true };
 
 export type ProjectState = 'default' | 'loading' | 'loaded' | 'closing' | 'saving' | 'saved' | 'error';
 
@@ -1587,6 +1588,7 @@ export class ProjectService {
   async projectNewWithResult(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<ProjectCreationResult> {
     let stage: ProjectCreationStage = 'validation';
     let npmExitCode: number | undefined;
+    let copiedBlocklyProjectPath: string | undefined;
     try {
       const templateDirectory = options.templateDirectory || 'template';
       const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
@@ -1643,6 +1645,9 @@ export class ProjectService {
       } else {
         // 复制 Blockly 模板文件到项目目录
         this.importProjectDirectory(templatePath, projectPath);
+        // Only this completed copy proves a new partial project belongs to
+        // this request. An existing target or a copy that throws does not.
+        copiedBlocklyProjectPath = projectPath;
       }
 
       if (templateDirectory === 'template') {
@@ -1658,14 +1663,16 @@ export class ProjectService {
       }
       stage = 'activation';
       const created = await this.finishProjectCreation(projectPath, options);
-      if (!created) return { ok: false, stage, error: '主软件未能激活新建的项目' };
+      if (!created) return { ok: false, stage, error: '主软件未能激活新建的项目',
+        ...(copiedBlocklyProjectPath ? { projectPath: copiedBlocklyProjectPath, partialMutation: true as const } : {}) };
       this.metrics.record('project_created');
       return { ok: true, projectPath };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.message.error(`${this.translate.instant('PROJECT.CREATE_FAILED')}: ${message}`);
       this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
-      return { ok: false, stage, error: message, ...(npmExitCode === undefined ? {} : { npmExitCode }) };
+      return { ok: false, stage, error: message, ...(npmExitCode === undefined ? {} : { npmExitCode }),
+        ...(copiedBlocklyProjectPath ? { projectPath: copiedBlocklyProjectPath, partialMutation: true as const } : {}) };
     }
   }
 

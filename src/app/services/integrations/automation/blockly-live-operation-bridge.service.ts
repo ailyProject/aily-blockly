@@ -1343,10 +1343,12 @@ export class BlocklyLiveOperationBridgeService {
       ? window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'))
       : `${newProjectData.path.replace(/[\\/]+$/, '')}/${newProjectData.name.replace(/\s/g, '_')}`;
 
-    const created = await this.projectService.projectNew(
+    const creation = await this.projectService.projectNewWithResult(
       newProjectData,
       { activationReason: 'chat-tool-create', ...(lifecycleOwner ? { deferActivation: true } : {}) },
     );
+    const created = creation.ok;
+    const failure = creation.ok === false ? creation : undefined;
     let ok = created;
     let activationError: unknown;
     if (created && lifecycleOwner) {
@@ -1360,13 +1362,17 @@ export class BlocklyLiveOperationBridgeService {
       operation: 'project_create',
       developmentMode: mode,
       projectType: mode,
-      project: created ? projectPath : null,
+      project: created ? projectPath : failure?.projectPath || null,
+      ...(failure ? { stage: failure.stage, error: failure.error,
+        ...(failure.npmExitCode === undefined ? {} : { npmExitCode: failure.npmExitCode }),
+        ...(failure.partialMutation ? { partialMutation: true } : {}) } : {}),
       ...(created && !ok ? { projectCreated: true, createdProject: projectPath,
+        stage: 'activation', partialMutation: true,
         activation: { completed: false, currentProject: this.projectService.currentProjectPath || null },
         code: (activationError as any)?.code || 'PROJECT_CREATE_ACTIVATION_FAILED' } : {}),
       message: ok ? `项目已创建并打开: ${projectPath}` : created
         ? (activationError instanceof Error ? activationError.message : activationError ? String(activationError) : '项目已创建，但未确认打开完成')
-        : '项目创建失败',
+        : failure?.error || '项目创建失败',
       name: newProjectData.name,
       path: newProjectData.path,
       board: {
