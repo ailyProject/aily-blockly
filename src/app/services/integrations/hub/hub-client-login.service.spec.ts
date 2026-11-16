@@ -77,4 +77,23 @@ describe('Hub browser login with client confirmation', () => {
     listener({ ...request(), expiresAt: Date.now() - 1 }); await settle();
     expect(bridge.confirm).not.toHaveBeenCalled(); expect(http.post).not.toHaveBeenCalled();
   });
+
+  it('continues after signing in when AuthService closes the login dialog before notifying later subscribers', async () => {
+    auth.isLoggedIn = false; auth.isLoggedIn$.next(false);
+    const dismissal = auth.isLoggedIn$.subscribe((loggedIn: boolean) => {
+      if (loggedIn) { auth.isLoggedIn = true; auth.loginDialogRequest$.next(null); }
+    });
+    listener(request()); await settle();
+    expect(auth.requestLogin).toHaveBeenCalledWith('hub-client-login');
+    expect(bridge.confirm).not.toHaveBeenCalled();
+    auth.isLoggedIn$.next(true); await settle(); dismissal.unsubscribe();
+    expect(bridge.confirm).toHaveBeenCalled(); expect(http.post).toHaveBeenCalled();
+  });
+
+  it('cancels when the client login dialog closes without an authenticated account', async () => {
+    auth.isLoggedIn = false; auth.isLoggedIn$.next(false);
+    listener(request()); await settle(); auth.loginDialogRequest$.next(null); await settle();
+    expect(bridge.confirm).not.toHaveBeenCalled(); expect(http.post).not.toHaveBeenCalled();
+    expect(new URL(electron.openUrl.calls.mostRecent().args[0]).searchParams.get('error')).toBe('access_denied');
+  });
 });

@@ -27,7 +27,8 @@ export class HubClientLoginService implements OnDestroy {
     this.auth.requestLogin('hub-client-login');
     return firstValueFrom(merge(
       this.auth.isLoggedIn$.pipe(filter(Boolean), map(() => true)),
-      this.auth.loginDialogRequest$.pipe(filter(value => value === null), map(() => false)),
+      // AuthService closes this dialog synchronously before later login subscribers run.
+      this.auth.loginDialogRequest$.pipe(filter(value => value === null), map(() => this.auth.isLoggedIn)),
     ).pipe(take(1), timeout(120_000)));
   }
 
