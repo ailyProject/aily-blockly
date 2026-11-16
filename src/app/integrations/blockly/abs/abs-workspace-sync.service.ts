@@ -5,7 +5,7 @@ import { readAbsHistoryPublication, historyPublicationIdentity, historyPublicati
   type AbsHistoryPublicationRequest, type AbsObservedProgramPublication } from './abs-history-publication';
 import { mergeAbsHistoryDocument } from './abs-history-document';
 import { restoreObservedProgramMap } from './abs-derived-map-recovery';
-import { assertProgramDriftObservation, type AbsProgramDriftObservation } from './abs-program-drift';
+import { assertProgramDriftObservation, assertProgramDriftShape, type AbsProgramDriftObservation } from './abs-program-drift';
 import type { HistoryEnvironmentPlan } from '../history-environment';
 import { settleLinkedProjectEnvironment } from '../environment-settlement';
 import { observeRuntimePublication } from './abs-runtime-publication-observation';
@@ -84,6 +84,7 @@ import { AbsNativeCandidateFailures } from './abs-native-candidate-failures';
 import { readWorkingCandidate, workingCandidateBinding } from './abs-working-candidate';
 import { mergeAbsStrictDocument } from './abs-strict-document-merge';
 import { readLegacyCandidateCapture } from './abs-legacy-candidate-capture';
+import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
 
 type AbsExportOptions = { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string;
   reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean; save?: boolean };
@@ -109,6 +110,7 @@ export interface AbsWorkspaceSyncOutcome {
   derivedOutputs?: AbsDerivedOutputs;
   /** Read-only pre-AI user state for history; never a published generation. */
   historyBase?: { snapshot: string; hash: string; inputAbsHash: string | null };
+  acceptedSource?: AbsAcceptedSourceProof;
 }
 
 /** Explicit v2 coordinator. Not an automatic legacy-format switch.
@@ -307,6 +309,7 @@ export class AbsWorkspaceSyncService {
     const partial = !generatedCodePublished || !!dependencyError;
     const facts: NativeSaveResultFacts = { projectSaved: true, generatedCodePublished, partial,
       publication: { ...result.publication, status: 'COMMITTED' }, requiresReload: false, evidence: result.evidence!, warnings: result.warnings,
+      ...(result.publication.acceptedSource ? { acceptedSource: result.publication.acceptedSource } : {}),
       ...(result.derivedOutputs ? { derivedOutputs: result.derivedOutputs as unknown as Record<string, unknown> } : {}),
       dependencyState: { saved: !dependencyError },
       ...(partial ? { code: dependencyError ? 'PROJECT_DEPENDENCY_SAVE_FAILED' : result.derivedOutputs?.code ?? 'PROJECT_DERIVED_OUTPUT_PENDING',
@@ -621,7 +624,7 @@ export class AbsWorkspaceSyncService {
         if (await sourceStore.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', '请先恢复未完成的项目保存，再另存为。');
         const expected = await sourceStore.captureDisk();
         const committed = await sourceStore.inspectCommitted();
-        if (committed) this.assertMirrors(committed.projection, expected, true);
+        if (committed) this.assertMirrors(committed.projection, expected, await sourceStore.workspaceMode() !== 'project-v1');
         const generated = await this.editor.prepareProjectCode(context.assertCurrent, lease);
         const snapshot = this.editor.captureProjectSnapshot(lease);
         if (generated && generated.revision !== snapshot.revision) throw new AbsSyncError('ABS_REVISION_STALE', '项目在准备另存为时发生变化，请重试。');
@@ -764,6 +767,7 @@ export class AbsWorkspaceSyncService {
     return this.withoutViewChecks(async (): Promise<AbsWorkspaceSyncOutcome> => {
       let saveCheckpoint = checkpoint;
       try {
+      const projectTree = await store.workspaceMode() === 'project-v1';
       const captured = computation ? await this.captureBackgroundSave(context, lease) : undefined;
       const inspection = options.rebind !== undefined || options.preserveDraft !== undefined ? await inspectAbsGeneration(store, context.scope) : undefined;
       if (options.rebind !== undefined && (options.preserveDraft !== undefined || initialize || options.publish === false || !inspection.diagnostics.rebind
@@ -783,12 +787,12 @@ export class AbsWorkspaceSyncService {
       // Explicit current-view saves/state operations own their canvas, not an
       // unrelated pending ABS draft. Retain that exact draft/map in the normal
       // immutable generation journal before publishing the current view.
-      const archiveCurrentDraft = !!committed && expected.abs !== null && expected.abs !== committed.abs
+      const archiveCurrentDraft = !projectTree && !!committed && expected.abs !== null && expected.abs !== committed.abs
         && (options.save === true || input?.generation !== undefined && input.generation !== null);
       if (input && (committed?.map.generation ?? null) !== input.generation) {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed after state-operation preflight.');
       }
-      if (committed && !inspection) this.assertMirrors(committed, expected, options.publish !== false && !archiveCurrentDraft);
+      if (committed && !inspection) this.assertMirrors(committed, expected, !projectTree && options.publish !== false && !archiveCurrentDraft);
       else if (!committed && (expected.map !== null || expected.abs !== null && !initialize)) {
         throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An existing mirror requires explicit generation initialization; orphan maps are never overwritten.', undefined, [], {
           reason: expected.map === null ? 'initial-baseline' : 'orphan-map',
@@ -869,7 +873,7 @@ export class AbsWorkspaceSyncService {
       // Still verify current disk/contracts and republish derived outputs: a
       // clean canvas does not prove generated files or dependencies are intact.
       const unchangedSave = options.save && prepared?.abiText === expected.abi;
-      if ((options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
+      if (!projectTree && (options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
         && absJson(context.scope) === absJson(committed.map.scope)
@@ -1031,7 +1035,7 @@ export class AbsWorkspaceSyncService {
       const expected = await store.captureDisk();
       if (committed && expected.abi === null) throw new AbsSyncError('ABS_BASELINE_MISSING', 'Save/export the current canvas before changing block state.');
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Inspect and recover the pending generation before changing block state.');
-      if (committed) this.assertMirrors(committed, expected, true);
+      if (committed) this.assertMirrors(committed, expected, await store.workspaceMode() !== 'project-v1');
       else if (expected.map !== null) throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An orphan map cannot authorize first-baseline state changes. Inspect project recovery.');
       assertCurrent();
       const before = this.editor.captureProjectSnapshot(lease);
@@ -1185,15 +1189,22 @@ export class AbsWorkspaceSyncService {
         const projection = await this.projection(document, runtime.contracts, null, context.scope, guard);
         const port = await openAbsHostStorage(context.path, () => { guard(); });
         if (!port.attachment) throw new AbsSyncError('ABS_CANDIDATE_ATTACHMENT_STALE', 'Working capture requires the physical project attachment.');
+        const captureStore = new AbsBaselineStore(port, context.scope), workspaceMode = await captureStore.workspaceMode();
         let published: AbsGenerationEvidence['binding'] | null = null;
         let publishedObservation: { status: string; code?: string } = { status: 'none' };
         try {
-          const saved = await new AbsBaselineStore(port, context.scope).readCommittedSnapshot();
+          const saved = await captureStore.readCommittedSnapshot();
           if (saved) { published = (await generationEvidence(saved.projection, saved.abi)).binding; publishedObservation = { status: 'captured' }; }
         } catch (error) { publishedObservation = { status: 'unavailable', code: (error as any)?.code ?? 'ABS_PUBLISHED_UNAVAILABLE' }; }
+        if (workspaceMode === 'project-v1' && (!published || published.abiHash === null))
+          throw new AbsSyncError('ABS_WORKSPACE_MODE_UNINITIALIZED', 'Project mode requires a verified accepted program.');
+        const author = workspaceMode === 'project-v1' ? await port.read('project.abs') : null;
+        const authorSource = workspaceMode === 'project-v1' ? { version: 1, path: 'project.abs', text: author,
+          hash: author === null ? null : await hashAbsText(author), bytes: author === null ? null : new TextEncoder().encode(author).byteLength } : undefined;
         guard();
         return { version: 1, document: absJson(document), abs: projection.abs, map: absMapJson(projection.map), contracts: absJson(projection.contracts),
           scope: { kind: 'pages', pageIds: [context.scope.pageId] }, attachment: port.attachment,
+          ...(authorSource ? { workspaceMode, authorSource, accepted: published } : {}),
           published, publishedObservation, working: { revision: before.revision } };
       } finally { lease.release(); }
     });
@@ -1668,10 +1679,13 @@ export class AbsWorkspaceSyncService {
         const savedCompact = await this.compactDocument(applied.document, actual.contracts, assertApplied);
         const projection = await this.projection(savedCompact, actual.contracts, prepared.abiText, context.scope, assertApplied);
         const evidence = await generationEvidence(projection, prepared.abiText);
-        await store.stage({ projection, mode: 'import', inputAbs: source, abi: prepared.abiText, expected }, expectedPublished);
+        const projectTree = await store.workspaceMode() === 'project-v1';
+        await store.stage({ projection, mode: 'import', inputAbs: source, abi: prepared.abiText, expected,
+          ...(projectTree ? { authorIntent: 'candidate' as const } : {}) }, expectedPublished);
         assertApplied();
         if (validation) await application.stage(operationId, validation, {
-          publication: { status: 'COMMITTED', generation: projection.map.generation, abiSaved: true, absMirrored: true, mapPublished: true },
+          publication: { status: 'COMMITTED', generation: projection.map.generation, abiSaved: true,
+            absMirrored: !projectTree || expected.abs === projection.abs, mapPublished: true },
           appliedRevision: applied.revision, requiresReload: false, evidence, abs: projection.abs,
           warnings: ['The original derived-code publication was not observed; source application is independently verified.'],
           derivedOutputs: { published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING' }, ...(historyBase ? { historyBase } : {}),
@@ -1700,6 +1714,7 @@ export class AbsWorkspaceSyncService {
         this.editor.publishAbsContext(projection, published.revision, context.assertCurrent);
         const outcome = { publication, appliedRevision: published.revision, requiresReload: false,
           warnings: derived.warnings, derivedOutputs: derived.output, evidence,
+          ...(publication.acceptedSource ? { acceptedSource: publication.acceptedSource } : {}),
           ...(historyBase ? { historyBase } : {}) };
         if (validation) await application.complete(operationId, outcome, context.assertCurrent);
         await journal.finish(operationId, context.assertCurrent);
@@ -1898,7 +1913,8 @@ export class AbsWorkspaceSyncService {
           reopenBlocked: failure } };
       }
     }
-    if (canInspectAbsDraft(inspection) || inspection.committed && !inspection.pending && inspection.diagnostics.issues.length > 0) {
+    if (inspection.diagnostics.workspaceMode !== 'project-v1'
+      && (canInspectAbsDraft(inspection) || inspection.committed && !inspection.pending && inspection.diagnostics.issues.length > 0)) {
       return this.run(async (context, lease, store) => {
         const current = await inspectAbsGeneration(store, context.scope);
         const snapshot = this.editor.captureProjectSnapshot(lease);
@@ -1946,6 +1962,19 @@ export class AbsWorkspaceSyncService {
       const guard = this.atRevision(context.assertCurrent, lease, snapshot);
       const assertCurrent = () => { guard(); };
       const port = await openAbsHostStorage(context.path, assertCurrent);
+      assertProgramDriftShape(input);
+      if (await store.workspaceMode() === 'project-v1' && absJson(input.attachment) === absJson(port.attachment)) {
+        const committed = await store.inspectCommitted();
+        if (committed) {
+          try {
+            const previous = await store.inspectRepair(committed.projection.map.generation);
+            guard();
+            if (absJson(previous.archive.programDrift) === absJson(input))
+              return this.repairInContext(context, lease, store, previous.archive.repairToken,
+                undefined, undefined, undefined, input);
+          } catch (error) { if ((error as any)?.code !== 'ABS_RECOVERY_ARCHIVE_MISSING') throw error; }
+        }
+      }
       const observation = await assertProgramDriftObservation(port, snapshot.revision, input, assertCurrent);
       if (observation.originalRequestId) {
         const original = await new AbsApplicationJournal(port, context.path).observe(observation.originalRequestId, assertCurrent);
@@ -1991,10 +2020,13 @@ export class AbsWorkspaceSyncService {
             if ((await store.inspectCommitted())?.pointerHash !== inspection.committed.pointerHash) throw new AbsSyncError('ABS_REPAIR_STALE', 'Committed repair changed.');
             const projection = inspection.committed.projection;
             const evidence = await generationEvidence(projection, inspection.disk.abi);
+            const acceptedSource = await store.acceptedSourceProof(projection.map.generation);
             const derived = this.repairDerived.observe(token, evidence.binding);
             guard(); this.editor.publishAbsContext(projection, snapshot.revision, context.assertCurrent);
             return { publication: { status: 'COMMITTED', generation: projection.map.generation,
-              abiSaved: true, absMirrored: true, mapPublished: true }, requiresReload: false,
+              abiSaved: true, absMirrored: inspection.disk.abs === projection.abs, mapPublished: true,
+              ...(acceptedSource ? { acceptedSource } : {}) }, requiresReload: false,
+              ...(acceptedSource ? { acceptedSource } : {}),
               warnings: derived.warnings, derivedOutputs: derived.output,
               recoveryArchive: previous.recoveryArchive, evidence, abs: projection.abs, reused: true,
               inputAbiHash: previous.recoveryArchive.files.abi.hash };
@@ -2053,6 +2085,7 @@ export class AbsWorkspaceSyncService {
         this.repairDerived.remember(resolution?.token ?? token, evidence.binding, derived);
       }
       return { publication, requiresReload, warnings: derived.warnings, derivedOutputs: derived.output, recoveryArchive: archive,
+        ...(publication.acceptedSource ? { acceptedSource: publication.acceptedSource } : {}),
         inputAbiHash: inspection.disk.abi === null ? null : await hashAbsText(inspection.disk.abi),
         ...(publication.status === 'COMMITTED' ? { evidence, abs: projection.abs } : {}) };
   }

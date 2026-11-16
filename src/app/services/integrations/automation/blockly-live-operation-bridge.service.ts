@@ -28,7 +28,8 @@ import {
 import { AbsGenerationToolsService } from '../../../integrations/blockly/abs/abs-generation-tools.service';
 import { sameAbsProjectDirectory } from '../../../integrations/blockly/abs/abs-project-path';
 import { checkAbsDocumentation } from '../../../integrations/blockly/abs/abs-documentation';
-import { ABS_LIVE_PROTOCOL, absProtocolReply, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
+import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
+import { absWorkspaceProtocol } from '../../../integrations/blockly/abs/abs-workspace-protocol';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
 import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
@@ -592,7 +593,9 @@ export class BlocklyLiveOperationBridgeService {
       if (this.projectService.getProjectMode(currentProject) !== 'blockly') return {
         ok: false, operation: 'abs_protocol', project: currentProject, code: 'ABS_WORKING_CANDIDATE_UNSUPPORTED',
         message: 'This project is not a Blockly program.' };
-      return absProtocolReply(currentProject, payload.params || {});
+      return absWorkspaceProtocol(currentProject, payload.params || {}, () => {
+        if (this.projectService.currentProjectPath !== currentProject) throw new Error('The protocol project changed.');
+      });
     }
 
     // Dependency evidence is independent of native canvas readiness and never

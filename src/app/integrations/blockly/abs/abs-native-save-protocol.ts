@@ -4,6 +4,7 @@ import type { ProjectPublicationOperation } from '@domain/project/public-api';
 import type { AbsBlockState, AbsBlockStateUpdateRequest } from './abs-block-state';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
+import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
 
 export interface NativeSaveIdentity {
   version: 2; requestId: string; operation: ProjectPublicationOperation; inputDigest: string;
@@ -26,6 +27,7 @@ export interface NativeSaveCommittedFacts {
   evidence: AbsGenerationEvidence; requiresReload: boolean; warnings?: readonly string[];
   derivedOutputs?: Record<string, unknown>; dependencyState?: Record<string, unknown>; code?: string; error?: string;
   blockState?: NativeSaveBlockStateReceipt;
+  acceptedSource?: AbsAcceptedSourceProof;
 }
 export interface NativeSaveFailureFacts {
   projectSaved: false; generatedCodePublished: false; partial: false;
@@ -33,6 +35,7 @@ export interface NativeSaveFailureFacts {
   requiresReload: false; code: string; error?: string; cancelled?: boolean; warnings?: readonly string[];
   evidence?: never;
   blockState?: never;
+  acceptedSource?: never;
 }
 export type NativeSaveResultFacts = NativeSaveCommittedFacts | NativeSaveFailureFacts;
 export type NativeSaveObservation = { state: 'not-found'; request: NativeSaveIdentity }

@@ -36,7 +36,7 @@ export class AbsBackgroundComputation {
     };
     this.worker.onerror = event => this.dispose(new Error(event.message || 'Background save worker failed.'));
     this.worker.onmessageerror = () => this.dispose(new Error('Background save worker message could not be read.'));
-    this.ready = this.call('init', [scope]);
+    this.ready = this.call('init', [scope, this.port.attachment]);
   }
   private call(method: string, args: unknown[]): Promise<any> {
     if (this.failed) return Promise.reject(this.failed);
