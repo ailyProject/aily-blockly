@@ -63,9 +63,9 @@ async function forwardHubBrowserLogin(value, product, options = {}) {
   throw new Error('Hub client unavailable');
 }
 
-function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresenter, product, development = false, directory = registryDirectory() }) {
+function createHubBrowserBridge({ window, ipcMain, WebContentsView, consentPresenter, product, development = false, directory = registryDirectory() }) {
   const contents = window.webContents;
-  const consent = consentPresenter || createHubConsentPresenter({ BrowserWindow, ipcMain });
+  const consent = consentPresenter || createHubConsentPresenter({ window, WebContentsView, ipcMain });
   const suffix = randomBytes(12).toString('hex');
   const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\aily-hub-${product}-${suffix}` : path.join(os.tmpdir(), `ahl-${suffix}`);
   const filename = path.join(directory, `${product}-${process.pid}-${suffix}.json`);

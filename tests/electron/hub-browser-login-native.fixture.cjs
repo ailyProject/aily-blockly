@@ -44,7 +44,7 @@ async function main() {
     document.querySelector('#switch').onclick=()=>{account='测试账号 B';document.querySelector('#account').textContent='当前账号：'+account;};
     document.querySelector('#start').onclick=()=>window.fixture.request(account);window.fixture.ready();</script></html>`);
   fs.writeFileSync(path.join(source, 'main.cjs'), `
-    const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+    const { app, BrowserWindow, WebContentsView, ipcMain } = require('electron');
     const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
     const { randomBytes } = require('node:crypto');
     const root = ${JSON.stringify(root)};
@@ -53,9 +53,9 @@ async function main() {
       assert.equal(app.isPackaged, true);
       for (const name of ['AILY_CHILD_PATH', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) assert.equal(process.env[name], undefined);
       let account = '', records = [];
-      const window = new BrowserWindow({ width:660,height:440,title:'客户端授权验证', webPreferences:{preload:path.join(__dirname,'preload.cjs')} });
+      const window = new BrowserWindow({ width:1000,height:780,title:'客户端授权验证', webPreferences:{preload:path.join(__dirname,'preload.cjs')} });
       window.webContents.on('console-message', event => console.log('fixture-renderer', event.message));
-      const bridge = require('./electron/hub-browser-login').createHubBrowserBridge({ window, ipcMain, BrowserWindow, product:'blockly', directory:path.join(root,'registry') });
+      const bridge = require('./electron/hub-browser-login').createHubBrowserBridge({ window, ipcMain, WebContentsView, product:'blockly', directory:path.join(root,'registry') });
       await bridge.ready;
       ipcMain.handle('fixture-account', () => account);
       ipcMain.handle('fixture-request', (_event, value) => {
