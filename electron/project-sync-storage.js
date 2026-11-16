@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { storageExecutor, observeStorageExecutor } = require('./project-file-lock-owner');
+const { assertNoPreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
 
@@ -44,12 +45,18 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
   };
   const locate = (key, create = false) => {
     const objectHash = historyHash(key);
-    if (typeof key !== 'string' || !(objectHash || readableFiles.has(key) || metadata.has(key) || workspaceMetadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
+    if (typeof key !== 'string' || !(objectHash || key === 'history-workspace.json' || readableFiles.has(key) || metadata.has(key) || workspaceMetadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
       throw fault('ABS_STORAGE_KEY_INVALID', 'Unsupported ABS sync storage key.');
     }
     if (objectHash && create) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
     access.checkRoot();
     if (readableFiles.has(key)) return path.join(root, key);
+    if (key === 'history-workspace.json') {
+      const directory = path.join(root, '.workspace-history');
+      try { access.checkDirectory(directory); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      return path.join(directory, 'workspace.json');
+    }
     const parents = workspaceMetadata.has(key) ? [directories[0]] : objectHash ? [path.join(root, '.workspace-history'), path.join(root, '.workspace-history', 'objects'),
       path.join(root, '.workspace-history', 'objects', objectHash.slice(0, 2))] : baseline.test(key) || recovery.test(key)
       ? [...directories, path.join(directories[1], key.split('/')[0])] : directories;
@@ -100,11 +107,12 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       };
       const replace = async (key, expectedHash, content) => {
         check();
+        assertNoPreparedWorkspaceMigration(access);
         if (historyHash(key)) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
         // Validate keys even for no-op/delete requests. Baselines are append-only;
         // only the prepared journal may be deleted by the sync protocol.
         locate(key);
-        if (readOnlyInputs.has(key) || workspaceMetadata.has(key) || !(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
+        if (key === 'history-workspace.json' || readOnlyInputs.has(key) || workspaceMetadata.has(key) || !(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
           || !(content === null || typeof content === 'string')
           || (content === null && key !== 'prepared.json' && key !== 'operation.json')
           || ((baseline.test(key) || recovery.test(key)) && expectedHash !== null)) {
@@ -128,7 +136,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
             finally { await handle.close(); }
           }
           // No await from the final renderer guard/physical identity/CAS to rename.
-          check(); locate(key);
+          check(); locate(key); assertNoPreparedWorkspaceMigration(access);
           if (hash(readBytes(key)) !== expectedHash) return false;
           attempted = true;
           if (bytes === null) files.unlinkSync(target);

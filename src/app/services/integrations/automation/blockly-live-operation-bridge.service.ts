@@ -64,7 +64,7 @@ type BlocklyLiveOperationPayload = {
 };
 
 const PROJECT_MUTATIONS = new Set([
-  'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery',
+  'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery', 'abs_workspace_migrate',
   'library_history_navigation', 'library_runtime_sync', 'library_mutation_prepare', 'library_mutation_abort', 'set_board_config', 'project_save', 'blocks_tidy',
   'project_build', 'project_upload',
   'project_media_import',
@@ -589,7 +589,7 @@ export class BlocklyLiveOperationBridgeService {
 
     // Static negotiation must remain reachable after failed loading. Its route
     // is still bound to this original project and its actual project mode.
-    if (payload.operation === 'abs_protocol') {
+    if (payload.operation === 'abs_protocol' && payload.params?.['action'] !== 'prepare_workspace_migration') {
       if (this.projectService.getProjectMode(currentProject) !== 'blockly') return {
         ok: false, operation: 'abs_protocol', project: currentProject, code: 'ABS_WORKING_CANDIDATE_UNSUPPORTED',
         message: 'This project is not a Blockly program.' };
@@ -767,6 +767,10 @@ export class BlocklyLiveOperationBridgeService {
         message: '库依赖正在更新，请等待运行时同步结束。' };
     }
     switch (payload.operation) {
+      case 'abs_protocol':
+        return this.absGenerationTools.workspaceMigration('prepare', payload.params || {});
+      case 'abs_workspace_migrate':
+        return this.runAbsOperation(() => this.absGenerationTools.workspaceMigration('select', payload.params || {}));
       case 'blocks_set_state':
         return payload.params?.['action'] === 'inspect'
           ? this.absGenerationTools.blockState(payload.params)
@@ -876,6 +880,8 @@ export class BlocklyLiveOperationBridgeService {
       'abs_projection',
       'abs_validate',
       'abs_recovery',
+      'abs_protocol',
+      'abs_workspace_migrate',
       'abs_capabilities',
       'abs_compose',
       'abs_precheck',

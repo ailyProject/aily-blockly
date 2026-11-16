@@ -224,10 +224,20 @@ export class NativeSavePublications {
       && !await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk)) return pending();
     if (await this.port.read('committed.json') !== pointer) return pending();
     const acceptedSource = await output.store.acceptedSourceProof(staged.record.evidence.binding.generation, undefined, true);
-    const current = await hash(pointer) === proof.committedHash
-      && (acceptedSource ? !acceptedSource.authorSource.pending : disk.abs === output.ancestor.projection.abs)
+    const pointerHash = await hash(pointer);
+    const current = pointerHash === proof.committedHash
+      && await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk)
+      && (await output.store.workspaceMode() === 'project-v1'
+        ? acceptedSourceMatches(acceptedSource, staged.record.evidence.binding, this.port.attachment)
+          && acceptedSource.committedHash === pointerHash
+        : disk.abs === output.ancestor.projection.abs)
+      && await this.port.read('committed.json') === pointer
       && await this.port.read('prepared.json') === null;
-    const result: NativeSaveResultFacts = final?.result ?? { projectSaved: true, generatedCodePublished: false, partial: true,
+    // The terminal receipt remains immutable; this read-only projection reports
+    // the author's current pending draft independently of that original commit.
+    const result: NativeSaveResultFacts = final ? { ...final.result, ...(acceptedSource ? { acceptedSource,
+      publication: { ...final.result.publication, ...(final.result.publication.acceptedSource ? { acceptedSource } : {}) } } : {}) }
+      : { projectSaved: true, generatedCodePublished: false, partial: true,
       publication: { status: 'COMMITTED', generation: staged.record.evidence.binding.generation, abiSaved: proof.mode === 'changed', absMirrored: disk.abs === output.ancestor.projection.abs, mapPublished: true },
       ...(acceptedSource ? { acceptedSource } : {}),
       requiresReload: false, evidence: staged.record.evidence,

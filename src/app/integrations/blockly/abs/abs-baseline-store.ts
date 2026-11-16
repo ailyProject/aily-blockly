@@ -58,8 +58,9 @@ export interface AbsGenerationInput {
   recoveryArchive?: { key: string; hash: string };
   /** Only saved-source-preserving map/pointer recovery may set this marker. */
   metadataOnly?: true;
-  /** Only the validated candidate publisher may acknowledge exact author input. */
-  authorIntent?: 'candidate';
+  /** Internal publisher intent: validated input acceptance, or History's
+   * semantic-only publication whose author transition belongs to Lex. */
+  authorIntent?: 'candidate' | 'preserve';
 }
 interface GenerationRecord extends Omit<AbsGenerationInput, 'expected'> {
   schemaVersion: 1;
@@ -157,6 +158,9 @@ export class AbsBaselineStore {
       || await hashNullable(input.inputMap) !== expected.map)) throw new AbsSyncError('ABS_GENERATION_INVALID', 'Recovery map must retain the exact replaced bytes.');
     await this.port.withLock(async storage => {
       const workspaceMode = await this.workspaceMode(storage);
+      if (input.authorIntent !== undefined && !['candidate', 'preserve'].includes(input.authorIntent)
+        || input.authorIntent === 'preserve' && workspaceMode !== 'project-v1')
+        throw new AbsSyncError('ABS_GENERATION_INVALID', 'Author preservation requires its project-v1 History publisher.');
       const previousPointer = await storage.read(COMMITTED);
       const previousCommitted = await hashNullable(previousPointer);
       if (expectedCommitted !== undefined && expectedCommitted !== previousCommitted) {
@@ -172,7 +176,7 @@ export class AbsBaselineStore {
         const accepted = input.authorIntent === 'candidate' && input.mode === 'import' && current === await hashNullable(input.inputAbs);
         const clean = current === null || current === await hashNullable(previous?.projection.abs ?? null)
           || !!previous?.authorSource && previous.authorSource.disposition !== 'preserved' && current === previous.authorSource.hash;
-        const disposition = accepted ? 'accepted' : clean ? 'refreshed' : 'preserved';
+        const disposition = input.authorIntent === 'preserve' ? 'preserved' : accepted ? 'accepted' : clean ? 'refreshed' : 'preserved';
         authorSource = { version: 1, inputHash: current, disposition,
           hash: disposition === 'refreshed' ? await hashAbsText(input.projection.abs) : current };
       }
@@ -381,7 +385,7 @@ export class AbsBaselineStore {
     allowHistorical = false): Promise<AbsAcceptedSourceProof | undefined> {
     if (await this.workspaceMode(storage) !== 'project-v1') return undefined;
     const loaded = await this.readGeneration(storage, generation, true);
-    if (loaded.record.workspaceMode !== 'project-v1' || !loaded.record.authorSource || !this.port.attachment) return undefined;
+    if (!this.port.attachment) return undefined;
     const pointer = await storage.read(COMMITTED);
     const current = pointer === absJson(loaded.pointer);
     if (!current && (!allowHistorical || !await this.inspectCommittedAncestor(generation))) return undefined;
@@ -391,7 +395,12 @@ export class AbsBaselineStore {
     return { version: 1, workspaceMode: 'project-v1', attachment: this.port.attachment, binding,
       committedHash: await hashAbsText(absJson(loaded.pointer)), authorSource: { path: 'project.abs', hash: authorHash,
         bytes: author === null ? null : new TextEncoder().encode(author).byteLength,
-        pending: !current || loaded.record.authorSource.disposition === 'preserved' || authorHash !== loaded.record.authorSource.hash } };
+        // Migration selects the author engine without rewriting the immutable
+        // accepted predecessor. An older generation has no author disposition;
+        // only exact equality to its normalized source can establish clean.
+        pending: !current || (loaded.record.authorSource
+          ? loaded.record.authorSource.disposition === 'preserved' || authorHash !== loaded.record.authorSource.hash
+          : authorHash !== await hashAbsText(loaded.record.projection.abs)) } };
   }
 
   /** Repair only a derived map of the same verified saved source. This does
@@ -708,6 +717,8 @@ export class AbsBaselineStore {
       // stage and new commit entrypoints cannot apply or republish them as new work.
       if (stored.schemaVersion === 1) await validateAbsProjection(record.projection, true);
       if (!['import', 'export'].includes(record.mode)
+        || record.authorIntent !== undefined && !['candidate', 'preserve'].includes(record.authorIntent)
+        || record.authorIntent === 'preserve' && record.workspaceMode !== 'project-v1'
         || (record.mode === 'import' && (typeof record.abi !== 'string' || typeof record.inputAbs !== 'string'))
         || (record.mode === 'export' && record.abi !== null)
         || !record.expected || Object.keys(record.expected).sort().join(',') !== 'abi,abs,map'
@@ -723,6 +734,7 @@ export class AbsBaselineStore {
           || !['accepted', 'refreshed', 'preserved'].includes(author.disposition)
           || author.inputHash !== record.expected.abs
           || author.hash !== (author.disposition === 'refreshed' ? await hashAbsText(record.projection.abs) : author.inputHash)
+          || record.authorIntent === 'preserve' && author.disposition !== 'preserved'
           || author.disposition === 'accepted' && (record.authorIntent !== 'candidate' || record.mode !== 'import'
             || await hashNullable(record.inputAbs) !== author.hash)) throw new Error('Invalid author/accepted source separation.');
       }

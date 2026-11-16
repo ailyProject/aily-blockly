@@ -2,6 +2,7 @@ import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store';
 import { assertGenerationValidation, generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
+import { acceptedSourceMatches } from './abs-workspace-mode';
 import { AbsSyncError, type AbsProjection } from './abs-state';
 export type { NativeSaveResultFacts } from './abs-native-save-protocol';
 import { NativeSavePublications } from './abs-native-save-publication';
@@ -214,9 +215,13 @@ export class AbsApplicationJournal {
     if (absJson(await generationEvidence(projection, abi)) !== absJson(staged.outcome.evidence)) throw fail('Original saved document readback differs from its result.');
     const disk = await store.captureDisk(), pointer = await this.port.read('committed.json');
     const acceptedSource = await store.acceptedSourceProof(binding.generation, undefined, true);
-    const current = pointer !== null && await hashAbsText(pointer) === proof.committedHash && disk.abi === abi
+    const pointerHash = pointer === null ? null : await hashAbsText(pointer);
+    const current = pointerHash !== null && pointerHash === proof.committedHash && disk.abi === abi
       && await store.matchesAcceptedDisk({ projection, abi }, disk)
-      && (acceptedSource ? !acceptedSource.authorSource.pending : disk.abs === projection.abs)
+      && (await store.workspaceMode() === 'project-v1'
+        ? acceptedSourceMatches(acceptedSource, binding, this.port.attachment) && acceptedSource.committedHash === pointerHash
+        : disk.abs === projection.abs)
+      && await this.port.read('committed.json') === pointer
       && await this.port.read('prepared.json') === null;
     assertCurrent();
     let outcome = staged.outcome;
@@ -229,8 +234,10 @@ export class AbsApplicationJournal {
         || absJson(final.outcome?.historyBase ?? null) !== absJson(outcome.historyBase ?? null)) throw fail('The original final result differs from the committed source.');
       outcome = final.outcome;
     }
-    if (finalText === null && acceptedSource) outcome = { ...outcome, acceptedSource,
-      publication: { ...outcome.publication, absMirrored: disk.abs === projection.abs, acceptedSource } };
+    if (acceptedSource) outcome = { ...outcome, acceptedSource,
+      publication: { ...outcome.publication,
+        ...(finalText === null ? { absMirrored: disk.abs === projection.abs, acceptedSource }
+          : outcome.publication.acceptedSource ? { acceptedSource } : {}) } };
     return { projection, result: { ...outcome, ok: true, operation: 'abs_apply', project: this.project,
       receipt: { ...validation, output: outcome.evidence, appliedRevision: outcome.appliedRevision,
         ...(outcome.historyBase ? { historyBase: { hash: outcome.historyBase.hash, inputAbsHash: outcome.historyBase.inputAbsHash } } : {}),

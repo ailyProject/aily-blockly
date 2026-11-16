@@ -10,6 +10,8 @@ import type { HistoryEnvironmentPlan } from '../history-environment';
 import { settleLinkedProjectEnvironment } from '../environment-settlement';
 import { observeRuntimePublication } from './abs-runtime-publication-observation';
 import { AbsOperationJournal, type NativeSaveOperationRef } from './abs-operation-journal';
+import { assertWorkspaceMigrationWritable, captureWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
+import { absWorkspaceProtocol } from './abs-workspace-protocol';
 import { AbsApplicationJournal } from './abs-application-journal';
 import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse } from './abs-native-save-result';
 import { blockStatePublicationIdentity, type NativeSaveResultFacts, type NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
@@ -251,7 +253,7 @@ export class AbsWorkspaceSyncService {
           finally { runtime.Events.setGroup(group); }
           guard(); // A layout change is allowed; a program/owner change is not.
         }
-        const outcome = await this.exportInContext(context, lease, store, { save: true }, undefined, checkpoint, computation);
+        const outcome = await this.exportInContext(context, lease, store, { save: true }, undefined, checkpoint, computation, !!history);
         if (outcome.publication.status !== 'COMMITTED' || outcome.requiresReload || !outcome.evidence) {
           throw Object.assign(new AbsSyncError('ABS_SAVE_INCOMPLETE', outcome.publication.error ?? 'The original native publication is not complete.'),
             { publication: outcome.publication, projectSaved: outcome.publication.abiSaved === true,
@@ -329,8 +331,48 @@ export class AbsWorkspaceSyncService {
     const store = new AbsBaselineStore(await openAbsHostStorage(path, guard), { projectKey: path, pageId: '' });
     const snapshot = await store.readCommittedSnapshot(); guard();
     if (!snapshot || snapshot.abi === null) throw new AbsSyncError('ABS_HISTORY_BASELINE_REQUIRED', 'History requires an existing complete saved snapshot.');
+    const acceptedSource = await store.acceptedSourceProof(snapshot.projection.map.generation); guard();
     return { ok: true, project: path, programPublicationVersion: 1,
-      evidence: await generationEvidence(snapshot.projection, snapshot.abi), abs: snapshot.projection.abs };
+      evidence: await generationEvidence(snapshot.projection, snapshot.abi), abs: snapshot.projection.abs,
+      ...(acceptedSource ? { acceptedSource } : {}) };
+  }
+
+  /** Runtime-only transition. Preparation is read-only; the final selection is
+   * one original project FIFO/editor lease plus the native publication lock. */
+  prepareWorkspaceModeMigration() {
+    return this.run(async (context, lease) => {
+      const working = this.editor.captureProjectSnapshot(lease), check = this.atRevision(context.assertCurrent, lease, working);
+      const guard = () => { check(); };
+      const port = await openAbsHostStorage(context.path, guard);
+      const migration = await captureWorkspaceMigrationProof(port, working, guard); guard();
+      const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard, port); guard();
+      if (!protocol.ok) return protocol;
+      return { ...protocol, migration };
+    }, false, true, false, false, true);
+  }
+
+  async migrateWorkspaceMode(input: Record<string, any>) {
+    if (input['version'] !== 1 || !/^[a-f0-9]{64}$/.test(input['recordHash'] ?? '')
+      || Object.keys(input).some(key => !['version', 'recordHash'].includes(key)))
+      throw new AbsSyncError('ABS_REQUEST_INVALID', 'Mode migration requires its exact immutable prepared record.');
+    const selection = await this.run(async (context, lease) => {
+      const working = this.editor.captureProjectSnapshot(lease), check = this.atRevision(context.assertCurrent, lease, working);
+      const guard = () => { check(); };
+      const port = await openAbsHostStorage(context.path, guard);
+      const request = await verifyWorkspaceMigrationRecord(port, input['recordHash'], working, guard); guard();
+      const select = window['fs']?.selectProjectWorkspaceMode;
+      if (typeof select !== 'function') throw new AbsSyncError('ABS_STORAGE_HOST_UNAVAILABLE', 'The native mode selector is unavailable.');
+      const selected = await select(context.path, request, guard); guard();
+      if (selected?.ok !== true) throw new AbsSyncError(selected?.error?.code ?? 'ABS_WORKSPACE_MIGRATION_CONFLICT',
+        selected?.error?.message ?? 'The native mode selection did not complete.');
+      const migrationReceipt = selected.value;
+      // The former storage capability was revoked by the mode switch. Obtain
+      // fresh proof rather than reading through that old mode-bound capability.
+      const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard); guard();
+      if (!protocol.ok) return { ...protocol, migrationReceipt };
+      return { ...protocol, migrationReceipt };
+    }, false, true, false, false, true);
+    return { ...selection, operation: 'abs_workspace_migrate' };
   }
 
   async publishHistoryProgram(input: unknown) {
@@ -762,7 +804,8 @@ export class AbsWorkspaceSyncService {
 
   private exportInContext(context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease,
     store: AbsBaselineStore, options: AbsExportOptions,
-    input?: { expected: AbsDiskSnapshot; generation: string | null }, checkpoint?: AbsDocumentSaveCheckpoint, computation?: AbsBackgroundComputation): Promise<AbsWorkspaceSyncOutcome> {
+    input?: { expected: AbsDiskSnapshot; generation: string | null }, checkpoint?: AbsDocumentSaveCheckpoint, computation?: AbsBackgroundComputation,
+    preserveAuthor = false): Promise<AbsWorkspaceSyncOutcome> {
     const initialize = options.initialize === true || options.save === true;
     return this.withoutViewChecks(async (): Promise<AbsWorkspaceSyncOutcome> => {
       let saveCheckpoint = checkpoint;
@@ -907,6 +950,7 @@ export class AbsWorkspaceSyncService {
       if (options.publish === false) return { publication: { status: 'NOT_COMMITTED', generation: projection.map.generation,
         abiSaved: false, absMirrored: false, mapPublished: false }, requiresReload: false, warnings: [], evidence, abs: projection.abs };
       await store.stage({ projection, mode: prepared ? 'import' : 'export', inputAbs: expected.abs ?? projection.abs, abi: prepared?.abiText ?? null, expected,
+        ...(projectTree && preserveAuthor ? { authorIntent: 'preserve' as const } : {}),
         ...(inspection || archiveCurrentDraft ? { inputMap: expected.map } : {}),
         ...(options.preserveDraft || archiveCurrentDraft ? { draftBaseGeneration: committed!.map.generation } : {}) },
         input?.generation === null ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash);
@@ -2439,7 +2483,7 @@ export class AbsWorkspaceSyncService {
 
   releaseHistoryNavigation(_token: string): void { /* No cross-request writer lease exists in this protocol. */ }
 
-  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore, computation?: AbsBackgroundComputation) => Promise<T>, flush = true, allowPageChange = false, repairLocation = true, background = false): Promise<T> {
+  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore, computation?: AbsBackgroundComputation) => Promise<T>, flush = true, allowPageChange = false, repairLocation = true, background = false, migration = false): Promise<T> {
     const context = this.context(allowPageChange); // Before queueing, not when an old task eventually starts.
     return this.editor.runProjectOperation(async () => {
       context.assertCurrent();
@@ -2447,6 +2491,9 @@ export class AbsWorkspaceSyncService {
       let releaseLayout = () => undefined;
       let computation: AbsBackgroundComputation | undefined;
       try {
+        const nativeStorage = await openAbsHostStorage(context.path, context.assertCurrent);
+        if (!migration) await assertWorkspaceMigrationWritable(nativeStorage);
+        context.assertCurrent(); lease.assertCurrent();
         releaseLayout = fenceBlocklyWorkspaceBumps(context.workspace);
         if (background) {
           const allow = lease.allowUserEdits;
@@ -2456,11 +2503,11 @@ export class AbsWorkspaceSyncService {
         context.assertCurrent(); lease.assertCurrent();
         let store: AbsBaselineStore;
         if (background) {
-          const port = await openAbsHostStorage(context.path, context.assertCurrent);
+          const port = nativeStorage;
           computation = new AbsBackgroundComputation(port, context.scope, () => { context.assertCurrent(); lease.assertCurrent(); });
           if (repairLocation) await computation.recoverLocation();
           store = computation.store(new AbsBaselineStore(port, context.scope));
-        } else store = await this.store(context, repairLocation);
+        } else store = await this.store(context, repairLocation, nativeStorage);
         return await operation(context, lease, store, computation);
       } finally { computation?.dispose(); try { releaseLayout(); } finally { lease.release(); } }
     });
@@ -2492,8 +2539,8 @@ export class AbsWorkspaceSyncService {
     else inspect();
   }
 
-  private async store(context: ReturnType<AbsWorkspaceSyncService['context']>, repairLocation = true) {
-    const port = await openAbsHostStorage(context.path, context.assertCurrent);
+  private async store(context: ReturnType<AbsWorkspaceSyncService['context']>, repairLocation = true, supplied?: import('./abs-baseline-store').AbsSyncStoragePort) {
+    const port = supplied ?? await openAbsHostStorage(context.path, context.assertCurrent);
     if (repairLocation) await this.withoutViewChecks(() => recoverAbsLocationMetadata(port, context.scope, context.assertCurrent));
     context.assertCurrent(); return new AbsBaselineStore(port, context.scope);
   }
