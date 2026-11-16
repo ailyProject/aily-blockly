@@ -1,6 +1,5 @@
 import { BehaviorSubject, of, Subject } from 'rxjs';
 import { CloudProjectOpenService } from './cloud-project-open.service';
-import { readCloudSyncBaseline } from './cloud-sync-baseline';
 
 describe('Cloud project continue editing', () => {
   const uuid = 'b27dffb8-6d46-4c39-864c-d16f8b9d483a';
@@ -16,7 +15,7 @@ describe('Cloud project continue editing', () => {
         files.set(`${target}/package.json`, '{"name":"demo","type":"coder"}');
       }),
       readFileSync: path => { if (!files.has(path)) throw new Error('missing'); return files.get(path); },
-      writeFileSync: (path, value) => files.set(path, value), mkdirSync: () => {},
+      writeFileSync: (path, value) => files.set(path, value),
     };
     user = new BehaviorSubject({ id: 'author' });
     state = new BehaviorSubject('authenticated');
@@ -27,7 +26,7 @@ describe('Cloud project continue editing', () => {
     cloud = { baseUrl: '/api/v1/cloud',
       getProject: jasmine.createSpy('details').and.returnValue(of({ status: 200,
         data: { id: 42, uuid, owner_id: 'author', category: 'coder', nickname: 'Demo' } })),
-      openVerifiedProjectArchive: jasmine.createSpy('archive').and.returnValue(of({ path: '/temp/extracted', sha256: 'a'.repeat(64) })),
+      openVerifiedProjectArchive: jasmine.createSpy('archive').and.returnValue(of({ path: '/temp/extracted' })),
     };
     projects = { projectRootPath: '/projects', ensureProjectRootPath: jasmine.createSpy('root').and.resolveTo(),
       getProjectMode: () => config.isCoderProduct() ? 'coder' : 'blockly',
@@ -37,7 +36,7 @@ describe('Cloud project continue editing', () => {
 
   afterEach(() => Object.assign(window, previous));
 
-  it('opens each product in a unique directory, retaining the numeric cloud ID and actual baseline', async () => {
+  it('opens each product in a unique directory, retaining the numeric cloud ID without a sync baseline file', async () => {
     for (const category of ['coder', 'blockly']) {
       config.isCoderProduct.and.returnValue(category === 'coder');
       cloud.getProject.and.returnValue(of({ status: 200, data: { id: 42, uuid, owner_id: 'author', category } }));
@@ -47,9 +46,7 @@ describe('Cloud project continue editing', () => {
       const target = projects.projectOpen.calls.mostRecent().args[0];
       expect(target).toMatch(/^\/projects\/Cloud_[a-f0-9-]+$/);
       expect(JSON.parse(files.get(`${target}/package.json`)!).cloudId).toBe(42);
-      expect(readCloudSyncBaseline(target, '42', 'author', '/api/v1/cloud')).toBe('a'.repeat(64));
-      expect(readCloudSyncBaseline(target, '42', 'other', '/api/v1/cloud')).toBeNull();
-      expect(readCloudSyncBaseline(target, '99', 'author', '/api/v1/cloud')).toBeNull();
+      expect(files.has(`${target}/.aily/cloud-sync.json`)).toBeFalse();
     }
     expect(window['fs'].importProjectDirectory).toHaveBeenCalledTimes(2);
     expect(projects.projectOpen.calls.first().args[0]).not.toBe(projects.projectOpen.calls.mostRecent().args[0]);
@@ -93,7 +90,7 @@ describe('Cloud project continue editing', () => {
     const opening = service.open(uuid, true);
     await Promise.resolve();
     user.next({ id: 'other' }); user.next({ id: 'author' });
-    download.next({ path: '/temp/extracted', sha256: 'a'.repeat(64) });
+    download.next({ path: '/temp/extracted' });
     await expectAsync(opening).toBeRejectedWithError(/已切换/);
     expect(window['fs'].importProjectDirectory).not.toHaveBeenCalled();
     expect(projects.projectOpen).not.toHaveBeenCalled();

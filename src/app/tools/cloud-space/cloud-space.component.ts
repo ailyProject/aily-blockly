@@ -7,7 +7,6 @@ import { NzButtonModule } from 'ng-zorro-antd/button';
 import { EditorComponent } from './editor/editor.component';
 import { CloudService } from './services/cloud.service';
 import { CloudProjectOpenService } from './services/cloud-project-open.service';
-import { readCloudSyncBaseline, writeCloudSyncBaseline } from './services/cloud-sync-baseline';
 import {
   ProjectService,
   projectDataRuntime,
@@ -546,11 +545,6 @@ export class CloudSpaceComponent {
     try {
       assertCurrent();
       const originalManifest = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
-      const expectedArchiveSha256 = originalManifest.cloudId
-        ? readCloudSyncBaseline(projectPath, originalManifest.cloudId, accountId, apiBase) : undefined;
-      if (originalManifest.cloudId && !expectedArchiveSha256) {
-        throw new Error('此本地工程缺少可靠的云端同步基线，请保留本地修改，从云端重新打开或另存为新工程');
-      }
       if (studentProject) {
         const manifest = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
         if (manifest.cloudId !== studentProject.id || !this.canEditProject(studentProject)) {
@@ -606,7 +600,6 @@ export class CloudSpaceComponent {
       archive: archivePath,
       category: this.projectService.getProjectMode(projectPath) === 'coder'
         ? 'coder' : 'blockly',
-      expectedArchiveSha256,
     }).subscribe(async res => {
         try {
           if (res && res.status === 200) {
@@ -616,7 +609,6 @@ export class CloudSpaceComponent {
             }
             await this.setCurrentProjectCloudId(res.data.id, projectPath);
             assertCurrent();
-            writeCloudSyncBaseline(projectPath, { cloudId: String(res.data.id), accountId, apiBase, archiveSha256: res.data.archive_sha256 });
             this.message.success('同步成功');
             // 更新项目列表
             await this.getCloudProjects();

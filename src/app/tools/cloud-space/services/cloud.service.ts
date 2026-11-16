@@ -68,7 +68,6 @@ export class CloudService {
     projectData?: any; // 新增的项目数据对象
     archive?: string;
     category?: 'blockly' | 'coder';
-    expectedArchiveSha256?: string;
   }): Observable<any> {
     const formData = new FormData();
     if (params.category) formData.append('category', params.category);
@@ -76,7 +75,6 @@ export class CloudService {
       formData.append('projectData', JSON.stringify(params.projectData));
     }
     if (params.pid) formData.append('pid', params.pid);
-    if (params.expectedArchiveSha256) formData.append('expectedArchiveSha256', params.expectedArchiveSha256);
     if (params.archive) {
       // 读取二进制文件（不指定编码参数，返回原始Buffer）
       const fileBuffer = window['fs'].readFileSync(params.archive, null);
@@ -144,7 +142,7 @@ export class CloudService {
       .pipe(catchError(this.handleError));
   }
 
-  openVerifiedProjectArchive(project: any, ownOnly: boolean): Observable<{ path: string; sha256: string }> {
+  openVerifiedProjectArchive(project: any, ownOnly: boolean): Observable<{ path: string }> {
     const params: Record<string, string> = {};
     if (ownOnly && /^[a-f0-9]{64}$/.test(project.archive_sha256 || '')) params['expectedArchiveSha256'] = project.archive_sha256;
     const path = ownOnly ? `${encodeURIComponent(project.uuid)}/archive` : `${encodeURIComponent(project.id)}/download`;
@@ -159,7 +157,7 @@ export class CloudService {
           || Number(response.headers.get('X-Archive-Size')) !== blob.size)) throw new Error('云工程归档校验失败，请重新打开');
         const magic = new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 6));
         if ([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c].some((value, index) => magic[index] !== value)) throw new Error('云工程不是有效的 7z 归档');
-        return { path: await this.downloadAndExtractArchive(blob), sha256 };
+        return { path: await this.downloadAndExtractArchive(blob) };
       })())),
     );
   }

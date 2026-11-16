@@ -4,7 +4,6 @@ import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { CloudService } from './cloud.service';
-import { writeCloudSyncBaseline } from './cloud-sync-baseline';
 
 @Injectable({ providedIn: 'root' })
 export class CloudProjectOpenService {
@@ -70,7 +69,6 @@ export class CloudProjectOpenService {
     manifest.doc_url = project.doc_url || '';
     manifest.keywords = typeof project.tags === 'string' ? JSON.parse(project.tags) : project.tags || [];
     window['fs'].writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-    writeCloudSyncBaseline(target, { cloudId: String(project.id), accountId, apiBase, archiveSha256: archive.sha256 });
     assertCurrent();
     await this.projects.projectOpen(target);
   }
