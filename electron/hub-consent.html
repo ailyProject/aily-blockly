@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>连接项目广场</title><link rel="stylesheet" href="hub-consent.css"><script defer src="hub-consent-page.js"></script></head><body>
+<main class="authorization-page app-ui-scope">
+  <section class="authorization-card" aria-labelledby="authorization-title" lang="zh-CN">
+    <div class="connection-mark" aria-hidden="true">
+      <span class="app-mark aily-mark"><img src="hub-consent-aily.jpg" alt="" width="44" height="44" /></span>
+      <svg class="connection-arrow" viewBox="0 0 24 24" fill="none"><path d="M4 12h16m-5-5 5 5-5 5" /></svg>
+      <span class="app-mark hub-mark"><svg viewBox="0 0 28 28" fill="none"><path d="m14 4 10 6v8l-10 6-10-6v-8l10-6Z" /><path d="m4 10 10 6 10-6M14 16v8M9 7l10 6" /></svg></span>
+    </div>
+
+    <header class="authorization-header">
+      <h1 id="authorization-title">连接项目广场</h1>
+      <p>使用你的 aily 账号登录，<br class="mobile-break" />将云工程带到创作者社区。</p>
+    </header>
+
+    <div class="account">
+      <span id="account-avatar" class="account-avatar" aria-hidden="true">A</span>
+      <div class="account-copy"><span>当前 aily 账号</span><strong id="account-name">正在读取账号…</strong><small id="account-email"></small></div>
+      <span class="account-status"><span></span>已登录</span>
+    </div>
+
+    <p class="target-origin">登录到 <span id="target-origin"></span></p>
+
+    <section class="permissions" aria-labelledby="permissions-title">
+      <h2 id="permissions-title">连接后，项目广场将获得以下权限</h2>
+      <ul>
+        <li>
+          <span class="permission-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3.25" /><path d="M5 20v-2a7 7 0 0 1 14 0v2" /></svg></span>
+          <div><h3>读取基本资料</h3><p>读取昵称和头像，用于展示你的项目广场作者身份。</p></div>
+        </li>
+        <li>
+          <span class="permission-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M7 18H6a4 4 0 0 1-.6-7.95A6.5 6.5 0 0 1 18 9a4.5 4.5 0 0 1 .5 9H17M12 13v8m-3-3 3 3 3-3" /></svg></span>
+          <div><h3>读取你的云工程</h3><p>持续查看、读取和复制你本人的云工程到项目广场。</p></div>
+        </li>
+      </ul>
+    </section>
+
+    <div class="privacy-note">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 3v6c0 4.5-4.5 7.5-8 9-3.5-1.5-8-4.5-8-9V6l8-3Z" /><path d="m8.5 12 2.5 2.5 4.5-5" /></svg>
+      <p>项目广场无权修改、删除或发布 aily 云工程，也无法访问支付和账号安全信息。</p>
+    </div>
+
+    <p class="expiry-note">连接连续 30 天未使用时需重新授权，你可随时撤销。</p>
+
+    <p id="error" class="authorization-error" role="alert" hidden></p>
+    <div class="authorization-actions">
+      <button id="allow" class="allow-button" type="button" disabled>允许并继续 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg></button>
+      <button id="cancel" class="cancel-button" type="button">取消</button>
+    </div>
+    <footer class="authorization-footer">你可以继续使用主软件，当前任务不会暂停。</footer>
+  </section>
+</main>
+</body></html>

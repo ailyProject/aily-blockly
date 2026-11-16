@@ -4,6 +4,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { randomBytes } = require('node:crypto');
 const { getProductAuthConfig } = require('./build-product');
+const { createHubConsentPresenter } = require('./hub-consent-window');
 
 const opaque = /^[A-Za-z0-9_-]{43}$/;
 const registryDirectory = () => path.join(os.tmpdir(), `aily-hub-login-${process.getuid?.() ?? os.userInfo().username}`);
@@ -62,8 +63,9 @@ async function forwardHubBrowserLogin(value, product, options = {}) {
   throw new Error('Hub client unavailable');
 }
 
-function createHubBrowserBridge({ window, ipcMain, dialog, product, development = false, directory = registryDirectory() }) {
+function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresenter, product, development = false, directory = registryDirectory() }) {
   const contents = window.webContents;
+  const consent = consentPresenter || createHubConsentPresenter({ BrowserWindow, ipcMain });
   const suffix = randomBytes(12).toString('hex');
   const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\aily-hub-${product}-${suffix}` : path.join(os.tmpdir(), `ahl-${suffix}`);
   const filename = path.join(directory, `${product}-${process.pid}-${suffix}.json`);
@@ -81,7 +83,7 @@ function createHubBrowserBridge({ window, ipcMain, dialog, product, development 
   const accept = value => {
     const request = parseHubBrowserLogin(value, product, development), now = Date.now();
     for (const [state, expires] of seen) if (expires <= now) seen.delete(state);
-    if (active?.expiresAt <= now) { active = null; delivering = false; }
+    if (active?.expiresAt <= now) { consent.cancel(); active = null; delivering = false; }
     if (active || seen.has(request.state) || seen.size >= 128) return false;
     seen.set(request.state, now + 120000); active = { ...request, expiresAt: now + 120000 };
     deliver(); return true;
@@ -112,8 +114,9 @@ function createHubBrowserBridge({ window, ipcMain, dialog, product, development 
   });
   server.on('error', () => {});
   window.on('focus', activate);
-  const resetRenderer = (_event, _url, _inPlace, isMainFrame) => {
-    if (isMainFrame) { rendererReady = false; if (delivering) active = null; delivering = false; }
+  const resetRenderer = (_event, _url, isInPlace, isMainFrame) => {
+    // Angular hash routing keeps the same initialized document and IPC listener.
+    if (isMainFrame && !isInPlace) { rendererReady = false; if (delivering) { consent.cancel(); active = null; } delivering = false; }
   };
   contents.on('did-start-navigation', resetRenderer);
   ipcMain.handle('hub-client-ready', event => { if (!ownFrame(event)) return false; rendererReady = true; deliver(); return true; });
@@ -122,20 +125,19 @@ function createHubBrowserBridge({ window, ipcMain, dialog, product, development 
       || typeof input.account !== 'string' || !input.account.trim() || input.account.length > 512) return false;
     confirming = true; const current = active;
     try {
-      window.show(); if (window.isMinimized()) window.restore(); window.focus();
-      const result = await dialog.showMessageBox(window, { type: 'question', title: '登录 aily Project',
-        message: '允许使用当前 aily 账号登录项目广场？',
-        detail: `当前账号：${input.account}\n目标：${new URL(current.redirect_uri).origin}\n\n允许读取基本资料和你本人的云工程。项目广场不能修改或删除云工程。`,
-        buttons: ['取消', '允许并登录'], defaultId: 0, cancelId: 0, noLink: true });
-      return result.response === 1 && active === current && current.expiresAt > Date.now() && ownFrame(event);
+      const approved = await consent.confirm({ account: input.account,
+        origin: new URL(current.redirect_uri).origin, expiresAt: current.expiresAt });
+      return approved === true && active === current && current.expiresAt > Date.now() && ownFrame(event);
     } finally { confirming = false; }
   });
   ipcMain.handle('hub-client-finish', (event, state) => {
     if (!ownFrame(event) || active?.state !== state) return false;
+    consent.cancel();
     active = null; delivering = false; return true;
   });
   return { ready, accept, close() {
     if (closed) return; closed = true;
+    consent.cancel();
     window.removeListener('focus', activate); contents.removeListener('did-start-navigation', resetRenderer);
     for (const name of ['hub-client-ready', 'hub-client-confirm', 'hub-client-finish']) ipcMain.removeHandler(name);
     try { fs.unlinkSync(filename); } catch {}

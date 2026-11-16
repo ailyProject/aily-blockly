@@ -18,7 +18,7 @@ async function main() {
       path.join(bundle, 'Contents/Info.plist')], { encoding: 'utf8' });
     if (plist.status !== 0) throw new Error(plist.stderr);
   }
-  for (const name of ['hub-browser-login.js', 'build-product.js']) {
+  for (const name of ['hub-browser-login.js', 'build-product.js', 'hub-consent-window.js', 'hub-consent-preload.js', 'hub-consent.html', 'hub-consent.css', 'hub-consent-page.js', 'hub-consent-aily.jpg']) {
     fs.copyFileSync(path.join(__dirname, '../../electron', name), path.join(source, 'electron', name));
   }
   fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({ name: 'hub-login-fixture', version: '1.0.0', main: 'main.cjs' }));
@@ -54,7 +54,8 @@ async function main() {
       for (const name of ['AILY_CHILD_PATH', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) assert.equal(process.env[name], undefined);
       let account = '', records = [];
       const window = new BrowserWindow({ width:660,height:440,title:'客户端授权验证', webPreferences:{preload:path.join(__dirname,'preload.cjs')} });
-      const bridge = require('./electron/hub-browser-login').createHubBrowserBridge({ window, ipcMain, dialog, product:'blockly', directory:path.join(root,'registry') });
+      window.webContents.on('console-message', event => console.log('fixture-renderer', event.message));
+      const bridge = require('./electron/hub-browser-login').createHubBrowserBridge({ window, ipcMain, BrowserWindow, product:'blockly', directory:path.join(root,'registry') });
       await bridge.ready;
       ipcMain.handle('fixture-account', () => account);
       ipcMain.handle('fixture-request', (_event, value) => {

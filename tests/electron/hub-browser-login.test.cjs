@@ -11,10 +11,10 @@ const makeUrl = (state = 's'.repeat(43), callback = 'https://hub.aily.pro/auth/c
 function fixture(directory, response = 1) {
   const window = new EventEmitter(), contents = new EventEmitter(), handlers = new Map(), messages = [], dialogs = [];
   contents.mainFrame = {}; contents.send = (...args) => messages.push(args);
-  Object.assign(window, { webContents: contents, isDestroyed: () => false, isMinimized: () => false, show() {}, focus() {} });
+  Object.assign(window, { webContents: contents, isDestroyed: () => false, show() { throw new Error('Main window must not be raised'); }, focus() { throw new Error('Main window must not be focused'); } });
   const ipcMain = { handle: (name, handler) => handlers.set(name, handler), removeHandler: name => handlers.delete(name) };
-  const dialog = { showMessageBox: async (_window, options) => { dialogs.push(options); return { response }; } };
-  const bridge = createHubBrowserBridge({ window, ipcMain, dialog, product: 'blockly', development: true, directory });
+  const consentPresenter = { confirm: async options => { dialogs.push(options); return response === 1; }, cancel() {} };
+  const bridge = createHubBrowserBridge({ window, ipcMain, consentPresenter, product: 'blockly', development: true, directory });
   const event = { sender: contents, senderFrame: contents.mainFrame };
   return { bridge, messages, dialogs, window, call: (name, input, e = event) => handlers.get(name)(e, input) };
 }
@@ -40,8 +40,8 @@ test('a cold request waits for its renderer and requires an explicit native conf
   assert.equal(f.call('hub-client-ready'), true);
   assert.equal(f.messages[0][0], 'hub-client-authorize');
   assert.equal(await f.call('hub-client-confirm', { state: 's'.repeat(43), account: '当前账号 B · b@example.test' }), true);
-  assert.match(f.dialogs[0].detail, /当前账号 B/); assert.match(f.dialogs[0].detail, /https:\/\/hub\.aily\.pro/);
-  assert.deepEqual(f.dialogs[0].buttons, ['取消', '允许并登录']); assert.equal(f.dialogs[0].defaultId, 0);
+  assert.match(f.dialogs[0].account, /当前账号 B/); assert.equal(f.dialogs[0].origin, 'https://hub.aily.pro');
+  assert.ok(f.dialogs[0].expiresAt > Date.now());
   assert.equal(f.call('hub-client-finish', 's'.repeat(43)), true);
   assert.equal(f.bridge.accept(makeUrl()), false);
 });
@@ -79,4 +79,25 @@ test('closing a destroyed window releases IPC and the owner record without acces
   Object.defineProperty(f.window, 'webContents', { get() { throw new Error('Object has been destroyed'); } });
   assert.doesNotThrow(() => f.bridge.close());
   assert.equal(hasHubBrowserOwner('blockly', { directory }), false);
+});
+
+test('Angular hash navigation preserves the ready renderer and its active consent request', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-client-test-')), f = fixture(directory);
+  t.after(() => { f.bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  await f.bridge.ready; f.call('hub-client-ready');
+  f.window.webContents.emit('did-start-navigation', {}, 'http://localhost:4202/#/main', true, true);
+  assert.equal(f.bridge.accept(makeUrl()), true);
+  assert.equal(f.messages.length, 1, 'the already initialized Angular service still receives the login request');
+  f.window.webContents.emit('did-start-navigation', {}, 'http://localhost:4202/#/main/settings', true, true);
+  assert.equal(await f.call('hub-client-confirm', { state: 's'.repeat(43), account: 'Account B' }), true);
+});
+
+test('a full document navigation invalidates an active request until the new renderer initializes', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-client-test-')), f = fixture(directory);
+  t.after(() => { f.bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  await f.bridge.ready; f.call('hub-client-ready'); f.bridge.accept(makeUrl());
+  f.window.webContents.emit('did-start-navigation', {}, 'http://localhost:4202/', false, true);
+  assert.equal(await f.call('hub-client-confirm', { state: 's'.repeat(43), account: 'Account B' }), false);
+  assert.equal(f.bridge.accept(makeUrl('x'.repeat(43))), true); assert.equal(f.messages.length, 1);
+  f.call('hub-client-ready'); assert.equal(f.messages.length, 2);
 });
