@@ -86,9 +86,13 @@ export class HubClientLoginService implements OnDestroy {
       if (reason !== 'access_denied') console.warn('[HubLogin] Authorization failed', { reason,
         status: error instanceof HttpErrorResponse ? error.status : undefined });
     } finally {
-      this.active = false;
-      try { if (!this.destroyed) this.electron.openUrl(callback.toString()); }
-      finally { await this.bridge?.finish(request.state).catch(() => false); }
+      try {
+        if (!this.destroyed) {
+          const delivered = await this.bridge?.deliver?.(request.state, callback.href).catch(() => false);
+          if (!this.destroyed && !delivered) this.electron.openUrl(callback.toString());
+        }
+      }
+      finally { this.active = false; await this.bridge?.finish(request.state).catch(() => false); }
     }
   }
 

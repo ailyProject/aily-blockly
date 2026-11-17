@@ -19,6 +19,7 @@
     "asar": true,
     "asarUnpack": [
       "electron/native/*.node",
+      "electron/native/browser-return.ps1",
       "electron/preload.js",
       "electron/node_modules/**/*.node",
       "electron/node_modules/@lydell/**",

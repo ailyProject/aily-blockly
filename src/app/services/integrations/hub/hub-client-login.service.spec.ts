@@ -46,6 +46,22 @@ describe('Hub browser login with client confirmation', () => {
     expect(bridge.finish).toHaveBeenCalledWith('s'.repeat(43));
   });
 
+  it('continues in the initiating browser tab for successful and failed authorization without opening another tab', async () => {
+    bridge.deliver = jasmine.createSpy().and.resolveTo(true);
+    listener(request()); await settle();
+    expect(bridge.deliver).toHaveBeenCalledWith(request().state, jasmine.stringMatching('/auth/desktop'));
+    expect(electron.openUrl).not.toHaveBeenCalled();
+    bridge.confirm.and.resolveTo(false); listener(request('t'.repeat(43))); await settle();
+    expect(bridge.deliver.calls.mostRecent().args[1]).toContain('error=access_denied');
+    expect(electron.openUrl).not.toHaveBeenCalled();
+  });
+
+  it('opens the normal receipt only when the initiating tab cannot receive it', async () => {
+    bridge.deliver = jasmine.createSpy().and.resolveTo(false);
+    listener(request()); await settle(); expect(electron.openUrl).toHaveBeenCalledTimes(1);
+    expect(bridge.finish).toHaveBeenCalledWith(request().state);
+  });
+
   it('starts a fresh authorization for the newly signed-in client account', async () => {
     listener(request()); await settle();
     auth.currentUser = { id: 'c' }; auth.getToken2.and.resolveTo('token-c'); auth.getAuthCredentialGeneration.and.returnValue(2);

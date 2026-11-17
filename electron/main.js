@@ -145,7 +145,7 @@ const hubBrowserDevelopment = !app.isPackaged;
 let hubBrowserBridge;
 let pendingHubBrowserLogin;
 const hubBrowserLaunch = process.argv.find(value => isHubBrowserLogin(value, getBuildProduct()));
-if (hubBrowserLaunch && hasHubBrowserOwner(getBuildProduct())) {
+if (hubBrowserLaunch && hasHubBrowserOwner(getBuildProduct(), { receipts: new URL(hubBrowserLaunch).searchParams.has('receipt_uri') })) {
   forwardHubBrowserLogin(hubBrowserLaunch, getBuildProduct(), { development: hubBrowserDevelopment })
     .then(() => app.exit(0), () => app.exit(1));
   return;

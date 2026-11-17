@@ -14,7 +14,7 @@ function fixture() {
   for (const method of ['setEnabled', 'setFocusable', 'setIgnoreMouseEvents']) {
     window[method] = () => assert.fail(`Consent must not change owner input via ${method}`);
   }
-  window.focusRestored = 0; window.webContents = { focus: () => window.focusRestored++ };
+  window.focusRestored = 0; window.webContents = { focus: () => window.focusRestored++, isDestroyed: () => window.destroyed };
   window.contentView = { children: [], addChildView(view) { this.children.push(view); },
     removeChildView(view) { this.children = this.children.filter(item => item !== view); } };
   class View extends EventEmitter {
@@ -45,22 +45,28 @@ function fixture() {
     }
     event() { return { sender: this.webContents, senderFrame: this.webContents.mainFrame }; }
   }
-  const prepareChrome = () => ({ setTheme() {} });
+  let gateActive = false, gateRestored = 0;
+  const prepareChrome = () => {
+    gateActive = true;
+    return { setTheme() {}, restore() { gateActive = false; gateRestored++; } };
+  };
   const presenter = createHubConsentPresenter({ window, BrowserWindow: View, ipcMain, prepareChrome });
-  return { presenter, window, views, handlers, ipcMain };
+  return { presenter, window, views, handlers, ipcMain,
+    get gateActive() { return gateActive; }, get gateRestored() { return gateRestored; } };
 }
 const input = () => ({ account: '测试账号 B · b@example.test', origin: 'https://hub.aily.pro', expiresAt: Date.now() + 120000 });
 
-test('consent is a non-modal child without changing owner input and only its exact sandboxed frame can approve', async t => {
+test('consent gates its owner without mouse pass-through and only its exact sandboxed frame can approve', async t => {
   const f = fixture(); t.after(() => f.presenter.cancel());
   const pending = f.presenter.confirm(input()), view = f.views[0], channels = view.channels();
-  assert.equal(view.options.parent, f.window); assert.equal(view.options.modal, false);
+  assert.equal(view.options.parent, f.window); assert.equal(view.options.modal, process.platform !== 'darwin');
   assert.equal(view.options.frame, true); assert.equal(view.options.transparent, false);
   assert.equal(view.options.titleBarStyle, 'default'); assert.equal(view.options.closable, true);
   assert.equal(view.options.skipTaskbar, true); assert.deepEqual(f.window.contentView.children, []);
   assert.equal(view.options.webPreferences.sandbox, true); assert.equal(view.options.webPreferences.nodeIntegration, false);
   assert.equal(view.options.webPreferences.contextIsolation, true); assert.equal(view.options.webPreferences.webSecurity, true);
   assert.equal(view.visible, false); view.emit('ready-to-show'); assert.equal(view.visible, true);
+  assert.equal(f.gateActive, true);
   assert.equal(f.handlers.get(channels.data)(view.event()).account, input().account);
   assert.equal(f.handlers.get(channels.data)({ sender: view.webContents, senderFrame: {} }), null);
   f.ipcMain.emit(channels.decision, { sender: view.webContents, senderFrame: {} }, true);
@@ -71,12 +77,15 @@ test('consent is a non-modal child without changing owner input and only its exa
   assert.equal(f.window.focusRestored, 1);
   assert.equal(f.window.isEnabled(), true);
   assert.equal(f.window.isFocusable(), true);
+  assert.equal(f.gateActive, false); assert.equal(f.gateRestored, 1);
   assert.equal(f.handlers.size, 0); assert.equal(f.ipcMain.listenerCount(channels.decision), 0);
 });
 
 test('closing, timeout and explicit cancellation never approve', async t => {
   const f = fixture(); t.after(() => f.presenter.cancel());
-  const closing = f.presenter.confirm(input()); f.views[0].emit('closed'); assert.equal(await closing, false);
+  const closing = f.presenter.confirm(input()); f.views[0].emit('ready-to-show');
+  f.views[0].emit('closed'); assert.equal(await closing, false);
+  assert.equal(f.gateActive, false); assert.equal(f.gateRestored, 1);
   const expired = f.presenter.confirm({ ...input(), expiresAt: Date.now() + 10 }); assert.equal(await expired, false);
   const cancelled = f.presenter.confirm(input()); f.presenter.cancel(); assert.equal(await cancelled, false);
 });
@@ -110,9 +119,20 @@ test('the child starts centered on its owner and does not resize or minimize ind
 
 test('closing the host removes the pending card and its IPC handlers', async () => {
   const f = fixture(), pending = f.presenter.confirm(input());
+  f.views[0].emit('ready-to-show'); assert.equal(f.gateActive, true);
   f.window.destroyed = true; f.window.emit('closed');
   assert.equal(await pending, false); assert.equal(f.views[0].webContents.isDestroyed(), true);
+  assert.equal(f.gateActive, false); assert.equal(f.gateRestored, 1);
   assert.equal(f.handlers.size, 0); assert.equal(f.window.listenerCount('resize'), 0);
+});
+
+test('closing after owner contents destruction releases the gate without focusing destroyed contents', async () => {
+  const f = fixture(), pending = f.presenter.confirm(input());
+  f.views[0].emit('ready-to-show');
+  f.window.webContents.isDestroyed = () => true;
+  f.window.webContents.focus = () => assert.fail('Destroyed contents cannot be focused');
+  f.window.emit('closed');
+  assert.equal(await pending, false); assert.equal(f.gateActive, false);
 });
 
 test('the initial and live themes follow the host and stop updating after the popup closes', async t => {

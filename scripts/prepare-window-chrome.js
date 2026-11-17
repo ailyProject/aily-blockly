@@ -24,7 +24,7 @@ function prepareWindowChrome() {
   try {
     execFileSync('xcrun', ['clang++', '-std=c++17', '-fobjc-arc', '-bundle', '-undefined', 'dynamic_lookup',
       '-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0', '-DNAPI_VERSION=8',
-      '-I', headers, '-framework', 'AppKit', source, '-o', temporary], { stdio: 'inherit' });
+      '-I', headers, '-framework', 'AppKit', '-framework', 'CoreGraphics', source, '-o', temporary], { stdio: 'inherit' });
     fs.renameSync(temporary, output);
     fs.writeFileSync(stamp, signature);
   } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }

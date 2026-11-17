@@ -2,6 +2,11 @@ function applyTheme(theme) { document.documentElement.dataset.theme = theme === 
 applyTheme(window.hubConsent.theme);
 const removeThemeListener = window.hubConsent.onTheme(applyTheme);
 window.addEventListener('unload', removeThemeListener, { once: true });
+document.addEventListener('selectstart', event => event.preventDefault());
+document.addEventListener('selectionchange', () => {
+  const selection = window.getSelection();
+  if (selection?.rangeCount) selection.removeAllRanges();
+});
 const allow = document.getElementById('allow');
 const cancel = document.getElementById('cancel');
 let valid = false;

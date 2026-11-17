@@ -86,6 +86,7 @@ declare global {
     };
     electronAPI: {
       hubClientLogin?: {
+        deliver?(state: string, callbackUrl: string): Promise<boolean>;
         ready(): Promise<boolean>;
         confirm(input: { state: string; account: string; theme?: 'light' | 'dark' }): Promise<boolean>;
         setTheme?(theme: 'light' | 'dark'): Promise<boolean>;

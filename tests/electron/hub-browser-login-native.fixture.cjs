@@ -23,7 +23,7 @@ async function main() {
       path.join(bundle, 'Contents/Info.plist')], { encoding: 'utf8' });
     if (plist.status !== 0) throw new Error(plist.stderr);
   }
-  for (const name of ['hub-browser-login.js', 'build-product.js', 'hub-consent-window.js', 'window-chrome.js', 'hub-consent-preload.js', 'hub-consent.html', 'hub-consent.css', 'hub-consent-page.js', 'hub-consent-aily.jpg']) {
+  for (const name of ['hub-browser-login.js', 'browser-return.js', 'build-product.js', 'hub-consent-window.js', 'window-chrome.js', 'hub-consent-preload.js', 'hub-consent.html', 'hub-consent.css', 'hub-consent-page.js', 'hub-consent-aily.jpg']) {
     fs.copyFileSync(path.join(__dirname, '../../electron', name), path.join(source, 'electron', name));
   }
   fs.mkdirSync(path.join(source, 'electron/native'), { recursive: true });
@@ -38,6 +38,7 @@ async function main() {
       receive: callback => { ipcRenderer.on('hub-client-authorize', async (_event, request) => {
         const account = await ipcRenderer.invoke('fixture-account');
         const allowed = await ipcRenderer.invoke('hub-client-confirm', { state: request.state, account });
+        await ipcRenderer.invoke('hub-client-deliver', request.state, 'https://hub.aily.pro/auth/desktop?'+new URLSearchParams({state:request.state, error:allowed?'fixture_success':'access_denied'}));
         await ipcRenderer.invoke('hub-client-finish', request.state);
         await ipcRenderer.invoke('fixture-result', { account, allowed });
         callback(allowed);
@@ -66,11 +67,14 @@ async function main() {
       let account = '', records = [];
       const window = new BrowserWindow({ width:1000,height:780,title:'客户端授权验证', webPreferences:{preload:path.join(__dirname,'preload.cjs')} });
       window.webContents.on('console-message', event => console.log('fixture-renderer', event.message));
-      const bridge = require(path.join(electronRoot,'hub-browser-login')).createHubBrowserBridge({ window, ipcMain, BrowserWindow, product:'blockly', directory:path.join(root,'registry') });
+      const browserReturn = require(path.join(electronRoot,'browser-return')).createBrowserReturn();
+      const restore = browserReturn.restore;
+      browserReturn.restore = target => { const result = restore(target); fs.appendFileSync(path.join(root,'browser-focus.jsonl'), JSON.stringify({restored:result})+'\\n'); return result; };
+      const bridge = require(path.join(electronRoot,'hub-browser-login')).createHubBrowserBridge({ window, ipcMain, BrowserWindow, browserReturn, deliverResult:async()=>true, product:'blockly', directory:path.join(root,'registry') });
       await bridge.ready;
       let ticks=0;setInterval(()=>{ticks++;},25);
       app.on('browser-window-created',(_event,child)=>{if(child===window)return;child.once('ready-to-show',()=>setTimeout(()=>{
-        const start=ticks;setTimeout(()=>{assert.ok(ticks>start);assert.equal(child.getParentWindow(),window);assert.equal(child.isModal(),false);assert.equal(window.isFocusable(),true);
+        const start=ticks;setTimeout(()=>{if(child.isDestroyed())return;assert.ok(ticks>start);assert.equal(child.getParentWindow(),window);assert.equal(child.isModal(),false);assert.equal(window.isFocusable(),true);
         const native=require(path.join(electronRoot,'native/window-chrome.node'));assert.equal(native.getIgnoresMouseEvents(window.getNativeWindowHandle()),false);
         fs.writeFileSync(path.join(root,'modality.json'),JSON.stringify({parented:true,modal:false,ownerFocusable:window.isFocusable(),ownerIgnoresMouse:false,backgroundProgress:ticks>start}));},150);
       },50));});
@@ -90,7 +94,7 @@ async function main() {
     }).catch(error=>{fs.writeFileSync(path.join(root,'failure.txt'),String(error.stack));app.exit(1);});
   `);
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
-  await createPackageWithOptions(source, path.join(bundle, 'Contents/Resources/app.asar'), { unpack: '**/*.node' });
+  await createPackageWithOptions(source, path.join(bundle, 'Contents/Resources/app.asar'), { unpack: '*.node' });
   const env = { ...process.env };
   for (const name of ['AILY_CHILD_PATH', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete env[name];
   const log = fs.openSync(path.join(root, 'native.log'), 'w');

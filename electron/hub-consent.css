@@ -52,7 +52,8 @@
 }
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; }
-body { margin: 0; background: var(--aily-bg-elevated); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--aily-bg-elevated); -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; cursor: default; }
+img { -webkit-user-drag: none; }
 [hidden] { display: none !important; }
 h1, h2, h3, p { margin: 0; }
 svg { flex-shrink: 0; width: 20px; height: 20px; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }

@@ -1051,6 +1051,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     setTheme: theme => ipcRenderer.invoke('hub-client-theme', theme),
     confirm: input => ipcRenderer.invoke('hub-client-confirm', input),
     finish: state => ipcRenderer.invoke('hub-client-finish', state),
+    deliver: (state, callbackUrl) => ipcRenderer.invoke('hub-client-deliver', state, callbackUrl),
     onAuthorize: callback => {
       const listener = (_event, data) => callback(data);
       ipcRenderer.on('hub-client-authorize', listener);
