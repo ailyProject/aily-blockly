@@ -341,87 +341,17 @@ function clearSlowCaches(instancePath) {
   }
 }
 
-/** 当前进程持有的实例锁文件路径，用于退出时清理 */
-let heldInstanceLockPath = null;
-
-// 实例目录复用池：复用空闲实例目录，保留 HTTP 缓存（图片等），清理导致启动慢的缓存
+// Keep the native profile lease until the process actually exits. Releasing
+// it during will-quit would allow a new process to reuse Chromium's directory
+// while the previous browser process is still shutting down.
+let heldInstanceProfile = null;
 function setupPooledUserDataPath() {
-  const originalUserDataPath = app.getPath('userData');
-  const instancesDir = path.join(originalUserDataPath, 'instances');
-
-  // 确保 instances 目录存在
-  if (!fs.existsSync(instancesDir)) {
-    fs.mkdirSync(instancesDir, { recursive: true });
-  }
-
-  // 扫描现有实例目录，查找空闲的可复用目录
-  let reusedPath = null;
-  let maxIndex = -1;
-
-  try {
-    const entries = fs.readdirSync(instancesDir);
-    for (const entry of entries) {
-      // 只处理 instance-N 格式的目录
-      const match = entry.match(/^instance-(\d+)$/);
-      if (!match) continue;
-
-      const index = parseInt(match[1], 10);
-      if (index > maxIndex) maxIndex = index;
-
-      if (reusedPath) continue; // 已找到可复用目录，只继续统计 maxIndex
-
-      const instancePath = path.join(instancesDir, entry);
-      const lockFilePath = path.join(instancePath, 'instance.lock');
-
-      if (fs.existsSync(lockFilePath)) {
-        try {
-          const lockData = JSON.parse(fs.readFileSync(lockFilePath, 'utf8'));
-          if (lockData.pid && isProcessRunning(lockData.pid)) {
-            // 进程仍在运行，该目录被占用
-            continue;
-          }
-        } catch {
-          // 锁文件损坏，视为空闲
-        }
-      }
-
-      // 该目录空闲，可以复用
-      reusedPath = instancePath;
-    }
-  } catch (e) {
-    console.warn('扫描实例目录失败:', e.message);
-  }
-
-  // 如果没有可复用目录，创建新的 instance-N
-  if (!reusedPath) {
-    const newIndex = maxIndex + 1;
-    reusedPath = path.join(instancesDir, `instance-${newIndex}`);
-    fs.mkdirSync(reusedPath, { recursive: true });
-    console.log('创建新实例目录:', reusedPath);
-  } else {
-    console.log('复用空闲实例目录:', reusedPath);
-  }
-
-  // 清理导致启动慢的缓存（GPUCache、Code Cache），保留 HTTP Cache
-  clearSlowCaches(reusedPath);
-
-  // 写入锁文件
-  const lockFilePath = path.join(reusedPath, 'instance.lock');
-  try {
-    fs.writeFileSync(lockFilePath, JSON.stringify({
-      pid: process.pid,
-      startTime: Date.now()
-    }));
-    heldInstanceLockPath = lockFilePath;
-  } catch (e) {
-    console.warn('写入实例锁文件失败:', e.message);
-  }
-
-  // 设置 userData 到复用的目录
-  app.setPath('userData', reusedPath);
-  console.log('实例用户数据目录:', reusedPath);
-
-  return reusedPath;
+  const { claimInstanceProfile } = require('./instance-profile-pool');
+  heldInstanceProfile = claimInstanceProfile(app.getPath('userData'));
+  clearSlowCaches(heldInstanceProfile.path);
+  app.setPath('userData', heldInstanceProfile.path);
+  console.log('实例用户数据目录:', heldInstanceProfile.path);
+  return heldInstanceProfile.path;
 }
 
 // 检查是否需要多实例模式
@@ -3327,6 +3257,24 @@ app.on("window-all-closed", () => {
 });
 
 async function cleanupRegisteredChildProcesses() {
+  const startedAt = Date.now();
+  const stop = async (step, action) => {
+    const stepStartedAt = Date.now();
+    try {
+      const result = await action();
+      console.info('[PROC_TRACE][APP_CLEANUP_STEP]', {
+        step, durationMs: Date.now() - stepStartedAt,
+        status: result === false || result?.complete === false ? 'incomplete' : 'settled',
+      });
+      return result;
+    } catch (error) {
+      console.warn('[PROC_TRACE][APP_CLEANUP_STEP]', {
+        step, durationMs: Date.now() - stepStartedAt, status: 'failed',
+        error: error?.message || String(error),
+      });
+      throw error;
+    }
+  };
   beginWindowShutdown();
   try { cliBridge?.close(); } catch (error) { console.warn('CLI bridge shutdown:', error); }
   console.info('[PROC_TRACE][APP_CLEANUP_START]', {
@@ -3340,22 +3288,33 @@ async function cleanupRegisteredChildProcesses() {
   beginNpmShutdown();
   beginAuthCredentialsShutdown();
 
-  const childTools = await stopAllChildToolSessions();
-  if (!childTools.complete) console.warn('[PROC_TRACE][CHILD_TOOL_SHUTDOWN_INCOMPLETE]', childTools);
-
+  // Only the registered-process fallback depends on owner/Runtime cleanup.
+  // Independent services can drain at the same time instead of extending the
+  // child-tool deadline by another full round of shutdown waits.
   await Promise.allSettled([
-    require('./library-dependencies').stopLibraryDependencyWorkers(),
-    cloudBuildController?.shutdown(),
-    killAllCmdProcesses(),
-    killAllNpmProcesses(),
-    killAllTerminals(),
-    cancelAllAilyServicesStreams(),
-    connector.shutdown(),
-    simulatorGateway.stop(),
-    simulatorSubappHost.defaultHost.stop(),
-    packagedRendererServer.close(),
+    (async () => {
+      try {
+        const childTools = await stop('child-tools', stopAllChildToolSessions);
+        if (!childTools.complete) console.warn('[PROC_TRACE][CHILD_TOOL_SHUTDOWN_INCOMPLETE]', childTools);
+      } finally {
+        await Promise.allSettled([
+          stop('commands', killAllCmdProcesses),
+          stop('npm', killAllNpmProcesses),
+          stop('terminals', killAllTerminals),
+          stop('aily-services', cancelAllAilyServicesStreams),
+        ]);
+      }
+    })(),
+    stop('library-workers', () => require('./library-dependencies').stopLibraryDependencyWorkers()),
+    stop('cloud-build', () => cloudBuildController?.shutdown()),
+    stop('connector', () => connector.shutdown()),
+    stop('simulator-gateway', () => simulatorGateway.stop()),
+    stop('simulator-host', () => simulatorSubappHost.defaultHost.stop()),
+    stop('renderer-server', () => packagedRendererServer.close()),
   ]);
+  await stop('native-jobs', () => require('./owned-process').stopAllOwnedProcesses());
   releaseAllAuthCredentialsLocks();
+  console.info('[PROC_TRACE][APP_CLEANUP_COMPLETE]', { durationMs: Date.now() - startedAt });
 }
 
 const applicationQuit = createApplicationQuitCoordinator({
@@ -3393,15 +3352,8 @@ app.on("will-quit", () => {
     }
     heldProjectLockNormalized = null;
   }
-  // 释放实例锁文件，使目录可被后续启动复用
-  if (heldInstanceLockPath) {
-    try {
-      fs.unlinkSync(heldInstanceLockPath);
-    } catch (e) {
-      console.warn('will-quit release instance lock:', e.message);
-    }
-    heldInstanceLockPath = null;
-  }
+  // The profile's native lease is released by process teardown. Its PID
+  // publication is retained until then; the next allocator reclaims it safely.
 });
 
 // 在 macOS 上，当应用被激活时（如点击 Dock 图标），重新创建窗口
@@ -3858,6 +3810,8 @@ function cleanupOldInstances() {
 
     fs.readdirSync(instancesDir).forEach(entry => {
       const instancePath = path.join(instancesDir, entry);
+      // Allocation anchors are permanent files, never old instance directories.
+      if (!fs.lstatSync(instancePath).isDirectory()) return;
 
       // 跳过当前正在使用的实例目录
       if (instancePath === currentUserData) return;

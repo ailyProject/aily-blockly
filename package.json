@@ -17,6 +17,7 @@
     "afterPack": "scripts/package-child-resources.js",
     "asar": true,
     "asarUnpack": [
+      "electron/native/windows-process/**/*.{node,exe,json}",
       "electron/preload.js",
       "electron/node_modules/**/*.node",
       "electron/node_modules/@lydell/**",
@@ -142,6 +143,7 @@
     }
   },
   "scripts": {
+    "prepare:windows-process": "node scripts/build-windows-process-runtime.cjs",
     "ng": "node scripts/run-angular.cjs",
     "start": "node scripts/run-angular.cjs serve",
     "watch": "node scripts/run-angular.cjs build --watch --configuration development",
