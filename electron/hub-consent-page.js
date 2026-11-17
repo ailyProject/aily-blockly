@@ -23,6 +23,7 @@ window.hubConsent.read().then(data => {
   document.getElementById('account-email').textContent = email.join(' · ');
   document.getElementById('account-avatar').textContent = Array.from(name)[0] || 'A';
   document.getElementById('target-origin').textContent = data.origin;
+  document.getElementById('account-site').textContent = data.region === 'cn' ? '国内站账号' : data.region === 'intl' ? '国际站账号' : '当前账号';
   valid = true; allow.disabled = false;
 }).catch(() => {
   const error = document.getElementById('error');

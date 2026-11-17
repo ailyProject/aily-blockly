@@ -1,11 +1,12 @@
-import { BehaviorSubject, of, Subject } from 'rxjs';
+import { BehaviorSubject, of, Subject, throwError } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
 import { setServerUrl } from '../../../configs/api.config';
 import { HubClientLoginService } from './hub-client-login.service';
 
 describe('Hub browser login with client confirmation', () => {
   let service: HubClientLoginService, listener: (request: any) => void, auth: any, http: any, bridge: any, electron: any, previous: any, theme: any;
   const settle = () => new Promise(resolve => setTimeout(resolve, 0));
-  const request = (state = 's'.repeat(43)) => ({ state, code_challenge: 'c'.repeat(43), redirect_uri: 'https://hub.aily.pro/auth/callback' });
+  const request = (state = 's'.repeat(43)) => ({ state, code_challenge: 'c'.repeat(43), redirect_uri: 'https://hub.aily.pro/auth/callback', region: 'cn' });
   beforeEach(() => {
     previous = window.electronAPI; setServerUrl('https://api.example');
     auth = { isLoggedIn: true, isSessionInvalidating: false, currentUser: { id: 'b' },
@@ -21,7 +22,7 @@ describe('Hub browser login with client confirmation', () => {
         data: { redirect_url: `https://hub.aily.pro/auth/callback?code=code-b&state=${body.state}` } })) };
     electron = { openUrl: jasmine.createSpy() };
     theme = { theme: jasmine.createSpy().and.returnValue('dark'), themeChanged$: new Subject() };
-    service = new HubClientLoginService(auth, http, electron, { run: (fn: any) => fn() } as any, theme); service.initialize();
+    service = new HubClientLoginService(auth, http, electron, { run: (fn: any) => fn() } as any, theme, { data: { region: 'cn' } } as any); service.initialize();
   });
   afterEach(() => { service.ngOnDestroy(); window.electronAPI = previous; setServerUrl('https://api.aily.pro'); });
 
@@ -107,4 +108,27 @@ describe('Hub browser login with client confirmation', () => {
     service.ngOnDestroy(); bridge.setTheme.calls.reset(); theme.themeChanged$.next('dark');
     expect(bridge.setTheme).not.toHaveBeenCalled();
   });
+  it('uses the registered provider callback while returning the code to the local browser', async () => {
+    listener({ ...request(), redirect_uri: 'http://localhost:65469/auth/callback',
+      authorization_redirect_uri: 'https://hub.aily.pro/auth/callback' }); await settle();
+    expect(http.post.calls.mostRecent().args[1].redirect_uri).toBe('https://hub.aily.pro/auth/callback');
+    const receipt = new URL(electron.openUrl.calls.mostRecent().args[0]);
+    expect(receipt.origin).toBe('http://localhost:65469'); expect(receipt.searchParams.get('code')).toBe('code-b');
+  });
+
+  it('refuses another site before confirmation without switching the signed-in account', async () => {
+    auth.isLoggedIn = false; auth.isLoggedIn$.next(false);
+    listener({ ...request(), region: 'intl' }); await settle();
+    expect(bridge.confirm).not.toHaveBeenCalled(); expect(http.post).not.toHaveBeenCalled();
+    expect(auth.requestLogin).not.toHaveBeenCalled();
+    expect(new URL(electron.openUrl.calls.mostRecent().args[0]).searchParams.get('error')).toBe('region_mismatch');
+    expect(auth.currentUser.id).toBe('b');
+  });
+
+  it('reports a failed authorization service separately from user cancellation', async () => {
+    http.post.and.returnValue(throwError(() => new HttpErrorResponse({ status: 404 })));
+    listener(request()); await settle();
+    expect(new URL(electron.openUrl.calls.mostRecent().args[0]).searchParams.get('error')).toBe('authorization_unavailable');
+  });
+
 });

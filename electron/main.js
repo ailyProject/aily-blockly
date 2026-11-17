@@ -2862,7 +2862,7 @@ function createWindow() {
     },
   });
 
-  hubBrowserBridge = createHubBrowserBridge({ window: mainWindow, ipcMain, WebContentsView,
+  hubBrowserBridge = createHubBrowserBridge({ window: mainWindow, ipcMain, BrowserWindow,
     product: getBuildProduct(), development: hubBrowserDevelopment });
   void hubBrowserBridge.ready.catch(() => console.warn('Hub client login transport unavailable'));
   if (pendingHubBrowserLogin) {

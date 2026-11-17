@@ -58,8 +58,13 @@ async function main() {
       let account = '', records = [];
       const window = new BrowserWindow({ width:1000,height:780,title:'客户端授权验证', webPreferences:{preload:path.join(__dirname,'preload.cjs')} });
       window.webContents.on('console-message', event => console.log('fixture-renderer', event.message));
-      const bridge = require('./electron/hub-browser-login').createHubBrowserBridge({ window, ipcMain, WebContentsView, product:'blockly', directory:path.join(root,'registry') });
+      const bridge = require('./electron/hub-browser-login').createHubBrowserBridge({ window, ipcMain, BrowserWindow, product:'blockly', directory:path.join(root,'registry') });
       await bridge.ready;
+      let ticks=0;setInterval(()=>{ticks++;},25);
+      app.on('browser-window-created',(_event,child)=>{if(child===window)return;child.once('ready-to-show',()=>setTimeout(()=>{
+        const start=ticks;setTimeout(()=>{assert.ok(ticks>start);assert.equal(child.getParentWindow(),window);assert.equal(child.isModal(),true);
+        fs.writeFileSync(path.join(root,'modality.json'),JSON.stringify({parented:true,modal:true,backgroundProgress:ticks>start}));},150);
+      },50));});
       ipcMain.handle('fixture-account', () => account);
       ipcMain.handle('fixture-request', (_event, value) => {
         account=value;

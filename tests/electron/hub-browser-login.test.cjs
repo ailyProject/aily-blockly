@@ -31,6 +31,15 @@ test('client protocol accepts only fixed products, PKCE and trusted callbacks', 
   assert.throws(() => parseHubBrowserLogin(makeUrl(undefined, 'http://localhost:65469/auth/callback'), 'blockly'));
 });
 
+test('site and registered authorization callback cannot be replaced with unknown protocol fields', () => {
+  const link = makeUrl() + '&region=intl&authorization_redirect_uri=' + encodeURIComponent('https://hub.aily.pro/auth/callback');
+  assert.equal(parseHubBrowserLogin(link, 'blockly').region, 'intl');
+  for (const invalid of [link + '&region=cn', link.replace('region=intl', 'region=other'),
+    link.replace('hub.aily.pro%2Fauth', 'evil.example%2Fauth'), link + '&extra=value']) {
+    assert.throws(() => parseHubBrowserLogin(invalid, 'blockly'));
+  }
+});
+
 test('a cold request waits for its renderer and requires an explicit native confirmation', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-client-test-')), f = fixture(directory);
   t.after(() => { f.bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });

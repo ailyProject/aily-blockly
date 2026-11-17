@@ -20,14 +20,20 @@ function isHubBrowserLogin(value, product) {
 function parseHubBrowserLogin(value, product, development = false) {
   if (typeof value !== 'string' || value.length > 4096 || !isHubBrowserLogin(value, product)) throw new Error('Invalid Hub login');
   const url = new URL(value), keys = ['state', 'code_challenge', 'redirect_uri'];
+  for (const key of ['region', 'authorization_redirect_uri']) if (url.searchParams.has(key)) keys.push(key);
   if (url.username || url.password || url.port || url.hash || [...url.searchParams.keys()].length !== keys.length
     || keys.some(key => url.searchParams.getAll(key).length !== 1)
     || !opaque.test(url.searchParams.get('state')) || !opaque.test(url.searchParams.get('code_challenge'))) throw new Error('Invalid Hub login');
-  const callback = new URL(url.searchParams.get('redirect_uri'));
-  const production = callback.protocol === 'https:' && !callback.port && ['hub.aily.pro', 'projects.aily.pro'].includes(callback.hostname);
-  const local = development && callback.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(callback.hostname);
-  if ((!production && !local) || callback.username || callback.password || callback.pathname !== '/auth/callback'
-    || callback.search || callback.hash) throw new Error('Untrusted Hub callback');
+  if (url.searchParams.has('region') && !['cn', 'intl'].includes(url.searchParams.get('region'))) throw new Error('Invalid Hub site');
+  const validateCallback = value => {
+    const callback = new URL(value);
+    const production = callback.protocol === 'https:' && !callback.port && ['hub.aily.pro', 'projects.aily.pro'].includes(callback.hostname);
+    const local = development && callback.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(callback.hostname);
+    if ((!production && !local) || callback.username || callback.password || callback.pathname !== '/auth/callback'
+      || callback.search || callback.hash) throw new Error('Untrusted Hub callback');
+  };
+  validateCallback(url.searchParams.get('redirect_uri'));
+  if (url.searchParams.has('authorization_redirect_uri')) validateCallback(url.searchParams.get('authorization_redirect_uri'));
   return Object.fromEntries(keys.map(key => [key, url.searchParams.get(key)]));
 }
 
@@ -63,9 +69,9 @@ async function forwardHubBrowserLogin(value, product, options = {}) {
   throw new Error('Hub client unavailable');
 }
 
-function createHubBrowserBridge({ window, ipcMain, WebContentsView, consentPresenter, product, development = false, directory = registryDirectory() }) {
+function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresenter, product, development = false, directory = registryDirectory() }) {
   const contents = window.webContents;
-  const consent = consentPresenter || createHubConsentPresenter({ window, WebContentsView, ipcMain });
+  const consent = consentPresenter || createHubConsentPresenter({ window, BrowserWindow, ipcMain });
   const suffix = randomBytes(12).toString('hex');
   const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\aily-hub-${product}-${suffix}` : path.join(os.tmpdir(), `ahl-${suffix}`);
   const filename = path.join(directory, `${product}-${process.pid}-${suffix}.json`);
@@ -131,7 +137,7 @@ function createHubBrowserBridge({ window, ipcMain, WebContentsView, consentPrese
     try {
       if (['light', 'dark'].includes(input.theme)) consent.setTheme?.(input.theme);
       const approved = await consent.confirm({ account: input.account,
-        origin: new URL(current.redirect_uri).origin, expiresAt: current.expiresAt });
+        origin: new URL(current.redirect_uri).origin, region: current.region, expiresAt: current.expiresAt });
       return approved === true && active === current && current.expiresAt > Date.now() && ownFrame(event);
     } finally { confirming = false; }
   });

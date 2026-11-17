@@ -90,7 +90,8 @@ declare global {
         confirm(input: { state: string; account: string; theme?: 'light' | 'dark' }): Promise<boolean>;
         setTheme?(theme: 'light' | 'dark'): Promise<boolean>;
         finish(state: string): Promise<boolean>;
-        onAuthorize(callback: (request: { state: string; code_challenge: string; redirect_uri: string; expiresAt?: number }) => void): () => void;
+        onAuthorize(callback: (request: { state: string; code_challenge: string; redirect_uri: string;
+          region?: 'cn' | 'intl'; authorization_redirect_uri?: string; expiresAt?: number }) => void): () => void;
       };
       SerialPort: {
         list: () => Promise<any[]>;
