@@ -886,6 +886,9 @@ export class CompileService {
     const fullDetail = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim();
     const clean = logSummaryOnly ? fullDetail : fullDetail.slice(0, 8000);
     appendProjectLog(projectPath, 'compile', 'ERROR', text || clean || '(no logs)');
+    if (logSummaryOnly) {
+      this.logService.update({ title, detail: text || '(no logs)', state: 'error' });
+    }
     this.application.updateNotice({
       title,
       text,
@@ -895,9 +898,6 @@ export class CompileService {
       setTimeout: 600000,
       sendToLog: !logSummaryOnly,
     });
-    if (logSummaryOnly) {
-      this.logService.update({ title, detail: text || '(no logs)', state: 'error' });
-    }
   }
 
   private runOneShotCommand(

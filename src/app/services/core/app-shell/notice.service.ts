@@ -62,16 +62,25 @@ export class NoticeService {
   private publish(opts: NoticeOptions, writeLog = true): void {
     this.data = opts;
     opts['showDetail'] = false;
-    this.stateSubject.next(opts);
 
     const sendToLog = opts.sendToLog ?? true;
     if (writeLog && sendToLog && opts.detail) {
-      this.logService.update({
+      opts.logTarget = this.logService.update({
         title: opts.title,
         detail: opts.detail,
         state: opts.state,
-      })
+        mergeKey: `notice-${crypto.randomUUID()}`,
+      });
+    } else if (writeLog && opts.detail && !opts.logTarget) {
+      // 流式输出已经写入日志时，保留通知出现时的记录，而不是点击时的尾部。
+      const clean = (text: string | undefined) => (text || '').replace(/\x1b\[[\d;]*m/g, '').trim();
+      const details = [clean(opts.detail), clean(opts.text)].filter(Boolean);
+      opts.logTarget = [...(this.logService.list || [])].reverse().find(item => {
+        const detail = clean(item.detail);
+        return !!detail && details.some(expected => expected.includes(detail) || detail.includes(expected));
+      });
     }
+    this.stateSubject.next(opts);
   }
 
   clear() {

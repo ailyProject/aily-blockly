@@ -26,12 +26,13 @@
 
 <div #scrollElement class="log-box" (scroll)="onLogScroll()">
   <div class="log-inner" [style.height.px]="virtualizer.getTotalSize()">
-    @for (row of virtualizer.getVirtualItems(); track row.index) {
+    @for (row of virtualizer.getVirtualItems(); track row.key) {
       @if (logList[row.index]) {
         <div
           #virtualRow
           [attr.data-index]="row.index"
           class="item"
+          [class.focused]="isFocusedLog(logList[row.index])"
           [ngClass]="{'error': logList[row.index].state === 'error', 'warn': logList[row.index].state === 'warn', 'info': logList[row.index].state === 'info'}"
           (click)="handleClick(logList[row.index], $event)"
           (dblclick)="handleDoubleClick(logList[row.index], $event)"

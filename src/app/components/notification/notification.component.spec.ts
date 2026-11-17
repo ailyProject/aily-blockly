@@ -26,6 +26,15 @@ describe('NotificationComponent progress animation', () => {
 
   afterEach(() => component.ngOnDestroy());
 
+  it('查看详情传递通知自己的日志目标，不依赖终端 PID', () => {
+    const openLog = jasmine.createSpy('openLog');
+    const target = { timestamp: 1000, mergeKey: 'notice-error' };
+    const notice = new NotificationComponent({} as any, {} as any, { openLog } as any);
+    notice.data = { state: 'error', detail: 'failure', logTarget: target };
+    notice.view();
+    expect(openLog).toHaveBeenCalledOnceWith(target);
+  });
+
   it('never goes negative when a shared frame timestamp predates a long render', () => {
     component.startProgressAnimation(100);
     nextFrame(400);
