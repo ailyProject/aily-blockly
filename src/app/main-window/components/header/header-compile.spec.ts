@@ -10,12 +10,16 @@ describe('Header compile readiness', () => {
       isProjectOpening: true,
       getProjectMode: jasmine.createSpy('mode').and.returnValue('blockly'),
       getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
+      ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true),
     };
     header.builderService = { build: jasmine.createSpy('build').and.resolveTo({ state: 'done' }) };
     header.translate = { instant: (key: string) => key };
     header.message = { info: jasmine.createSpy('info') };
     header.connectorState = { running: false };
     header.configService = { isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(false) };
+    header.uploaderService = { requiresLocalPort: jasmine.createSpy('requiresPort').and.returnValue(true),
+      upload: jasmine.createSpy('upload').and.resolveTo({ state: 'done' }) };
+    header.serialService = { currentPort: null };
   });
 
   it('does not dispatch while Blockly is loading and can compile once loading finishes', async () => {
@@ -51,6 +55,28 @@ describe('Header compile readiness', () => {
     await header.process({ action: 'compile', state: 'default' });
     expect(header.builderService.build).toHaveBeenCalledTimes(1);
     expect(header.message.info).not.toHaveBeenCalled();
+  });
+
+  for (const action of ['compile', 'play', 'upload']) {
+    it(`requests a board before dependency or serial-port checks for Coder ${action}`, async () => {
+      header.configService.isCoderProduct.and.returnValue(true);
+      header.projectService.ensureCoderBoardSelected.and.resolveTo(false);
+      const item = { action, state: 'default' };
+      await header.process(item, null, 'manual');
+      expect(header.projectService.ensureCoderBoardSelected).toHaveBeenCalledTimes(1);
+      expect(header.projectService.getProjectDependencyBlockMessage).not.toHaveBeenCalled();
+      expect(header.builderService.build).not.toHaveBeenCalled();
+      expect(header.uploaderService.requiresLocalPort).not.toHaveBeenCalled();
+      expect(header.uploaderService.upload).not.toHaveBeenCalled();
+      expect(item.state).toBe('default');
+    });
+  }
+
+  it('does not request a board from Blockly compilation', async () => {
+    header.projectService.isProjectOpening = false;
+    await header.process({ action: 'compile', state: 'default' });
+    expect(header.projectService.ensureCoderBoardSelected).not.toHaveBeenCalled();
+    expect(header.builderService.build).toHaveBeenCalledTimes(1);
   });
 
   for (const action of ['compile', 'play', 'upload']) {
