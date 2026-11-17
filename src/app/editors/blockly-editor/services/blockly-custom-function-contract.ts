@@ -11,6 +11,8 @@ const scriptTypes = Object.keys(kinds).filter(type => kinds[type] !== 'definitio
 const sourceHashes = new Set([
   '4d3a8f44d8fbeffc76bdfe6648fa076e2474505ab359a81cd64bfa98aaef592b',
   'f19d9900bbaf14bcb159bc8e4f62bb5cce82af27e7265b90af5369ae2caaa10d',
+  // Audited local-symbol scope provider; native function/model effects are unchanged.
+  '95a7020bc863c88fd49da23fec16479931a4f24a791558d8f2cb9787089e8ed7',
 ]);
 export interface CustomFunctionRegistration {
   get(type: string): { kind: CustomFunctionKind; parameterTypes: string[] } | undefined;
