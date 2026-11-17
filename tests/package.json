@@ -2,6 +2,7 @@
   "name": "aily-blockly-tests",
   "private": true,
   "scripts": {
+    "test:windows-process-runtime": "cd .. && node --test tests/windows-process-runtime.test.cjs",
     "test:owned-process": "cd .. && node --test tests/electron/instance-profile-pool.test.cjs tests/electron/owned-process.windows.test.cjs tests/electron/cli-discovery-lifecycle.test.cjs tests/electron/cli-discovery-lifecycle.windows.test.cjs tests/electron/cmd-message-port.test.js tests/electron/npm-resource-lifecycle.test.js tests/electron/app-shutdown.test.js",
     "test:library-compatibility": "cd .. && node --test tests/library-compatibility.test.cjs",
     "test:blockly-project-creation": "cd .. && node --test tests/electron/blockly-project-creation.test.cjs tests/electron/blockly-project-create-diagnostics.test.cjs",
