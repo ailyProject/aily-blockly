@@ -79,7 +79,9 @@ export async function nativeObservationWindow({ electron, descriptorFile, projec
         if (phase === 'status' && res.statusCode === 200) state.statusSeen = true;
         if (phase === 'history' && res.statusCode === 200) state.historySeen = true;
         let completedPublication;
-        if (phase === 'publication' && res.statusCode === 200) {
+        // An exact completed state receipt can accompany a partial HTTP400 error.
+        const publicationResponse = res.statusCode === 200 || (input.operation === 'blocks_set_state' && res.statusCode === 400);
+        if (phase === 'publication' && publicationResponse) {
           try {
             const reply = JSON.parse(Buffer.isBuffer(args[0]) ? args[0].toString('utf8') : args[0]);
             const receipt = reply.saveReceipt;
@@ -89,7 +91,7 @@ export async function nativeObservationWindow({ electron, descriptorFile, projec
             }
           } catch { /* An invalid or nonterminal reply is never held as a known commit. */ }
         }
-        if ((phase === 'capture' || completedPublication) && res.statusCode === 200 && !state.held && !state.released) {
+        if (((phase === 'capture' && res.statusCode === 200) || completedPublication) && !state.held && !state.released) {
           const body = args[0];
           state.held = { pid: process.pid, requestId: completedPublication?.requestId ?? input.requestId, responseStatus: res.statusCode, bytes: typeof body === 'string' ? Buffer.byteLength(body, typeof args[1] === 'string' ? args[1] : undefined) : body?.length ?? 0, clientClosed: false, ...(completedPublication ? { originalPublication: completedPublication } : {}) };
           state.pending = { res, end, args };

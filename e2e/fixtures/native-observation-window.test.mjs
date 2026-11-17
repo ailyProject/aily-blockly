@@ -222,3 +222,78 @@ test('fixture installation still requires the descriptor Main identity and exact
     await assert.rejects(f.install(), message);
   });
 });
+
+function partialResponse(f, operation = 'blocks_set_state', receipt = {}) {
+  const reply = JSON.parse(f.terminal(operation, receipt, 400).toString('utf8'));
+  reply.ok = false;
+  reply.partial = true;
+  reply.derivedOutputs = { published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING' };
+  const bytes = Buffer.from(' \n' + JSON.stringify(reply) + '\n');
+  f.rawResponse(bytes);
+  return bytes;
+}
+
+for (const observe of [false, true]) test(`HTTP400 completed state ${observe ? 'observation' : 'initial response'} holds and preserves the partial error`, async t => {
+  const f = await fixture(t, { flatTerminal: !observe });
+  await f.install();
+  let command = f.command();
+  if (observe) {
+    const pending = partialResponse(f, 'blocks_set_state', { state: 'pending' });
+    const initial = await f.send(command);
+    assert.equal(initial.status, 400);
+    assert.deepEqual(initial.bytes, pending);
+    command = { ...command, operation: 'abs_recovery', params: {
+      action: 'observe_state', state: command.params, originalTargetPid: 1234,
+    } };
+  }
+  const expected = partialResponse(f);
+  let settled = false;
+  const response = f.send(command).then(value => { settled = true; return value; });
+  response.catch(() => {});
+  const value = await held(f);
+  assert.equal(value.responseStatus, 400);
+  assert.equal(value.requestId, f.nativeRequestId);
+  assert.equal(value.originalPublication.receipt.state, 'completed');
+  assert.equal(settled, false);
+  assert.equal(f.callbacks, observe ? 1 : 0);
+  await f.window.release();
+  const released = await response;
+  assert.equal(released.status, 400);
+  assert.deepEqual(released.bytes, expected);
+  assert.equal(JSON.parse(released.bytes).ok, false);
+});
+
+test('HTTP400 state nonterminal, mismatched and unowned replies remain untouched', async t => {
+  const f = await fixture(t);
+  await f.install();
+  for (const receipt of [
+    { state: 'pending' }, { version: 1 }, { requestId: 'pub2-' + randomUUID() },
+    { operation: 'project_save' }, { project: path.join(f.project, 'other') },
+  ]) {
+    const expected = partialResponse(f, 'blocks_set_state', receipt), response = await f.send();
+    assert.equal(response.status, 400);
+    assert.deepEqual(response.bytes, expected);
+  }
+  const expected = partialResponse(f), command = f.command();
+  for (const other of [
+    { ...command, token: 'other-token' },
+    { ...command, path: path.join(f.project, 'other') },
+    { ...command, params: { ...command.params, action: 'inspect' } },
+  ]) {
+    const response = await f.send(other);
+    assert.equal(response.status, 400);
+    assert.deepEqual(response.bytes, expected);
+  }
+  await f.window.sample();
+  assert.equal(f.window.held, undefined);
+});
+
+test('HTTP400 default save completion retains its existing pass-through behavior', async t => {
+  const f = await fixture(t);
+  await f.install({});
+  const expected = partialResponse(f, 'project_save'), response = await f.send(f.command('project_save'));
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.bytes, expected);
+  await f.window.sample();
+  assert.equal(f.window.held, undefined);
+});
