@@ -86,3 +86,42 @@ export function nativeHistoryCheckpoint(snapshot) {
   assert.ok(checkpoint?.checkpointId && Array.isArray(checkpoint.changedPaths));
   return checkpoint;
 }
+
+// Read the two real settlement projections without treating canvas persistence
+// as proof that an unapplied candidate was committed.
+export function nativeSaveProjections(snapshot, initialUsers = 0) {
+  let users = 0;
+  const start = snapshot.entries.findIndex(
+    (entry) =>
+      entry.type === 'message' &&
+      entry.message.role === 'user' &&
+      ++users === initialUsers + 1,
+  );
+  assert.ok(start >= 0, 'The actual submitted user turn must exist');
+  const cards = snapshot.entries
+    .slice(start + 1)
+    .filter((entry) => entry.type === 'custom_message')
+    .map((entry) => entry.details);
+  return {
+    canvas: cards.findLast((details) => details?.operation === 'project_persistence'),
+    candidate: cards.findLast((details) => details?.operation === 'project_verification'),
+  };
+}
+
+export function assertNativeSaveProjections(projections, expected) {
+  const projectKey = (value) => {
+    const canonical = resolve(value);
+    return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+  };
+  assert.equal(projectKey(projections.canvas?.project), projectKey(expected.project));
+  assert.equal(projections.canvas?.verification?.scope, 'current-canvas-save');
+  assert.equal(projections.canvas.verification.status, expected.canvas);
+  assert.equal(projections.canvas.verification.ok, expected.canvas === 'saved');
+  if (expected.candidate !== undefined) {
+    assert.ok(projections.candidate, 'The actual candidate verification card must exist');
+    assert.equal(projectKey(projections.candidate.project), projectKey(expected.project));
+    assert.equal(projections.candidate.turnId, projections.canvas.turnId);
+    assert.equal(projections.candidate.save, expected.candidate);
+  }
+  return projections;
+}
