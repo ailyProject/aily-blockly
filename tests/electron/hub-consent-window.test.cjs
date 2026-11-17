@@ -10,8 +10,10 @@ function fixture() {
   window.destroyed = false; window.bounds = { x: 120, y: 70, width: 1200, height: 780 };
   window.isDestroyed = () => window.destroyed; window.isMinimized = () => false;
   window.getContentBounds = () => window.bounds; window.show = () => {};
-  window.enabled = true; window.isEnabled = () => window.enabled; window.setEnabled = enabled => { window.enabled = enabled; };
-  window.focusable = true; window.isFocusable = () => window.focusable;
+  window.isEnabled = () => true; window.isFocusable = () => true;
+  for (const method of ['setEnabled', 'setFocusable', 'setIgnoreMouseEvents']) {
+    window[method] = () => assert.fail(`Consent must not change owner input via ${method}`);
+  }
   window.focusRestored = 0; window.webContents = { focus: () => window.focusRestored++ };
   window.contentView = { children: [], addChildView(view) { this.children.push(view); },
     removeChildView(view) { this.children = this.children.filter(item => item !== view); } };
@@ -43,19 +45,16 @@ function fixture() {
     }
     event() { return { sender: this.webContents, senderFrame: this.webContents.mainFrame }; }
   }
-  const prepareChrome = (_child, owner) => {
-    owner.focusable = false;
-    return { restore() { owner.focusable = true; }, setTheme() {} };
-  };
+  const prepareChrome = () => ({ setTheme() {} });
   const presenter = createHubConsentPresenter({ window, BrowserWindow: View, ipcMain, prepareChrome });
   return { presenter, window, views, handlers, ipcMain };
 }
 const input = () => ({ account: '测试账号 B · b@example.test', origin: 'https://hub.aily.pro', expiresAt: Date.now() + 120000 });
 
-test('consent is a modal child of its host and only its exact sandboxed frame can approve', async t => {
+test('consent is a non-modal child without changing owner input and only its exact sandboxed frame can approve', async t => {
   const f = fixture(); t.after(() => f.presenter.cancel());
   const pending = f.presenter.confirm(input()), view = f.views[0], channels = view.channels();
-  assert.equal(view.options.parent, f.window); assert.equal(view.options.modal, process.platform !== 'darwin');
+  assert.equal(view.options.parent, f.window); assert.equal(view.options.modal, false);
   assert.equal(view.options.frame, true); assert.equal(view.options.transparent, false);
   assert.equal(view.options.titleBarStyle, 'default'); assert.equal(view.options.closable, true);
   assert.equal(view.options.skipTaskbar, true); assert.deepEqual(f.window.contentView.children, []);

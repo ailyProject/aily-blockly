@@ -70,9 +70,9 @@ async function main() {
       await bridge.ready;
       let ticks=0;setInterval(()=>{ticks++;},25);
       app.on('browser-window-created',(_event,child)=>{if(child===window)return;child.once('ready-to-show',()=>setTimeout(()=>{
-        const start=ticks;setTimeout(()=>{assert.ok(ticks>start);assert.equal(child.getParentWindow(),window);assert.equal(window.isFocusable(),false);
-        const native=require(path.join(electronRoot,'native/window-chrome.node'));assert.equal(native.getIgnoresMouseEvents(window.getNativeWindowHandle()),true);
-        fs.writeFileSync(path.join(root,'modality.json'),JSON.stringify({parented:true,ownerFocusable:window.isFocusable(),ownerIgnoresMouse:true,backgroundProgress:ticks>start}));},150);
+        const start=ticks;setTimeout(()=>{assert.ok(ticks>start);assert.equal(child.getParentWindow(),window);assert.equal(child.isModal(),false);assert.equal(window.isFocusable(),true);
+        const native=require(path.join(electronRoot,'native/window-chrome.node'));assert.equal(native.getIgnoresMouseEvents(window.getNativeWindowHandle()),false);
+        fs.writeFileSync(path.join(root,'modality.json'),JSON.stringify({parented:true,modal:false,ownerFocusable:window.isFocusable(),ownerIgnoresMouse:false,backgroundProgress:ticks>start}));},150);
       },50));});
       ipcMain.handle('fixture-account', () => account);
       ipcMain.handle('fixture-request', (_event, value) => {
