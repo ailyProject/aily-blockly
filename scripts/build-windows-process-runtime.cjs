@@ -152,7 +152,7 @@ function verifyPackaged(context) {
   verify(arch, { directory: path.join(resources, 'app.asar.unpacked', prefix) });
   const { statFile } = require('@electron/asar');
   for (const name of [...names, 'runtime.json']) {
-    if (statFile(path.join(resources, 'app.asar'), `${prefix}/${name}`).unpacked !== true)
+    if (statFile(path.join(resources, 'app.asar'), path.join(prefix, name)).unpacked !== true)
       throw new Error(`Windows native runtime must be outside ASAR: ${name}`);
   }
 }

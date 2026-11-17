@@ -73,6 +73,26 @@ test('Blockly and Coder both compile before collection, map only fresh Windows f
     assert.equal(config.mac.files, undefined);
   }
 });
+test('ASAR verification uses Windows separators when executed on Windows', t => {
+  const f = fixture(t), module = { exports: {} }, files = [];
+  const file = path.join(root, 'scripts/build-windows-process-runtime.cjs');
+  vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
+    module, __filename: file, __dirname: path.dirname(file), console, process, Buffer,
+    require: name => {
+      if (name === 'node:path') return path.win32;
+      if (name === '@electron/asar') return { statFile: (_archive, name) => { files.push(name);return { unpacked: true }; } };
+      if (name === 'node:fs') return { readFileSync: name => {
+        const basename = path.win32.basename(name);
+        if (['aily-job.node', 'aily-job-launcher.exe', 'runtime.json'].includes(basename)) return fs.readFileSync(path.join(f.directory, basename));
+        return fs.readFileSync(path.join(root, basename === 'build-windows-process-runtime.cjs' ? 'scripts' : 'electron/native/windows-process', basename));
+      } };
+      return require(name);
+    },
+  });
+  module.exports.verifyPackaged({ electronPlatformName: 'win32', arch: require('electron-builder').Arch.x64,
+    appOutDir: 'C:\\app', packager: { getResourcesDir: () => 'C:\\app\\resources' } });
+  assert.deepEqual(files, ['aily-job.node', 'aily-job-launcher.exe', 'runtime.json'].map(name => `electron\\native\\windows-process\\x64\\${name}`));
+});
 test('Windows packaged smoke observes target readiness and joins native cleanup with a clean load environment', async () => {
   let invocation;
   const module = { exports: {} }, file = path.join(root, 'scripts/build-windows-process-runtime.cjs');
