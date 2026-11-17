@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export async function nativeObservationWindow({ electron, descriptorFile, project, requestId }) {
+export async function nativeObservationWindow({ electron, descriptorFile, project, requestId, initialPublication = false }) {
   const descriptor = JSON.parse(await fs.readFile(descriptorFile, 'utf8'));
   assert.ok(Number.isSafeInteger(descriptor.pid) && descriptor.pid > 0);
   assert.ok(Number.isSafeInteger(descriptor.port) && descriptor.port > 0);
@@ -46,6 +46,14 @@ export async function nativeObservationWindow({ electron, descriptorFile, projec
           const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           const own = body.token === input.token && typeof body.path === 'string' && body.path.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase() === input.project;
           if (!own) return;
+          if (input.initialPublication) {
+            const request = body.params?.saveRequest;
+            if (body.operation === 'project_save' && request?.version === 2 && /^pub2-[a-f0-9-]{36}$/.test(request.requestId) && !state.requestId) state.requestId = request.requestId;
+            if (['project_save', 'project_publication_status'].includes(body.operation) && request?.requestId === state.requestId && state.requestId && !state.held) {
+              phase = 'publication';
+            }
+            return;
+          }
           if (body.operation === 'project_publication_status' && body.params?.saveRequest?.requestId === input.requestId) phase = 'status';
           else if (state.statusSeen && body.operation === 'abs_recovery' && body.params?.action === 'history_inspect') phase = 'history';
           else if (state.historySeen && body.operation === 'abs_recovery' && body.params?.action === 'candidate_capture' && !state.held && !state.released) phase = 'capture';
@@ -58,9 +66,19 @@ export async function nativeObservationWindow({ electron, descriptorFile, projec
         if (phase) state.trace.push({ phase, responseStatus: res.statusCode, at: Date.now() });
         if (phase === 'status' && res.statusCode === 200) state.statusSeen = true;
         if (phase === 'history' && res.statusCode === 200) state.historySeen = true;
-        if (phase === 'capture' && res.statusCode === 200 && !state.held && !state.released) {
+        let completedPublication;
+        if (phase === 'publication' && res.statusCode === 200) {
+          try {
+            const reply = JSON.parse(Buffer.isBuffer(args[0]) ? args[0].toString('utf8') : args[0]);
+            const receipt = reply.saveReceipt;
+            if (receipt?.version === 2 && receipt.state === 'completed' && receipt.requestId === state.requestId && receipt.operation === 'project_save') {
+              completedPublication = { requestId: receipt.requestId, receipt, publication: reply.result?.publication, targetPid: reply.targetPid };
+            }
+          } catch { /* An invalid or nonterminal reply is never held as a known commit. */ }
+        }
+        if ((phase === 'capture' || completedPublication) && res.statusCode === 200 && !state.held && !state.released) {
           const body = args[0];
-          state.held = { pid: process.pid, requestId: input.requestId, responseStatus: res.statusCode, bytes: typeof body === 'string' ? Buffer.byteLength(body, typeof args[1] === 'string' ? args[1] : undefined) : body?.length ?? 0, clientClosed: false };
+          state.held = { pid: process.pid, requestId: completedPublication?.requestId ?? input.requestId, responseStatus: res.statusCode, bytes: typeof body === 'string' ? Buffer.byteLength(body, typeof args[1] === 'string' ? args[1] : undefined) : body?.length ?? 0, clientClosed: false, ...(completedPublication ? { originalPublication: completedPublication } : {}) };
           state.pending = { res, end, args };
           res.once('close', () => { state.held.clientClosed = true; });
           return this;
@@ -73,7 +91,7 @@ export async function nativeObservationWindow({ electron, descriptorFile, projec
     server.removeListener('request', original);
     server.on('request', state.wrapper);
     globalThis[symbol] = state;
-  }, { key, pid: descriptor.pid, port: descriptor.port, token: descriptor.token, project: path.resolve(project).replaceAll('\\', '/').replace(/\/$/, '').toLowerCase(), requestId });
+  }, { key, pid: descriptor.pid, port: descriptor.port, token: descriptor.token, project: path.resolve(project).replaceAll('\\', '/').replace(/\/$/, '').toLowerCase(), requestId, initialPublication });
   let held, trace = [], closed = false;
   return {
     get held() { return held; },
