@@ -65,6 +65,12 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     await settleLinkedProjectEnvironment(project, assertCurrent);
   }
 
+  async openCoderBoardSelector(projectPath: string): Promise<void> {
+    // A background Coder request must never change the active project's board.
+    if (!this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) return;
+    await this.uiService.openBoardSelector(projectPath);
+  }
+
   updateFooterState(state: { state: string; text: string; timeout?: number }): void {
     this.uiService.updateFooterState(state);
   }

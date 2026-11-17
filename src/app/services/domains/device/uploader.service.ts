@@ -7,7 +7,7 @@ import { ConfigService } from '@core/preferences/public-api';
 import { MetricsService } from '@core/metrics/public-api';
 import { SerialService } from './serial.service';
 import type { UploadRecoveryPolicy } from './policies/upload-recovery-policy';
-import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
+import { ProjectService, CODER_EXECUTION_PORT, CODER_BOARD_REQUIRED_MESSAGE, type CoderExecutionPort } from '@domain/project/public-api';
 import { resolveUploadDispatchMode } from './policies/upload-dispatch-policy';
 import {
   DEVICE_APPLICATION_PORT,
@@ -184,6 +184,9 @@ export class UploaderService {
   }
 
   async upload(projectPath = this.projectService.currentProjectPath, port?: string, firmware?: FirmwareUploadOptions) {
+    if (this.configService.isCoderProduct() && !await this.projectService.ensureCoderBoardSelected(projectPath)) {
+      return { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' };
+    }
     const projectCurrent = firmware ? this.projectService.captureCurrentProjectGuard() : undefined;
     const assertUploadCurrent = () => {
       if (firmware && (this.projectService.isAilyCodeProject(projectPath) || this.isPythonProject()

@@ -1,3 +1,5 @@
+export const CODER_BOARD_REQUIRED_MESSAGE = '请先选择开发板，再编译或上传 Arduino 工程。';
+
 /** Arduino sources stay in their original directory; Coder caches stay in sketch/. */
 export function coderSourceDirectory(manifest: { arduinoSketch?: unknown }): string {
   return manifest?.arduinoSketch === true ? '.' : 'sketch';

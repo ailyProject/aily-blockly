@@ -68,7 +68,8 @@ describe('Coder build metadata', () => {
     };
     project = { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
       ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
-      getProjectDependencyBlockMessage: () => undefined };
+      getProjectDependencyBlockMessage: () => undefined,
+      ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true) };
     metadata = new CoderBuildInfoService(electron);
     window['builder'] = { captureBuildSource: jasmine.createSpy('captureBuildSource').and.returnValue({ digest: 'captured' }),
       patchBuildMetadata: (projectPath: string, patch: any) => {
@@ -454,6 +455,43 @@ describe('Coder build metadata', () => {
     (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('must not run'));
     expect((await compiler.runCompileFromDisk()).success).toBeTrue();
     expect((compiler as any).npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+    expect(project.ensureCoderBoardSelected).not.toHaveBeenCalled();
+  });
+
+  for (const backend of ['local', 'cloud']) {
+    it(`opens board selection before ${backend} preparation for an unconfigured Arduino project`, async () => {
+      writeManifest({ type: 'coder', arduinoSketch: true, entry: 'Blink.ino', dependencies: {} });
+      files.set(`${root}/Blink.ino`, 'void setup() {}\nvoid loop() {}');
+      const before = files.get(packagePath);
+      project.ensureCoderBoardSelected.and.resolveTo(false);
+      project.isCloudBuild = () => backend === 'cloud';
+      const compiler: any = createCompiler(() => 0);
+      compiler.configService.getCompileBackend = () => backend;
+      compiler.configService.getCloudBuildSettings = () => ({});
+      compiler.npmService.prepareCompileBackend = jasmine.createSpy('prepareBackend');
+      const start = spyOn(compiler.application, 'startBuild');
+      expect(await compiler.runCompileFromDisk()).toEqual({ success: false,
+        result: { state: 'warn', text: '请先选择开发板，再编译或上传 Arduino 工程。', buildOutcome: 'not-started' } });
+      expect(project.ensureCoderBoardSelected).toHaveBeenCalledOnceWith(root);
+      expect(start).not.toHaveBeenCalled();
+      expect(compiler.npmService.ensureLocalCompilerDependencies).not.toHaveBeenCalled();
+      expect(compiler.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+      expect(compiler.npmService.prepareCompileBackend).not.toHaveBeenCalled();
+      expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+      expect(compiler.metrics.record).not.toHaveBeenCalled();
+      expect(files.get(packagePath)).toBe(before);
+    });
+  }
+
+  it('compiles the native source after the user selects a board', async () => {
+    electron.pathJoin = (...parts: string[]) => parts.filter(part => part && part !== '.').join('/');
+    writeManifest({ ...readManifest(), arduinoSketch: true, entry: 'Blink.ino' });
+    files.set(`${root}/Blink.ino`, 'void setup() {}\nvoid loop() {}');
+    project.currentPackageData = readManifest();
+    const compiler: any = createCompiler(() => 0);
+    expect((await compiler.runCompileFromDisk()).success).toBeTrue();
+    expect(project.ensureCoderBoardSelected).toHaveBeenCalledOnceWith(root);
+    expect(compiler.runOneShotCommand).toHaveBeenCalled();
   });
 
   it('waits for automatic compiler repair before starting a local compilation', async () => {
