@@ -8,9 +8,12 @@ const scriptTypes = Object.keys(kinds).filter(type => kinds[type] !== 'definitio
 
 // Audited original and identity-preserving sources, normalized LF.
 // Names/version strings alone are not provenance.
-const sourceHashes = new Set([
+const legacySourceHashes = new Set([
   '4d3a8f44d8fbeffc76bdfe6648fa076e2474505ab359a81cd64bfa98aaef592b',
   'f19d9900bbaf14bcb159bc8e4f62bb5cce82af27e7265b90af5369ae2caaa10d',
+]);
+const sourceHashes = new Set([
+  ...legacySourceHashes,
   // Audited local-symbol scope provider; native function/model effects are unchanged.
   '95a7020bc863c88fd49da23fec16479931a4f24a791558d8f2cb9787089e8ed7',
 ]);
@@ -50,8 +53,9 @@ export async function registerCustomFunctionContract(source: string, realm: any,
     && functions.every(([name, value]) => Object.getOwnPropertyDescriptor(realm, name)?.value === value)
     && typeof extension === 'function' && realm.Blockly.Extensions.TEST_ONLY?.allExtensions?.function_params_mutator === extension;
 
-  if (!sourceHashes.has(await sha256Hex(source.replace(/\r\n/g, '\n'))) || !intact()) return;
-  registrations.set(registry, { owner, capture: () => {
+  const sourceHash = await sha256Hex(source.replace(/\r\n/g, '\n'));
+  if (!sourceHashes.has(sourceHash) || !intact()) return;
+  const registration = { owner, capture: () => {
     let used = false;
     const definition = registry['custom_function_def'];
     const init = definition && Object.getOwnPropertyDescriptor(definition, 'init')?.value;
@@ -106,5 +110,26 @@ export async function registerCustomFunctionContract(source: string, realm: any,
       }));
       synchronize(workspace, { blocks: { blocks } });
     } };
-  } });
+  } };
+  registrations.set(registry, registration);
+
+  // Keep selected, audited older library versions interoperable with model
+  // symbols. The compatibility boundary owns this proven private binding
+  // schema; the generator itself only consumes the public local-scope API.
+  const generator = realm.Arduino;
+  if (legacySourceHashes.has(sourceHash) && typeof generator?.registerModelSymbolLocalScope === 'function') {
+    generator.registerModelSymbolLocalScope('core-functions.legacy-parameters', (block: Blockly.Block, model: any) => {
+      if (kinds[block.type] !== 'definition' || model.getType() !== '' || realm.Arduino !== generator
+        || registrations.get(registry) !== registration || !isCurrent()) return false;
+      if (registration.capture().get(block.type)?.kind !== 'definition') return false;
+      const instance = block as any, variables = block.workspace.getVariableMap();
+      // Never serialize here: the library's saveExtraState ensures IDs and can
+      // mutate metadata. Resolve the existing native binding without effects.
+      return (instance.params_ || []).some((parameter: any, index: number) => {
+        const id = (instance.paramVarIds_ || [])[index];
+        const bound = (id && variables.getVariableById(id)) || variables.getVariable(parameter.name, '');
+        return !!bound && bound.getId() === model.getId();
+      });
+    });
+  }
 }
