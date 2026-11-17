@@ -111,5 +111,7 @@ child/aily-builder*
 todo.md
 plans/
 /.generated/blockly-runtime/
+/electron/native/*.node
+/electron/native/*.node.*
 # 本机临时草稿不属于应用源码。
 .draft/

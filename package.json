@@ -14,9 +14,11 @@
     ],
     "appId": "blockly.aily.pro",
     "forceCodeSigning": false,
+    "beforePack": "scripts/prepare-window-chrome.js",
     "afterPack": "scripts/package-child-resources.js",
     "asar": true,
     "asarUnpack": [
+      "electron/native/*.node",
       "electron/preload.js",
       "electron/node_modules/**/*.node",
       "electron/node_modules/@lydell/**",
@@ -52,7 +54,9 @@
           "!package-lock.json",
           "!.gitignore",
           "!dev-app-update.yml",
-          "!**/*.md"
+          "!**/*.md",
+          "!native/*.mm",
+          "!native/*.stamp"
         ]
       },
       {

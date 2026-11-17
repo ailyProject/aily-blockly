@@ -51,13 +51,14 @@
   font-synthesis: none;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: transparent; -webkit-font-smoothing: antialiased; }
+html, body { width: 100%; height: 100%; }
+body { margin: 0; background: var(--aily-bg-elevated); -webkit-font-smoothing: antialiased; }
 [hidden] { display: none !important; }
 h1, h2, h3, p { margin: 0; }
 svg { flex-shrink: 0; width: 20px; height: 20px; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
-.authorization-page { display: grid; place-items: center; width: 100vw; height: 100vh; padding: 16px; }
-.authorization-card { position: relative; display: flex; flex-direction: column; width: 100%; max-width: 456px; max-height: 100%; overflow: hidden; background: var(--aily-bg-elevated); border: 1px solid var(--aily-border-secondary); border-radius: 20px; box-shadow: var(--aily-shadow-lg); }
-.authorization-body { min-height: 0; overflow-y: auto; padding: 26px 26px 18px; scrollbar-width: thin; scrollbar-color: var(--aily-border-secondary) transparent; }
+.authorization-page { width: 100%; height: 100%; }
+.authorization-card { display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--aily-bg-elevated); }
+.authorization-body { flex: 1; min-height: 0; overflow-y: auto; padding: 26px 26px 18px; scrollbar-width: thin; scrollbar-color: var(--aily-border-secondary) transparent; }
 .authorization-header { text-align: center; }
 .connection-mark { display: flex; align-items: center; justify-content: center; gap: 9px; margin: 0 0 16px; }
 .app-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; overflow: hidden; }
@@ -101,9 +102,6 @@ button { display: inline-flex; align-items: center; justify-content: center; gap
 .allow-button svg { width: 16px; height: 16px; }
 .cancel-button { color: var(--aily-text-tertiary); border-color: var(--aily-border-input); background: var(--aily-bg-elevated); }
 .cancel-button:hover:not(:disabled) { color: var(--aily-text-primary); border-color: var(--aily-color-accent); background: var(--aily-bg-secondary); }
-.close-button { position: absolute; z-index: 1; top: 12px; right: 12px; width: 28px; min-height: 28px; padding: 0; border-radius: 7px; color: var(--aily-text-hint); background: transparent; }
-.close-button svg { width: 16px; height: 16px; }
-.close-button:hover { color: var(--aily-text-primary); background: var(--aily-bg-tertiary); }
 button:disabled { cursor: default; opacity: .5; box-shadow: none; }
 button:focus-visible { outline: 3px solid color-mix(in srgb, var(--aily-color-accent) 45%, transparent); outline-offset: 3px; }
 .authorization-error { margin-top: 12px; padding: 9px 11px; color: var(--aily-color-error-bright); background: color-mix(in srgb, var(--aily-color-error-bright) 8%, var(--aily-bg-elevated)); border: 1px solid color-mix(in srgb, var(--aily-color-error-bright) 28%, var(--aily-border-secondary)); border-radius: 8px; font-size: 11px; line-height: 1.7; }

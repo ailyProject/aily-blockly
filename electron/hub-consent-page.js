@@ -4,7 +4,6 @@ const removeThemeListener = window.hubConsent.onTheme(applyTheme);
 window.addEventListener('unload', removeThemeListener, { once: true });
 const allow = document.getElementById('allow');
 const cancel = document.getElementById('cancel');
-const close = document.getElementById('close');
 let valid = false;
 function decide(approved) {
   if (approved && !valid) return;
@@ -13,7 +12,6 @@ function decide(approved) {
 }
 allow.addEventListener('click', () => decide(true));
 cancel.addEventListener('click', () => decide(false));
-close.addEventListener('click', () => decide(false));
 document.addEventListener('keydown', event => { if (event.key === 'Escape') decide(false); });
 window.hubConsent.read().then(data => {
   if (!data || Date.now() >= data.expiresAt) throw new Error('授权请求已过期，请从项目广场重新登录。');

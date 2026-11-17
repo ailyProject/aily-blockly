@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const { prepareChildResources } = require('./prepare-child-resources');
+const { prepareWindowChrome } = require('./prepare-window-chrome');
 
 function isCoderDevMode(args = []) {
   return args.includes('--coder');
@@ -24,6 +25,7 @@ function createElectronDevLaunchOptions(args = [], environment = {}) {
 }
 
 async function main() {
+  prepareWindowChrome();
   const launch = createElectronDevLaunchOptions(process.argv.slice(2), process.env);
   await prepareChildResources({ development: true, includeCoder: launch.coderMode });
   const electronPath = require('electron');
