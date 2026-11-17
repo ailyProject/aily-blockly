@@ -1560,7 +1560,7 @@ function getSelectedResourceSourceKey(conf = {}) {
     : 'auto';
 }
 
-function getZipUrlState(conf = {}) {
+function getZipUrlState(conf = {}, currentRegion = conf.region) {
   const sources = getConfiguredResourceSources(conf);
   if (sources.length === 0) {
     return { currentUrl: '', urls: [] };
@@ -1575,15 +1575,27 @@ function getZipUrlState(conf = {}) {
     };
   }
 
+  if (currentRegion === 'cn' || currentRegion === 'eu') {
+    const configuredOrder = conf.download_region_order?.[currentRegion];
+    const regionOrder = Array.isArray(configuredOrder) && configuredOrder.length > 0
+      && configuredOrder.every((key) => typeof key === 'string' && key.trim())
+      ? configuredOrder.map((key) => key.trim())
+      : (currentRegion === 'cn' ? ['cn', 'eu'] : ['eu', 'cn']);
+    const preferredUrls = regionOrder.map((key) => normalizeResourceUrl(conf.regions?.[key]?.resource));
+    sources.sort((first, second) => {
+      const firstIndex = preferredUrls.indexOf(first.url);
+      const secondIndex = preferredUrls.indexOf(second.url);
+      return (firstIndex < 0 ? preferredUrls.length : firstIndex)
+        - (secondIndex < 0 ? preferredUrls.length : secondIndex);
+    });
+  }
+
   return {
     currentUrl: sources[0].url,
     urls: sources.map((source) => source.url),
   };
 }
 
-function buildZipUrls(conf = {}) {
-  return JSON.stringify(getZipUrlState(conf).urls);
-}
 let rendererGeneration = 0;
 let readyRendererGeneration = 0;
 let powerMonitorListenersRegistered = false;
@@ -2419,7 +2431,7 @@ function loadEnv() {
     ? officialRegion
     : (conf.region || officialRegion);
   const regionConfig = conf.regions && conf.regions[currentRegion] ? conf.regions[currentRegion] : conf.regions[officialRegion];
-  const zipUrlState = getZipUrlState(conf);
+  const zipUrlState = getZipUrlState(conf, currentRegion);
 
   // 当前区域
   process.env.AILY_REGION = currentRegion;
@@ -2524,7 +2536,7 @@ function loadEnv() {
     process.env.AILY_COMPILERS_PATH = repairBootstrap.record.sharedResources.compilers;
   }
   // zip包下载镜像地址：auto 模式输出完整列表，手动模式仅输出选中地址
-  process.env.AILY_ZIP_URLS = buildZipUrls(conf);
+  process.env.AILY_ZIP_URLS = JSON.stringify(zipUrlState.urls);
   // zip包下载地址
   process.env.AILY_ZIP_URL = zipUrlState.currentUrl || regionConfig.resource;
   // API服务器地址
