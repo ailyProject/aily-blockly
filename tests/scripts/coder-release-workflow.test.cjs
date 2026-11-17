@@ -29,6 +29,41 @@ function run(job, name, modules, env = {}, globals = {}) {
   });
 }
 
+test('Windows signing invokes the artifact-aware helper with the uploaded id and existing SignPath configuration', async () => {
+  const job = workflow.jobs['build-and-sign-windows'];
+  const signing = step('build-and-sign-windows', 'Sign installer');
+  assert.equal(signing.uses, 'actions/github-script@v7');
+  assert.equal(signing.env.SIGNPATH_ARTIFACT_ID, '${{ steps.unsigned.outputs.artifact-id }}');
+  assert.equal(signing.env.SIGNPATH_API_TOKEN, '${{ secrets.SIGNPATH_API_TOKEN }}');
+  assert.equal(signing.env.SIGNPATH_SIGNING_POLICY, '${{ needs.prepare.outputs.signing_policy }}');
+  assert.equal(signing.env.GITHUB_TOKEN, '${{ github.token }}');
+  assert.ok(job.steps.indexOf(signing) > job.steps.findIndex(step => step.id === 'unsigned'));
+  assert.ok(job.steps.indexOf(signing) < job.steps.findIndex(step => step.name === 'Verify Authenticode and generate final manifest'));
+  let received;
+  const github = {}, context = {}, core = {};
+  await vm.runInNewContext(`(async () => { ${signing.with.script} })()`, {
+    github, context, core,
+    process: { env: { SIGNPATH_API_TOKEN: 'signpath-token', SIGNPATH_ARTIFACT_ID: '14344542516',
+      SIGNPATH_SIGNING_POLICY: 'release-signing', GITHUB_TOKEN: 'github-token', RELEASE_VERSION: '0.1.7' } },
+    require(name) {
+      assert.equal(name, './scripts/sign-coder-installer.cjs');
+      return async (scope, inputs) => {
+        assert.equal(scope.github, github);
+        assert.equal(scope.context, context);
+        assert.equal(scope.core, core);
+        received = JSON.parse(JSON.stringify(inputs));
+      };
+    },
+  });
+  assert.deepEqual(received, {
+    'api-token': 'signpath-token', 'organization-id': 'bd01a768-a9e3-4a62-945d-fcfdc37a299e',
+    'project-slug': 'aily-blockly', 'signing-policy-slug': 'release-signing',
+    'artifact-configuration-slug': 'aily-coder', 'github-artifact-id': '14344542516',
+    'github-token': 'github-token', 'parameters': 'version: "0.1.7"',
+    'output-artifact-directory': 'dist/aily-coder',
+  });
+});
+
 function guard(releases = []) {
   const written = {};
   run('publish-release', 'Resolve existing release and reject channel rollback', {
