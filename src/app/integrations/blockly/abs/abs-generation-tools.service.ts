@@ -20,6 +20,17 @@ export class AbsGenerationToolsService {
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
   captureMediaImportTarget(target: MediaImportTarget) { return this.sync.captureMediaImportTarget(target); }
   observeApplication(requestId: string) { return this.sync.observeApplication(requestId); }
+  async workspaceMigration(operation: 'prepare' | 'select', input: Record<string, any>) {
+    try {
+      if (operation === 'prepare') {
+        if (input['version'] !== 1 || input['action'] !== 'prepare_workspace_migration'
+          || Object.keys(input).some(key => !['version', 'action'].includes(key)))
+          throw new AbsSyncError('ABS_REQUEST_INVALID', 'Migration preparation requires version 1 and its runtime action.');
+        return await this.sync.prepareWorkspaceModeMigration();
+      }
+      return await this.sync.migrateWorkspaceMode(input);
+    } catch (error) { return { ok: false, operation: operation === 'prepare' ? 'abs_protocol' : 'abs_workspace_migrate', ...serializeAbsFailure(error) }; }
+  }
 
   async candidateBackup(project: string, input: Record<string, any>, assertCurrent: () => void) {
     try {

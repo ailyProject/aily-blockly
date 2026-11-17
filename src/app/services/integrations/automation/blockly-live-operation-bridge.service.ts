@@ -28,7 +28,8 @@ import {
 import { AbsGenerationToolsService } from '../../../integrations/blockly/abs/abs-generation-tools.service';
 import { sameAbsProjectDirectory } from '../../../integrations/blockly/abs/abs-project-path';
 import { checkAbsDocumentation } from '../../../integrations/blockly/abs/abs-documentation';
-import { ABS_LIVE_PROTOCOL, absProtocolReply, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
+import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
+import { absWorkspaceProtocol } from '../../../integrations/blockly/abs/abs-workspace-protocol';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
 import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
@@ -63,7 +64,7 @@ type BlocklyLiveOperationPayload = {
 };
 
 const PROJECT_MUTATIONS = new Set([
-  'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery',
+  'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery', 'abs_workspace_migrate',
   'library_history_navigation', 'library_runtime_sync', 'library_mutation_prepare', 'library_mutation_abort', 'set_board_config', 'project_save', 'blocks_tidy',
   'project_build', 'project_upload',
   'project_media_import',
@@ -72,6 +73,7 @@ const PROJECT_MUTATIONS = new Set([
 // Backup/observation and environment-only operations are not program writers.
 function publishesProjectProgram(payload: BlocklyLiveOperationPayload): boolean {
   const { operation, params = {} } = payload;
+  if (operation === 'abs_protocol') return params['action'] === 'prepare_workspace_migration';
   if (['project_save', 'blocks_tidy', 'abs_apply', 'board_switch', 'set_board_config'].includes(operation || '')) return true;
   if (operation === 'abs_projection') return params['publish'] !== false;
   if (operation === 'blocks_set_state') return params['action'] !== 'inspect';
@@ -399,7 +401,8 @@ export class BlocklyLiveOperationBridgeService {
       && this.projectService.hasSavedRecoveryTarget?.(recoveryPath)
       && this.projectService.getBlocklyProjectLoadStatus(recoveryPath).ready === false;
     if (journalReopen || recoveryInspection || candidateBackup || runtimeRecovery || recoveryDependencyReload || (!PROJECT_MUTATIONS.has(payload.operation || '')
-      && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update'))) return execute();
+      && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update')
+      && !(payload.operation === 'abs_protocol' && payload.params?.['action'] === 'prepare_workspace_migration'))) return execute();
     const projectPath = payload.path || this.projectService.currentProjectPath;
     if (this.projectService.isProjectTransitionInProgress(projectPath)
       && !(this.projectService.isLibraryMutationInProgress(projectPath)
@@ -588,11 +591,13 @@ export class BlocklyLiveOperationBridgeService {
 
     // Static negotiation must remain reachable after failed loading. Its route
     // is still bound to this original project and its actual project mode.
-    if (payload.operation === 'abs_protocol') {
+    if (payload.operation === 'abs_protocol' && payload.params?.['action'] !== 'prepare_workspace_migration') {
       if (this.projectService.getProjectMode(currentProject) !== 'blockly') return {
         ok: false, operation: 'abs_protocol', project: currentProject, code: 'ABS_WORKING_CANDIDATE_UNSUPPORTED',
         message: 'This project is not a Blockly program.' };
-      return absProtocolReply(currentProject, payload.params || {});
+      return absWorkspaceProtocol(currentProject, payload.params || {}, () => {
+        if (this.projectService.currentProjectPath !== currentProject) throw new Error('The protocol project changed.');
+      });
     }
 
     // Dependency evidence is independent of native canvas readiness and never
@@ -764,6 +769,10 @@ export class BlocklyLiveOperationBridgeService {
         message: '库依赖正在更新，请等待运行时同步结束。' };
     }
     switch (payload.operation) {
+      case 'abs_protocol':
+        return this.absGenerationTools.workspaceMigration('prepare', payload.params || {});
+      case 'abs_workspace_migrate':
+        return this.runAbsOperation(() => this.absGenerationTools.workspaceMigration('select', payload.params || {}));
       case 'blocks_set_state':
         return payload.params?.['action'] === 'inspect'
           ? this.absGenerationTools.blockState(payload.params)
@@ -873,6 +882,8 @@ export class BlocklyLiveOperationBridgeService {
       'abs_projection',
       'abs_validate',
       'abs_recovery',
+      'abs_protocol',
+      'abs_workspace_migrate',
       'abs_capabilities',
       'abs_compose',
       'abs_precheck',
@@ -1332,10 +1343,12 @@ export class BlocklyLiveOperationBridgeService {
       ? window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'))
       : `${newProjectData.path.replace(/[\\/]+$/, '')}/${newProjectData.name.replace(/\s/g, '_')}`;
 
-    const created = await this.projectService.projectNew(
+    const creation = await this.projectService.projectNewWithResult(
       newProjectData,
       { activationReason: 'chat-tool-create', ...(lifecycleOwner ? { deferActivation: true } : {}) },
     );
+    const created = creation.ok;
+    const failure = creation.ok === false ? creation : undefined;
     let ok = created;
     let activationError: unknown;
     if (created && lifecycleOwner) {
@@ -1349,13 +1362,17 @@ export class BlocklyLiveOperationBridgeService {
       operation: 'project_create',
       developmentMode: mode,
       projectType: mode,
-      project: created ? projectPath : null,
+      project: created ? projectPath : failure?.projectPath || null,
+      ...(failure ? { stage: failure.stage, error: failure.error,
+        ...(failure.npmExitCode === undefined ? {} : { npmExitCode: failure.npmExitCode }),
+        ...(failure.partialMutation ? { partialMutation: true } : {}) } : {}),
       ...(created && !ok ? { projectCreated: true, createdProject: projectPath,
+        stage: 'activation', partialMutation: true,
         activation: { completed: false, currentProject: this.projectService.currentProjectPath || null },
         code: (activationError as any)?.code || 'PROJECT_CREATE_ACTIVATION_FAILED' } : {}),
       message: ok ? `项目已创建并打开: ${projectPath}` : created
         ? (activationError instanceof Error ? activationError.message : activationError ? String(activationError) : '项目已创建，但未确认打开完成')
-        : '项目创建失败',
+        : failure?.error || '项目创建失败',
       name: newProjectData.name,
       path: newProjectData.path,
       board: {
