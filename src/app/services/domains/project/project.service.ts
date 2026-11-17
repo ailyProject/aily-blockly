@@ -1,5 +1,5 @@
 import { ensureProjectPartitionFile } from './project-partitions';
-import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject } from './coder/arduino-sketch';
+import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { projectViewOpenError } from './project-view-ownership';
@@ -3822,6 +3822,18 @@ export class ProjectService {
       }
     }
     return undefined;
+  }
+
+  /** Coder execution must choose a target before dependency preparation or port selection. */
+  async ensureCoderBoardSelected(projectPath = this.currentProjectPath): Promise<boolean> {
+    if (!projectPath || !this.configService.isCoderProduct() || !this.isAilyCodeProject(projectPath)) return true;
+    const project = projectPath === this.currentProjectPath ? this : this.getCoderProjectContext(projectPath);
+    const current = project.captureCurrentProjectGuard();
+    if (await project.getBoardModule()) return true;
+    if (!current()) return false;
+    this.message.warning(CODER_BOARD_REQUIRED_MESSAGE);
+    await this.application.openCoderBoardSelector(projectPath);
+    return false;
   }
 
   // 获取开发板模块的package.json

@@ -57,12 +57,14 @@ describe('Coder concurrent process integration', () => {
       isProjectTransitionInProgress: jasmine.createSpy('transition').and.returnValue(false),
       getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
       beginCoderOperation: () => () => {},
+      ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true),
       getCoderProjectContext(path: string) {
         if (!contexts.has(path)) contexts.set(path, {
           currentProjectPath: path, isCoderProjectContext: true,
           captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }),
           coderProjects: project.coderProjects, currentBoardConfig: {}, boardChangeSubject: new Subject(),
           isAilyCodeProject: () => true, beginCoderOperation: () => () => {},
+          ensureCoderBoardSelected: (path: string) => project.ensureCoderBoardSelected(path),
           syncCurrentBoardConfig: async () => true,
           ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
           getProjectDependencyBlockMessage: (path: string) => project.getProjectDependencyBlockMessage(path),
@@ -212,6 +214,16 @@ describe('Coder concurrent process integration', () => {
     expect(commands.length).toBe(2);
     expect(runtime.getState('/a').build).toBe('warn');
     expect(runtime.getState('/b').build).toBe('done');
+  });
+
+  it('asks for a board before resolving a port or starting an upload session', async () => {
+    project.ensureCoderBoardSelected.and.resolveTo(false);
+    const resolve = spyOn(runtime, 'resolvePort');
+    expect(await runtime.upload('/a')).toEqual({ state: 'warn',
+      text: '请先选择开发板，再编译或上传 Arduino 工程。', buildOutcome: 'not-started' });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(commands).toEqual([]);
+    expect(runtime.getState('/a').upload).toBe('default');
   });
 
   it('lets separate devices upload concurrently, rejects a shared port, and releases the lease after failure', async () => {

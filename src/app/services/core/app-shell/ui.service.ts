@@ -928,7 +928,7 @@ export class UiService {
   }
 
   /** 打开切换开发板弹窗（Header 菜单与 Aily View MCU 节点共用） */
-  async openBoardSelector(): Promise<void> {
+  async openBoardSelector(projectPath?: string): Promise<void> {
     const { ProjectService } = await import('@domain/project/public-api');
     const projectService = this.injector.get(ProjectService);
     const isAilyCode = projectService.isAilyCodeProject();
@@ -939,6 +939,8 @@ export class UiService {
       boardList = await this.configService.loadBoardList();
     }
 
+    if (projectPath && projectService.currentProjectPath !== projectPath) return;
+    if (isAilyCode && this.modal.openModals.some(modal => modal.getContentComponent() instanceof BoardSelectorDialogComponent)) return;
     this.modal.create({
       nzTitle: null,
       nzFooter: null,
