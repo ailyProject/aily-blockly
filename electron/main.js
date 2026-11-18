@@ -1145,8 +1145,13 @@ async function handleCliBridgeCommand(action, payload) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
   switch (action) {
     case 'library-dependencies': {
-      const result = await runProjectLibraryOperation(payload.operation, payload.projectPath, payload.request, payload.transaction);
-      return { ok: true, ...result };
+      try {
+        const result = await runProjectLibraryOperation(payload.operation, payload.projectPath, payload.request, payload.transaction);
+        return { ok: true, ...result };
+      } catch (error) {
+        if (error?.commandDispatched === false) return { ok: false, commandDispatched: false, code: error.code, message: error.message };
+        throw error;
+      }
     }
     case 'open': {
       if (!requestedPath) return { ok: false, message: '缺少 path 参数' };
@@ -1255,6 +1260,8 @@ async function handleCliBridgeCommand(action, payload) {
       const projectOptionalOperations = new Set([
         'search_boards_libraries',
         'project_create',
+        'project_create_status',
+        'project_create_cancel',
         'project_open',
         'project_close',
         'project_load_status',

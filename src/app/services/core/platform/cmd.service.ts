@@ -91,7 +91,13 @@ export class CmdService {
     let settled = false;
     let removeListener: (() => void) | undefined;
     let observation: ReturnType<typeof setTimeout> | undefined;
-    const onAbort = () => subject.error(cancelledCommandError());
+    let dispatched = false;
+    const onAbort = () => {
+      if (dispatched && observeExit && typeof window['cmd'].kill === 'function') {
+        void window['cmd'].kill(streamId).catch(() => undefined);
+      }
+      subject.error(cancelledCommandError());
+    };
     const cleanup = () => {
       if (settled) return;
       settled = true;
@@ -170,6 +176,7 @@ export class CmdService {
     }
 
     // 执行命令
+    dispatched = true;
     window['cmd'].run(cmdOptions).then((result: any) => {
       if (settled) return;
       if (!result.success) {
@@ -275,7 +282,9 @@ export class CmdService {
           // console.log(`Processing queued command: ${task.command}`);
 
           // 执行命令并等待完成
-          const observable = this.executeCommand(task.command, task.cwd, task.silent, task.options);
+          const observable = this.executeCommand(task.command, task.cwd, task.silent, {
+            observeExit: true, ...task.options,
+          });
 
           await new Promise<void>((resolve, reject) => {
             observable.subscribe({

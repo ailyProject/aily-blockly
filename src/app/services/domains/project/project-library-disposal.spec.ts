@@ -159,6 +159,35 @@ describe('dependency-only persistence around library edits', () => {
     return {service,application,calls,release,lifecycleRelease,restore:()=>{window['libraryDependencies']=previous;}};
   }
 
+  it('cancels the original preparation while its history acknowledgement is lost', async () => {
+    const f = fixture(), requestId = 'env1-baf84ee4-c9c0-4e8d-83d9-c4b20bc425e6';
+    let acknowledge!: (value: {token: string}) => void;
+    let started!: () => void;
+    const start = new Promise<void>(resolve => { started = resolve; });
+    window['libraryDependencies'].historyBegin = jasmine.createSpy('begin').and.callFake(() => {
+      started();
+      return new Promise(resolve => { acknowledge = resolve; });
+    });
+    window['libraryDependencies'].historyDiscard.and.returnValue(new Promise(() => {}));
+    try {
+      const pending = f.service.beginLibraryMutation(['@aily-project/lib-test'], undefined, [], {requestId, expiresAt: Date.now() + 60_000});
+      const failure = pending.catch((error: unknown) => error);
+      await start;
+      await f.service.abortLibraryMutation(undefined, requestId, '/project');
+      expect(f.service.isLibraryMutationInProgress()).toBeFalse();
+      expect(f.release).toHaveBeenCalledTimes(1);
+      expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
+      acknowledge({ token: 'old-token' });
+      expect(await failure).toEqual(jasmine.any(Error));
+      expect(window['libraryDependencies'].historyDiscard).toHaveBeenCalledOnceWith('/project', {token: 'old-token'});
+      window['libraryDependencies'].historyBegin.and.resolveTo({token: 'new-token'});
+      const next = await f.service.beginLibraryMutation(['@aily-project/lib-test']);
+      await f.service.abortLibraryMutation(undefined, requestId, '/project');
+      expect(f.service.isLibraryMutationInProgress()).toBeTrue();
+      await f.service.abortLibraryMutation(next.token);
+    } finally { f.restore(); }
+  });
+
   it('does not touch dependencies or the canvas when library undo confirmation is cancelled', async () => {
     const f = fixture(), record = jasmine.createSpy('record');
     f.application.prepareBlocklyLibraryEdit = async () => ({ document: { pages: ['before'] }, release: f.release, record });

@@ -148,7 +148,9 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
         .then(() => handleCommand(action, payload))
         .then((result) => {
           const out = result || { ok: false, message: 'No result' };
-          if (Object.prototype.hasOwnProperty.call(out, 'project')) {
+          const originalCreate = action === 'blockly-live-operation' && payload.operation === 'project_create'
+            && !!payload.params?.createRequest;
+          if (!originalCreate && Object.prototype.hasOwnProperty.call(out, 'project')) {
             currentProject = out.project || null;
             writeDiscovery(server.address() ? server.address().port : 0);
           }

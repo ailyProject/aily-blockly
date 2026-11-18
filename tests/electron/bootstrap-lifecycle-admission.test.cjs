@@ -280,3 +280,57 @@ for (const failure of ['false', 'throw']) {
     assert.equal(f.domain.projectLifecycle.owners.size, 0);
   });
 }
+
+test('expired original creation releases pre-activation ownership and cannot take over after the next request', async () => {
+  const { randomUUID } = require('node:crypto');
+  const f = bridgeFixture();
+  f.bridge.executeProjectCreate = f.originalMethods.executeProjectCreate;
+  f.bridge.normalizeAilyBoardPackageName = (value) => value;
+  f.bridge.configService.getPreferredChatAgentRuntimeMode = () => 'blockly';
+  f.domain.createDefaultNewProjectData = async (_board, requested) => ({ path: '/projects', name: requested.name, board: {} });
+  const copied = [], activated = [];
+  let notifyCopy, continueCopy;
+  const firstCopied = new Promise(resolve => { notifyCopy = resolve; });
+  const preparation = new Promise(resolve => { continueCopy = resolve; });
+  f.domain.projectNewWithResult = async (data, options) => {
+    const target = path.join(data.path, data.name);
+    options.createAuthority.assertCurrent();
+    copied.push(target);
+    options.createAuthority.markCreated(target);
+    return { ok: true, projectPath: target };
+  };
+  f.domain.projectOpenInternal = async (target, options) => {
+    if (target.endsWith('first')) { notifyCopy(); await preparation; }
+    options.createActivation.assertCurrent();
+    options.createActivation.markActivated();
+    f.domain.currentProjectPath = target;
+    activated.push(target);
+    return true;
+  };
+  const request = (deadlineAt) => ({ version: 1, requestId: randomUUID(), rendererGeneration: 7, deadlineAt });
+  function call(operation, createRequest, target) {
+    return f.bridge.executeOperation({ operation, rendererGeneration: 7, lifecycle: snapshot(), params: {
+      createRequest, ...(target ? { name: target, boardName: '@aily-project/board-test' } : {})
+    } });
+  }
+  const old = request(Date.now() + 45);
+  const first = call('project_create', old, 'first');
+  await firstCopied;
+  assert.ok(f.domain.projectLifecycle.owners.size > 0);
+  assert.equal((await first).createReceipt.state, 'cancelled');
+  assert.equal(f.domain.projectLifecycle.owners.size, 0);
+  const next = request(Date.now() + 10_000);
+  const second = await call('project_create', next, 'second');
+  assert.equal(second.createReceipt.state, 'completed');
+  continueCopy();
+  await new Promise(resolve => setImmediate(resolve));
+  const prior = await call('project_create_status', old);
+  assert.equal(prior.createReceipt.createdProject, copied[0]);
+  assert.equal(prior.activationCurrent, false);
+  const observation = await call('project_create_cancel', next);
+  assert.equal(observation.activationCurrent, true);
+  assert.equal(observation.projectType, 'blockly');
+  assert.equal((await call('project_create', next, 'altered')).code, 'PROJECT_CREATE_REQUEST_REUSED');
+  assert.deepEqual(activated, [copied[1]]);
+  assert.equal(f.domain.projectLifecycle.owners.size, 0);
+});

@@ -25,15 +25,20 @@ class LibraryDependencies {
   constructor({ run = runDependencyWorker, trashLocalDirectory } = {}) {
     this.environment = new (require('./library-environment-journal').LibraryEnvironmentJournal)();
     this.environmentGuards = new Map();
-    this.run = (root, request) => run(root, { ...request, environmentRequestId: this.environment.owned.get(root)?.record.requestId }, this.environment.owned.has(root) || request.materializeSources ? {
-      beforeReify: (locations, worker, writes) => {
-        const guard = this.environmentGuards.get(root);
-        if (!guard) throw fault('LIBRARY_ENVIRONMENT_UNCERTAIN', 'The original dependency writer is unavailable.');
-        if (!this.environment.owned.has(root)) this.environment.begin(root, { operation: 'library-prepare' }, this.states.get(root), guard);
-        this.environment.preserve(root, locations, guard, worker);
-        if (writes) this.environment.preserveInputWrites(root, writes, guard);
-      },
-    } : undefined);
+    this.run = (root, request, control) => {
+      control?.assertActive();
+      return run(root, { ...request, environmentRequestId: this.environment.owned.get(root)?.record.requestId }, this.environment.owned.has(root) || request.materializeSources ? {
+        assertActive: control?.assertActive,
+        beforeReify: (locations, worker, writes) => {
+          control?.assertActive();
+          const guard = this.environmentGuards.get(root);
+          if (!guard) throw fault('LIBRARY_ENVIRONMENT_UNCERTAIN', 'The original dependency writer is unavailable.');
+          if (!this.environment.owned.has(root)) this.environment.begin(root, { operation: 'library-prepare' }, this.states.get(root), guard);
+          this.environment.preserve(root, locations, guard, worker);
+          if (writes) this.environment.preserveInputWrites(root, writes, guard);
+        },
+      } : undefined);
+    };
     this.states = new Map();
     this.queues = new Map();
     this.locals = new (require('./library-local-changes').LocalLibraryChanges)({ trash: trashLocalDirectory });
@@ -154,8 +159,9 @@ class LibraryDependencies {
     return this.queue(project, root => this.locked(root, () => this.status(root), 'read'));
   }
 
-  beginEnvironmentAttempt(project, request) {
+  beginEnvironmentAttempt(project, request, control) {
     return this.queue(project, root => this.locked(root, assertCurrent => {
+      control?.assertActive();
       this.environment.begin(root, request ? { ...request, operation: 'library-change' } : { operation: 'library-edit-session' }, this.states.get(root), assertCurrent);
       return this.environment.beginAttempt(root, this.states.get(root), assertCurrent);
     }));
@@ -163,21 +169,9 @@ class LibraryDependencies {
   endEnvironmentAttempt(project, id) { this.environment.endAttempt(this.root(project), id); }
 
   async cancelEnvironmentWorkers(project, requestId) {
-    const root = this.root(project), { killRegisteredProcessTree } = require('./process-tree');
+    const root = this.root(project);
     const targets = [...workers].filter(child => child.environmentRoot === root && child.environmentRequestId === requestId);
-    await Promise.all(targets.map(child => killRegisteredProcessTree(child.pid, 'library-dependencies-original-request')));
-  }
-
-  settleCancelledEnvironment(project, requestId) {
-    return this.queue(project, root => this.locked(root, assertCurrent => {
-      const original = this.environment.find(root, requestId), owned = this.environment.owned.get(root);
-      if (original && owned?.record.requestId === requestId && !owned.record.request.programRef
-        && !fs.existsSync(path.join(original.folder, 'result.json'))) {
-        const restored = this.environment.restore(root, owned, assertCurrent);
-        if (restored.state === null) this.states.delete(root); else this.states.set(root, restored.state);
-      }
-      return { environment: this.environment.observe(root, requestId), candidateApplied: false };
-    }, false));
+    await Promise.all(targets.map(child => stopWorker(child, 'library-dependencies-original-request')));
   }
 
   finishAbortedEnvironmentAttempt(project, id) {
@@ -187,8 +181,9 @@ class LibraryDependencies {
     }));
   }
 
-  mutate(project, request) {
+  mutate(project, request, control) {
     return this.queue(project, root => this.locked(root, async assertCurrent => {
+      control?.assertActive();
       const disk = this.read(root), previous = this.effective(root);
       const plan = this.plan(disk, previous);
       const names = request.packages;
@@ -215,7 +210,8 @@ class LibraryDependencies {
       let result;
       try {
         if (request.localSource) this.prepareLocalSource(root, request, assertCurrent);
-        result = await this.run(root, { ...plan, options: request.options });
+        result = await this.run(root, { ...plan, options: request.options }, control);
+        control?.assertActive();
         assertCurrent();
         if (!sameLibraryInput(original, fs.readFileSync(path.join(root, 'package.json'), 'utf8'))) throw conflict();
       } catch (error) {
@@ -313,9 +309,11 @@ class LibraryDependencies {
     fs.renameSync(candidate, target);
   }
 
-  removeLocal(project, { folderName }) {
+  removeLocal(project, { folderName }, control) {
     return this.queue(project, root => this.locked(root, async assertCurrent => {
+      control?.assertActive();
       await this.locals.target(root, folderName); // Validate the exact owned logical leaf before checkpointing.
+      control?.assertActive();
       this.environment.begin(root, { operation: 'local-library-remove', folderName }, this.states.get(root), assertCurrent);
       this.environment.preserve(root, [`sketch/libraries/${folderName}`], assertCurrent);
       await this.locals.remove(root, folderName);
@@ -345,9 +343,10 @@ class LibraryDependencies {
     }));
   }
 
-  async prepareSources(root, assertCurrent) {
+  async prepareSources(root, assertCurrent, control) {
     const before = this.dependencyInput(root);
-    await this.run(root, { materializeSources: true, manifest: this.effective(root) });
+    await this.run(root, { materializeSources: true, manifest: this.effective(root) }, control);
+    control?.assertActive();
     assertCurrent();
     const after = this.dependencyInput(root);
     if (!sameLibraryInput(before.package, after.package) || after.lock !== before.lock) throw conflict();
@@ -383,10 +382,12 @@ class LibraryDependencies {
     return this.queue(project, root => this.locked(root, assertCurrent => this.saveInLock(root, options, assertCurrent)));
   }
 
-  async saveInLock(root, { prepareSources = false, onPublish = () => {} } = {}, assertCurrent) {
+  async saveInLock(root, { prepareSources = false, onPublish = () => {}, control } = {}, assertCurrent) {
+      control?.assertActive();
       const state = this.states.get(root);
       if (!state) {
-        if (prepareSources) await this.prepareSources(root, assertCurrent);
+        if (prepareSources) await this.prepareSources(root, assertCurrent, control);
+        control?.assertActive();
         this.locals.save(root); this.environment.complete(root, assertCurrent); return this.status(root);
       }
       this.environment.begin(root, { operation: 'library-save' }, this.states.get(root), assertCurrent);
@@ -395,7 +396,8 @@ class LibraryDependencies {
         state.resolution.archiveFile = archiveDependencyResolution(root, state.resolution);
         const before = this.dependencyInput(root);
         try {
-          await this.run(root, { ...this.plan(disk, effective), options: state.options });
+          await this.run(root, { ...this.plan(disk, effective), options: state.options }, control);
+          control?.assertActive();
           assertCurrent();
           const current = this.dependencyInput(root);
           if (this.states.get(root) !== state || current.package !== before.package || current.lock !== before.lock) throw conflict();
@@ -407,15 +409,17 @@ class LibraryDependencies {
       }
       // npm owns lockfile creation and resolution. Library transactions call
       // this after source preparation, independently of saving editor content.
-      if (prepareSources) await this.prepareSources(root, assertCurrent);
+      if (prepareSources) await this.prepareSources(root, assertCurrent, control);
       let publication;
+      control?.assertActive();
       onPublish();
-      try { publication = await this.run(root, { ...this.plan(disk, effective), options: state.options, save: true }); }
+      try { publication = await this.run(root, { ...this.plan(disk, effective), options: state.options, save: true }, control); }
       catch (error) {
         if (state.treeNeedsReconcile) state.reconcileFailure = { code: error.code || 'LIBRARY_DEPENDENCY_SAVE_FAILED',
           phase: 'save', message: error.message, outcome: 'unverified', requiresInspection: true };
         throw error;
       }
+      control?.assertActive();
       assertCurrent();
       const saved = this.read(root);
       if (state.treeNeedsReconcile && fields.some(field => !same(saved[field], publication.manifest?.[field]))) {
@@ -501,9 +505,9 @@ class LibraryDependencies {
     }));
   }
 
-  observeEnvironment(project, { requestId }) {
+  async observeEnvironment(project, { requestId }) {
     const root = this.root(project);
-    return this.queue(root, () => this.locked(root, () => ({ environment: this.environment.observe(root, requestId), candidateApplied: false }), false));
+    return { environment: this.environment.observe(root, requestId), candidateApplied: false };
   }
 
   pendingEnvironment(project) {
@@ -524,8 +528,9 @@ class LibraryDependencies {
     }, false));
   }
 
-  historyBegin(project, { packages }) {
+  historyBegin(project, { packages }, control) {
     return this.queue(project, root => this.locked(root, () => {
+      control?.assertActive();
       if (this.status(root).dirty) throw new Error('Save pending dependencies before a library checkpoint.');
       return this.history.begin(root, packages);
     }));
@@ -536,7 +541,7 @@ class LibraryDependencies {
   }
 
   historyDiscard(project, { token }) {
-    return this.queue(project, root => this.history.discard(root, token));
+    return this.history.discard(this.root(project), token);
   }
 
   historyRestore(project, { token, forward }) {
@@ -631,8 +636,9 @@ function isCoderProject(root) {
   catch { return false; }
 }
 
-function runDependencyWorker(root, request, hooks) {
+async function runDependencyWorker(root, request, hooks) {
   if (shuttingDown) return Promise.reject(new Error('Application is shutting down'));
+  hooks?.assertActive?.();
   const { childScriptPath } = require('./child-script-path');
   const preprocessPath = childScriptPath('preprocess.js');
   const childRoot = path.dirname(path.dirname(preprocessPath));
@@ -649,7 +655,8 @@ function runDependencyWorker(root, request, hooks) {
     workers.add(child);
     child.environmentRoot = root;
     child.environmentRequestId = request.environmentRequestId;
-    let response, detail = '';
+    child.environmentProcessIdentity = require('./process-tree').captureRegisteredProcessIdentity(child);
+    let response, workerError, detail = '';
     child.on('message', value => {
       if (value?.type === 'environment-before-reify') {
         Promise.resolve().then(() => {
@@ -659,26 +666,30 @@ function runDependencyWorker(root, request, hooks) {
           const owner = storageExecutor();
           return hooks.beforeReify(value.locations, { version: 1, hostPid: owner.hostPid, storagePid: child.pid,
             instanceId: `library-worker-${child.pid}`, processIdentity: processIdentity(child.pid), bootId: owner.bootId }, value.writes);
-        }).then(() => { if (child.connected) child.send({ type: 'environment-checkpoint-ack', token: value.token, ok: true }); },
+        }).then(() => hooks?.assertActive?.()).then(() => { if (child.connected) child.send({ type: 'environment-checkpoint-ack', token: value.token, ok: true }); },
           error => { if (child.connected) child.send({ type: 'environment-checkpoint-ack', token: value.token, ok: false, error: error.message }); });
       } else response = value;
     });
     child.stdout.on('data', value => { detail = (detail + value).slice(-8000); });
     child.stderr.on('data', value => { detail = (detail + value).slice(-8000); });
-    child.on('error', error => { workers.delete(child); reject(error); });
+    child.on('error', error => { workerError ??= error; });
     child.on('close', code => {
       workers.delete(child);
-      response?.ok && code === 0 ? resolve(response) : reject(new Error(response?.error || detail || `npm dependency worker exited: ${code}`));
+      response?.ok && code === 0 ? resolve(response) : reject(workerError ?? new Error(response?.error || detail || `npm dependency worker exited: ${code}`));
     });
-    child.stdin.on('error', reject);
+    child.stdin.on('error', error => { workerError ??= error; });
     child.stdin.end(JSON.stringify({ ...request, ...(hooks ? { environmentCheckpoint: true } : {}), npmRoot }));
   });
 }
 
 async function stopLibraryDependencyWorkers() {
   shuttingDown = true;
+  return Promise.all([...workers].map(child => stopWorker(child, 'library-dependencies')));
+}
+
+function stopWorker(child, label) {
   const { killRegisteredProcessTree } = require('./process-tree');
-  return Promise.all([...workers].map(child => killRegisteredProcessTree(child.pid, 'library-dependencies')));
+  return killRegisteredProcessTree(child.pid, label, { registered: child, identity: child.environmentProcessIdentity });
 }
 
 module.exports = { LibraryDependencies, runDependencyWorker, stopLibraryDependencyWorkers };

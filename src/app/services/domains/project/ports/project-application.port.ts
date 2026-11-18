@@ -29,6 +29,7 @@ export interface BlocklyLibraryRuntimeRebuildInput {
   runtimeSignature: string;
   previousRuntimeSignature?: string;
   retainedDocument?: unknown;
+  assertOwner?: () => void;
 }
 
 /**
@@ -62,7 +63,7 @@ export interface ProjectApplicationPort {
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
   captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
-  prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[]): Promise<{
+  prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[], signal?: AbortSignal): Promise<{
     document: unknown;
     usedLibraries?: string[];
     release(): void;
