@@ -6,6 +6,7 @@ export interface BlocklyBuildInput {
   projectPath: string;
   graphSemanticRevision?: string;
   requestId?: string;
+  clearCache?: boolean;
 }
 
 export interface BlocklyBuildOutcome {
