@@ -232,7 +232,7 @@ test('baseline rereads after a conflict and never overwrites a concurrent newer 
   assert.throws(() => saveBaseline({ conflict: true }), /conflict/);
 });
 
-test('artifacts support same-run retries and stable verification waits for domestic synchronization', () => {
+test('artifacts support same-run retries and stable baselines wait for domestic synchronization', () => {
   const uploads = Object.values(workflow.jobs).flatMap(job => job.steps).filter(step => step.uses === 'actions/upload-artifact@v4');
   assert.equal(uploads.length, 4);
   assert.ok(uploads.every(step => step.with.overwrite === true));
@@ -241,7 +241,21 @@ test('artifacts support same-run retries and stable verification waits for domes
   assert.ok(workflow.jobs['publish-release'].needs.includes('prepare-release'));
   assert.deepEqual(workflow.jobs['sync-stable-feed'].needs, ['prepare', 'upload-stable-feed']);
   assert.equal(workflow.jobs['sync-stable-feed'].if, "needs.prepare.outputs.channel == 'stable'");
-  assert.deepEqual(workflow.jobs['verify-stable-feed'].needs, ['prepare', 'sync-stable-feed']);
+  assert.equal(workflow.jobs['verify-stable-feed'], undefined);
+  const baseline = workflow.jobs['save-source-baseline'];
+  assert.deepEqual(baseline.needs, ['prepare', 'publish-release', 'sync-stable-feed']);
+  for (const [channel, syncResult, publishResult, expected] of [
+    ['stable', 'success', 'success', true],
+    ['stable', 'failure', 'success', false],
+    ['beta', 'skipped', 'success', true],
+    ['beta', 'skipped', 'failure', false],
+  ]) {
+    assert.equal(vm.runInNewContext(baseline.if.replace(/needs\.([a-z-]+)/g, 'needs["$1"]'), {
+      always: () => true,
+      needs: { prepare: { outputs: { channel } }, 'publish-release': { result: publishResult },
+        'sync-stable-feed': { result: syncResult } },
+    }), expected);
+  }
   const syncWorkflow = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/workflows/coder-sync.yml'), 'utf8'));
   for (const source of [workflow, syncWorkflow]) {
     assert.deepEqual(source.jobs['sync-stable-feed'].steps[0].env, {

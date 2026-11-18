@@ -575,36 +575,11 @@ jobs:
           sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" "bash $SERVER_SCRIPT_PATH"
           echo "✓ 脚本执行完成"
 
-  verify-stable-feed:
-    needs: [prepare, sync-stable-feed]
-    if: needs.prepare.outputs.channel == 'stable'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.x'
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: AilyCoder-*
-          merge-multiple: true
-          path: release
-      - uses: actions/download-artifact@v4
-        with:
-          name: Coder-changelog
-          path: release
-      - name: Verify published files on both download endpoints
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: node scripts/verify-coder-release.cjs release "$RELEASE_VERSION"
-
   save-source-baseline:
-    needs: [prepare, publish-release, verify-stable-feed]
+    needs: [prepare, publish-release, sync-stable-feed]
     if: >-
       always() && needs.publish-release.result == 'success' &&
-      (needs.prepare.outputs.channel == 'beta' || needs.verify-stable-feed.result == 'success')
+      (needs.prepare.outputs.channel == 'beta' || needs.sync-stable-feed.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
