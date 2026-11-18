@@ -823,7 +823,7 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_abi_check':
         return this.executeProjectAbiCheck();
       case 'project_build':
-        return this.executeProjectBuild(payload.params || {});
+        return this.executeProjectBuild(payload.params || {}, currentProject);
       case 'get_board_config':
         return getBoardConfig(this.projectService, payload.params?.['section']);
       case 'board_switch':
@@ -1437,11 +1437,19 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeProjectBuild(params: Record<string, any>): Promise<Record<string, any>> {
+  private async executeProjectBuild(params: Record<string, any>, projectPath = this.projectService.currentProjectPath): Promise<Record<string, any>> {
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const assertCurrent = () => {
+      if (this.projectService.currentProjectPath !== projectPath || !projectCurrent()) {
+        throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { code: 'BUILD_SOURCE_STALE' });
+      }
+    };
     try {
-      await this.projectService.ensureBlocklyLibraryRuntimeReady(this.projectService.currentProjectPath);
+      assertCurrent();
+      await this.projectService.ensureBlocklyLibraryRuntimeReady(projectPath);
+      assertCurrent();
     } catch (error) {
-      return { ok: false, operation: 'project_build', project: this.projectService.currentProjectPath,
+      return { ok: false, operation: 'project_build', project: projectPath,
         buildOutcome: 'not-started', code: (error as any)?.code,
         message: error instanceof Error ? error.message : String(error) };
     }
@@ -1452,12 +1460,12 @@ export class BlocklyLiveOperationBridgeService {
         clearCache: params['clear_cache'] === true,
         requestId: params['buildLogRequestId'],
       },
-      this.projectService.currentProjectPath,
+      projectPath,
     );
     return {
       ok: toolResult.is_error !== true,
       operation: 'project_build',
-      project: this.projectService.currentProjectPath,
+      project: projectPath,
       message: this.extractToolContent(toolResult),
       metadata: toolResult.metadata,
       buildOutcome: toolResult.metadata?.['buildOutcome'],

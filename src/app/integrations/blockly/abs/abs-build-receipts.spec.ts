@@ -93,7 +93,10 @@ describe('live build receipt ownership', () => {
 
   it('marks library readiness failures as not-started rather than compiler failures', async () => {
     const service: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
-    service.projectService = { currentProjectPath: '/isolated', ensureBlocklyLibraryRuntimeReady: async () => { throw new Error('runtime not ready'); } };
+    service.projectService = {
+      currentProjectPath: '/isolated', captureCurrentProjectGuard: () => () => true,
+      ensureBlocklyLibraryRuntimeReady: async () => { throw new Error('runtime not ready'); },
+    };
     expect(await service.executeProjectBuild({})).toEqual(jasmine.objectContaining({
       ok: false, buildOutcome: 'not-started', message: 'runtime not ready',
     }));

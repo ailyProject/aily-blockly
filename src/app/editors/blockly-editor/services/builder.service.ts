@@ -19,7 +19,7 @@ import { type BlockCodeMapping } from '../components/blockly/generators/arduino/
 import { BlocklyService } from './blockly.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint } from '@domain/build/public-api';
+import { BuilderService, CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint, type BlocklyBuildInput } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
@@ -54,6 +54,7 @@ const PREPROCESS_PENDING_CHAT_MAX_WAIT_MS = 10_000;
 const PREPROCESS_POST_CHAT_QUIET_MS = 1500;
 const PREPROCESS_SLOW_PHASE_MS = 32;
 const PREPROCESS_ERROR_OUTPUT_LIMIT = 64 * 1024;
+type BuildPreparation = Partial<Pick<BlocklyBuildInput, 'projectPath' | 'clearCache'>>;
 
 @Injectable({ providedIn: 'root' })
 export class _BuilderService {
@@ -97,6 +98,7 @@ export class _BuilderService {
     private projectDebugConfigurationService:
       ProjectDebugConfigurationService,
     private metrics: MetricsService,
+    private builderService: BuilderService,
   ) { }
 
   // buildInProgress = false;
@@ -549,7 +551,10 @@ export class _BuilderService {
         const graphSemanticRevision =
           action.payload?.graphSemanticRevision as string | undefined;
         const requestId = action.payload?.requestId as string | undefined;
-        const result = await this.build(graphSemanticRevision, requestId, checkpoint);
+        const result = await this.build(graphSemanticRevision, requestId, checkpoint, {
+          projectPath: action.payload?.projectPath,
+          clearCache: action.payload?.clearCache === true,
+        });
         return { success: true, result, checkpoint };
       } catch (msg) {
         return { success: false, result: msg, checkpoint };
@@ -573,6 +578,10 @@ export class _BuilderService {
       // 手动触发预编译
       const reason = action.payload?.reason || 'manual';
       console.log(`收到预编译触发请求，原因: ${reason}`);
+      if (action.payload?.clearCache === true) {
+        try { await this.preparePreprocessCache(action.payload?.projectPath); }
+        catch (error) { return { success: false, error }; }
+      }
       // 配置变更时使编译缓存失效，强制下次上传重新编译
       if (reason === 'config-changed') {
         this.passed = false;
@@ -992,6 +1001,34 @@ export class _BuilderService {
     this.preprocessFullError = '';
   }
 
+  private clearOwnedBuildCache(projectPath: string, projectCurrent: () => boolean): Promise<void> {
+    if (!projectCurrent() || projectPath !== this.projectService.currentProjectPath
+      || this.workflowService.currentState !== ProcessState.BUILDING) {
+      throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed before cache preparation.'), { buildOutcome: 'not-started' });
+    }
+    return this.builderService.clearBuildCache(projectPath);
+  }
+
+  /** Reserve the workflow only for the mutation, then schedule ordinary advisory preprocessing. */
+  private async preparePreprocessCache(projectPath: string): Promise<void> {
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    if (!projectPath || projectPath !== this.projectService.currentProjectPath || !this.workflowService.startBuild()) {
+      throw Object.assign(new Error('Cache preparation was not admitted for the active Blockly project.'), { buildOutcome: 'not-started' });
+    }
+    let failure: string | undefined;
+    try {
+      ++this.preprocessRunGeneration;
+      await this.waitForPreprocessDrain(projectPath, () => !projectCurrent(), 'background');
+      await this.clearOwnedBuildCache(projectPath, projectCurrent);
+      if (!projectCurrent()) throw new Error('The Blockly project changed during cache preparation.');
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      this.workflowService.finishBuild(failure === undefined, failure);
+    }
+  }
+
   /**
    * 检查预编译是否正在进行中
    */
@@ -1264,8 +1301,9 @@ export class _BuilderService {
     graphSemanticRevision?: string,
     requestId?: string,
     checkpoint: BuildCheckpoint = {},
+    preparation: BuildPreparation = {},
   ): Promise<ActionState> {
-    return this.buildAttemptWithBackend(graphSemanticRevision, requestId, checkpoint);
+    return this.buildAttemptWithBackend(graphSemanticRevision, requestId, checkpoint, false, preparation);
   }
 
   private async buildAttemptWithBackend(
@@ -1273,10 +1311,16 @@ export class _BuilderService {
     requestId?: string,
     checkpoint: BuildCheckpoint = {},
     retryLocally = false,
+    preparation: BuildPreparation = {},
   ): Promise<ActionState> {
     // 提交时固定配置与项目；任务内切换编译后端不会改变用户设置，也不能混用两类产物。
     requestId ??= crypto.randomUUID();
     let cloudBuild = this.isCloudBuild();
+    const requestedProjectPath = this.projectService.currentProjectPath;
+    if ((preparation.projectPath !== undefined && preparation.projectPath !== requestedProjectPath)
+      || (preparation.clearCache && !preparation.projectPath)) {
+      throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { buildOutcome: 'not-started' });
+    }
     if (
       graphSemanticRevision !== undefined
       && !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
@@ -1310,13 +1354,17 @@ export class _BuilderService {
 
     this.activeExecutionConfig = undefined;
     checkpoint.startedAt = Date.now();
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
 
     if (pythonRoute) {
-      const project = this.projectService.currentProjectPath;
+      const project = requestedProjectPath;
       const log = await createProjectBuildLog(project, requestId);
       return log.run(async () => {
       try {
-        if (project !== this.projectService.currentProjectPath) throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed.'), { buildOutcome: 'not-started' });
+        if (preparation.clearCache) await this.clearOwnedBuildCache(project, projectCurrent);
+        if (!projectCurrent() || project !== this.projectService.currentProjectPath) {
+          throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed.'), { buildOutcome: 'not-started' });
+        }
         const result = await this.generateAndWritePythonEntry();
         this.workflowService.finishBuild(true);
         return result;
@@ -1342,11 +1390,9 @@ export class _BuilderService {
     this.currentProgress = 0; // 重置进度
     this.hasReceivedRealProgress = false; // 重置进度标记
 
-    const requestedProjectPath = this.projectService.currentProjectPath;
     const requestedSettingsKey = this.compileSettingsKey();
     const backendOperation = this.projectService.beginBuildBackendOperation(requestedProjectPath);
     const attempt = this.buildAttempt = (this.buildAttempt || 0) + 1;
-    const projectCurrent = this.projectService.captureCurrentProjectGuard();
     let settled!: () => void;
     const cleanup = new Promise<void>(resolve => { settled = resolve; });
     const retry = createCloudBuildLocalRetry({
@@ -1432,6 +1478,13 @@ export class _BuilderService {
           if (cancellation.signal.aborted || !projectCurrent()) throw new Error('Build configuration changed or was cancelled.');
           await this.npmService.ensureLocalCompilerDependencies(requestedProjectPath);
           if (cancellation.signal.aborted || !projectCurrent()) throw new Error('Build configuration changed or was cancelled.');
+        }
+        if (preparation.clearCache) {
+          if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
+          if (this.activeBuildRequestId !== requestId || requestedSettingsKey !== this.compileSettingsKey()) {
+            throw Object.assign(new Error('BUILD_SOURCE_STALE: Build context changed before cache preparation.'), { buildOutcome: 'not-started' });
+          }
+          await this.clearOwnedBuildCache(requestedProjectPath, projectCurrent);
         }
 
         // compile.js owns fresh preprocessing in the same supervised transaction.

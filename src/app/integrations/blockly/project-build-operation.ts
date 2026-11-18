@@ -8,9 +8,9 @@ export async function runProjectBuild(
   projectPath: string,
 ): Promise<HostToolResult> {
   try {
-    if (input.clearCache) await builderService.clearBuildCache(projectPath);
     if (input.preprocessOnly) {
-      builderService.triggerPreprocess('host_live_operation');
+      if (input.clearCache) await builderService.triggerPreprocessWithCacheClear(projectPath, 'host_live_operation');
+      else builderService.triggerPreprocess('host_live_operation');
       return {
         is_error: false,
         content: JSON.stringify({
@@ -20,7 +20,12 @@ export async function runProjectBuild(
       };
     }
 
-    const result = await builderService.build(undefined, { source: 'ai', requestId: input.requestId });
+    const result = await builderService.build(undefined, {
+      source: 'ai',
+      requestId: input.requestId,
+      expectedProjectPath: projectPath,
+      clearCache: input.clearCache,
+    });
     return {
       is_error: false,
       metadata: { buildResult: result },
