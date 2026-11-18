@@ -393,7 +393,7 @@ describe('Blockly dependency preparation cancellation', () => {
       };
       const closed = new Subject<any>();
       component.modal = { create: jasmine.createSpy('create').and.returnValue({ afterClose: closed }) };
-      component.electronService = { exists: () => true };
+      component.electronService = { exists: () => !recoveryTarget };
       component.installMissingBlocklyLibraries = jasmine.createSpy('install');
       const libraries = [{ name: '@aily-project/lib-missing', version: '1.0.0', localPath: '/target/local-library' }];
       const waiting = component.restoreMissingProjectLibraries('/target', libraries, session);
@@ -401,8 +401,8 @@ describe('Blockly dependency preparation cancellation', () => {
         // A pending modal must fail immediately, rather than consuming the
         // native startup deadline while Agent tools cannot take over.
         await expectAsync(waiting).toBeRejectedWith(jasmine.objectContaining({
-          code: 'PROJECT_RECOVERY_LIBRARIES_REQUIRED',
-          message: jasmine.stringMatching(/@aily-project\/lib-missing/),
+          code: 'PROJECT_RECOVERY_LIBRARY_SOURCE_MISSING',
+          message: jasmine.stringMatching(/本地积木库来源不存在/),
         }));
         expect(component.modal.create).not.toHaveBeenCalled();
       } else {
