@@ -8,6 +8,7 @@
  * - 仅监听 127.0.0.1 的随机端口(回环,不对外暴露)。
  * - 启动时把 { pid, port, token } 写入发现文件
  *   ~/.aily-blockly/cli-bridge/<pid>.json,供 CLI 发现并鉴权。
+ * - 当前项目由窗口导航更新，命令回包中的项目仅表示该命令的目标。
  * - 每个请求需携带 token,防止同机其它进程随意调用。
  * - dev 与打包环境通用(都写同一个发现文件)。
  *
@@ -61,7 +62,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
   const instanceId = crypto.randomUUID();
   let identity = {};
   let closed = false, published = false;
-  let currentProject = null;
+  let currentProject = getStatus?.()?.project || null;
 
   const writeDiscovery = (port) => {
     safeWriteDiscoveryFile(discoveryFile, {
@@ -154,12 +155,6 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
         .then(() => handleCommand(action, payload))
         .then((result) => {
           const out = result || { ok: false, message: 'No result' };
-          const originalCreate = action === 'blockly-live-operation' && payload.operation === 'project_create'
-            && !!payload.params?.createRequest;
-          if (!originalCreate && Object.prototype.hasOwnProperty.call(out, 'project')) {
-            currentProject = out.project || null;
-            writeDiscovery(server.address() ? server.address().port : 0);
-          }
           sendJson(out.ok ? 200 : 400, out);
         })
         .catch((err) => {
@@ -205,7 +200,9 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
       }
     },
     updateProject: (project) => {
-      currentProject = project || null;
+      const nextProject = project || null;
+      if (nextProject === currentProject) return;
+      currentProject = nextProject;
       const addr = server.address();
       if (addr && published && !closed) writeDiscovery(addr.port);
     },
