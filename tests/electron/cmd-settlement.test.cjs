@@ -9,7 +9,7 @@ const test = require('node:test');
 
 const project = path.resolve('cmd-settlement-project');
 
-function fixture({ canRelease = () => true, stop = async () => false } = {}) {
+function fixture({ canRelease = () => true, stop = async () => false, stopJob, buildDeliveryAuthority } = {}) {
   const filename = path.join(__dirname, '../../electron/cmd.js');
   const realRequire = createRequire(filename);
   const handlers = new Map(), children = [], signals = [];
@@ -24,21 +24,30 @@ function fixture({ canRelease = () => true, stop = async () => false } = {}) {
         captureRegisteredProcessIdentity: async () => '123456',
         async killRegisteredProcessTree(pid, name, options) { signals.push({ pid, name, options }); return stop(options); }
       };
+      if (name === './child-process-message-port') {
+        const port = realRequire(name);
+        return { ...port, normalizeProcessMessagePortConfig: value =>
+          port.normalizeProcessMessagePortConfig(value && { ...value }) };
+      }
       if (name === './build-workspace-supervisor') return { createBuildWorkspaceSupervisor: workspace => workspace && {
         releaseAfterOwnerExit: () => false, releaseAfterTermination: () => false, canReleaseResources: canRelease
       } };
-      if (name === 'child_process') return { spawn() {
-        const child = Object.assign(new EventEmitter(), {
-          pid: 70001 + children.length, exitCode: null, signalCode: null, stderr: new EventEmitter(), stdout: new EventEmitter()
-        });
-        children.push(child);
-        return child;
-      } };
+      if (name === './owned-process') return {
+        spawn() {
+          const child = Object.assign(new EventEmitter(), {
+            pid: 70001 + children.length, exitCode: null, signalCode: null, stderr: new EventEmitter(), stdout: new EventEmitter()
+          });
+          children.push(child);
+          return child;
+        },
+        getOwnedProcessInfo: () => stopJob ? { released: false } : null,
+        stopOwnedProcess: stopJob,
+      };
       return realRequire(name);
     }
   }, { filename });
   const api = original.exports;
-  api.registerCmdHandlers();
+  api.registerCmdHandlers(undefined, { buildDeliveryAuthority });
   const events = [];
   const owner = Object.assign(new EventEmitter(), {
     mainFrame: {}, isDestroyed: () => false, send: (...args) => events.push(args)
@@ -137,4 +146,47 @@ test('the host rechecks the closed original tree after a failed stop without a s
   assert.equal(f.api.getCmdProcess(original), undefined);
   assert.equal((await f.status(original)).ownershipReleased, true);
   assert.equal(f.signals.length, 1);
+});
+
+test('build delivery and the renderer close wait for native Job cleanup', async () => {
+  let finish;
+  const deliveryExits = [];
+  const f = fixture({
+    stopJob: () => new Promise(resolve => { finish = resolve; }),
+    buildDeliveryAuthority: {
+      invalidate() {},
+      async begin() {
+        return { handle: 'delivery', onExit: (...args) => deliveryExits.push(args), abandon() {} };
+      },
+    },
+  });
+  const streamId = 'normal-native-build';
+  assert.equal((await f.start(streamId, { buildWorkspace: project, buildDeliveryRequest: 'request.json' })).success, true);
+  close(f.children[0]);
+  assert.deepEqual(deliveryExits, []);
+  assert.deepEqual(f.events, []);
+  assert.equal((await f.status(streamId)).state, 'running');
+  assert.equal((await f.status(streamId)).ownershipReleased, false);
+
+  finish(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(deliveryExits, [[0, null, false]]);
+  assert.equal(f.events[0]?.[1].type, 'close');
+  assert.equal(f.events[0]?.[1].ownershipReleased, true);
+  assert.equal((await f.status(streamId)).code, 0);
+  assert.deepEqual(f.signals, []);
+});
+
+test('a closed build with a retained Job can retry the original Job', async () => {
+  const f = fixture({ stopJob: async () => false, stop: async () => true });
+  const streamId = 'retained-native-build';
+  assert.equal((await f.start(streamId, { buildWorkspace: project })).success, true);
+  close(f.children[0]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await f.status(streamId)).ownershipReleased, false);
+  assert.equal(f.events[0]?.[1].ownershipReleased, false);
+
+  assert.equal((await f.stop(streamId)).success, true);
+  assert.equal(f.signals[0]?.options.registered, f.children[0]);
+  assert.equal((await f.status(streamId)).ownershipReleased, true);
 });

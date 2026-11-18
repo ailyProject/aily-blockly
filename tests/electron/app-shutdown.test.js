@@ -43,6 +43,7 @@ function host(overrides = {}) {
     getActiveCmdProcesses: () => [], getActiveNpmProcesses: () => [],
     getActiveTerminals: () => [], getActiveAilyServicesStreams: () => [],
     require: name => {
+      if (name === './owned-process') return { stopAllOwnedProcesses: async () => true };
       assert.equal(name, './library-dependencies');
       return { stopLibraryDependencyWorkers: async () => calls.push('stop-libraries') };
     },
@@ -76,7 +77,8 @@ test('quit blocks new commands and installers before stopping registered process
 test('quit waits for both pending library mutations and cloud cancellation', async () => {
   let finishLibrary, finishCloud;
   const h = host({
-    require: () => ({ stopLibraryDependencyWorkers: () => new Promise(resolve => { finishLibrary = resolve; }) }),
+    require: name => name === './owned-process' ? { stopAllOwnedProcesses: async () => true }
+      : ({ stopLibraryDependencyWorkers: () => new Promise(resolve => { finishLibrary = resolve; }) }),
     cloudBuildController: { shutdown: () => new Promise(resolve => { finishCloud = resolve; }) },
   });
   h.begin(); await settle();
@@ -111,12 +113,15 @@ test('one failing cleanup still allows the remaining services to finish before q
   assert.equal(h.quits, 1);
 });
 
-test('application cleanup waits for child-tool owner and Runtime drain before the process fallback', async () => {
+test('independent services stop during owner drain while the process fallback waits', async () => {
   const childTools = Promise.withResolvers(); let drains = 0;
   const h = host({ stopAllChildToolSessions: () => { drains++; return childTools.promise; } });
   h.begin(); h.begin(); await settle();
   assert.equal(drains, 1);
-  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth']);
+  assert(h.calls.includes('stop-libraries'));
+  assert(h.calls.includes('stop-cloud'));
+  assert(!h.calls.includes('stop-commands'));
+  assert(!h.calls.includes('stop-npm'));
   assert.equal(h.completed, false); assert.equal(h.quits, 0);
   childTools.resolve({ complete: true }); await settle();
   assert(h.calls.indexOf('stop-libraries') > h.calls.indexOf('block-auth'));
@@ -132,10 +137,25 @@ test('an incomplete child-tool drain is reported before the registered-process f
   h.begin(); await settle();
   assert.equal(drains, 1); assert.equal(h.warnings.length, 1);
   assert.deepEqual(h.warnings[0].args, ['[PROC_TRACE][CHILD_TOOL_SHUTDOWN_INCOMPLETE]', failure]);
-  assert.deepEqual(h.warnings[0].calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth']);
+  assert.deepEqual(h.warnings[0].calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth', 'stop-libraries', 'stop-cloud']);
   assert(h.calls.includes('stop-commands')); assert(h.calls.includes('stop-npm'));
   assert.equal(h.completed, true); assert.equal(h.quits, 1);
   assert.equal(failure.ownerCleanup.complete, false, 'fallback must not relabel owner cleanup as acknowledged');
+});
+
+test('a failed child-tool drain still runs every process fallback and joins independent services', async () => {
+  const cloud = Promise.withResolvers();
+  const h = host({
+    stopAllChildToolSessions: async () => { throw new Error('owner drain failed'); },
+    cloudBuildController: { shutdown: () => cloud.promise },
+  });
+  h.begin(); await settle();
+  assert(h.calls.includes('stop-commands')); assert(h.calls.includes('stop-npm'));
+  assert.equal(h.quits, 0);
+  assert.equal(h.warnings[0].args[1].step, 'child-tools');
+  assert.equal(h.warnings[0].args[1].status, 'failed');
+  cloud.resolve(); await settle();
+  assert.equal(h.quits, 1); assert.equal(h.completed, true);
 });
 
 test('native main-window close waits for process cleanup', () => {

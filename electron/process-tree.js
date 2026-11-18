@@ -162,14 +162,29 @@ function windowsPowerShell(script, timeout = 10000) {
   });
 }
 
-async function windowsProcessSnapshot(timeout, includeUnknown = false) {
+const pendingWindowsSnapshots = new Map();
+
+function windowsProcessSnapshot(timeout = 10000, includeUnknown = false) {
+  // Requests with the same timeout can share a query before it starts.
+  // Once launched, a later request must capture fresh identities.
+  if (!pendingWindowsSnapshots.has(timeout)) {
+    pendingWindowsSnapshots.set(timeout, Promise.resolve().then(() => {
+      pendingWindowsSnapshots.delete(timeout);
+      return readWindowsProcessSnapshot(timeout);
+    }));
+  }
+  const snapshot = pendingWindowsSnapshots.get(timeout);
+  return includeUnknown ? snapshot : snapshot.then(rows => rows.filter(row => row.created !== null));
+}
+
+async function readWindowsProcessSnapshot(timeout) {
   const text = await windowsPowerShell(
     'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -gt 0 } | ForEach-Object { @{ pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; created=if ($null -ne $_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks.ToString() } else { $null } } })',
     timeout);
   const rows = JSON.parse(text);
   if (!Array.isArray(rows) || rows.some(row => !Number.isInteger(row.pid) || !Number.isInteger(row.parent)
     || (row.created !== null && (typeof row.created !== 'string' || !/^\d+$/.test(row.created))))) throw new Error('Invalid process snapshot.');
-  return includeUnknown ? rows : rows.filter(row => row.created !== null);
+  return rows;
 }
 
 function windowsTaskkill(pid) {
@@ -321,8 +336,19 @@ function killRegisteredProcessTree(pid, label, options = {}) {
     return Promise.resolve(false);
   }
 
+  if (options.registered && options.registered.pid !== pid) return Promise.resolve(false);
+  const ownedProcess = options.registered || options.ownedProcess;
+  if (isWin32 && ownedProcess) {
+    const { getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
+    if (getOwnedProcessInfo(ownedProcess)) {
+      // Failure must retain this exact Job. Never fall through to a PID scan
+      // that might now refer to a different task or main-software instance.
+      return stopOwnedProcess(ownedProcess).catch(() => false);
+    }
+  }
+
   if (options.registered) {
-    if (options.registered.pid !== pid || processExited(options.registered)) return Promise.resolve(false);
+    if (processExited(options.registered)) return Promise.resolve(false);
     const operation = isWin32
       ? terminateBoundWindowsTree(options.registered, options.identity, options.observe)
       : terminateUnixProcessTree(pid, label, Date.now(), options.registered, options.identity, options.observe);

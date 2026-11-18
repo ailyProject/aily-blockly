@@ -7,6 +7,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { CloudBuildBroker } = require('../../electron/cloud-build/broker');
 const protocol = require('../../electron/cloud-build/protocol');
+const { captureBuildSource } = require('../../child/scripts/build-source-capture');
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-reuse-')));
@@ -160,6 +161,23 @@ test('source changed during the final owner check rejects the cached result', as
   f.broker.querySource = async (...args) => { if (verifying) fs.writeFileSync(path.join(f.root, 'src/header.h'), '#define VALUE 3'); return originalSource(...args); };
   await assert.rejects(f.run(), { code: 'BUILD_SOURCE_STALE' });
   assert.equal(f.jobs, 1); assert.equal(f.broker.active.size, 0);
+});
+
+test('cloud compile refuses a block edit after submission and reports the specific cause', async t => {
+  const f = fixture(t);
+  f.config.sourceCapture = captureBuildSource(f.config, {
+    documentText: '{"blocks":[]}', revision: 1, runtimeRevision: 1, pageId: 'main',
+  });
+  const query = f.broker.querySource;
+  f.broker.querySource = async (...args) => {
+    const answer = await query(...args);
+    const workspace = f.config.sourceCapture.workspace;
+    answer.source.workspace = f.jobs ? { ...workspace, documentSha256: protocol.sha256('edited'), revision: 2 } : workspace;
+    return answer;
+  };
+  await assert.rejects(f.run(), { code: 'BUILD_SOURCE_STALE', sourceReason: 'blocks' });
+  assert.equal(f.jobs, 1);
+  assert.equal(f.broker.active.size, 0);
 });
 
 test('a same-version npm library edit invalidates reuse', async t => {

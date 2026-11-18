@@ -30,7 +30,7 @@ export interface CmdOptions {
   forwardStdout?: boolean;
   /** Bind a build marker to this registered command's confirmed tree cancellation. */
   buildWorkspace?: string;
-  /** Advisory preprocess only: foreground save may use native tree-stop acknowledgement. */
+  /** Advisory preprocess keeps observing until the host releases ownership. */
   backgroundPreprocess?: boolean;
   /** Observe the original native process even if its close notification is lost. */
   observeExit?: boolean;

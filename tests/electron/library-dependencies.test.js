@@ -6,6 +6,20 @@ const path = require('node:path');
 const { LibraryDependencies, runDependencyWorker } = require('../../electron/library-dependencies');
 const { LibraryDependencySessions } = require('../../electron/library-dependency-sessions');
 
+test('a missing project manifest reports unknown save state without creating project inputs', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-missing-manifest-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'project.abi'), '{}');
+  const api = new LibraryDependencies({ run: () => assert.fail('Status must not start a dependency worker') });
+  const sessions = new LibraryDependencySessions(api);
+  assert.throws(() => api.status(root), { code: 'LIBRARY_DEPENDENCY_MANIFEST_MISSING' });
+  assert.deepEqual(fs.readdirSync(root), ['project.abi']);
+  await assert.rejects(sessions.run('status', root), { code: 'LIBRARY_DEPENDENCY_MANIFEST_MISSING' });
+  assert.deepEqual(fs.readdirSync(root).sort(), ['.aily', 'project.abi']);
+  assert.deepEqual(fs.readdirSync(path.join(root, '.aily')), ['project-files.guard']);
+  assert.equal(fs.readFileSync(path.join(root, 'project.abi'), 'utf8'), '{}');
+});
+
 test('clean reconciliation is fast only for Coder; Blockly, unknown, dirty and history-restored projects keep npm recovery', async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-reconcile-mode-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

@@ -169,12 +169,36 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     for (const type of ['bug', 'feature', 'other', 'library', 'build&upload']) {
       component.feedbackType = type;
       const content = await (component as any).buildIssueContent('2026-11-06T03:00:00Z');
+      expect(content).toContain('`[USER]` replaces the local username in paths');
+      expect(content).toContain('they are not the paths or values used by the program');
       expect(content).toContain('| Installed | true |');
       expect(content).toContain('| Selected Version | 0.1.33 |');
       expect(content).toContain('| Running Version | 0.1.32 |');
       expect(content).toContain('"scaleFactor": 2.25');
       expect(content).toContain('"fullScreen": true');
     }
+  });
+
+  it('submits masked compiler paths without modifying the original compile or upload logs', async () => {
+    const compileLog = String.raw`arm-none-eabi-g++ "-LC:\Users\16353\project\.build" "-TC:\Users\16353\sdk\flash.ld" "-Wl,-Map,C:\Users\16353\project\sketch.map" "-LC:/Users/16353/tools/CMSIS/"`;
+    const uploadLog = String.raw`无法使用烧录工具 bossac@1.8.0: "C:/Users/16353/tools/bossac@1.8.0/bossac"`;
+    const logs = {
+      compile: { status: 'ok', content: compileLog, truncated: false },
+      upload: { status: 'ok', content: uploadLog, truncated: false },
+      uploadEvidence: { latestTimestamp: null, latestOtaEntry: null },
+    };
+    const component = createComponent();
+    spyOn(component as any, 'readProjectDiagnosticLogs').and.resolveTo(logs);
+    prepareValidFeedback(component, 'build&upload');
+
+    await component.submitFeedback();
+
+    const content = String(submittedPayload().content);
+    expect(content).toContain(compileLog.replace(/16353/g, '[USER]'));
+    expect(content).toContain(uploadLog.replace(/16353/g, '[USER]'));
+    expect(content).not.toContain('16353');
+    expect(logs.compile.content).toBe(compileLog);
+    expect(logs.upload.content).toBe(uploadLog);
   });
 
   it('preserves explicit uninstalled state and tolerates failed diagnostics IPC', async () => {

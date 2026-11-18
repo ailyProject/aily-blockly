@@ -6,6 +6,7 @@ const os = require('node:os');
 const { once } = require('node:events');
 const test = require('node:test');
 const { CommandManager } = require('../../electron/cmd');
+const { getOwnedProcessInfo } = require('../../electron/owned-process');
 const { createBuildWorkspaceSupervisor } = require('../../electron/build-workspace-supervisor');
 const { acquireBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
 const { EventEmitter } = require('node:events');
@@ -26,7 +27,10 @@ function cancellationFixture({ terminate, workspace, viaIpc = false, backgroundP
     clearTimeout: timer => { if (timer) timer.cancelled = true; },
     require: name => {
       if (name === 'electron') return { ipcMain: { handle: (name, handler) => handlers.set(name, handler) } };
-      if (name === 'child_process') return { spawn: () => { spawnCalls++; return child; } };
+      if (name === './owned-process') return {
+        spawn: () => { spawnCalls++; return child; },
+        getOwnedProcessInfo: () => null,
+      };
       if (name === './platform') return { isLinux: true };
       if (name === './process-tree') return {
         captureRegisteredProcessIdentity: () => Promise.resolve('test-process'),
@@ -47,6 +51,12 @@ function cancellationFixture({ terminate, workspace, viaIpc = false, backgroundP
       return !!timer;
     },
   };
+}
+
+function nextCommandExit(manager) {
+  return new Promise(resolve => {
+    const remove = manager.onProcessExit(event => { remove(); resolve(event); });
+  });
 }
 
 test('Windows taskkill has a finite deadline and timeout cannot confirm termination', async () => {
@@ -288,16 +298,22 @@ test('registered cancellation stops the owner and descendant before releasing it
   acquireBuildWorkspace(root, 'compile').release();
 });
 
-test('a delegated parent exiting with its build marker remains unresolved and cannot retarget its closed PID', async t => {
+test('a delegated parent needs native Job confirmation to release its remaining marker after exit', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
   const manager = new CommandManager(), streamId = 'abandoned-owner';
+  const closed = nextCommandExit(manager);
   const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
     args: ['-e', 'require(process.argv[1]).acquireBuildWorkspace(process.argv[2], "compile").markDelegated();process.exit(1)',
       path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] }).process;
-  await once(child, 'close');
-  assert.equal(manager.getProcess(streamId), child);
-  assert.throws(() => manager.executeCommand({ command: process.execPath, streamId }), /already registered/);
-  assert.equal(await manager.killProcess(streamId), false);
+  await closed;
+  if (getOwnedProcessInfo(child)) {
+    assert.equal(manager.getProcess(streamId), undefined);
+    assert.equal(fs.existsSync(path.join(root, '.build/aily-workspace.lock')), false);
+  } else {
+    assert.equal(manager.getProcess(streamId), child);
+    assert.throws(() => manager.executeCommand({ command: process.execPath, streamId }), /already registered/);
+    assert.equal(await manager.killProcess(streamId), false);
+  }
   // Fixture never spawned descendants. Explicit verified test cleanup only.
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
   manager.processes.delete(streamId);
@@ -311,10 +327,11 @@ for (const exit of ['process.exit(1)', "process.kill(process.pid,'SIGKILL')"]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const manager = new CommandManager(), streamId = 'early-exit';
-    const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
+    const closed = nextCommandExit(manager);
+    manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
       args: ['-e', `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');${exit}`,
-        path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] }).process;
-    await once(child, 'close');
+        path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] });
+    await closed;
     assert.equal(manager.getProcess(streamId), undefined);
     assert.equal(fs.existsSync(path.join(root, '.build/aily-workspace.lock')), false);
     assert.equal(await manager.killProcess(streamId), true);
@@ -324,9 +341,10 @@ for (const exit of ['process.exit(1)', "process.kill(process.pid,'SIGKILL')"]) {
 
 for (const code of [0, 7]) test(`registered installer is removed on a completed exit (${code})`, async () => {
   const manager = new CommandManager();
-  const child = manager.executeCommand({ command: process.execPath, args: ['-e', `process.exit(${code})`],
-    streamId: 'installer', shellProfile: false }).process;
-  await once(child, 'close');
+  const closed = nextCommandExit(manager);
+  manager.executeCommand({ command: process.execPath, args: ['-e', `process.exit(${code})`],
+    streamId: 'installer', shellProfile: false });
+  assert.equal((await closed).code, code);
   assert.equal(manager.getProcess('installer'), undefined);
 });
 
@@ -347,19 +365,20 @@ test('legacy borrowed AppData markers do not block a command without a token', a
   const markers = [path.join(lockRoot, 'writer.lock'), path.join(lockRoot, 'readers/legacy.lock')];
   for (const filename of markers) fs.writeFileSync(filename, marker);
   const manager = new CommandManager();
-  const child = manager.executeCommand({ command: process.execPath, args: ['-e', 'process.exit(0)'],
-    streamId: 'legacy-markers', shellProfile: false }).process;
-  const [code] = await once(child, 'close');
+  const closed = nextCommandExit(manager);
+  manager.executeCommand({ command: process.execPath, args: ['-e', 'process.exit(0)'],
+    streamId: 'legacy-markers', shellProfile: false });
+  const { code } = await closed;
   assert.equal(code, 0); assert.equal(manager.getProcess('legacy-markers'), undefined);
   for (const filename of markers) assert.equal(fs.readFileSync(filename, 'utf8'), marker);
 });
 
 test('failed installer termination never retargets a subsequently closed PID', async () => {
   const manager = new CommandManager();
+  const closed = nextCommandExit(manager);
   const child = manager.executeCommand({ command: process.execPath,
     args: ['-e', 'console.log("ready");setTimeout(()=>process.exit(0),200)'],
     streamId: 'uncertain-installer', shellProfile: false }).process;
-  const closed = once(child, 'close');
   await once(child.stdout, 'data');
   // Deterministic failed-stop injection: never target a foreign PID. The real
   // fixture exits on its own; the manager must not retarget its closed PID.

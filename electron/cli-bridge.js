@@ -18,6 +18,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { watchDiscoveryFile } = require('./cli-discovery-lifecycle');
 
 const BRIDGE_VERSION = 1;
 
@@ -57,6 +58,9 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
   const token = crypto.randomBytes(16).toString('hex');
   const pid = process.pid;
   const discoveryFile = getDiscoveryFilePath(pid);
+  const instanceId = crypto.randomUUID();
+  let identity = {};
+  let closed = false, published = false;
   let currentProject = null;
 
   const writeDiscovery = (port) => {
@@ -66,6 +70,8 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
       pid,
       port,
       token,
+      instanceId,
+      ...identity,
       project: currentProject,
       serve: !!(getStatus && getStatus().serve),
       updatedAt: Date.now(),
@@ -170,9 +176,12 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
     logger.warn('[cli-bridge] 服务错误:', e && e.message);
   });
 
-  server.listen(0, '127.0.0.1', () => {
+  server.listen(0, '127.0.0.1', async () => {
     const port = server.address().port;
+    identity = await watchDiscoveryFile(discoveryFile, instanceId, logger);
+    if (closed) return;
     writeDiscovery(port);
+    published = true;
     logger.log(`[cli-bridge] 已启动,端口 ${port},发现文件 ${discoveryFile}`);
   });
 
@@ -187,6 +196,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
 
   return {
     close: () => {
+      closed = true;
       cleanup();
       try {
         server.close();
@@ -197,9 +207,10 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
     updateProject: (project) => {
       currentProject = project || null;
       const addr = server.address();
-      if (addr) writeDiscovery(addr.port);
+      if (addr && published && !closed) writeDiscovery(addr.port);
     },
     getPort: () => {
+      if (!published || closed) return null;
       const addr = server.address();
       return addr ? addr.port : null;
     },

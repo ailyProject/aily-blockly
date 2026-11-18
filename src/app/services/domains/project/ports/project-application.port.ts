@@ -40,6 +40,7 @@ export interface BlocklyLibraryRuntimeRebuildInput {
  * depending on application presentation or sibling domains.
  */
 export interface ProjectApplicationPort {
+  openCoderBoardSelector(projectPath: string): Promise<void>;
   updateFooterState(state: ProjectFooterState): void;
   closeTerminal(): void;
   closeConnectionGraphWindows(): Promise<boolean>;

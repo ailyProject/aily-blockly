@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, getOwnedProcessInfo } = require('./owned-process');
+const { captureRegisteredProcessIdentity, killRegisteredProcessTree } = require('./process-tree');
 const { createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 const { readProjectMode } = require('./project-companion');
 const { mergeDependencies, LibraryDependencyConflicts, archiveDependencyResolution, digest, fault } = require('./library-dependency-conflicts');
@@ -72,7 +73,13 @@ class LibraryDependencies {
 
   status(project) {
     const root = this.root(project);
-    const input = this.dependencyInput(root), disk = JSON.parse(input.package), state = this.states.get(root), merged = mergeDependencies(disk, state);
+    const input = this.dependencyInput(root);
+    // JSON.parse(null) returns null, which an unstaged merge would accept as
+    // clean. Quit would then wait for an unavailable editor instead of showing
+    // the missing-manifest save-state error immediately.
+    if (input.package === null) throw fault('LIBRARY_DEPENDENCY_MANIFEST_MISSING',
+      'Project package.json is missing; cannot confirm the library save state.');
+    const disk = JSON.parse(input.package), state = this.states.get(root), merged = mergeDependencies(disk, state);
     const dependencyConflict = merged.conflicts.length ? this.describeConflicts(root, disk, state, merged.conflicts, input) : undefined;
     const environment = this.environment.describe(root);
     return { dirty: this.states.has(root) || this.locals.dirty(root), busy: this.queues.has(root),
@@ -655,7 +662,7 @@ async function runDependencyWorker(root, request, hooks) {
     workers.add(child);
     child.environmentRoot = root;
     child.environmentRequestId = request.environmentRequestId;
-    child.environmentProcessIdentity = require('./process-tree').captureRegisteredProcessIdentity(child);
+    child.environmentProcessIdentity = getOwnedProcessInfo(child) ? undefined : captureRegisteredProcessIdentity(child);
     let response, workerError, detail = '';
     child.on('message', value => {
       if (value?.type === 'environment-before-reify') {
@@ -688,7 +695,6 @@ async function stopLibraryDependencyWorkers() {
 }
 
 function stopWorker(child, label) {
-  const { killRegisteredProcessTree } = require('./process-tree');
   return killRegisteredProcessTree(child.pid, label, { registered: child, identity: child.environmentProcessIdentity });
 }
 

@@ -65,6 +65,12 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     await settleLinkedProjectEnvironment(project, assertCurrent);
   }
 
+  async openCoderBoardSelector(projectPath: string): Promise<void> {
+    // A background Coder request must never change the active project's board.
+    if (!this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) return;
+    await this.uiService.openBoardSelector(projectPath);
+  }
+
   updateFooterState(state: { state: string; text: string; timeout?: number }): void {
     this.uiService.updateFooterState(state);
   }
@@ -109,14 +115,13 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     // _BuilderService is component-scoped. Resolving it from this root
     // adapter creates an unused instance whose in-memory passed flag is false.
     // Read the actual matching build receipt from the current editor capture.
-    return await this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+    let verified = false;
+    const ready = await this.blocklyService.runWithBackgroundProjectCode(async (prepared, assertCurrent) => {
       assertCurrent();
-      if (!current()) return false;
       const config = { currentProjectPath: path, boardModule, code: prepared.code,
         projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
-      let verified: boolean;
       if (settings.getCompileBackend() === 'cloud') {
-        if (!prepared.sourceWorkspace || !window['cloudBuild']?.reusable) return false;
+        if (!prepared.sourceWorkspace || !window['cloudBuild']?.reusable) return;
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
         verified = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } }) === true;
       } else {
@@ -129,8 +134,8 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         verified = proof.status === 'verified';
       }
       assertCurrent();
-      return current() && verified;
-    });
+    }, () => !current(), false, 'build');
+    return ready && current() && verified;
   }
 
   async createBlocklyCoderProject(path: string): Promise<string> {

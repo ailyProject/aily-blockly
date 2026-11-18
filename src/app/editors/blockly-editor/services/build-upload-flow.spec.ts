@@ -26,6 +26,7 @@ describe('Blockly compile and upload handoff', () => {
     const prepared = { code: 'compiled code', artifacts: [], projectMacros: [] };
     const project: any = { beginBuildBackendOperation: () => ({ local: false, release() {} }), isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', getBoardModule: async () => '@aily-project/board-test',
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'build-upload-opening' }),
       isAilyCodeProject: () => false, getBoardJson: async () => ({}), getBuildPath: async () => '/project/.build' };
     const workflow: any = { currentState: ProcessState.IDLE,
       // Stop at the device boundary; these tests never flash hardware.
@@ -299,7 +300,8 @@ describe('Blockly compile and upload handoff', () => {
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
       platformService: { za7: '/tool' }, configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} }, translate: { instant: (x: string) => x },
       blocklyService: { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
-        getProjectPersistenceRevision: () => 1, publishPreparedCodeView() {} },
+        captureBuildSnapshot: () => ({ revision: 1 }), publishPreparedCodeView() {},
+        readAfterWorkspaceEdit: (read: () => unknown) => read() },
       runWithInteractiveProjectCode: async (_workspace: unknown, consume: any) => consume(prepared, () => {}),
       waitForOneIdleBoundary: async () => {}, runBuilderPreprocessPhase: (_tag: string, fn: any) => fn(),
       waitForAilyBuilderReady: async () => {}, writeCompileRequest: jasmine.createSpy('request').and.resolveTo('/request'),
@@ -443,7 +445,10 @@ describe('Blockly compile and upload handoff', () => {
     const noticeService = new NoticeService(logService as any);
     noticeService.stateSubject.subscribe(notice => notices.push(notice));
     let listener: any, rejectRun!: (reason: unknown) => void;
-    window['cmd'] = { onData: (_id: string, callback: any) => { listener = callback; return () => { listener = undefined; }; },
+    window['cmd'] = { onData: (streamId: string, callback: any) => {
+      listener = (event: any) => callback({ ...event, streamId });
+      return () => { listener = undefined; };
+    },
       run: () => new Promise((_resolve, reject) => { rejectRun = reject; }) };
     const cmd = new CmdService(logService as any), spawn = cmd.spawn.bind(cmd);
     spyOn(cmd, 'spawn').and.callFake((command, args, options, silent) => spawn(command, args, options, scenario.silent || silent));
@@ -562,6 +567,15 @@ describe('Blockly compile and upload handoff', () => {
     f.command.next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
     f.command.next({ type: 'close', code: 1 }); f.command.complete();
     expect((await result).state).toBe('error'); expect(f.service.passed).toBeFalse();
+    expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
+  });
+
+  it('rejects the completed compiler result when a Blockly edit supersedes its captured inputs', async () => {
+    const f = compileFixture(), { result } = await f.start();
+    f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    expect(await result).toEqual(jasmine.objectContaining({ state: 'error', code: 'BUILD_SOURCE_STALE', sourceReason: 'blocks' }));
+    expect(f.service.passed).toBeFalse();
     expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
   });
 

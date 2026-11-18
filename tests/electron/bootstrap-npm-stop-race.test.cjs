@@ -35,6 +35,7 @@ function fixture(snapshot) {
       setTimeout: (callback) => setImmediate(callback),
       require(name) {
         if (name === "./platform") return { isWin32: true };
+        if (name === "./owned-process") return { getOwnedProcessInfo: () => null };
         if (name === "node:path") return path;
         if (name === "child_process")
           return {
@@ -71,7 +72,8 @@ function fixture(snapshot) {
           return {
             ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
           };
-        if (name === "child_process") return { spawn: () => original };
+        if (name === "./owned-process") return { spawn: () => original, getOwnedProcessInfo: () => null };
+        if (name === "./npm-mutation-queue") return { acquireNpmMutation: () => null };
         if (name === "./process-tree") return treeModule.exports;
         if (name === "./project-task-scope")
           return require("../../electron/project-task-scope");

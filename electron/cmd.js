@@ -1,5 +1,6 @@
 // 管理系统命令进程，并提供 Shell、路径和终端环境检测能力。
-const { spawn, exec } = require('child_process');
+const { exec } = require('child_process');
+const { spawn, getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -407,7 +408,8 @@ class CommandManager {
   receipt(streamId, entry, ownershipReleased) {
     const code = entry.code ?? entry.process?.exitCode;
     const signal = entry.signal ?? entry.process?.signalCode;
-    const exited = entry.closed || entry.terminationConfirmed || typeof code === 'number' || typeof signal === 'string';
+    // Expose the close after the host has drained output and checked ownership.
+    const exited = entry.terminationConfirmed || (entry.closed && (!entry.nativeJob || entry.completedNormally !== undefined));
     return { streamId, state: exited ? 'exited' : entry.process ? 'running' : 'starting',
       terminationConfirmed: entry.terminationConfirmed === true, ownershipReleased,
       ...(exited ? { code: code ?? null, signal: signal ?? null } : {}),
@@ -425,7 +427,7 @@ class CommandManager {
   }
 
   // 执行命令并返回流式数据
-  executeCommand(options) {
+  executeCommand(options, onSettledClose) {
     if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
     let {
       command,
@@ -553,9 +555,11 @@ class CommandManager {
         });
 
     const startedAt = Date.now();
+    const nativeJob = !!getOwnedProcessInfo(child);
     const entry = {
       process: child,
-      processIdentity: captureRegisteredProcessIdentity(child),
+      nativeJob,
+      processIdentity: nativeJob ? undefined : captureRegisteredProcessIdentity(child),
       command,
       args,
       cwd: cwd || process.cwd(),
@@ -565,7 +569,6 @@ class CommandManager {
       messagePort,
       buildWorkspace,
       buildWorkspacePath: options.buildWorkspace,
-      backgroundPreprocess: options.backgroundPreprocess === true && !!options.buildWorkspace,
       startedAt,
       ownerWebContents: options.ownerWebContents,
       projectPath: options.projectPath,
@@ -576,16 +579,20 @@ class CommandManager {
 
     this.processes.set(streamId, entry);
 
-    child.once('close', (code, signal) => {
+    child.once('close', async (code, signal) => {
       entry.closed = true;
       entry.code = code;
       entry.signal = signal;
+      if (entry.nativeJob && !entry.terminationConfirmed && await stopOwnedProcess(child).catch(() => false)) {
+        this.confirmTreeTermination(entry);
+      }
       // During cancellation, wait for the tree result before forgetting the
       // command. Interrupted build markers still require confirmed cleanup.
       const recoveredBeforeDelegation = entry.buildWorkspace?.releaseAfterOwnerExit?.() === true;
       const safeExit = !child.pid || (Number.isInteger(code) && !signal) || recoveredBeforeDelegation;
       entry.completedNormally = safeExit;
-      if (!this.reconcileClosedStream(streamId, entry)) {
+      this.reconcileClosedStream(streamId, entry);
+      if (this.processes.get(streamId) === entry) {
         console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
           streamId, pid: child.pid, reason: entry.stopRequested ? 'termination-pending' : 'termination-unconfirmed',
         });
@@ -597,6 +604,10 @@ class CommandManager {
           console.warn('[PROC_TRACE][CMD_EXIT_LISTENER_ERROR]', { streamId, error: String(error) });
         }
       }
+      onSettledClose?.({
+        code, signal, pid: child.pid, startedAt, expected: entry.stopRequested,
+        ownershipReleased: this.processes.get(streamId) !== entry,
+      });
     });
 
     if (messagePort) {
@@ -661,9 +672,12 @@ class CommandManager {
     if (!entry) return !owner || this.ownerReceipts.get(owner)?.get(streamId)?.ownershipReleased === true;
     if (owner && entry.ownerWebContents !== owner) return false;
     if (entry.stopPromise) return entry.stopPromise;
-    // Closing the original handle turns Stop into reconciliation only.
-    if (entry.closed || typeof entry.process?.exitCode === 'number' || typeof entry.process?.signalCode === 'string')
+    // After exit, only the exact Job can still be stopped. Fallback paths
+    // reconcile from evidence without signaling the old PID.
+    const exited = entry.closed || typeof entry.process?.exitCode === 'number' || typeof entry.process?.signalCode === 'string';
+    if (exited && (!entry.nativeJob || entry.terminationConfirmed)) {
       return this.reconcileClosedStream(streamId, entry);
+    }
     if (entry.process) {
       console.info('[PROC_TRACE][CMD_KILL]', {
         streamId,
@@ -680,7 +694,7 @@ class CommandManager {
               registered: entry.process, identity: entry.processIdentity,
               observe: evidence => { entry.observeTermination = evidence; },
             });
-            // A failed taskkill can race a supervised build's normal finish.
+            // A failed stop can race a supervised build's normal finish.
             // Its own marker cleanup confirms completion; parent close alone
             // cannot establish that installer/compiler descendants stopped.
             if (!stopped) {
@@ -691,8 +705,7 @@ class CommandManager {
               entry.stopRequested = false;
               return this.reconcileClosedStream(streamId, entry);
             }
-            entry.terminationConfirmed = true;
-            entry.workspaceCleanupPending = !!entry.buildWorkspace;
+            this.confirmTreeTermination(entry);
           }
           this.releaseCommandResources(streamId, entry);
           return this.processes.get(streamId) !== entry;
@@ -717,34 +730,52 @@ class CommandManager {
   reconcileClosedStream(streamId, entry) {
     if (this.processes.get(streamId) !== entry) return false;
     if (!entry.terminationConfirmed) {
-      if (!entry.closed || entry.stopRequested) return false;
-      let release = entry.completedNormally && !entry.terminationUnconfirmed;
-      if (entry.buildWorkspace) {
-        // Re-read this exact supervisor's release evidence. A read failure
-        // during the original close need not keep its registration forever.
-        try {
-          release = entry.completedNormally && entry.buildWorkspace.canReleaseResources();
-        } catch { release = false; }
-      } else if (!entry.projectSessionId && !entry.releaseNpmMutation) {
-        release = true;
-      }
-      if (!release) {
-        this.observeClosedTree(streamId, entry);
-        this.scheduleResourceCheck(streamId, entry);
+      if (!entry.closed || entry.stopRequested || (entry.nativeJob && entry.completedNormally === undefined)) return false;
+      if (entry.nativeJob) {
+        if (getOwnedProcessInfo(entry.process)?.released !== true) {
+          this.scheduleResourceCheck(streamId, entry);
+          return false;
+        }
+        this.confirmTreeTermination(entry);
+      } else if (!this.confirmClosedFallback(streamId, entry)) {
         return false;
       }
-      entry.terminationConfirmed = true;
     }
     this.releaseCommandResources(streamId, entry);
     return this.processes.get(streamId) !== entry;
+  }
+
+  confirmClosedFallback(streamId, entry) {
+    let release = entry.completedNormally && !entry.terminationUnconfirmed;
+    if (entry.buildWorkspace) {
+      // Re-read this exact supervisor's release evidence. A read failure
+      // during the original close need not keep its registration forever.
+      try {
+        release = entry.completedNormally && entry.buildWorkspace.canReleaseResources();
+      } catch { release = false; }
+    } else if (!entry.projectSessionId && !entry.releaseNpmMutation) {
+      release = true;
+    }
+    if (!release) {
+      this.observeClosedTree(streamId, entry);
+      this.scheduleResourceCheck(streamId, entry);
+      return false;
+    }
+    entry.terminationConfirmed = true;
+    return true;
+  }
+
+  confirmTreeTermination(entry) {
+    if (entry.terminationConfirmed) return;
+    entry.terminationConfirmed = true;
+    entry.workspaceCleanupPending = !!entry.buildWorkspace;
   }
 
   observeClosedTree(streamId, entry) {
     if (!entry.observeTermination || entry.observation || Date.now() < (entry.nextObservationAt || 0)) return;
     entry.observation = Promise.resolve().then(entry.observeTermination).then(verified => {
       if (!verified || this.processes.get(streamId) !== entry) return;
-      entry.terminationConfirmed = true;
-      entry.workspaceCleanupPending = !!entry.buildWorkspace;
+      this.confirmTreeTermination(entry);
       this.releaseCommandResources(streamId, entry);
     }).catch(() => undefined).finally(() => {
       entry.nextObservationAt = Date.now() + 1000;
@@ -962,6 +993,16 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
         releaseNpmMutation,
         ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
+      }, ({ code, signal, pid, startedAt, expected, ownershipReleased }) => {
+        delivery?.onExit(code, signal, expected || !ownershipReleased);
+
+        console.log(`[CMD][${streamId}] close, code: ${code}, signal: ${signal}`);
+        console.info('[PROC_TRACE][CMD_CLOSE]', {
+          streamId, pid, code, signal, durationMs: Date.now() - startedAt
+        });
+        sendCmdData(senderWindow, `cmd-data-${streamId}`, {
+          type: 'close', code, signal, streamId, expected, ownershipReleased
+        });
       });
       releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
       const process = result.process;
@@ -970,8 +1011,6 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           try { delivery.onMessage(normalizeProcessMessage(message, 4096).message); }
           catch { delivery.abandon(); }
         });
-        process.once('close', (code, signal) => delivery.onExit(code, signal,
-          result.stopRequested || commandManager.getProcess(streamId) !== undefined));
       }
       // console.log(options);
       // 监听标准输出
@@ -1003,28 +1042,6 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           type: 'stderr',
           data: output,
           streamId
-        });
-      });
-
-      // 监听进程关闭
-      process.on('close', (code, signal) => {
-        console.log(`[CMD][${streamId}] close, code: ${code}, signal: ${signal}`);
-
-        console.info('[PROC_TRACE][CMD_CLOSE]', {
-          streamId,
-          pid: process.pid,
-          code,
-          signal,
-          durationMs: Date.now() - result.startedAt
-        });
-
-        sendCmdData(senderWindow, `cmd-data-${streamId}`, {
-          type: 'close',
-          code,
-          signal,
-          streamId,
-          expected: result.stopRequested,
-          ownershipReleased: commandManager.status(streamId, senderWindow).ownershipReleased,
         });
       });
 

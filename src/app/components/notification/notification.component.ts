@@ -162,7 +162,7 @@ export class NotificationComponent {
   }
 
   view() {
-    this.uiService.openBottomSider('log');
+    this.uiService.openLog(this.data?.logTarget);
   }
 
   // 清除 ANSI 格式化字符，先移除 SGR 颜色序列，再清除残留 ESC 字符

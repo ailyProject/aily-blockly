@@ -166,7 +166,7 @@ function fixture(t) {
     } },
   });
   const editor = methods(editorFile, '_BuilderService', ['build', 'buildAttemptWithBackend', 'cancel',
-    'preparePreprocessCache', 'clearOwnedBuildCache'], {
+    'preparePreprocessCache', 'detachIsolatedPreprocess', 'clearOwnedBuildCache'], {
     crypto: webcrypto,
     ProcessState,
     resolveLinuxBoardProjectRoute,

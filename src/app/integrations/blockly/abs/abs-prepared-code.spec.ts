@@ -82,7 +82,7 @@ describe('prepared project code boundary', () => {
 
     Object.defineProperty(editor, 'workspace', { get: () => workspace });
 
-    Object.assign(editor, { projectCodePreparation: preparation, projectOperations: new SerialOperationQueue(),
+    Object.assign(editor, { projectCodePreparation: preparation, projectOperations: new SerialOperationQueue(), workspaceEditGate: gate,
       getActivePageId: () => pageId, assertWorkspaceEditAvailable: owner => gate.assertAvailable(owner),
       acquireWorkspaceEditLease: () => gate.acquire(), isWorkspaceEditBlocked: () => gate.blocked,
       captureProjectSnapshot: owner => { gate.assertAvailable(owner); return capture(); } });
@@ -121,6 +121,48 @@ describe('prepared project code boundary', () => {
     expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeTrue();
     expect(acquire).not.toHaveBeenCalled();
     expect(consume).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores view state across build publication without ignoring block edits or changing the project document', async () => {
+    const editor = productEditor();
+    const viewState = { scale: 1, scrollX: 0, scrollY: 0 };
+    Object.assign(editor, {
+      buildRevision: new BlocklyProjectRevision(),
+      buildCodePreparation: new BlocklyProjectCodePreparation(),
+      getProjectDocument: () => ({ pages: [{ id: pageId, content: capture().document, viewState }] }),
+    });
+    const initial = editor.captureBuildSnapshot();
+    const ready = await editor.runWithBackgroundProjectCode((prepared, assertCurrent) => {
+      expect(prepared.sourceWorkspace?.documentText).toBe(initial.documentText);
+      Object.assign(viewState, { scale: 0.5, scrollX: 42, scrollY: -10 });
+      assertCurrent();
+    }, () => false, false, 'build');
+    expect(ready).toBeTrue();
+    expect(editor.captureBuildSnapshot().revision).toBe(initial.revision);
+    expect(editor.getProjectDocument().pages[0].viewState).toBe(viewState);
+
+    workspace.getVariableMap().createVariable('changed after capture');
+    expect(editor.captureBuildSnapshot().revision).toBeGreaterThan(initial.revision);
+  });
+
+  it('waits to verify a build while a queued save holds the workspace', async () => {
+    const editor = productEditor();
+    let begin!: () => void, finish!: () => void;
+    const started = new Promise<void>(resolve => { begin = resolve; });
+    const released = new Promise<void>(resolve => { finish = resolve; });
+    const save = editor.runProjectOperation(async () => {
+      const lease = editor.acquireWorkspaceEditLease();
+      try { begin(); await released; }
+      finally { lease.release(); }
+    });
+    await started;
+    const read = jasmine.createSpy('source').and.callFake(() => editor.isWorkspaceEditInProgress());
+    const after = editor.readAfterWorkspaceEdit(read);
+    expect(read).not.toHaveBeenCalled();
+    finish();
+    await save;
+    expect(await after).toBeFalse();
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it('defers background work when editing starts while waiting in the project queue', async () => {
