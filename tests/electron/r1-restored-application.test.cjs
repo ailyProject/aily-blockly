@@ -134,4 +134,80 @@ test('a real committed successor base keeps the older tracked intent in restored
   assert.deepEqual((await ctx.journal.inspect()).candidate, snapshot.candidate, 'Observation cannot rewrite the snapshot generation');
 });
 
+test('only recovered-view readback retains an original writer fence across a later unchanged save', async () => {
+  const ctx = await fixture('identical-document');
+  try {
+    const readback = async document => assert.deepEqual(document, ctx.original.document);
+    await ctx.journal.recordRestoredApplication(ctx.original.operationId, guard, async () => {
+      assert.fail('A live original writer cannot authorize recovery');
+    });
+    const marker = `recoveries/application-restored-${ctx.original.operationId}.json`;
+    assert.equal(await ctx.port.read(marker), null);
+    await ctx.stop();
+    const restored = await kernel.recoverAbsProjectOperation(ctx.port, ctx.project, guard);
+    assert.deepEqual(restored.document, ctx.original.document);
+    await ctx.journal.restored(restored.operationId, guard);
+    await assert.rejects(ctx.journal.recordRestoredApplication(restored.operationId, guard,
+      async () => { throw Error('Recovered live document changed'); }), /live document changed/);
+    assert.equal(await ctx.port.read(marker), null);
+    await ctx.journal.recordRestoredApplication(restored.operationId, guard, readback);
+    const stored = await ctx.port.read(marker);
+    const result = await ctx.journal.inspectRestoredApplication(ctx.original.requestId, guard);
+    assert.equal(result.settlement.recordHash, await kernel.hashAbsText(stored));
+    assert.equal(result.originalPublication, 'UNKNOWN');
+
+    const store = new kernel.AbsBaselineStore(ctx.port, { projectKey: ctx.project, pageId: 'main' });
+    const disk = await store.captureDisk();
+    const savedDocument = JSON.parse(disk.abi);
+    assert.deepEqual(savedDocument, restored.document);
+    const next = await ctx.journal.begin({ kind: 'document-save', document: savedDocument, disk }, guard);
+    await ctx.journal.finishUnchangedSave(next, disk, guard);
+    assert.deepEqual(await store.captureDisk(), disk);
+    const coldPort = await openProjectSyncStorage(ctx.project, guard);
+    const reply = (await new kernel.AbsApplicationJournal(coldPort, ctx.project).observe(ctx.original.requestId, guard)).result;
+    assert.equal(reply.publication.status, 'UNKNOWN');
+    assert.equal(reply.ok, false);
+    assert.deepEqual(reply.currentDocumentRecovery, result);
+    assert.equal(await coldPort.read(marker), stored);
+
+    const { next: nextGeneration, expectedPointerHash } = JSON.parse(fs.readFileSync(path.join(ctx.project, 'r0-input.json'), 'utf8'));
+    await store.stage(nextGeneration, expectedPointerHash);
+    const publication = await store.commit(nextGeneration.projection.map.generation, guard,
+      async (content, expected, access) => assert.equal(await access.replace('project.abi', expected, content), true));
+    assert.equal(publication.status, 'COMMITTED');
+    assert.notDeepEqual(await store.captureDisk(), disk);
+    const historical = (await new kernel.AbsApplicationJournal(coldPort, ctx.project).observe(ctx.original.requestId, guard)).result;
+    assert.equal(historical.publication.status, 'UNKNOWN');
+    assert.deepEqual(historical.currentDocumentRecovery, result);
+    assert.equal(await coldPort.read(marker), stored);
+  } finally { if (children.has(ctx.child)) await ctx.stop(); }
+});
+
+test('cold recovery settles exact pre-ABI staging without granting an application result', async () => {
+  const ctx = await fixture('staged-before-abi');
+  try {
+    assert.ok(await ctx.port.read('prepared.json'));
+    await ctx.stop();
+    const restored = await kernel.recoverAbsProjectOperation(ctx.port, ctx.project, guard);
+    assert.equal(await ctx.port.read('prepared.json'), null);
+    assert.deepEqual(restored.document, ctx.original.document);
+    const store = new kernel.AbsBaselineStore(ctx.port, { projectKey: ctx.project, pageId: 'main' });
+    const disk = await store.captureDisk();
+    assert.equal(JSON.parse(disk.abi).pages[0].content.blocks.blocks[0].fields.VALUE, 100);
+    await ctx.journal.restored(restored.operationId, guard);
+    const staged = await ctx.port.read(`recoveries/application-${restored.operationId}.json`);
+    assert.ok(staged);
+    await ctx.journal.recordRestoredApplication(restored.operationId, guard,
+      async actual => assert.deepEqual(actual, restored.document));
+    const observed = (await new kernel.AbsApplicationJournal(ctx.port, ctx.project).observe(ctx.original.requestId, guard)).result;
+    assert.equal(observed.code, 'ABS_APPLY_OBSERVATION_PENDING');
+    assert.equal(observed.publication.status, 'UNKNOWN');
+    assert.equal(observed.currentDocumentRecovery.oldWriter.state, 'exited');
+    assert.equal(observed.currentDocumentRecovery.candidateApplied, false);
+    const marker = JSON.parse(await ctx.port.read(`recoveries/application-restored-${restored.operationId}.json`));
+    assert.equal(marker.stagedHash, await kernel.hashAbsText(staged));
+    assert.deepEqual(await store.captureDisk(), disk);
+  } finally { if (children.has(ctx.child)) await ctx.stop(); }
+});
+
 after(async () => { for (const child of children) child.kill('SIGKILL'); console.log('R1_RESTORED_OUTPUT=' + root); });

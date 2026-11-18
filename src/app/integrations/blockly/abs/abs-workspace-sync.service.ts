@@ -1857,6 +1857,7 @@ export class AbsWorkspaceSyncService {
     const context = this.context(), port = await openAbsHostStorage(context.path, context.assertCurrent);
     const observed = await new AbsApplicationJournal(port, context.path).observe(requestId, context.assertCurrent);
     const result = observed.result;
+    if (result.currentDocumentRecovery?.settlement) return result;
     const currentCommit = observed.projection && result.applicationObservation.current;
     const unknown = result.publication?.status === 'UNKNOWN';
     if (!currentCommit && !unknown) return result;

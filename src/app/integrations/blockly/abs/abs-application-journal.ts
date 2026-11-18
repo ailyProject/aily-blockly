@@ -9,7 +9,7 @@ import { NativeSavePublications } from './abs-native-save-publication';
 import { nativeSaveCapability } from './abs-native-save-protocol';
 import type { NativeSaveIdentity, NativeSaveOperationRef, NativeSaveStageInput, NativeSaveResultFacts } from './abs-native-save-protocol';
 import type { AbsSyncStorageAccess } from './abs-baseline-store';
-import type { AbsOperationSnapshot } from './abs-operation-journal';
+import { AbsOperationJournal, restoredApplicationKey, type AbsOperationSnapshot } from './abs-operation-journal';
 import { applicationRequestKey, OriginalRequestAdmissions, originalAdmissionOutcome } from './original-request-admission';
 
 const stageKey = (id: string) => `recoveries/application-${id}.json`;
@@ -160,8 +160,13 @@ export class AbsApplicationJournal {
         applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } } };
     }
     const indexText = await this.port.read(await applicationRequestKey(requestId));
-    const unknown = (code: string) => ({ result: { ok: false, operation: 'abs_apply', project: this.project, code,
-      publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false } } });
+    const unknown = async (code: string, operationId?: string) => {
+      const recovery = operationId && await this.port.read(restoredApplicationKey(operationId)) !== null
+        ? await new AbsOperationJournal(this.port, this.project).inspectRestoredApplication(requestId, assertCurrent) : null;
+      return { result: { ok: false, operation: 'abs_apply', project: this.project, code,
+        publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false },
+        ...(recovery ? { currentDocumentRecovery: recovery } : {}) } };
+    };
     if (indexText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN');
     const index = JSON.parse(indexText);
     if (index.version !== 1 || index.project !== this.project || index.requestId !== requestId || !/^[a-f0-9-]{36}$/.test(index.operationId)) throw fail('Invalid original application request index.');
@@ -193,7 +198,7 @@ export class AbsApplicationJournal {
         applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } } };
     }
     const stagedText = await this.port.read(stageKey(index.operationId));
-    if (stagedText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN');
+    if (stagedText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN', index.operationId);
     const staged = JSON.parse(stagedText), validation = staged.validation, binding = staged.outcome?.evidence?.binding;
     if (snapshot.application?.requestId !== requestId || absJson(snapshot.application.validation) !== absJson(validation)
       || validation.requestId !== requestId || validation.candidate.hash !== snapshot.candidate?.hash
@@ -206,7 +211,7 @@ export class AbsApplicationJournal {
       // Read-only observation in the acknowledgement gap. Restart recovery
       // seals this evidence durably before admitting another document writer.
       const currentStore = new AbsBaselineStore(this.port, binding.scope), committed = await this.ancestor(currentStore, binding.generation);
-      if (!committed) return unknown('ABS_APPLY_OBSERVATION_PENDING');
+      if (!committed) return unknown('ABS_APPLY_OBSERVATION_PENDING', index.operationId);
       const committedPointer = await this.port.read('committed.json');
       const currentDisk = await currentStore.captureDisk();
       const historicalAbi = await currentStore.readDerivedAbi(binding.generation);
