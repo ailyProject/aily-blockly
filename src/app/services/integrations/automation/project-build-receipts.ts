@@ -20,6 +20,8 @@ interface BuildEntry {
   waiters: Set<() => void>;
 }
 
+type PersistedBuild = { state: ProjectBuildReceiptResponse['buildReceipt']['state']; result?: Record<string, any> };
+
 function fault(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: 'BUILD_RECEIPT_CONFLICT' });
 }
@@ -39,11 +41,12 @@ export function readProjectBuildRequest(value: unknown): ProjectBuildRequest {
   return { version: 1, requestId: request.requestId, waitMs: request.waitMs ?? 0 };
 }
 
-/** Renderer-local, compile-only receipts. Refresh loses the receipt, never invents a result from old files. */
+/** Live replies retain the full result; original disk evidence survives renderer replacement. */
 export class ProjectBuildReceipts {
   private readonly entries = new Map<string, BuildEntry>();
 
-  constructor(private readonly retentionMs = 10 * 60_000, private readonly completedLimit = 32) {}
+  constructor(private readonly retentionMs = 10 * 60_000, private readonly completedLimit = 32,
+    private readonly readPersisted?: (project: string, requestId: string) => PersistedBuild | undefined) {}
 
   start(project: string, request: ProjectBuildRequest, signature: string,
     run: () => Promise<Record<string, any>>): Promise<ProjectBuildReceiptResponse> {
@@ -51,6 +54,8 @@ export class ProjectBuildReceipts {
     let entry = this.find(project, request.requestId);
     if (entry && entry.signature !== signature) throw fault('Build request ID already belongs to different compile options.');
     if (!entry) {
+      const original = this.readPersisted?.(project, request.requestId);
+      if (original) return Promise.resolve(this.response('project_build', project, request, original));
       entry = { project, signature, waiters: new Set() };
       this.entries.set(request.requestId, entry);
       const owned = entry;
@@ -89,11 +94,18 @@ export class ProjectBuildReceipts {
         entry.waiters.add(finish);
       });
     }
-    return { ok: true, operation,
-      buildReceipt: { version: 1, requestId: request.requestId, project: entry?.project ?? project,
-        state: !entry ? 'unknown' : entry.completedAt === undefined ? 'running' : 'completed' },
-      ...(entry?.completedAt !== undefined ? { result: entry.result } : {}),
-    };
+    const recovered = !entry || entry.result?.['buildOutcome'] === 'unknown'
+      ? this.readPersisted?.(project, request.requestId) : undefined;
+    const observed = recovered ?? (entry
+      ? entry.completedAt === undefined ? { state: 'running' as const } : { state: 'completed' as const, result: entry.result }
+      : { state: 'unknown' as const });
+    return this.response(operation, entry?.project ?? project, request, observed);
+  }
+
+  private response(operation: ProjectBuildReceiptResponse['operation'], project: string, request: ProjectBuildRequest,
+    observed: PersistedBuild): ProjectBuildReceiptResponse {
+    return { ok: true, operation, buildReceipt: { version: 1, requestId: request.requestId, project, state: observed.state },
+      ...(observed.result ? { result: observed.result } : {}) };
   }
 
   private prune(): void {
@@ -105,4 +117,16 @@ export class ProjectBuildReceipts {
       if (entry.completedAt! < cutoff || excess > 0) { this.entries.delete(id); excess--; }
     }
   }
+}
+
+/** Project routing is checked by the caller. Native inspection binds the execution and current artifact separately. */
+export function readNativeBuildReceipt(project: string, requestId: string): PersistedBuild | undefined {
+  const value = window['builder']?.inspectBuildExecution?.(project, requestId);
+  if (value?.version !== 1 || value.buildRequestId !== requestId) return undefined;
+  if (value.status === 'running' && value.ownerState === 'live') return { state: 'running' };
+  if (!['completed', 'failed', 'cancelled'].includes(value.status)) return { state: 'unknown' };
+  return { state: 'completed', result: { project, operation: 'project_build', ok: value.status === 'completed',
+    ...(value.status === 'completed' && value.result && value.buildInput ? { buildInput: value.buildInput } : {}),
+    ...(value.status === 'failed' ? { buildOutcome: 'failed', message: '原编译失败。' } : {}),
+    ...(value.status === 'cancelled' ? { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', message: '原编译已取消。' } : {}) } };
 }

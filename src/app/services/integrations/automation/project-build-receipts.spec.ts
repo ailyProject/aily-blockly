@@ -30,6 +30,19 @@ describe('project build receipt store', () => {
     expect(answer.result).toBeUndefined();
   });
 
+  it('uses an exact persisted receipt after renderer replacement without dispatching the original twice', async () => {
+    const read = jasmine.createSpy('read').and.returnValue({ state: 'completed', result: { ok: true } });
+    const store = new ProjectBuildReceipts(0, 0, read);
+    const mutate = jasmine.createSpy('mutate');
+    const first = await store.status('/isolated', request());
+    expect(first.buildReceipt.state).toBe('completed');
+    expect(first.result).toEqual({ ok: true });
+    const second = await store.start('/isolated', request(), 'original', mutate);
+    expect(second.result).toEqual(first.result);
+    expect(read.calls.allArgs()).toEqual([['/isolated', 'build-1'], ['/isolated', 'build-1']]);
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it('reobserves the exact completed log without executing or recreating it', async () => {
     const store = new ProjectBuildReceipts();
     const buildLog = { version: 1, requestId: 'with-log', project: '/isolated', path: '/isolated/.log/compile/requests/owned.log', complete: true };

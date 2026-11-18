@@ -5,13 +5,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
-function fixture(snapshots, kills = []) {
-  const called = [], logs = [], snapshotCalls = [];
-  const context = { module: { exports: {} }, process: { env: { SystemRoot: 'C:\\Windows' } },
+function fixture(snapshots, kills = [], boundResults = []) {
+  const called = [], logs = [], snapshotCalls = [], bound = [];
+  const context = { module: { exports: {} }, Buffer, process: { env: { SystemRoot: 'C:\\Windows' } },
     console: { info: (_tag, value) => logs.push(value), warn() {} },
     setTimeout: callback => setImmediate(callback),
     require(name) {
       if (name === './platform') return { isWin32: true };
+      if (name === 'node:fs') return fs;
       if (name === 'node:path') return path;
       if (name === 'child_process') return {
         exec(command, _options, callback) {
@@ -19,7 +20,13 @@ function fixture(snapshots, kills = []) {
           const ok = kills.shift() === true;
           callback(ok ? null : new Error('native child exited during taskkill'), '', '');
         },
-        execFile(_exe, _args, _options, callback) {
+        execFile(_exe, args, _options, callback) {
+          const encoded = /FromBase64String\('([^']+)'\)/.exec(args.at(-1));
+          if (encoded) {
+            bound.push(...JSON.parse(Buffer.from(encoded[1], 'base64').toString('utf8')));
+            callback(boundResults.shift() || null, '');
+            return;
+          }
           snapshotCalls.push(true);
           const next = snapshots.shift();
           callback(next instanceof Error ? next : null, next instanceof Error ? '' : JSON.stringify(next));
@@ -29,7 +36,7 @@ function fixture(snapshots, kills = []) {
     },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/process-tree.js'), 'utf8'), context);
-  return { stop: options => context.module.exports.killRegisteredProcessTree(10, 'cmd:build', options), called, logs, snapshotCalls };
+  return { stop: options => context.module.exports.killRegisteredProcessTree(10, 'cmd:build', options), called, logs, snapshotCalls, bound };
 }
 const root = { pid: 10, parent: 1, created: '100' }, child = { pid: 11, parent: 10, created: '101' };
 
@@ -73,4 +80,37 @@ test('fast native failure stays unconfirmed without guessing from parent exit or
   const f = fixture([], [false]);
   assert.equal(await f.stop({ preferNativeAck: true }), false);
   assert.equal(f.snapshotCalls.length, 0);
+});
+
+test('a registered command never force-stops a replacement Windows PID', async () => {
+  const replacement = { ...root, created: '200' };
+  const f = fixture([[replacement]], [true]);
+  const registered = { pid: 10, exitCode: null, signalCode: null };
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100') }), false);
+  assert.deepEqual(f.called, []);
+});
+
+test('an exited registered Windows command never sends a later force-stop', async () => {
+  const f = fixture([[root]], [true]);
+  const registered = { pid: 10, exitCode: 0, signalCode: null };
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100') }), false);
+  assert.deepEqual(f.called, []);
+});
+
+test('a new child of an absent Windows parent is never attributed to its former identity', async () => {
+  const alreadyOwned = { ...child, created: '110' };
+  const ambiguous = { pid: 12, parent: 10, created: '120' };
+  const f = fixture([[root, alreadyOwned], [ambiguous], [ambiguous], [ambiguous], []]);
+  const registered = { pid: 10, exitCode: null, signalCode: null };
+  let observe;
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100'), observe: reader => { observe = reader; } }), false);
+  assert.deepEqual(f.bound.map(entry => entry.pid), [10, 11]);
+  assert.equal(await observe(), true);
+});
+
+test('a lost force-stop response can settle from the original tree proof without signaling again', async () => {
+  const f = fixture([[root], []], [], [new Error('helper exit acknowledgement lost')]);
+  const registered = { pid: 10, exitCode: null, signalCode: null };
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100') }), true);
+  assert.deepEqual(f.bound.map(entry => entry.pid), [10]);
 });

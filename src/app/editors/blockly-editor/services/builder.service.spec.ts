@@ -108,6 +108,24 @@ describe('BuilderService isolated derived outputs', () => {
 });
 
 describe('BuilderService background preprocess ownership', () => {
+  it('lets protected foreground work continue while a private preprocess stop is unconfirmed', async () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    const unsubscribe = jasmine.createSpy('unsubscribe');
+    let finish!: (value: boolean) => void;
+    service.cmdService = { kill: jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { finish = resolve; })) };
+    service.preprocessProcess = { unsubscribe };
+    service.preprocessStreamId = 'private-original';
+    service.isolatedPreprocessStreamId = 'private-original';
+    service.preprocessRunGeneration = 1;
+    await service.stopPreprocess();
+    expect(service.isPreprocessing()).toBeFalse();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('private-original');
+    service.preprocessStreamId = 'new-owner';
+    finish(false);
+    await Promise.resolve();
+    expect(service.preprocessStreamId).toBe('new-owner');
+  });
   it('reports an unconfirmed stop instead of treating false as successful cleanup', async () => {
     const service = Object.create(_BuilderService.prototype) as any;
     service.preprocessProcess = { unsubscribe: jasmine.createSpy('unsubscribe') };

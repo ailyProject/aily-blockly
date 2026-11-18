@@ -385,6 +385,30 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
   });
 
+  it('ends an unconfirmed private build in the foreground without recording a fake cancellation', async () => {
+    const f = compileFixture();
+    const id = 'private-uncertain-original';
+    const { result } = await f.start(id);
+    expect(f.service.streamId).toBeTruthy();
+    const binding = { version: 1, id: 'original-execution', inputDigest: 'original-input',
+      buildRequestId: id, logicalProjectPath: '/project' };
+    f.service.activeExecutionConfig = { ...f.service.activeExecutionConfig, execution: binding,
+      currentProjectPath: '/project/.aily/build-executions/original-execution/project' };
+    window['builder'].isolatedBuildExecutionVersion = 1;
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancel').and.returnValue(undefined);
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.resolveTo(undefined);
+    f.service.cmdService.kill = jasmine.createSpy('kill');
+
+    f.service.cancel(id);
+    const stopped = await result;
+    expect(stopped).toEqual(jasmine.objectContaining({ buildOutcome: 'unknown', code: 'BUILD_OBSERVATION_UNCONFIRMED' }));
+    expect(f.service.cmdService.kill).not.toHaveBeenCalled();
+    expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
+    expect(f.service.activeBuildRequestId).toBeNull();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.ERROR);
+    expect(f.command.observed).toBeFalse();
+  });
+
   it('a confirmed native Blockly Stop aborts the matching request', async () => {
     const f = compileFixture();
     const requestId = 'native-cancelled-request';

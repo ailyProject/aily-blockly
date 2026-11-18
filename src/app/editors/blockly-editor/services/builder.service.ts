@@ -121,6 +121,7 @@ export class _BuilderService {
   private dependencySubscription: any = null; // 保存依赖变化订阅引用
   private preprocessProcess: any = null; // 保存当前运行的预处理订阅
   private preprocessStreamId: string | null = null; // 保存预处理的 streamId
+  private isolatedPreprocessStreamId: string | null = null;
   private preprocessError: string | null = null; // 保存预编译错误信息
   private preprocessFullError: string = ''; // 保存预编译完整错误日志
   private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
@@ -398,6 +399,7 @@ export class _BuilderService {
     const streamId = this.preprocessStreamId;
     if (!streamId || this.preprocessStop) return;
     ++this.preprocessRunGeneration;
+    const detached = this.detachIsolatedPreprocess();
     // Keep observing ownership even after the stream's diagnostics become stale.
     const stopping = this.cmdService.kill(streamId).then(stopped => {
       if (this.preprocessStreamId !== streamId) return;
@@ -408,10 +410,20 @@ export class _BuilderService {
     }).finally(() => {
       if (this.preprocessStop === stopping) this.preprocessStop = null;
     });
-    this.preprocessStop = stopping;
+    if (!detached) this.preprocessStop = stopping;
     void stopping.catch((error) => {
       console.warn('终止预编译进程失败:', error);
     });
+  }
+
+  /** The native observer can outlive the UI owner of a private execution. */
+  private detachIsolatedPreprocess(): boolean {
+    if (!this.preprocessStreamId || this.preprocessStreamId !== this.isolatedPreprocessStreamId) return false;
+    this.preprocessProcess?.unsubscribe();
+    this.preprocessProcess = null;
+    this.preprocessStreamId = null;
+    this.isolatedPreprocessStreamId = null;
+    return true;
   }
 
   private async writeTextFile(filePath: string, content: string): Promise<void> {
@@ -798,6 +810,9 @@ export class _BuilderService {
         const spawnStartedAt = Date.now();
         const preprocessStreamId = `builder_preprocess_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         this.preprocessStreamId = preprocessStreamId;
+        if (buildConfig.execution?.operation === 'preprocess' && buildConfig.currentProjectPath !== currentProjectPath) {
+          this.isolatedPreprocessStreamId = preprocessStreamId;
+        }
         this.pendingPrecompile = false;
         let settled = false;
         let ownershipRetained = false;
@@ -807,7 +822,10 @@ export class _BuilderService {
           settled = true;
           if (this.preprocessStreamId === preprocessStreamId) {
             this.preprocessProcess = null;
-            if (!ownershipRetained) this.preprocessStreamId = null;
+            if (!ownershipRetained) {
+              this.preprocessStreamId = null;
+              this.isolatedPreprocessStreamId = null;
+            }
           }
         };
         // CmdService dispatches on call. From here, the child owns settlement.
@@ -815,7 +833,9 @@ export class _BuilderService {
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
-          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: buildConfig.currentProjectPath, backgroundPreprocess: true },
+          { ...this.projectService.getProjectDependencySession?.(currentProjectPath),
+            streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: buildConfig.currentProjectPath,
+            backgroundPreprocess: true, observeExit: true },
           true,
         ).subscribe({
           next: (output) => {
@@ -1020,6 +1040,7 @@ export class _BuilderService {
     let failure: string | undefined;
     try {
       ++this.preprocessRunGeneration;
+      this.detachIsolatedPreprocess();
       await this.waitForPreprocessDrain(projectPath, () => !projectCurrent(), 'background');
       await this.clearOwnedBuildCache(projectPath, projectCurrent);
       if (!projectCurrent()) throw new Error('The Blockly project changed during cache preparation.');
@@ -1095,6 +1116,7 @@ export class _BuilderService {
     if (this.isCloudBuild()) { await this.stopPreprocess(); return; }
     ++this.preprocessRunGeneration;
     const projectPath = this.projectService.currentProjectPath;
+    this.detachIsolatedPreprocess();
     await this.waitForPreprocessDrain(projectPath, isCancelled, 'upload');
   }
 
@@ -1678,9 +1700,11 @@ export class _BuilderService {
                 const streamId = `blockly_build_${crypto.randomUUID()}`;
                 this.streamId = streamId;
                 const command = this.cmdService.spawn('node', [compileScriptPath, configFilePath], {
+                  ...this.projectService.getProjectDependencySession?.(projectPath),
                   cwd: executionConfig.currentProjectPath,
                   shellProfile: false,
                   buildWorkspace: executionConfig.currentProjectPath,
+                  observeExit: true,
                   ...(buildConfig.recordProjectDelivery ? { buildDeliveryRequest: configFilePath } : {}),
                   streamId,
                 }, true); // This build owns its diagnostic log; suppress CmdService's close-tail replay.
@@ -1834,6 +1858,7 @@ export class _BuilderService {
                     let outputLines: Array<{ line: string; type: 'stdout' | 'stderr' }> = [];
 
                     if (output.type === 'close') {
+                      if (output.recovered) requestLog.markIncomplete('The original process exit was recovered after its event was lost.');
                       processExitCode = output.code ?? (output.signal ? 1 : 0);
                       processSignal = output.signal || null;
 
@@ -2050,7 +2075,7 @@ export class _BuilderService {
       await preparing;
       await this.localStopPending;
       await this.cloudCancelPromise;
-      if (cancellation.signal.aborted) {
+      if (cancellation.signal.aborted && cancellation.signal.reason?.buildOutcome !== 'unknown') {
         // Unsubscribe suppresses the command's completion callback. Persist the
         // stop once here, including cancellation before source capture, while
         // this build still owns the workflow and before a new build can start.
@@ -2418,6 +2443,19 @@ export class _BuilderService {
     });
   }
 
+  private detachUnconfirmedBuild(): void {
+    const unconfirmed = Object.assign(new Error('原编译停止结果未确认，可以开始新的编译。'), {
+      code: 'BUILD_OBSERVATION_UNCONFIRMED', buildOutcome: 'unknown'
+    });
+    this.cancelled = true;
+    this.buildCancellation?.abort(unconfirmed);
+    this.buildSubscription?.unsubscribe();
+    this.activeBuildLog?.markIncomplete(unconfirmed.message);
+    this.clearProgressTimer();
+    this.safeUpdateNotice({ title: this.t('CANCELLED_TITLE'), text: unconfirmed.message, state: 'warn', setTimeout: 5000 });
+    this.buildPromiseReject?.(unconfirmed);
+  }
+
   /**
    * 取消当前编译过程
    */
@@ -2447,16 +2485,23 @@ export class _BuilderService {
     }
 
     const execution = this.activeExecutionConfig;
+    const privateExecution = !!execution?.execution?.logicalProjectPath
+      && execution.currentProjectPath !== execution.execution.logicalProjectPath && this.isolatedBuilds();
     if (execution?.execution && !this.activeCloudRequestId) {
       if (execution.execution.buildRequestId !== this.activeBuildRequestId) return;
       try {
         // The exact native execution chooses the terminal result. Keep the
         // original stream and log open when Stop did not win that result.
         const outcome = window['builder'].cancelBuildExecution(execution);
-        if (outcome?.status !== 'cancelled' || outcome.version !== 1 || outcome.id !== execution.execution.id
-          || outcome.buildRequestId !== execution.execution.buildRequestId || outcome.inputDigest !== execution.execution.inputDigest) return;
+        const matching = outcome?.version === 1 && outcome.id === execution.execution.id
+          && outcome.buildRequestId === execution.execution.buildRequestId && outcome.inputDigest === execution.execution.inputDigest;
+        if (!matching || outcome.status !== 'cancelled') {
+          if (privateExecution && (!matching || !['completed', 'failed'].includes(outcome.status))) this.detachUnconfirmedBuild();
+          return;
+        }
       } catch (error) {
         console.warn('Could not confirm build cancellation; continuing to observe the original execution:', error);
+        if (privateExecution) this.detachUnconfirmedBuild();
         return;
       }
     }
@@ -2495,8 +2540,9 @@ export class _BuilderService {
     
     if (this.streamId) {
       console.log('通过 streamId 终止进程:', this.streamId);
+      const stop = privateExecution ? this.cmdService.kill(this.streamId, 3000) : this.cmdService.kill(this.streamId);
       killPromises.push(
-        this.cmdService.kill(this.streamId)
+        stop
           .then(success => {
             console.log('通过 streamId 终止成功:', success);
             return success;

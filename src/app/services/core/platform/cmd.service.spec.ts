@@ -1,9 +1,42 @@
 import { CmdService } from './cmd.service';
+import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 
 describe('CmdService command lifecycle', () => {
   let oldCmd: any;
   beforeEach(() => { oldCmd = window['cmd']; });
   afterEach(() => { window['cmd'] = oldCmd; });
+
+  it('recovers a missing close for the original Blockly stream once', fakeAsync(() => {
+    const callbacks = new Map<string, (event: any) => void>();
+    const observer = jasmine.createSpy('close');
+    const status = jasmine.createSpy('status').and.resolveTo({
+      streamId: 'other', state: 'exited', code: 0, terminationConfirmed: true, ownershipReleased: true
+    });
+    const run = jasmine.createSpy('run').and.resolveTo({ success: true });
+    window['cmd'] = { run, status, onData: (id: string, fn: (event: any) => void) => {
+      callbacks.set(id, fn); return () => callbacks.delete(id);
+    } };
+    const service = new CmdService({ update() {} } as any);
+    service.spawn('node', [], { streamId: 'original', buildWorkspace: '/captured', observeExit: true }).subscribe(observer);
+    flushMicrotasks(); tick(500);
+    expect(observer).not.toHaveBeenCalled();
+    status.and.resolveTo({ streamId: 'original', state: 'exited', code: 0, terminationConfirmed: true, ownershipReleased: true });
+    tick(500);
+    expect(observer).toHaveBeenCalledOnceWith(jasmine.objectContaining({ type: 'close', streamId: 'original', recovered: true }));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(callbacks.size).toBe(0);
+  }));
+
+  it('returns an unconfirmed stop instead of leaving a fenced foreground caller waiting for IPC', fakeAsync(() => {
+    const kill = jasmine.createSpy('kill').and.returnValue(new Promise(() => {}));
+    window['cmd'] = { kill };
+    const service = new CmdService({ update() {} } as any);
+    const result = jasmine.createSpy('result');
+    void service.kill('original', 200).then(result);
+    tick(200);
+    expect(result).toHaveBeenCalledOnceWith(false);
+    expect(kill).toHaveBeenCalledOnceWith('original');
+  }));
 
   it('still requests main-process cleanup after the output stream closes', async () => {
     let listener!: (event: any) => void;
