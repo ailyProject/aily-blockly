@@ -32,6 +32,29 @@ test('client protocol accepts only fixed products, PKCE and trusted callbacks', 
   assert.throws(() => parseHubBrowserLogin(makeUrl(undefined, 'http://localhost:65469/auth/callback'), 'blockly'));
 });
 
+test('only a capable client receives a handoff with separate registered callbacks', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-client-test-'));
+  const old = fixture(directory);
+  await old.bridge.ready;
+  t.after(() => { old.bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  const recordPath = path.join(directory, fs.readdirSync(directory).find(name => name.endsWith('.json')));
+  const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+  fs.writeFileSync(recordPath, JSON.stringify({ ...record, protocolVersion: 2 }));
+  const separate = new URL(makeUrl());
+  separate.searchParams.set('authorization_redirect_uri', 'https://hub.aily.pro/auth/callback');
+  separate.searchParams.set('authorization_redirect_uri_intl', 'https://projects.aily.pro/auth/callback');
+  assert.equal(hasHubBrowserOwner('blockly', { directory, splitCallbacks: true }), false);
+  await assert.rejects(forwardHubBrowserLogin(separate.href, 'blockly', { directory }));
+  assert.throws(() => parseHubBrowserLogin(separate.href + '&region=cn', 'blockly'));
+  assert.throws(() => parseHubBrowserLogin(separate.href.replace('projects.aily.pro', 'untrusted.example'), 'blockly'));
+  const current = fixture(directory);
+  t.after(() => current.bridge.close());
+  await current.bridge.ready;
+  current.call('hub-client-ready');
+  await forwardHubBrowserLogin(separate.href, 'blockly', { directory });
+  assert.equal(current.messages[0][1].authorization_redirect_uri_intl, 'https://projects.aily.pro/auth/callback');
+});
+
 test('site and registered authorization callback cannot be replaced with unknown protocol fields', () => {
   const link = makeUrl() + '&region=intl&authorization_redirect_uri=' + encodeURIComponent('https://hub.aily.pro/auth/callback');
   assert.equal(parseHubBrowserLogin(link, 'blockly').region, 'intl');

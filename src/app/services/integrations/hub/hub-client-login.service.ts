@@ -7,7 +7,7 @@ import { firstValueFrom, filter, map, merge, take, timeout, Subscription } from 
 import { getServerUrl } from '../../../configs/api.config';
 
 interface ClientLoginRequest { state: string; code_challenge: string; redirect_uri: string;
-  region?: 'cn' | 'intl'; authorization_redirect_uri?: string; expiresAt?: number; }
+  region?: 'cn' | 'intl'; authorization_redirect_uri?: string; authorization_redirect_uri_intl?: string; expiresAt?: number; }
 
 @Injectable({ providedIn: 'root' })
 export class HubClientLoginService implements OnDestroy {
@@ -28,12 +28,14 @@ export class HubClientLoginService implements OnDestroy {
     void this.bridge.ready();
   }
 
-  private async signedIn(region?: 'cn' | 'intl'): Promise<boolean> {
-    await this.auth.initializeAuth();
-    const clientRegion = this.config.data?.region;
-    if (region && region !== (clientRegion === 'cn' ? 'cn' : ['eu', 'intl'].includes(clientRegion) ? 'intl' : undefined)) {
-      throw new Error('region_mismatch');
-    }
+  private clientRegion(): 'cn' | 'intl' | undefined {
+    const region = this.config.data?.region;
+    if (region === 'cn') return 'cn';
+    if (region === 'eu' || region === 'intl') return 'intl';
+    return undefined;
+  }
+
+  private async signedIn(): Promise<boolean> {
     if (this.auth.isLoggedIn) return true;
     this.auth.requestLogin('hub-client-login');
     return firstValueFrom(merge(
@@ -48,15 +50,21 @@ export class HubClientLoginService implements OnDestroy {
     this.active = true;
     const expiresAt = Math.min(request.expiresAt ?? Date.now() + 120_000, Date.now() + 120_000);
     const callback = new URL('/auth/desktop', request.redirect_uri);
-    const authorizationCallback = new URL(request.authorization_redirect_uri ?? request.redirect_uri);
     callback.searchParams.set('state', request.state);
     try {
-      if (!await this.signedIn(request.region) || this.destroyed) throw new Error('cancelled');
+      await this.auth.initializeAuth();
+      if (this.destroyed) throw new Error('cancelled');
+      const region = this.clientRegion();
+      if (request.region && request.region !== region) throw new Error('region_mismatch');
+      if (!region) throw new Error('authorization_failed');
+      const authorizationCallback = new URL((region === 'intl' ? request.authorization_redirect_uri_intl : undefined)
+        ?? request.authorization_redirect_uri ?? request.redirect_uri);
+      if (!await this.signedIn() || this.destroyed) throw new Error('cancelled');
       const generation = this.auth.getAuthCredentialGeneration(), account = this.auth.currentUser?.id;
       const api = getServerUrl().replace(/\/+$/, ''), token = await this.auth.getToken2();
       const current = () => !this.destroyed && Date.now() < expiresAt && this.auth.isLoggedIn && !this.auth.isSessionInvalidating
         && account && this.auth.currentUser?.id === account && generation === this.auth.getAuthCredentialGeneration()
-        && api === getServerUrl().replace(/\/+$/, '');
+        && region === this.clientRegion() && api === getServerUrl().replace(/\/+$/, '');
       if (!token || !current()) throw new Error('account_changed');
       const identity = await firstValueFrom(this.http.get<{ status: number; data: { id: string; nickname?: string; email?: string } }>(
         `${api}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${token}` } }).pipe(timeout(12000)));

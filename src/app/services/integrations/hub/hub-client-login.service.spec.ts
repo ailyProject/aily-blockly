@@ -5,6 +5,7 @@ import { HubClientLoginService } from './hub-client-login.service';
 
 describe('Hub browser login with client confirmation', () => {
   let service: HubClientLoginService, listener: (request: any) => void, auth: any, http: any, bridge: any, electron: any, previous: any, theme: any;
+  let config: { data: { region: string } };
   const settle = () => new Promise(resolve => setTimeout(resolve, 0));
   const request = (state = 's'.repeat(43)) => ({ state, code_challenge: 'c'.repeat(43), redirect_uri: 'https://hub.aily.pro/auth/callback', region: 'cn' });
   beforeEach(() => {
@@ -22,7 +23,8 @@ describe('Hub browser login with client confirmation', () => {
         data: { redirect_url: `https://hub.aily.pro/auth/callback?code=code-b&state=${body.state}` } })) };
     electron = { openUrl: jasmine.createSpy() };
     theme = { theme: jasmine.createSpy().and.returnValue('dark'), themeChanged$: new Subject() };
-    service = new HubClientLoginService(auth, http, electron, { run: (fn: any) => fn() } as any, theme, { data: { region: 'cn' } } as any); service.initialize();
+    config = { data: { region: 'cn' } };
+    service = new HubClientLoginService(auth, http, electron, { run: (fn: any) => fn() } as any, theme, config as any); service.initialize();
   });
   afterEach(() => { service.ngOnDestroy(); window.electronAPI = previous; setServerUrl('https://api.aily.pro'); });
 
@@ -140,6 +142,27 @@ describe('Hub browser login with client confirmation', () => {
     expect(new URL(electron.openUrl.calls.mostRecent().args[0]).searchParams.get('error')).toBe('region_mismatch');
     expect(auth.currentUser.id).toBe('b');
   });
+
+  for (const [region, api, redirect] of [
+    ['cn', 'https://api.yiyu.pro', 'https://hub.aily.pro/auth/callback'],
+    ['eu', 'https://api.aily.pro', 'https://projects.aily.pro/auth/callback'],
+  ]) {
+    it('uses the configured ' + region + ' server and its registered callback for a regionless request', async () => {
+      config.data.region = region; setServerUrl(api);
+      bridge.deliver = jasmine.createSpy().and.resolveTo(true);
+      http.post.and.returnValue(of({ status: 200, data: { redirect_url: redirect + '?state=' + request().state + '&code=code-b' } }));
+      listener({ ...request(), region: undefined, authorization_redirect_uri: 'https://hub.aily.pro/auth/callback',
+        authorization_redirect_uri_intl: 'https://projects.aily.pro/auth/callback' });
+      await settle();
+      expect(http.get.calls.mostRecent().args[0]).toBe(api + '/api/v1/auth/me');
+      expect(http.post.calls.mostRecent().args[0]).toBe(api + '/api/v1/auth/hub/authorize');
+      expect(http.post.calls.mostRecent().args[1].redirect_uri).toBe(redirect);
+      const returned = new URL(bridge.deliver.calls.mostRecent().args[1]);
+      expect(returned.searchParams.get('sourceApiUrl')).toBe(api);
+      expect(returned.searchParams.get('code')).toBe('code-b');
+      expect(electron.openUrl).not.toHaveBeenCalled();
+    });
+  }
 
   it('reports a failed authorization service separately from user cancellation', async () => {
     http.post.and.returnValue(throwError(() => new HttpErrorResponse({ status: 404 })));

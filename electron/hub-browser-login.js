@@ -21,12 +21,16 @@ function isHubBrowserLogin(value, product) {
 function parseHubBrowserLogin(value, product, development = false) {
   if (typeof value !== 'string' || value.length > 4096 || !isHubBrowserLogin(value, product)) throw new Error('Invalid Hub login');
   const url = new URL(value), keys = ['state', 'code_challenge', 'redirect_uri'];
-  for (const key of ['region', 'authorization_redirect_uri']) if (url.searchParams.has(key)) keys.push(key);
+  for (const key of ['region', 'authorization_redirect_uri', 'authorization_redirect_uri_intl']) {
+    if (url.searchParams.has(key)) keys.push(key);
+  }
   if (url.searchParams.has('receipt_uri') || url.searchParams.has('receipt_token')) keys.push('receipt_uri', 'receipt_token');
   if (url.username || url.password || url.port || url.hash || [...url.searchParams.keys()].length !== keys.length
     || keys.some(key => url.searchParams.getAll(key).length !== 1)
     || !opaque.test(url.searchParams.get('state')) || !opaque.test(url.searchParams.get('code_challenge'))) throw new Error('Invalid Hub login');
   if (url.searchParams.has('region') && !['cn', 'intl'].includes(url.searchParams.get('region'))) throw new Error('Invalid Hub site');
+  if (url.searchParams.has('authorization_redirect_uri_intl')
+    && (url.searchParams.has('region') || !url.searchParams.has('authorization_redirect_uri'))) throw new Error('Invalid Hub callbacks');
   const validateCallback = value => {
     const callback = new URL(value);
     const production = callback.protocol === 'https:' && !callback.port && ['hub.aily.pro', 'projects.aily.pro'].includes(callback.hostname);
@@ -36,6 +40,7 @@ function parseHubBrowserLogin(value, product, development = false) {
   };
   validateCallback(url.searchParams.get('redirect_uri'));
   if (url.searchParams.has('authorization_redirect_uri')) validateCallback(url.searchParams.get('authorization_redirect_uri'));
+  if (url.searchParams.has('authorization_redirect_uri_intl')) validateCallback(url.searchParams.get('authorization_redirect_uri_intl'));
   if (url.searchParams.has('receipt_uri')) {
     const receipt = new URL(url.searchParams.get('receipt_uri'));
     const callback = new URL(url.searchParams.get('redirect_uri'));
@@ -105,7 +110,8 @@ function owners(product, directory = registryDirectory()) {
 
 async function forwardHubBrowserLogin(value, product, options = {}) {
   const request = parseHubBrowserLogin(value, product, options.development);
-  const candidates = owners(product, options.directory).filter(owner => !request.receipt_uri || owner.protocolVersion >= 2);
+  const version = request.authorization_redirect_uri_intl ? 3 : request.receipt_uri ? 2 : 1;
+  const candidates = owners(product, options.directory).filter(owner => (owner.protocolVersion ?? 1) >= version);
   for (const owner of candidates.slice(0, 8)) {
     const accepted = await new Promise(resolve => {
       const socket = net.createConnection(owner.pipe); let reply = '', settled = false;
@@ -132,7 +138,7 @@ function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresent
   const ownFrame = event => !window.isDestroyed() && event.sender === contents && event.senderFrame === event.sender.mainFrame;
   const activate = () => {
     if (closed) return;
-    try { fs.writeFileSync(filename, JSON.stringify({ product, protocolVersion: 2, pid: process.pid, pipe, focusedAt: Date.now() }), { mode: 0o600 }); } catch {}
+    try { fs.writeFileSync(filename, JSON.stringify({ product, protocolVersion: 3, pid: process.pid, pipe, focusedAt: Date.now() }), { mode: 0o600 }); } catch {}
   };
   const deliver = () => {
     if (!active || !rendererReady || delivering || window.isDestroyed()) return;
@@ -234,4 +240,4 @@ function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresent
 
 module.exports = { isHubBrowserLogin, parseHubBrowserLogin, forwardHubBrowserLogin, createHubBrowserBridge, deliverHubBrowserResult, reportHubBrowserOpened,
   hasHubBrowserOwner: (product, options = {}) => owners(product, options.directory)
-    .some(owner => !options.receipts || owner.protocolVersion >= 2) };
+    .some(owner => (owner.protocolVersion ?? 1) >= (options.splitCallbacks ? 3 : options.receipts ? 2 : 1)) };
