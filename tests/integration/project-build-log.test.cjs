@@ -94,6 +94,17 @@ test('cold observation recovers only the exact compilation source and log, indep
   const otherProject = fixture(t);
   assert.equal((await status('older', otherProject.root)).buildReceipt.state, 'unknown');
 
+  if (process.platform === 'win32') {
+    const realStat = fs.lstatSync;
+    const pathStat = t.mock.method(fs, 'lstatSync', (filename, ...options) => {
+      const actual = realStat(filename, ...options);
+      if (filename === old.buildLog.path) actual.dev = 0;
+      return actual;
+    });
+    try { assert.equal((await status('older')).result.buildLog?.complete, true); }
+    finally { pathStat.mock.restore(); }
+  }
+
   fs.unlinkSync(old.buildLog.path + '.receipt.json');
   const legacy = (await status('older')).result;
   assert.equal(legacy.buildLog.path, old.buildLog.path);

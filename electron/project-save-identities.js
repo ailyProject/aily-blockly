@@ -34,14 +34,21 @@ function createProjectSaveIdentities(appDataPath) {
   function read(file) {
     if (!file) return null;
     let before;
-    try { before = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-    if (!before.isFile() || before.isSymbolicLink() || before.size !== 64) throw unavailable();
+    try { before = fs.lstatSync(file, { bigint: true }); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    if (!before.isFile() || before.isSymbolicLink() || before.size !== 64n) throw unavailable();
     const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
     try {
-      const opened = fs.fstatSync(descriptor);
-      if (opened.ino !== before.ino || opened.dev !== before.dev || opened.size !== before.size) throw unavailable();
+      const opened = fs.fstatSync(descriptor, { bigint: true });
+      // Windows Electron can omit the volume ID on path stats. Keep checking
+      // inode and precise times, and compare the descriptor's real volume on both reads.
+      const matches = (named, handle) => named.isFile() && !named.isSymbolicLink()
+        && (named.dev === handle.dev || (process.platform === 'win32' && named.dev === 0n))
+        && named.ino === handle.ino && named.size === handle.size && named.mtimeNs === handle.mtimeNs && named.ctimeNs === handle.ctimeNs;
+      if (!matches(before, opened)) throw unavailable();
       const bytes = Buffer.alloc(64);
       if (fs.readSync(descriptor, bytes) !== bytes.length) throw unavailable();
+      const after = fs.fstatSync(descriptor, { bigint: true });
+      if (opened.dev !== after.dev || !matches(opened, after) || !matches(fs.lstatSync(file, { bigint: true }), after)) throw unavailable();
       const value = bytes.toString('utf8');
       if (!/^[a-f0-9]{64}$/.test(value)) throw unavailable();
       return value;

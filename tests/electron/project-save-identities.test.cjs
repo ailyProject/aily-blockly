@@ -43,3 +43,24 @@ test('a malformed existing identity fails closed for the original ID', t => {
   const another = id.slice(0, -1) + '2';
   assert.equal(index.inspect(another, other), 'missing');
 });
+
+test('Windows Electron path stats may omit the device without changing the file identity', { skip: process.platform !== 'win32' }, t => {
+  const appData = fixture(t);
+  const index = createProjectSaveIdentities(appData);
+  index.remember(id, original);
+  const hash = createHash('sha256').update(id).digest('hex');
+  const identityFile = path.join(appData, 'settled-save-identities', hash.slice(0, 2), hash.slice(2));
+  const originalStat = fs.lstatSync;
+  let replaced = false;
+  t.mock.method(fs, 'lstatSync', (file, options) => {
+    const stat = originalStat(file, options);
+    if (file === identityFile) {
+      stat.dev = 0n;
+      if (replaced) stat.ino += 1n;
+    }
+    return stat;
+  });
+  assert.equal(index.inspect(id, original), 'matching');
+  replaced = true;
+  assert.throws(() => index.inspect(id, original));
+});

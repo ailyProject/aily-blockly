@@ -417,7 +417,11 @@ function readBuildLogReference(store, project, requestId) {
             || !samePath(fs.realpathSync(physicalPath), physicalPath)) return undefined;
         const fd = fs.openSync(physicalPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
         try {
-            if (state(fs.fstatSync(fd)) !== state(before)) return undefined;
+            const opened = fs.fstatSync(fd);
+            // Some Windows Electron builds omit the device only on path stat.
+            const named = process.platform === 'win32' && before.dev === 0
+                ? { ...before, dev: opened.dev } : before;
+            if (!opened.isFile() || opened.nlink !== 1 || state(opened) !== state(named)) return undefined;
             const prefix = Buffer.alloc(Math.min(before.size, 128 * 1024));
             const count = fs.readSync(fd, prefix, 0, prefix.length, 0);
             const header = /^Build request: ([^\r\n]+)\nProject: ([^\r\n]+)\n\n/.exec(prefix.subarray(0, count).toString('utf8'));
@@ -426,7 +430,7 @@ function readBuildLogReference(store, project, requestId) {
                 return undefined;
             let receipt;
             try { receipt = json(physicalPath + '.receipt.json', 1024); } catch { /* Legacy or incomplete captures have no proof. */ }
-            if (state(fs.fstatSync(fd)) !== state(before) || state(fs.lstatSync(physicalPath)) !== state(before)
+            if (state(fs.fstatSync(fd)) !== state(opened) || state(fs.lstatSync(physicalPath)) !== state(before)
                 || !samePath(fs.realpathSync(physicalPath), physicalPath)) return undefined;
             return { version: 1, requestId, project, path: path.resolve(project, '.log', 'compile', 'requests', filename),
                 complete: receipt?.version === 1 && receipt.requestId === requestId && receipt.size === before.size };
