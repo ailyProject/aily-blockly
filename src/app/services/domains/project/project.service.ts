@@ -151,7 +151,7 @@ interface ProjectOpenOptions {
   /** Recovery-copy navigation preserves the original source recovery view. */
   retainRecovery?: true;
   /** Internal create-only authority. The final activation checks before changing the view. */
-  createActivation?: { signal: AbortSignal; assertCurrent(): void; markActivated(): void };
+  createActivation?: { signal: AbortSignal; assertCurrent(): void; beginHandoff(): void; markActivated(): void };
 }
 
 interface ProjectCreationOptions {
@@ -2270,10 +2270,9 @@ export class ProjectService {
     const isSwitchingProject = !!previousProjectPath
       && !this.isSameProjectPath(previousProjectPath, projectPath);
     const creation = options.createActivation;
-    const checkCreation = async (commit = false) => {
+    const checkCreation = async () => {
       try {
         creation?.assertCurrent();
-        if (commit) creation?.markActivated();
       }
       catch (error) {
         if (isSwitchingProject || !previousProjectPath) await window['projectLock']?.release(projectPath);
@@ -2325,7 +2324,10 @@ export class ProjectService {
           throw error;
         }
       }
-      if (creation) await checkCreation(true);
+      if (creation) {
+        await checkCreation();
+        creation.beginHandoff();
+      }
       if (isSwitchingProject && this.getProjectMode(previousProjectPath) === 'blockly') {
         try {
           await this.stopProjectCommands(previousProjectPath);
@@ -2349,6 +2351,7 @@ export class ProjectService {
         : this.dependencyLifecycle.get(projectPath);
       if (session && (!retained || reload)) onPreparation?.(session);
       const context = this.getCoderProjectContext(projectPath);
+      creation?.markActivated();
       this.currentProjectPath = projectPath;
       this.publishCoderProjectContext(context);
       void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
@@ -2366,6 +2369,19 @@ export class ProjectService {
       return this.router.navigate(['/main/code-editor-pro'], { queryParams: { path: projectPath }, replaceUrl: true });
     }
 
+    const originalOpen = this.projectOpenTask;
+    let ownsNewTargetLock = false;
+    const releasePreparedTargetLock = async () => {
+      if (!ownsNewTargetLock) return;
+      ownsNewTargetLock = false;
+      // A stopped task can outlive its renderer lease. A newer open of the
+      // same target now owns the shared native view lock.
+      if (this.isSameProjectPath(projectPath, this.currentProjectPath)
+        || this.projectOpenTask && this.projectOpenTask !== originalOpen
+          && this.isSameProjectPath(projectPath, this.projectOpenTask.path)) return;
+      try { await window['projectLock']?.release(projectPath); }
+      catch (error) { console.warn('project-lock release after create preparation:', error); }
+    };
     if (this.electronService.isElectron && window['projectLock']) {
       let r = await window['projectLock'].tryAcquire(projectPath);
       if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
@@ -2388,12 +2404,45 @@ export class ProjectService {
         this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
         return false;
       }
-      if (creation) await checkCreation();
+      if (creation) {
+        ownsNewTargetLock = !r.alreadyHeld;
+        try { creation.assertCurrent(); }
+        catch (error) { await releasePreparedTargetLock(); throw error; }
+      }
     }
 
-    // Prior to this boundary only the new target has been locked. Cancellation
-    // can release view admission immediately; later work may change the source.
-    if (creation) await checkCreation(true);
+    const beginPreparation = () => {
+      const session = this.rememberDependencyBackend(this.dependencyLifecycle.beginPreparation(projectPath));
+      onPreparation?.(session);
+      return session;
+    };
+    let preparedSession: ProjectDependencySession | undefined;
+    if (creation) {
+      // The target's environment may wait on a native queue. Complete this
+      // cancellable work before touching the previously active project.
+      const session = beginPreparation();
+      const check = () => { creation.assertCurrent(); this.assertProjectDependencySession(session); };
+      const abort = () => {
+        this.dependencyLifecycle.release(session);
+        void releasePreparedTargetLock();
+      };
+      creation.signal.addEventListener('abort', abort, { once: true });
+      try {
+        check();
+        await this.application.settleEnvironmentBeforeOpen?.(projectPath, check);
+        check();
+        preparedSession = session;
+        // Source teardown must keep ownership until it settles; a pending
+        // handoff does not attest that the target canvas was activated.
+        if (previousProjectPath || this.router.url.startsWith('/main/blockly-editor')) creation.beginHandoff();
+      } catch (error) {
+        this.dependencyLifecycle.release(session);
+        await releasePreparedTargetLock();
+        throw error;
+      } finally {
+        creation.signal.removeEventListener('abort', abort);
+      }
+    }
     if (isSwitchingProject && !(await this.application.closeConnectionGraphWindows())) {
       if (this.electronService.isElectron && window['projectLock']
         && !this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
@@ -2406,7 +2455,7 @@ export class ProjectService {
       this.warnConnectionGraphWindowCloseFailure();
       return false;
     }
-    if (creation) await checkCreation();
+    if (creation && previousProjectPath) await checkCreation();
 
     if (recovery) {
       const libraries = await window['libraryDependencies']?.status(projectPath);
@@ -2454,22 +2503,22 @@ export class ProjectService {
       }
     }
 
-    const session = this.rememberDependencyBackend(this.dependencyLifecycle.beginPreparation(projectPath));
-    onPreparation?.(session);
-    if (this.getProjectMode(projectPath) === 'blockly') {
+    const session = preparedSession ?? beginPreparation();
+    if (!preparedSession && this.getProjectMode(projectPath) === 'blockly') {
       await this.application.settleEnvironmentBeforeOpen?.(projectPath, () => this.assertProjectDependencySession(session));
       this.assertProjectDependencySession(session);
     }
-    this.beginBlocklyProjectLoad(projectPath);
+    if (!creation) this.beginBlocklyProjectLoad(projectPath);
 
     const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
-    if (abiIsExist && window['projectLock']?.recordActive) {
+    const recordNavigation = async () => {
       try {
         const navigation = await window['projectLock'].recordActive(projectPath);
         if (navigation?.ok !== true) console.warn('Project crash navigation could not be recorded:', navigation);
       } catch (error) { console.warn('Project crash navigation could not be recorded:', error); }
       this.assertProjectDependencySession(session);
-    }
+    };
+    if (!creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
     const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
     if (blocklyRouteIsBeingReused) {
       // Angular reuses the component when only query params change. Take an
@@ -2480,6 +2529,15 @@ export class ProjectService {
     }
 
     // 更新当前项目路径和包数据
+    if (creation) {
+      try { creation.assertCurrent(); creation.markActivated(); }
+      catch (error) {
+        this.dependencyLifecycle.release(session);
+        await releasePreparedTargetLock();
+        throw error;
+      }
+      this.beginBlocklyProjectLoad(projectPath);
+    }
     this.currentProjectPath = projectPath;
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
     this.projectActivationSubject.next({
@@ -2488,6 +2546,7 @@ export class ProjectService {
       reason: activationReason,
       sessionResource: options.sessionResource ?? null,
     });
+    if (creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
 
     if (activationReason === 'reload' || activationReason === 'chat-tool-reload') {
       // Angular ignores navigation to the exact same route and query params. Move off the

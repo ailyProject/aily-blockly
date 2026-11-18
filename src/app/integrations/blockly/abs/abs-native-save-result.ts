@@ -4,6 +4,22 @@ import { absJson, hashAbsText } from './abs-identity-map';
 import { absProjectionReceipt } from './abs-projection-receipt';
 import { readProjectSaveInput } from '../../../services/shared/project-save-input';
 import type { NativeSaveIdentity, NativeSaveObservation, NativeSaveResultFacts, NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
+import { originalAdmissionOutcome, type OriginalRequestAdmissions } from './original-request-admission';
+
+export function nativeSaveAdmissionResponse(
+  record: NonNullable<Awaited<ReturnType<OriginalRequestAdmissions['observe']>>>,
+  request: ProjectSaveRequest, observer: AbsStorageExecutor | undefined, originalTargetPid?: number,
+): ProjectSaveReceiptResponse {
+  const project = record.project, { requestId, operation, input } = request;
+  const receipt = { version: 2 as const, requestId, project, operation, ...(input ? { input } : {}) };
+  if (originalTargetPid !== undefined && record.executor.hostPid !== originalTargetPid) return {
+    ok: true, operation: 'project_save_status', saveReceipt: { ...receipt, state: 'unknown' }, code: 'PROJECT_SAVE_EXECUTOR_MISMATCH',
+  };
+  return { ok: true, operation: 'project_save_status', saveReceipt: { ...receipt, state: 'completed' },
+    result: { ...originalAdmissionOutcome(record), projectSaved: false, generatedCodePublished: false, partial: false },
+    publicationObservation: { version: 1, durable: true, requestId, operation, operationId: record.operationId,
+      attachment: record.attachment, executor: record.executor, observer: { hostPid: observer?.hostPid ?? null }, current: false } };
+}
 
 /** The input digest describes the original command, never a later GUI capture. */
 export async function nativeSaveIdentity(project: string, request: ProjectSaveRequest): Promise<NativeSaveIdentity> {

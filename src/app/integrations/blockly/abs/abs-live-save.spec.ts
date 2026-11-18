@@ -2,27 +2,39 @@ import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 import { BlocklyEditorAutomationAdapter } from '../blockly-editor-automation.adapter';
 import { ProjectApplicationAdapter } from '../../project/project-application.adapter';
+import { AbsApplicationJournal } from './abs-application-journal';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 
 describe('ABS save with deferred generated code', () => {
-  let previousLibraries: any;
-  beforeEach(() => { previousLibraries = window['libraryDependencies']; });
-  afterEach(() => { window['libraryDependencies'] = previousLibraries; });
+  let previousLibraries: any, previousFs: any;
+  beforeEach(() => {
+    previousLibraries = window['libraryDependencies']; previousFs = window['fs'];
+    window['fs'] = { projectProgramPublicationVersion: 1, nativeSaveReceiptVersion: 2,
+      projectSyncStorageVersion: 2, openProjectSyncStorage: async () => { throw new Error('Unexpected native storage read'); } };
+  });
+  afterEach(() => { window['libraryDependencies'] = previousLibraries; window['fs'] = previousFs; });
   for (const dependencyFailure of [false, true]) it(`retains committed facts and separates dependency failure=${dependencyFailure}`, async () => {
     let save!: (path: string) => Promise<any>;
     const project = { currentProjectPath: '/isolated', setAbsSaveHandler: handler => { save = handler; } };
     const service = new AbsWorkspaceSyncService({} as any, project as any);
-    const exportGeneration = spyOn(service, 'exportGeneration').and.resolveTo({
-      publication: { status: 'COMMITTED' }, requiresReload: false, warnings: ['busy'],
-      derivedOutputs: { published: false, code: 'BUILD_WORKSPACE_BUSY', error: 'active build' },
-    } as any);
+    const source = { publication: { status: 'COMMITTED', generation: 'original', abiSaved: true,
+      absMirrored: true, mapPublished: true }, requiresReload: false, warnings: ['busy'],
+      evidence: { binding: { generation: 'original' } },
+      derivedOutputs: { published: false, code: 'BUILD_WORKSPACE_BUSY', error: 'active build' } };
+    // The v2 publisher seals source under its lease, then settles effects.
+    const ref = { operationId: 'original' };
+    spyOn(service as any, 'run').and.resolveTo({ ref, outcome: source, project: '/isolated', port: {},
+      identity: { operation: 'project_save', requestId: 'pub2-original' } });
+    const complete = spyOn(AbsApplicationJournal.prototype, 'completeNativeSave').and.resolveTo();
     window['libraryDependencies'] = { save: jasmine.createSpy('libraries').and.callFake(async () => {
       if (dependencyFailure) throw new Error('dependency save failed');
     }) };
     expect(await save('/isolated')).toEqual(jasmine.objectContaining({ projectSaved: true,
       generatedCodePublished: false, partial: true,
       code: dependencyFailure ? 'PROJECT_DEPENDENCY_SAVE_FAILED' : 'BUILD_WORKSPACE_BUSY' }));
-    expect(exportGeneration).toHaveBeenCalledOnceWith({ save: true });
+    expect(complete).toHaveBeenCalledOnceWith(ref as any, jasmine.objectContaining({
+      projectSaved: true, publication: source.publication, dependencyState: { saved: !dependencyFailure },
+    }), jasmine.any(Function) as any);
   });
 });
 

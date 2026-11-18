@@ -5,6 +5,7 @@ import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
 import { assertNativeSaveIdentity, nativeSaveCapability, nativeSaveIndexKey, nativeSaveError, readNativeSaveRequest,
   type NativeSaveIdentity, type NativeSaveOperationRef } from './abs-native-save-protocol';
+import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
 export type { NativeSaveIdentity, NativeSaveOperationRef } from './abs-native-save-protocol';
 
 export interface AbsOperationSnapshot {
@@ -101,6 +102,9 @@ export class AbsOperationJournal {
     const context = nativeSaveCapability(this.port);
     return this.port.withLock(async storage => {
       assertCurrent();
+      const admission = nativeSaveAdmissionIdentity(input.request);
+      if (admission && await new OriginalRequestAdmissions(this.port, this.project).observe(admission, storage))
+        throw nativeSaveError('The original native request was rejected before starting.', 'ABS_NATIVE_SAVE_REQUEST_ALREADY_RECORDED');
       const found = await readNativeSaveRequest({ ...context, read: key => storage.read(key) }, this.project, input.request);
       if (found) return { created: false, ref: found.ref };
       const previous = await storage.read(currentKey);
@@ -129,6 +133,9 @@ export class AbsOperationJournal {
     const id = crypto.randomUUID();
     return this.port.withLock(async storage => {
       assertCurrent();
+      if (input.application && await new OriginalRequestAdmissions(this.port, this.project)
+        .observe({ operation: 'abs_apply', requestId: input.application.requestId }, storage))
+        throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED', 'The original apply request was rejected before starting.');
       const previous = await storage.read(currentKey);
       if (previous !== null && this.pointer(previous).state === 'pending') throw conflict();
       const disk = await this.disk(storage);
@@ -140,7 +147,7 @@ export class AbsOperationJournal {
       assertCurrent();
       if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
       if (record.application) {
-        const key = `recoveries/request-${(await hashAbsText(record.application.requestId)).slice(7)}.json`;
+        const key = await applicationRequestKey(record.application.requestId);
         if (!await storage.replace(key, null, absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,
           requestId: record.application.requestId }))) throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED',
             'This exact apply request is retained. Observe its result; it cannot apply the candidate twice.');
@@ -173,7 +180,7 @@ export class AbsOperationJournal {
     const observer = nativeSaveCapability(this.port);
     return this.port.withLock<AbsCurrentDocumentRecovery | null>(async storage => {
       assertCurrent();
-      const indexKey = `recoveries/request-${(await hashAbsText(requestId)).slice(7)}.json`;
+      const indexKey = await applicationRequestKey(requestId);
       const indexText = await storage.read(indexKey);
       if (indexText === null) return null;
       const index = JSON.parse(indexText);

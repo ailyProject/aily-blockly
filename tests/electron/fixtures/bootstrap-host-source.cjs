@@ -99,8 +99,8 @@ function bridgeFixture(sourceProject = '', generation = 7) {
   const Domain = sourceClass(
     'src/app/services/domains/project/project.service.ts',
     'ProjectService',
-    { normalizeProjectOpenPath: (value) => value },
-    ['withProjectLifecycleAdmission', 'acquireProjectLifecycle', 'projectOpen'],
+    { window, normalizeProjectOpenPath: (value) => value },
+    ['withProjectLifecycleAdmission', 'acquireProjectLifecycle', 'projectOpen', 'projectOpenInternal'],
   );
   const domain = new Domain();
   domain.currentProjectPath = sourceProject;
