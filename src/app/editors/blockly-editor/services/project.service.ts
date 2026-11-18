@@ -235,6 +235,19 @@ export class _ProjectService {
     } catch { return undefined; }
   }
 
+  /** Pair the prepared source with the acknowledged hydrated save. Native capture verifies the saved bytes independently. */
+  async compareSavedBuildDocument(project: string, documentText: string) {
+    try {
+      const context = this.captureSaveContext(project);
+      context.assertCurrent();
+      const comparison = this.cleanState.compareBuildDocument(this.cleanScope(), documentText);
+      if (!comparison) return undefined;
+      const savedAbiHash = `sha256:${await sha256Hex(comparison.abiText)}`;
+      context.assertCurrent();
+      return { savedAbiHash, savedMatch: comparison.savedMatch };
+    } catch { return undefined; }
+  }
+
   /** A crash-recovered pre-operation view may contain unsaved edits. Verify
    * every page without acknowledging those edits as a saved checkpoint. */
   async rememberRecoveredProject(path: string, diskText: string, source: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease): Promise<void> {

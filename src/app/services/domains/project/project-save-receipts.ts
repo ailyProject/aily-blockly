@@ -35,6 +35,10 @@ export interface ProjectSaveReceiptResponse {
 export type ProjectSaveDurableLookup = (
   project: string, request: ProjectSaveRequest,
 ) => Promise<ProjectSaveReceiptResponse | null>;
+interface SettledSaveIdentities {
+  inspect(requestId: string, binding: string): 'missing' | 'matching' | 'different';
+  remember(requestId: string, binding: string): void;
+}
 interface SaveEntry {
   project: string;
   operation: ProjectSaveOperation;
@@ -42,6 +46,7 @@ interface SaveEntry {
   context: readonly unknown[];
   state: 'queued' | 'running' | 'completed';
   completion: Promise<void>;
+  nativeSettlement?: Promise<ProjectSaveReceiptResponse | null>;
   waiters: Set<() => void>;
   completedAt?: number;
   result?: Record<string, any>;
@@ -75,9 +80,8 @@ export function readProjectSaveRequest(value: unknown): ProjectSaveRequest {
     ...(input ? { input } : {}) };
 }
 
-/** A renderer owns a save task; callers own only observations. Expired results
- * retain consumed identities, so pruning can never turn a late ID into a write.
- * A new renderer has no proof of old work and reports unknown, not success. */
+/** A renderer owns a save task; callers own only observations. Consumed IDs
+ * remain fenced as in-memory tombstones or verified native identity records. */
 export class ProjectSaveReceipts {
   private readonly entries = new Map<string, SaveEntry>();
   private readonly expired = new Map<string, SaveIdentity>();
@@ -87,15 +91,18 @@ export class ProjectSaveReceipts {
   private readonly identityLimit: number;
   private readonly durableLookup?: ProjectSaveDurableLookup;
   private readonly durableOnly: boolean | ((project: string) => boolean);
+  private readonly settledIdentities?: SettledSaveIdentities;
 
   constructor(options: { now?: () => number; retentionMs?: number; completedLimit?: number; identityLimit?: number;
-    durableLookup?: ProjectSaveDurableLookup; durableOnly?: boolean | ((project: string) => boolean) } = {}) {
+    durableLookup?: ProjectSaveDurableLookup; durableOnly?: boolean | ((project: string) => boolean);
+    settledIdentities?: SettledSaveIdentities } = {}) {
     this.now = options.now ?? Date.now;
     this.retentionMs = options.retentionMs ?? 10 * 60_000;
     this.completedLimit = options.completedLimit ?? 32;
     this.identityLimit = options.identityLimit ?? 8192;
     this.durableLookup = options.durableLookup;
     this.durableOnly = typeof options.durableOnly === 'function' ? options.durableOnly : options.durableOnly === true;
+    this.settledIdentities = options.settledIdentities;
   }
 
   async start(project: string, input: ProjectSaveRequest, context: readonly unknown[], run: () => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
@@ -115,7 +122,7 @@ export class ProjectSaveReceipts {
     if (original) return original;
     const entry = this.admit(project, request, context, run);
     await entry.completion;
-    if (request.version === 2) return await this.durable(project, request)
+    if (request.version === 2) return await (entry.nativeSettlement ?? this.durable(project, request))
       ?? this.response(request.operation, project, request, entry);
     return this.response(request.operation, project, request, entry);
   }
@@ -169,6 +176,37 @@ export class ProjectSaveReceipts {
     return response;
   }
 
+  private saveBinding(project: string, request: ProjectSaveRequest): string {
+    return JSON.stringify([projectKey(project), request.operation, request.input ?? null]);
+  }
+
+  private isSettled(project: string, request: ProjectSaveRequest): boolean {
+    if (request.version !== 2 || !this.settledIdentities) return false;
+    let retained: ReturnType<SettledSaveIdentities['inspect']>;
+    try { retained = this.settledIdentities.inspect(request.requestId, this.saveBinding(project, request)); }
+    catch { throw fail('PROJECT_SAVE_IDENTITY_UNAVAILABLE', 'The host could not verify whether this save ID was already consumed.'); }
+    if (retained === 'different') throw fail('PROJECT_SAVE_RECEIPT_CONFLICT', 'This save ID belongs to another project or operation.');
+    if (retained !== 'missing' && retained !== 'matching')
+      throw fail('PROJECT_SAVE_IDENTITY_UNAVAILABLE', 'The host returned an invalid settled save identity.');
+    return retained === 'matching';
+  }
+
+  private async settleNativeIdentity(project: string, request: ProjectSaveRequest, entry: SaveEntry): Promise<ProjectSaveReceiptResponse | null> {
+    const response = await this.durable(project, request);
+    const proof = response?.publicationObservation;
+    const attachment = proof?.attachment;
+    if (response?.saveReceipt.state === 'completed' && response.result && proof?.version === 1 && proof.durable === true
+      && proof.requestId === request.requestId && proof.operation === request.operation && /^[a-f0-9-]{36}$/.test(proof.operationId)
+      && attachment?.version === 1 && projectKey(attachment.root) === projectKey(project)
+      && [attachment.identity?.dev, attachment.identity?.ino, attachment.identity?.birthtimeNs].every(value => /^\d+$/.test(value ?? ''))) {
+      try { this.settledIdentities!.remember(request.requestId, this.saveBinding(project, request)); }
+      catch { return response; } // Keep the volatile fence when the private index cannot be written.
+      if (this.entries.get(request.requestId) === entry) this.entries.delete(request.requestId);
+      this.expired.delete(request.requestId);
+    }
+    return response;
+  }
+
   private admit(project: string, request: ProjectSaveRequest, context: readonly unknown[], run: () => Promise<Record<string, any>>): SaveEntry {
     this.prune();
     const existing = this.find(project, request);
@@ -177,7 +215,7 @@ export class ProjectSaveReceipts {
         throw fail('PROJECT_SAVE_RECEIPT_CONTEXT_STALE', 'This save ID belongs to an earlier project session. Observe its original receipt; do not submit it again.');
       return existing;
     }
-    if (this.expired.has(request.requestId))
+    if (this.expired.has(request.requestId) || this.isSettled(project, request))
       throw fail('PROJECT_SAVE_RECEIPT_EXPIRED', 'This original save result expired. Its consumed ID cannot start another save.');
     if (this.entries.size + this.expired.size >= this.identityLimit)
       throw fail('PROJECT_SAVE_RECEIPT_CAPACITY', 'Save receipt admission reached its finite host limit. Existing requests remain observable; no new save was started.');
@@ -197,6 +235,11 @@ export class ProjectSaveReceipts {
             generatedCodePublished: facts.generatedCodePublished === true, partial: facts.partial === true } : {}) };
       }
       entry.state = 'completed'; entry.completedAt = this.now();
+      if (request.version === 2 && this.settledIdentities) {
+        entry.nativeSettlement = this.settleNativeIdentity(project, request, entry);
+        // A disconnected observer may never await its original settlement.
+        void entry.nativeSettlement.catch(() => undefined);
+      }
       finish(); for (const waiter of [...entry.waiters]) waiter();
       this.prune();
     });
@@ -217,7 +260,7 @@ export class ProjectSaveReceipts {
     if (entry) await this.wait(entry, request.waitMs);
     if (entry && entry.state !== 'completed') return this.response(operation, project, request, entry);
     if (request.version === 2) {
-      const original = await this.durable(project, request);
+      const original = await (entry?.nativeSettlement ?? this.durable(project, request));
       if (original) return original;
     }
     return this.response(operation, project, request, entry);
@@ -243,7 +286,8 @@ export class ProjectSaveReceipts {
       project: entry?.project ?? project, operation: request.operation, state: entry?.state ?? 'unknown',
       ...(request.input ? { input: clone(request.input) } : {}) },
       ...(entry?.state === 'completed' ? { result: clone(entry.result) }
-        : !entry ? { code: this.expired.has(request.requestId) ? 'PROJECT_SAVE_RECEIPT_EXPIRED' : 'PROJECT_SAVE_RECEIPT_UNKNOWN' } : {}) };
+        : !entry ? { code: this.expired.has(request.requestId) || this.isSettled(project, request)
+          ? 'PROJECT_SAVE_RECEIPT_EXPIRED' : 'PROJECT_SAVE_RECEIPT_UNKNOWN' } : {}) };
   }
 
   private prune(): void {

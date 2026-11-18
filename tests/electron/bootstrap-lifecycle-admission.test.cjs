@@ -145,7 +145,7 @@ test('idle create prepares once and activates directly with the same admitted ow
   });
   let prepared = 0,
     opened = 0;
-  f.domain.projectNew = async (_data, options) => {
+  f.domain.projectNewWithResult = async (_data, options) => {
     prepared++;
     assert.equal(
       options.deferActivation,
@@ -153,7 +153,7 @@ test('idle create prepares once and activates directly with the same admitted ow
       'creation must not IPC-serialize or replace the original lease owner',
     );
     assert.equal(f.domain.projectLifecycle.hasActive('/projects/weather'), true);
-    return true;
+    return { ok: true, projectPath: path.join('/projects', 'weather') };
   };
   const projectOpen = f.domain.projectOpen.bind(f.domain);
   f.domain.projectOpen = async (target, options) => {
@@ -241,9 +241,9 @@ for (const failure of ['false', 'throw']) {
     });
     let creations = 0,
       activations = 0;
-    f.domain.projectNew = async () => {
+    f.domain.projectNewWithResult = async () => {
       creations++;
-      return true;
+      return { ok: true, projectPath: path.join('/projects', 'retained') };
     };
     f.domain.projectOpen = async () => {
       activations++;
@@ -280,3 +280,162 @@ for (const failure of ['false', 'throw']) {
     assert.equal(f.domain.projectLifecycle.owners.size, 0);
   });
 }
+
+test('expired original creation releases pre-activation ownership and cannot take over after the next request', async () => {
+  const { randomUUID } = require('node:crypto');
+  const f = bridgeFixture();
+  f.bridge.executeProjectCreate = f.originalMethods.executeProjectCreate;
+  f.bridge.normalizeAilyBoardPackageName = (value) => value;
+  f.bridge.configService.getPreferredChatAgentRuntimeMode = () => 'blockly';
+  f.domain.createDefaultNewProjectData = async (_board, requested) => ({ path: '/projects', name: requested.name, board: {} });
+  const copied = [], activated = [];
+  let notifyCopy, continueCopy;
+  const firstCopied = new Promise(resolve => { notifyCopy = resolve; });
+  const preparation = new Promise(resolve => { continueCopy = resolve; });
+  f.domain.projectNewWithResult = async (data, options) => {
+    const target = path.join(data.path, data.name);
+    options.createAuthority.assertCurrent();
+    copied.push(target);
+    options.createAuthority.markCreated(target);
+    return { ok: true, projectPath: target };
+  };
+  f.domain.projectOpenInternal = async (target, options) => {
+    if (target.endsWith('first')) { notifyCopy(); await preparation; }
+    options.createActivation.assertCurrent();
+    options.createActivation.markActivated();
+    f.domain.currentProjectPath = target;
+    activated.push(target);
+    return true;
+  };
+  const request = (deadlineAt) => ({ version: 1, requestId: randomUUID(), rendererGeneration: 7, deadlineAt });
+  function call(operation, createRequest, target) {
+    return f.bridge.executeOperation({ operation, rendererGeneration: 7, lifecycle: snapshot(), params: {
+      createRequest, ...(target ? { name: target, boardName: '@aily-project/board-test' } : {})
+    } });
+  }
+  const old = request(Date.now() + 45);
+  const first = call('project_create', old, 'first');
+  await firstCopied;
+  assert.ok(f.domain.projectLifecycle.owners.size > 0);
+  assert.equal((await first).createReceipt.state, 'cancelled');
+  assert.equal(f.domain.projectLifecycle.owners.size, 0);
+  const next = request(Date.now() + 10_000);
+  const second = await call('project_create', next, 'second');
+  assert.equal(second.createReceipt.state, 'completed');
+  continueCopy();
+  await new Promise(resolve => setImmediate(resolve));
+  const prior = await call('project_create_status', old);
+  assert.equal(prior.createReceipt.createdProject, copied[0]);
+  assert.equal(prior.activationCurrent, false);
+  const observation = await call('project_create_cancel', next);
+  assert.equal(observation.activationCurrent, true);
+  assert.equal(observation.projectType, 'blockly');
+  assert.equal((await call('project_create', next, 'altered')).code, 'PROJECT_CREATE_REQUEST_REUSED');
+  assert.deepEqual(activated, [copied[1]]);
+  assert.equal(f.domain.projectLifecycle.owners.size, 0);
+});
+
+for (const source of ['', '/active']) test(`stopping a create during linked environment preparation releases admission (source=${source || 'empty'})`, async () => {
+  const { randomUUID } = require('node:crypto');
+  const f = bridgeFixture(source);
+  const originalProject = path.join('/projects', 'first'), nextProject = path.join('/projects', 'second');
+  const saved = new Set(), locked = new Set(source ? [source] : []);
+  const touchedSource = [], activated = [], recordedNavigation = [], lateWrites = [];
+  let enteredPreparation, finishPreparation, originalFinished;
+  const entered = new Promise(resolve => { enteredPreparation = resolve; });
+  const stalled = new Promise(resolve => { finishPreparation = resolve; });
+  const unwound = new Promise(resolve => { originalFinished = resolve; });
+  const sessions = new Map();
+  Object.assign(f.domain.dependencyLifecycle, {
+    beginPreparation(project) {
+      const session = { projectPath: project, signal: new AbortController().signal };
+      sessions.set(project, session);
+      return session;
+    },
+    release(session) { if (sessions.get(session.projectPath) === session) sessions.delete(session.projectPath); },
+    finishPreparation() {},
+  });
+  f.window.projectLock = {
+    tryAcquire: async project => {
+      const alreadyHeld = locked.has(project);
+      locked.add(project);
+      return { ok: true, alreadyHeld };
+    },
+    release: async project => { locked.delete(project); return { ok: true }; },
+    recordActive: async project => { recordedNavigation.push(project); return { ok: true }; },
+  };
+  Object.assign(f.domain, {
+    electronService: { isElectron: true, exists: project => saved.has(project) },
+    ensureProjectModeAllowed: async () => true,
+    application: {
+      hasActiveProjectMutation: () => false,
+      closeConnectionGraphWindows: async () => { touchedSource.push('close-graph'); return true; },
+      async settleEnvironmentBeforeOpen(project, assertCurrent) {
+        if (project === originalProject) {
+          enteredPreparation();
+          await stalled;
+          assertCurrent();
+          lateWrites.push(project);
+        }
+      },
+    },
+    beginBlocklyProjectLoad() {},
+    projectActivationSubject: { next: activation => { activated.push(activation.path); } },
+    router: { url: source ? '/main/blockly-editor' : '/main/guide', navigate: async () => true },
+    rememberDependencyBackend: session => session,
+    assertProjectDependencySession: session => assert.equal(sessions.get(session.projectPath), session),
+    stopProjectCommands: async project => { touchedSource.push(project); },
+    discardDepartingBlocklyProject: async () => { touchedSource.push('retire'); return true; },
+    waitForProjectOpenCompletion: async () => undefined,
+    createDefaultNewProjectData: async (_board, requested) => ({ path: '/projects', name: requested.name }),
+    projectNewWithResult: async (data, options) => {
+      const project = path.join(data.path, data.name);
+      assert.ok(!saved.has(project), 'a replay would create files twice');
+      saved.add(project);
+      options.createAuthority.markCreated(project);
+      return { ok: true, projectPath: project };
+    },
+  });
+  f.bridge.configService.getPreferredChatAgentRuntimeMode = () => 'blockly';
+  f.bridge.normalizeAilyBoardPackageName = value => value;
+  f.bridge.executeProjectCreate = async (...args) => {
+    try { return await f.originalMethods.executeProjectCreate.apply(f.bridge, args); }
+    finally { if (args[0].name === 'first') originalFinished(); }
+  };
+  const request = () => ({ version: 1, requestId: randomUUID(), rendererGeneration: 7, deadlineAt: Date.now() + 10_000 });
+  const call = (operation, createRequest, name) => f.bridge.executeOperation({
+    operation, rendererGeneration: 7, lifecycle: snapshot(source || null),
+    params: { createRequest, ...(name ? { name, boardName: '@aily-project/board-test' } : {}) },
+  });
+  const old = request();
+  const first = call('project_create', old, 'first');
+  await Promise.race([entered, first.then(result => assert.fail(JSON.stringify(result)))]);
+  assert.equal(f.domain.currentProjectPath, source);
+  assert.deepEqual(touchedSource, []);
+  assert.equal(locked.has(originalProject), true);
+  const stopped = await call('project_create_cancel', old);
+  assert.equal(stopped.createReceipt.state, 'cancelled');
+  assert.equal(stopped.createReceipt.createdProject, originalProject);
+  assert.equal(stopped.createReceipt.activationCommitted, false);
+  assert.equal(stopped.activationCurrent, false);
+  assert.equal((await first).createReceipt.state, 'cancelled');
+  assert.equal(f.domain.projectLifecycle.owners.size, 0);
+  assert.equal(locked.has(originalProject), false);
+  assert.equal(sessions.has(originalProject), false);
+  assert.equal(f.domain.currentProjectPath, source);
+  assert.deepEqual(touchedSource, []);
+
+  const second = await call('project_create', request(), 'second');
+  assert.equal(second.createReceipt.state, 'completed');
+  assert.equal(second.createReceipt.activationCommitted, true);
+  finishPreparation();
+  await unwound;
+  assert.equal((await call('project_create_status', old)).createReceipt.state, 'cancelled');
+  assert.deepEqual([...saved], [originalProject, nextProject]);
+  assert.deepEqual(lateWrites, []);
+  assert.deepEqual(activated, [nextProject]);
+  assert.deepEqual(recordedNavigation, [nextProject]);
+  assert.deepEqual(touchedSource, source ? ['close-graph', source, 'retire'] : []);
+  assert.equal(f.domain.currentProjectPath, nextProject);
+  assert.equal(f.domain.projectLifecycle.owners.size, 0);
+});

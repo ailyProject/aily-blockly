@@ -2,7 +2,13 @@ import { BlocklyLiveOperationBridgeService } from '@integration/automation/publi
 import { absProtocolReply } from './abs-live-protocol';
 
 describe('static original-project protocol discovery', () => {
+  let oldFs: unknown;
+  beforeEach(() => { oldFs = window['fs']; });
+  afterEach(() => { window['fs'] = oldFs; });
   function fixture(mode = 'blockly') {
+    window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async () => ({
+      read: async () => null, withLock: async () => { throw new Error('Protocol negotiation cannot write.'); },
+    }) };
     const service: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     service.projectService = { currentProjectPath: '/original', getProjectMode: () => mode,
       isProjectTransitionInProgress: jasmine.createSpy('transition').and.throwError('No lifecycle ownership'),
@@ -16,7 +22,8 @@ describe('static original-project protocol discovery', () => {
     const service = fixture();
     const result = await service.execute({ operation: 'abs_protocol', path: '/original', params: { version: 1 } });
     expect(result).toEqual({ ok: true, operation: 'abs_protocol', project: '/original', protocol: {
-      version: 1, generation: 2, absSchema: 2, legacyAbiWrites: false, workingCandidateVersion: 1 } });
+      version: 1, generation: 2, absSchema: 2, legacyAbiWrites: false, workingCandidateVersion: 1,
+      workspaceMode: 'overlay-v1', supportedWorkspaceModes: ['overlay-v1', 'project-v1'] } });
     expect(service.projectService.getBlocklyProjectLoadStatus).not.toHaveBeenCalled();
     expect(service.projectService.isProjectTransitionInProgress).not.toHaveBeenCalled();
     expect(service.projectService.isLibraryMutationInProgress).not.toHaveBeenCalled();

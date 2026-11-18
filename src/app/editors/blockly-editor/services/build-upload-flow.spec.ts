@@ -26,6 +26,7 @@ describe('Blockly compile and upload handoff', () => {
     const prepared = { code: 'compiled code', artifacts: [], projectMacros: [] };
     const project: any = { beginBuildBackendOperation: () => ({ local: false, release() {} }), isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', getBoardModule: async () => '@aily-project/board-test',
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'build-upload-opening' }),
       isAilyCodeProject: () => false, getBoardJson: async () => ({}), getBuildPath: async () => '/project/.build' };
     const workflow: any = { currentState: ProcessState.IDLE,
       // Stop at the device boundary; these tests never flash hardware.
@@ -269,7 +270,9 @@ describe('Blockly compile and upload handoff', () => {
     ]);
     window['fs'] = { readFileSync: (file: string) => files.get(file),
       existsSync: (file: string) => files.has(file), mkdirSync() {},
+      lstatSync: () => ({ _isSymbolicLink: false }),
       writeFileSync: (file: string, content: string) => files.set(file, content),
+      appendFileSync: (file: string, content: string) => files.set(file, files.get(file)! + content),
       renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
       replaceProjectText: async (request: any, check: () => void) => {
         check(); const file = `${request.projectPath}/${request.fileName}`;
@@ -297,7 +300,8 @@ describe('Blockly compile and upload handoff', () => {
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
       platformService: { za7: '/tool' }, configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} }, translate: { instant: (x: string) => x },
       blocklyService: { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
-        getProjectPersistenceRevision: () => 1, publishPreparedCodeView() {} },
+        captureBuildSnapshot: () => ({ revision: 1 }), publishPreparedCodeView() {},
+        readAfterWorkspaceEdit: (read: () => unknown) => read() },
       runWithInteractiveProjectCode: async (_workspace: unknown, consume: any) => consume(prepared, () => {}),
       waitForOneIdleBoundary: async () => {}, runBuilderPreprocessPhase: (_tag: string, fn: any) => fn(),
       waitForAilyBuilderReady: async () => {}, writeCompileRequest: jasmine.createSpy('request').and.resolveTo('/request'),
@@ -308,8 +312,8 @@ describe('Blockly compile and upload handoff', () => {
       compileValidationService: { triggerAfterSuccessfulCompile() {} },
       appendCompileLog() {}, saveBuildInfo: async () => {}, handleCompileError() {},
     });
-    const start = async () => {
-      const result = service.build().catch((error: any) => error);
+    const start = async (requestId?: string) => {
+      const result = service.build(undefined, requestId).catch((error: any) => error);
       // Let asynchronous macro hashing/publication and request preparation finish.
       for (let n = 0; n < 100 && !service.cmdService.spawn.calls.count(); n++) {
         await new Promise(resolve => setTimeout(resolve, 1));
@@ -322,11 +326,16 @@ describe('Blockly compile and upload handoff', () => {
 
   for (const early of [false, true]) it(`persists a cancelled Blockly request after cleanup and before releasing workflow (early=${early})`, async () => {
     const f = compileFixture();
-    let stopped!: (value: boolean) => void, prepared!: () => void;
+    let stopped!: (value: boolean) => void, prepared!: () => void, persisted!: () => void;
+    let persisting!: () => void;
+    const metadataStarted = new Promise<void>(resolve => { persisting = resolve; });
     f.service.workflowService.currentState = ProcessState.BUILDING;
     f.service.workflowService.finishBuild.and.callFake(() => { f.service.workflowService.currentState = ProcessState.ERROR; });
     f.service.ensureCancelState = () => {};
-    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.resolveTo();
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.callFake(() => new Promise<void>(resolve => {
+      persisted = resolve;
+      persisting();
+    }));
     f.service.cmdService.kill = jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
     if (early) f.service.npmService.ensureLocalCompilerDependencies = () => new Promise<void>(resolve => { prepared = resolve; });
     const result = f.service.build().catch((error: any) => error);
@@ -336,11 +345,89 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
     expect(f.service.workflowService.finishBuild).not.toHaveBeenCalled();
     if (early) prepared(); else stopped(true);
+    await metadataStarted;
+    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true,
+      { config: early ? undefined : f.service.activeExecutionConfig });
+    expect(f.service.workflowService.finishBuild).not.toHaveBeenCalled();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.BUILDING);
+    persisted();
     const completed = await result;
     expect(completed).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled', state: 'warn', retryable: false }));
-    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(f.service.passed).toBeFalse();
+  });
+
+  for (const terminal of ['completed', 'failed', 'mismatched', 'unconfirmed']) it(`a late Blockly Stop preserves the ${terminal} request and its log tail`, async () => {
+    const f = compileFixture();
+    const requestId = 'native-terminal-before-stop';
+    const { result } = await f.start(requestId);
+    const binding = { version: 1, id: 'native-execution', inputDigest: 'digest', buildRequestId: requestId };
+    const config = { ...f.service.activeExecutionConfig, execution: binding };
+    f.service.activeExecutionConfig = config;
+    const nativeReply = terminal === 'mismatched' ? { ...binding, status: 'cancelled', id: 'other-execution' }
+      : terminal === 'unconfirmed' ? undefined : { ...binding, status: terminal };
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancelBuildExecution').and.returnValue(nativeReply);
+    f.service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(true);
+    f.service.ensureCancelState = jasmine.createSpy('ensureCancelState');
+
+    f.service.cancel(requestId);
+    expect(window['builder'].cancelBuildExecution).toHaveBeenCalledOnceWith(config);
+    expect(f.service.buildCancellation.signal.aborted).toBeFalse();
+    expect(f.command.observed).toBeTrue();
+    expect(f.service.cmdService.kill).not.toHaveBeenCalled();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.BUILDING);
+    f.command.next({ type: 'stdout', data: 'final compiler output\n' });
+    f.command.next({ type: 'close', code: terminal === 'failed' ? 1 : 0 });
+    f.command.complete();
+    const settled = await result;
+    expect(settled.state).toBe(terminal === 'failed' ? 'error' : 'done');
+    expect(settled.code).not.toBe('BUILD_CANCELLED');
+    expect(settled.buildLog).toEqual(jasmine.objectContaining({ requestId, complete: true }));
+    expect(f.files.get(settled.buildLog.path)).toContain('final compiler output');
+    expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends an unconfirmed private build in the foreground without recording a fake cancellation', async () => {
+    const f = compileFixture();
+    const id = 'private-uncertain-original';
+    const { result } = await f.start(id);
+    expect(f.service.streamId).toBeTruthy();
+    const binding = { version: 1, id: 'original-execution', inputDigest: 'original-input',
+      buildRequestId: id, logicalProjectPath: '/project' };
+    f.service.activeExecutionConfig = { ...f.service.activeExecutionConfig, execution: binding,
+      currentProjectPath: '/project/.aily/build-executions/original-execution/project' };
+    window['builder'].isolatedBuildExecutionVersion = 1;
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancel').and.returnValue(undefined);
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.resolveTo(undefined);
+    f.service.cmdService.kill = jasmine.createSpy('kill');
+
+    f.service.cancel(id);
+    const stopped = await result;
+    expect(stopped).toEqual(jasmine.objectContaining({ buildOutcome: 'unknown', code: 'BUILD_OBSERVATION_UNCONFIRMED' }));
+    expect(f.service.cmdService.kill).not.toHaveBeenCalled();
+    expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
+    expect(f.service.activeBuildRequestId).toBeNull();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.ERROR);
+    expect(f.command.observed).toBeFalse();
+  });
+
+  it('a confirmed native Blockly Stop aborts the matching request', async () => {
+    const f = compileFixture();
+    const requestId = 'native-cancelled-request';
+    const { result } = await f.start(requestId);
+    const binding = { version: 1, id: 'native-execution', inputDigest: 'digest', buildRequestId: requestId };
+    const config = { ...f.service.activeExecutionConfig, execution: binding };
+    f.service.activeExecutionConfig = config;
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancelBuildExecution').and.returnValue({ ...binding, status: 'cancelled' });
+    f.service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(true);
+    f.service.ensureCancelState = jasmine.createSpy('ensureCancelState');
+    const streamId = f.service.streamId;
+
+    f.service.cancel(requestId);
+    expect(window['builder'].cancelBuildExecution).toHaveBeenCalledOnceWith(config);
+    expect(f.service.buildCancellation.signal.aborted).toBeTrue();
+    expect(f.service.cmdService.kill).toHaveBeenCalledOnceWith(streamId);
+    expect(await result).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled' }));
   });
 
   for (const scenario of [
@@ -358,7 +445,10 @@ describe('Blockly compile and upload handoff', () => {
     const noticeService = new NoticeService(logService as any);
     noticeService.stateSubject.subscribe(notice => notices.push(notice));
     let listener: any, rejectRun!: (reason: unknown) => void;
-    window['cmd'] = { onData: (_id: string, callback: any) => { listener = callback; return () => { listener = undefined; }; },
+    window['cmd'] = { onData: (streamId: string, callback: any) => {
+      listener = (event: any) => callback({ ...event, streamId });
+      return () => { listener = undefined; };
+    },
       run: () => new Promise((_resolve, reject) => { rejectRun = reject; }) };
     const cmd = new CmdService(logService as any), spawn = cmd.spawn.bind(cmd);
     spyOn(cmd, 'spawn').and.callFake((command, args, options, silent) => spawn(command, args, options, scenario.silent || silent));
@@ -477,6 +567,15 @@ describe('Blockly compile and upload handoff', () => {
     f.command.next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
     f.command.next({ type: 'close', code: 1 }); f.command.complete();
     expect((await result).state).toBe('error'); expect(f.service.passed).toBeFalse();
+    expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
+  });
+
+  it('rejects the completed compiler result when a Blockly edit supersedes its captured inputs', async () => {
+    const f = compileFixture(), { result } = await f.start();
+    f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    expect(await result).toEqual(jasmine.objectContaining({ state: 'error', code: 'BUILD_SOURCE_STALE', sourceReason: 'blocks' }));
+    expect(f.service.passed).toBeFalse();
     expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
   });
 

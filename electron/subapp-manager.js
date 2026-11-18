@@ -4,7 +4,8 @@ const os = require('os');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const { isDeepStrictEqual } = require('node:util');
-const { execFile, spawn } = require('child_process');
+const { execFile } = require('child_process');
+const { spawn } = require('./owned-process');
 const semver = require('semver');
 const { killRegisteredProcessTree } = require('./process-tree');
 const versions = require('./subapp-version-store');
@@ -1100,7 +1101,7 @@ function runNpm(args, options = {}) {
       stopping = true;
       try {
         const stopped = child.pid && await bounded(
-          (options.killProcessTree || killRegisteredProcessTree)(child.pid, 'subapp-npm'),
+          (options.killProcessTree || killRegisteredProcessTree)(child.pid, 'subapp-npm', { ownedProcess: child }),
           15000, 'SUBAPP_STOP_TIMEOUT', 'Timed out stopping subapp npm');
         if (!stopped) error.processClosed = processClosed;
       } catch { error.processClosed = processClosed; }

@@ -32,7 +32,7 @@ describe('CodeEditorFrameComponent dependency preparation', () => {
       component.bootstrap('/project').then(() => { complete = true; });
       flushMicrotasks();
       expect(component.initCoderEmbed).toHaveBeenCalled();
-      expect(component.projectService.discardLibraryChanges).toHaveBeenCalledOnceWith('/project', true, false);
+      expect(component.projectService.discardLibraryChanges).toHaveBeenCalledOnceWith('/project', true, false, true);
       expect(component.setupBuildOutputsWatch).toHaveBeenCalledOnceWith('/project');
       expect(lifecycle.isBusy('/project')).toBeTrue();
       expect(complete).toBeFalse();
@@ -42,6 +42,58 @@ describe('CodeEditorFrameComponent dependency preparation', () => {
       expect(lifecycle.isBusy('/project')).toBeFalse();
     } finally { window['path'] = originalPath; }
   }));
+
+  it('opens the workbench after an install failure and retries without remounting it', async () => {
+    const originalPath = window['path'];
+    window['path'] = { resolve: (path: string) => path };
+    const lifecycle = (Object.create(ProjectService.prototype) as any).dependencyLifecycle;
+    const root = '/project';
+    const session = lifecycle.beginPreparation(root);
+    const component: any = Object.create(CodeEditorFrameComponent.prototype);
+    component.coderBootstrapGeneration = 0;
+    component.electronService = { isElectron: false };
+    const discard = jasmine.createSpy('restoreDependencies').and.returnValues(
+      Promise.resolve('missing dependency'), Promise.resolve(undefined),
+    );
+    component.projectService = {
+      getProjectDependencySession: () => session,
+      assertProjectDependencySession: (current: any) => lifecycle.assertCurrent(current),
+      runProjectDependencyTask: (current: any, work: () => Promise<any>) => lifecycle.run(current, work),
+      finishProjectDependencyPreparation: (current: any) => lifecycle.finishPreparation(current),
+      setProjectDependencyResult: (current: any, ready: boolean) => lifecycle.setResult(current, ready),
+      isProjectDependencyPreparationInProgress: (path: string) => lifecycle.isBusy(path),
+      discardLibraryChanges: discard,
+    };
+    const notice = { update: jasmine.createSpy('notice'), clear: jasmine.createSpy('clear') };
+    component.coderRuntime = { getSession: () => ({ notice }) };
+    component.translate = { instant: (key: string) => key };
+    component.beginCoderEmbedLoading = () => {};
+    component.ensureProjectPackageJsonExists = async () => {};
+    component.loadProject = jasmine.createSpy('loadProject').and.resolveTo();
+    component.initCoderEmbed = jasmine.createSpy('initEmbed').and.resolveTo();
+    component.setupBuildOutputsWatch = () => {};
+    component.ensureNpmDepsWithRetry = jasmine.createSpy('prepareDependencies').and.callFake(async () => {
+      lifecycle.setResult(session, true);
+    });
+    try {
+      await component.bootstrap(root);
+      expect(lifecycle.getStatus(root)).toBe('error');
+      expect(component.loadProject).toHaveBeenCalledOnceWith(root, session);
+      expect(component.initCoderEmbed).toHaveBeenCalledTimes(1);
+      expect(component.ensureNpmDepsWithRetry).not.toHaveBeenCalled();
+      const failure = notice.update.calls.mostRecent().args[0];
+      expect(failure).toEqual(jasmine.objectContaining({ state: 'error', detail: 'missing dependency', sendToLog: true }));
+
+      failure.onRetry();
+      failure.onRetry();
+      await lifecycle.waitForIdle(session);
+      expect(discard).toHaveBeenCalledTimes(2);
+      expect(notice.clear).toHaveBeenCalledTimes(1);
+      expect(component.ensureNpmDepsWithRetry).toHaveBeenCalledOnceWith(root, session);
+      expect(lifecycle.getStatus(root)).toBe('ready');
+      expect(component.initCoderEmbed).toHaveBeenCalledTimes(1);
+    } finally { window['path'] = originalPath; }
+  });
 
   it('prepares the runtime during library recovery and mounts only after recovery completes', fakeAsync(() => {
     const originalPath = window['path'];

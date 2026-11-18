@@ -5,6 +5,7 @@ import { ABS_PROJECTION_VERSION, AbsIdentityMap, AbsSyncError } from './abs-stat
 
 /** Disk diagnosis is separate from workspace preparation and never grants apply authority. */
 export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsIdentityMap['scope']) {
+  const workspaceMode = await store.workspaceMode();
   const disk = await store.captureDisk();
   const pending = await store.inspectPending();
   const committed = await store.inspectCommitted();
@@ -16,12 +17,13 @@ export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsId
     if (baseline.map.projectionVersion !== ABS_PROJECTION_VERSION) issues.push('ABS_PROJECTION_UPGRADE_REQUIRED');
     if (absJson(baseline.map.scope) !== absJson(scope)) issues.push('ABS_SCOPE_INVALID');
     if (disk.map !== absMapJson(baseline.map)) issues.push('ABS_MAP_INVALID');
-    if (disk.abs !== baseline.abs) issues.push('ABS_SOURCE_CONFLICT');
+    if (workspaceMode !== 'project-v1' && disk.abs !== baseline.abs) issues.push('ABS_SOURCE_CONFLICT');
   }
   if (disk.abi === null) issues.push('ABS_SAVED_ABI_REQUIRED');
   const canRebind = !!baseline && issues.length > 0
     && issues.every(issue => ['ABS_SCOPE_INVALID', 'ABS_MAP_INVALID', 'ABS_PROJECTION_UPGRADE_REQUIRED'].includes(issue));
   const hashes = await hashAbsDisk(disk);
+  const author = workspaceMode === 'project-v1' && baseline ? await store.acceptedSourceProof(baseline.map.generation) : undefined;
   const journal = pending ? await store.inspectJournalRecovery() : null;
   const rebind = canRebind ? { token: await hashAbsText(absJson({ scope, hashes, committed: committed!.pointerHash })),
     from: baseline!.map.scope, to: scope } : undefined;
@@ -33,6 +35,9 @@ export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsId
     throw new AbsSyncError('ABS_BASELINE_STALE', 'Generation changed during inspection; inspect again before acting.');
   }
   return { disk, committed, pending, diagnostics: { scope, generation: baseline?.map.generation,
+    ...(workspaceMode === 'project-v1' ? { workspaceMode, authorSource: author?.authorSource ?? { path: 'project.abs',
+      hash: hashes.abs, bytes: disk.abs === null ? null : new TextEncoder().encode(disk.abs).byteLength,
+      pending: !baseline || disk.abs !== baseline.abs } } : {}),
     baselineScope: baseline?.map.scope, issues, hashes, ...(journal ? { journal } : {}),
     status: rebind ? 'rebind-required' : issues.length ? 'blocked' : 'ready', ...(rebind ? { rebind } : {}) } };
 }

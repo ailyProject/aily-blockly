@@ -1,4 +1,4 @@
-export type { NoticeOptions } from './models/notice';
+export type { NoticeOptions, NoticeLogTarget } from './models/notice';
 export * from './development-resource-routing';
 export * from './linux-board-project-route';
 export * from './project-recovery-files';

@@ -14,10 +14,12 @@ const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { createNotificationApi } = require('./notification-preload');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
+const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
     prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
+const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
 
 async function readDependencyEnvironmentCapability() {
   let capability;
@@ -74,6 +76,8 @@ async function invokeCloudBuild(payload) {
       name: 'CloudBuildError',
       message: envelope?.error?.message || 'Cloud build failed.',
       code: envelope?.error?.code || 'CLOUD_BUILD_ERROR',
+      ...(envelope?.error?.sourceReason ? { sourceReason: envelope.error.sourceReason } : {}),
+      ...(envelope?.error?.buildSnapshot ? { buildSnapshot: envelope.error.buildSnapshot } : {}),
       ...(typeof envelope?.error?.logComplete === 'boolean' ? { logComplete: envelope.error.logComplete } : {}),
     };
   }
@@ -718,6 +722,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   fs: {
     projectRecoveryReceipts: recoveryReceipts,
+    projectSaveIdentities: saveIdentities,
     projectRepairEnvironment: {
       forkPolicy: params => ipcRenderer.invoke('project-repair-fork-policy', params),
       admission: () => ipcRenderer.invoke('project-repair-admission'),
@@ -730,6 +735,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     nativeSaveReceiptVersion: 2,
     projectProgramPublicationVersion: 1,
     openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
+    selectProjectWorkspaceMode: (projectPath, input, assertCurrent) => selectProjectWorkspaceModeBridge(projectPath, input, assertCurrent),
     projectCopySourceVersion: 1,
     withProjectCopySource: (projectPath, assertCurrent, action) => require('./project-copy-source').withProjectCopySource(projectPath, assertCurrent, action),
     readCodeDeclaration: (candidate, roots) => require('./code-suggestion-declarations').readCodeDeclaration(candidate, roots),
@@ -923,6 +929,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   cmd: {
     run: (options) => ipcRenderer.invoke('cmd-run', options),
     kill: (streamId) => ipcRenderer.invoke('cmd-kill', { streamId }),
+    status: (streamId) => ipcRenderer.invoke('cmd-status', { streamId }),
     killByName: (processName) => ipcRenderer.invoke('cmd-kill-by-name', { processName }),
     input: (streamId, input) => ipcRenderer.invoke('cmd-input', { streamId, input }),
     onData: (streamId, callback) => {

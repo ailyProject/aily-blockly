@@ -158,7 +158,8 @@
               "buildTarget": "aily-blockly:build:production"
             },
             "development": {
-              "buildTarget": "aily-blockly:build:development"
+              "buildTarget": "aily-blockly:build:development",
+              "prebundle": false
             }
           },
           "defaultConfiguration": "development"

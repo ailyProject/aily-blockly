@@ -14,6 +14,7 @@ const modules = {
   'project-copy-admission.js': 'inspectProjectCopyBuild',
   'project-copy-source.js': 'withProjectCopySource',
   'npm-mutation-queue.js': 'acquireNpmMutation',
+  'instance-profile-pool.js': 'claimInstanceProfile',
 };
 
 for (const packaged of [false, true]) {

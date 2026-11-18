@@ -10,7 +10,8 @@ describe('后台编译系统通知', () => {
       isAilyCodeProject: () => coder, boardChangeSubject: new Subject<void>(), beginCoderOperation: () => () => {},
     };
     const compile = { runCompileFromDisk: jasmine.createSpy('compile').and.callFake(async () => { if (error) throw error; return result; }) };
-    const service = new BuilderService(action as any, project as any, {} as any, {} as any, electron as any, compile as any);
+    const blocklyBuild = { isAvailable: () => true, build: async () => ({ ...result, checkpoint: { startedAt: 1 } }) };
+    const service = new BuilderService(action as any, project as any, {} as any, {} as any, electron as any, compile as any, undefined, blocklyBuild);
     return { service, electron, compile };
   }
 

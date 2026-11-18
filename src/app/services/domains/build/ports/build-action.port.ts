@@ -16,6 +16,7 @@ export interface BuildActionPort {
     payload?: T,
     feedbackCallback?: (feedback: BuildActionFeedback<T>) => void,
     timeoutMs?: number,
+    options?: { requireHandler?: boolean },
   ): void;
   dispatchWithFeedback<T = any>(
     type: string,

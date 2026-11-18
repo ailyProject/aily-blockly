@@ -12,6 +12,7 @@ export interface ProjectBuildLogReference {
 }
 
 export interface ProjectBuildLog {
+  readonly requestId: string;
   append(text: string): void;
   markIncomplete(reason: string): void;
   run<T extends object>(operation: () => Promise<T>): Promise<T & { buildLog: ProjectBuildLogReference }>;
@@ -50,9 +51,20 @@ export async function createProjectBuildLog(project: string, requestedId?: strin
     if (finished || failure || !text) return;
     try { window['fs'].appendFileSync(path, text); } catch (error) { fail(error); }
   };
-  const finish = () => finished ??= { version: 1, requestId, project, ...(path ? { path } : {}),
-    complete: !failure && !incomplete, ...(failure || incomplete ? { error: failure || incomplete } : {}) };
-  return { append,
+  const finish = () => {
+    if (finished) return finished;
+    finished = { version: 1, requestId, project, ...(path ? { path } : {}),
+      complete: !failure && !incomplete, ...(failure || incomplete ? { error: failure || incomplete } : {}) };
+    if (path && finished.complete) {
+      try {
+        const fs = window['fs'];
+        fs.writeFileSync(path + '.receipt.json', JSON.stringify({ version: 1, requestId, size: fs.statSync(path).size }),
+          { encoding: 'utf8', flag: 'wx' });
+      } catch { /* Without this record, a later observer only reports a partial log. */ }
+    }
+    return finished;
+  };
+  return { requestId, append,
     markIncomplete(reason: string) {
       incomplete ??= reason;
       append(`\n[Incomplete log capture] ${reason}\n`);

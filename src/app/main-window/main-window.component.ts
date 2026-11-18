@@ -591,6 +591,9 @@ export class MainWindowComponent implements OnDestroy {
     this.uiService.actionSubject.subscribe((e: any) => {
       // console.log(e);
       switch (e.type) {
+        case 'log':
+          if (e.action === 'reveal') void this.logComponent?.reveal(e.data);
+          break;
         case 'tool':
           if (e.action === 'open') {
             this.showRbox = true;

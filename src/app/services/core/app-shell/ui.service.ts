@@ -30,6 +30,7 @@ import {
 } from '@integration/subapps/public-api';
 import { closeConnectionGraphSubWindows } from './project-window-lifecycle';
 import { ProcessState, WorkflowService } from './workflow.service';
+import type { NoticeLogTarget } from '@shared/public-api';
 
 @Injectable({
   providedIn: 'root',
@@ -784,6 +785,12 @@ export class UiService {
     } else {
       window['iWindow'].send({ to: 'main', data: { action: 'switch-terminal-tab', tab: data } });
     }
+  }
+
+  openLog(target?: NoticeLogTarget): void {
+    // openBottomSider 的 Promise 等待终端 PID，日志定位不能依赖终端就绪。
+    void this.openBottomSider('log');
+    this.actionSubject.next({ action: 'reveal', type: 'log', data: target });
   }
 
   async openBottomSider(data = 'default'): Promise<{ pid: number }> {

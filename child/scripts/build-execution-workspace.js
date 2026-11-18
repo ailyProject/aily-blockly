@@ -3,14 +3,17 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
+const { renameForAtomicReplace } = require('./atomic-replace');
 const { tryAcquireFileLock } = require('./native-file-lock');
 const { collectLibraryPackages } = require('./library-packages');
 const { captureBuildSource } = require('./build-source-capture');
+const { buildSnapshotReceipt } = require('./build-snapshot-receipt');
 const { getSystemBootId } = require('./system-boot-id');
 const { processIdentity } = require('./build-process-identity');
 const { inspectBuildWorkspaceIdle } = require('./build-workspace-lease');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const UUID = /^[a-f0-9-]{36}$/;
+const SHA256 = /^[a-f0-9]{64}$/;
 const HEADER = /^(?:variables|objects)_[a-zA-Z0-9_-]+-[a-f0-9]{8}\.h$/;
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
@@ -41,7 +44,7 @@ function write(filename, value) {
     try {
         const fd = fs.openSync(temp, 'wx', 0o600);
         try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        fs.renameSync(temp, filename);
+        renameForAtomicReplace(temp, filename);
     } finally { try { fs.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
 }
 function locked(store, action) {
@@ -80,9 +83,7 @@ function retirePreprocessInputs(store, id) {
             const record = json(filename);
             if (!isTerminal(record) || !/^[a-f0-9]{64}$/.test(record.inputDigest)
                 || typeof record.buildRequestId !== 'string' || !REQUEST_ID.test(record.buildRequestId)) return;
-            const outcome = json(path.join(folder, 'outcome.json'));
-            if (outcome?.version !== 1 || outcome.id !== id || outcome.status !== record.status
-                || outcome.inputDigest !== record.inputDigest || outcome.buildRequestId !== record.buildRequestId) return;
+            if (readOutcome({ folder, record })?.status !== record.status) return;
 
             if (!isUnindexedPreprocess(store, record)) return;
 
@@ -225,7 +226,12 @@ function prepareBuildExecution(config, workspace, operation = 'compile') {
     if (typeof execution.buildRequestId !== 'string' || !REQUEST_ID.test(execution.buildRequestId)) fail('Invalid build request identity.');
     const prepared = { ...config, currentProjectPath: root, partitionFilePath: path.join(root, 'partitions.csv'), execution };
     delete prepared.sourceCapture;
+    delete prepared.savedBuildComparison;
     prepared.sourceCapture = captureBuildSource(prepared, workspace);
+    if (operation === 'compile') {
+        execution.buildSnapshot = buildSnapshotReceipt(prepared.sourceCapture, execution.buildRequestId,
+            inputDigest, config.savedBuildComparison, execution.abiHash);
+    }
     write(path.join(folder, 'execution.json'), { ...execution, status: 'prepared', sourceCapture: prepared.sourceCapture });
     write(path.join(folder, 'config.json'), prepared);
     if (operation === 'compile') locked(store, () => {
@@ -248,9 +254,19 @@ function recordFor(config) {
     const record = json(path.join(folder, 'execution.json'));
     if (record.id !== execution.id || record.inputDigest !== execution.inputDigest || record.buildRequestId !== execution.buildRequestId
         || record.abiHash !== execution.abiHash
+        || JSON.stringify(record.buildSnapshot) !== JSON.stringify(execution.buildSnapshot)
         || !samePath(record.logicalProjectPath, store.root) || JSON.stringify(record.sourceCapture) !== JSON.stringify(config.sourceCapture)) fail('Execution binding changed.');
     return { store, folder, root, record };
 }
+function readOutcome({ folder, record }) {
+    const outcome = readOptional(json, path.join(folder, 'outcome.json'));
+    if (!outcome) return null;
+    if (outcome.version !== 1 || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
+        || outcome.inputDigest !== record.inputDigest || !TERMINAL_STATUSES.includes(outcome.status)
+        || (TERMINAL_STATUSES.includes(record.status) && record.status !== outcome.status)) fail('Terminal execution receipt changed.');
+    return outcome;
+}
+
 function claimOutcome(value, status) {
     // Cancellation and completion use one immutable first-writer receipt. A
     // late Stop cannot rewrite a completed build, and a late compiler cannot
@@ -264,9 +280,8 @@ function claimOutcome(value, status) {
         return receipt;
     } catch (error) {
         if (error.code !== 'EEXIST') throw error;
-        const existing = json(filename);
-        if (existing.version !== 1 || existing.id !== receipt.id || existing.buildRequestId !== receipt.buildRequestId
-            || existing.inputDigest !== receipt.inputDigest || !TERMINAL_STATUSES.includes(existing.status)) fail('Terminal execution receipt changed.');
+        const existing = readOutcome(value);
+        if (!existing) fail('Terminal execution receipt disappeared.');
         return existing;
     }
 }
@@ -301,7 +316,12 @@ function finishBuildExecution(config, success) {
 function cancelBuildExecution(config) {
     if (!config?.execution) return;
     const value = recordFor(config);
-    if (!['prepared', 'running'].includes(value.record.status)) return { status: value.record.status };
+    if (TERMINAL_STATUSES.includes(value.record.status)) {
+        const outcome = readOutcome(value);
+        if (!outcome) fail('Terminal execution receipt is missing.');
+        return outcome;
+    }
+    if (!['prepared', 'running'].includes(value.record.status)) fail('Execution status is unknown.');
     return claimOutcome(value, 'cancelled');
 }
 
@@ -328,13 +348,13 @@ function abandonPreparedPreprocess(config) {
 }
 function completedExecution(projectPath) {
     const store = storage(projectPath), pointer = json(store.pointer);
-    if (!UUID.test(pointer.id)) return null;
-    const folder = path.join(store.parent, pointer.id), record = json(path.join(folder, 'execution.json')), root = path.join(folder, 'project');
-    const outcome = json(path.join(folder, 'outcome.json'));
-    if (outcome.status !== 'completed' || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
-        || outcome.inputDigest !== record.inputDigest) return null;
-    if (record.status !== 'completed' || record.operation !== 'compile' || record.id !== pointer.id
+    if (pointer.version !== 1 || !UUID.test(pointer.id)) return null;
+    const folder = directory(store.parent, pointer.id, false);
+    const record = json(path.join(folder, 'execution.json')), root = path.join(folder, 'project');
+    if (record.version !== 1 || !['running', 'completed'].includes(record.status)
+        || record.operation !== 'compile' || record.id !== pointer.id
         || record.buildRequestId !== pointer.buildRequestId || !samePath(record.logicalProjectPath, store.root)
+        || readOutcome({ folder, record })?.status !== 'completed'
         || !samePath(fs.realpathSync(root), root)) return null;
     // A directory or exit code alone is never a firmware receipt.
     const upload = require('./blockly-upload-state'), config = json(path.join(folder, 'config.json'), 160 * 1024 * 1024);
@@ -387,18 +407,71 @@ function resolveBuildProjectPath(projectPath) {
         return resolveBuildExecution(root)?.currentProjectPath ?? null;
     } catch { return null; }
 }
+function readBuildLogReference(store, project, requestId) {
+    try {
+        const logs = directory(directory(directory(store.root, '.log', false), 'compile', false), 'requests', false);
+        const filename = `${hash(requestId)}.log`;
+        const physicalPath = path.join(logs, filename);
+        const before = fs.lstatSync(physicalPath);
+        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1
+            || !samePath(fs.realpathSync(physicalPath), physicalPath)) return undefined;
+        const fd = fs.openSync(physicalPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+        try {
+            const opened = fs.fstatSync(fd);
+            // Some Windows Electron builds omit the device only on path stat.
+            const named = process.platform === 'win32' && before.dev === 0
+                ? { ...before, dev: opened.dev } : before;
+            if (!opened.isFile() || opened.nlink !== 1 || state(opened) !== state(named)) return undefined;
+            const prefix = Buffer.alloc(Math.min(before.size, 128 * 1024));
+            const count = fs.readSync(fd, prefix, 0, prefix.length, 0);
+            const header = /^Build request: ([^\r\n]+)\nProject: ([^\r\n]+)\n\n/.exec(prefix.subarray(0, count).toString('utf8'));
+            if (header?.[1] !== requestId || !path.isAbsolute(header[2])
+                || (!samePath(path.resolve(header[2]), store.root) && !samePath(path.resolve(header[2]), path.resolve(project))))
+                return undefined;
+            let receipt;
+            try { receipt = json(physicalPath + '.receipt.json', 1024); } catch { /* Legacy or incomplete captures have no proof. */ }
+            if (state(fs.fstatSync(fd)) !== state(opened) || state(fs.lstatSync(physicalPath)) !== state(before)
+                || !samePath(fs.realpathSync(physicalPath), physicalPath)) return undefined;
+            return { version: 1, requestId, project, path: path.resolve(project, '.log', 'compile', 'requests', filename),
+                complete: receipt?.version === 1 && receipt.requestId === requestId && receipt.size === before.size };
+        } finally { fs.closeSync(fd); }
+    } catch { return undefined; }
+}
+
+function historicalBuildReference(record, folder) {
+    const { id, buildRequestId, inputDigest, sourceCapture } = record;
+    const { digest, ...capture } = sourceCapture ?? {};
+    const sourceRoot = path.join(folder, 'project');
+    const sourceSha256 = capture.schemaVersion === 1 && capture.scope === 'captured-build-source' && capture.mode === 'blockly'
+        && typeof capture.sourceSha256 === 'string' && SHA256.test(capture.sourceSha256) && digest === hash(JSON.stringify(capture))
+        && capture.projectLocationSha256 === hash(process.platform === 'win32' ? sourceRoot.toLowerCase() : sourceRoot)
+        ? capture.sourceSha256 : undefined;
+    return { version: 1, operation: 'compile', executionId: id, buildRequestId, inputDigest,
+        ...(sourceSha256 ? { sourceSha256 } : {}) };
+}
+
 function inspectBuildExecution(projectPath, buildRequestId) {
     try {
-        const store = storage(projectPath), index = json(path.join(store.parent, 'requests', `${hash(buildRequestId)}.json`));
-        if (index.buildRequestId !== buildRequestId || !UUID.test(index.id)) return null;
-        const record = json(path.join(store.parent, index.id, 'execution.json'));
-        if (record.id !== index.id || record.buildRequestId !== buildRequestId || !samePath(record.logicalProjectPath, store.root)) return null;
+        if (typeof buildRequestId !== 'string' || !REQUEST_ID.test(buildRequestId)) return null;
+        const store = storage(projectPath);
+        const requests = directory(store.parent, 'requests', false);
+        const indexPath = path.join(requests, `${hash(buildRequestId)}.json`);
+        const index = json(indexPath);
+        if (index.version !== 1 || index.buildRequestId !== buildRequestId || !UUID.test(index.id)) return null;
+        const folder = directory(store.parent, index.id, false);
+        const record = json(path.join(folder, 'execution.json'));
+        if (record.version !== 1 || record.operation !== 'compile' || record.id !== index.id
+            || record.buildRequestId !== buildRequestId || typeof record.inputDigest !== 'string' || !SHA256.test(record.inputDigest)
+            || !samePath(record.logicalProjectPath, store.root)) return null;
         let current;
         try { current = json(store.pointer); } catch { /* The exact request remains observable if pointer publication was interrupted. */ }
-        const selected = record.status === 'completed' ? resolveBuildExecution(projectPath) : null;
-        let status = record.status, ownerState;
-        try { if (json(path.join(store.parent, index.id, 'outcome.json')).status === 'cancelled') status = 'cancelled'; }
-        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        const outcome = readOutcome({ folder, record });
+        if (!outcome && !['prepared', 'running'].includes(record.status)) return null;
+        let status = outcome?.status ?? record.status, ownerState;
+        const isCurrent = current?.id === record.id && current.buildRequestId === buildRequestId;
+        const resolved = status === 'completed' && isCurrent ? resolveBuildExecution(projectPath) : null;
+        const selected = resolved?.buildRequestId === buildRequestId
+            && samePath(resolved.currentProjectPath, path.join(folder, 'project')) ? resolved : null;
         if (status === 'prepared') ownerState = 'start-unobserved';
         if (status === 'running') {
             const owner = record.owner, boot = getSystemBootId();
@@ -415,14 +488,19 @@ function inspectBuildExecution(projectPath, buildRequestId) {
                 else { status = 'unconfirmed'; ownerState = 'identity-unavailable'; }
             }
         }
+        const buildLog = outcome && readBuildLogReference(store, projectPath, buildRequestId);
+        if (JSON.stringify(json(indexPath)) !== JSON.stringify(index)) return null;
         return { version: 1, executionId: record.id, buildRequestId, status, inputDigest: record.inputDigest,
+            ...(record.buildSnapshot ? { buildSnapshot: record.buildSnapshot } : {}),
             ...(record.abiHash ? { buildInput: { version: 1, executionId: record.id, buildRequestId,
                 inputDigest: record.inputDigest, abiHash: record.abiHash } } : {}),
+            ...(outcome ? { buildHistory: historicalBuildReference(record, folder) } : {}),
+            ...(buildLog ? { buildLog } : {}),
             ...(ownerState ? { ownerState } : {}),
             nextAction: status === 'running' && ownerState === 'live' ? 'observe-original'
                 : ['prepared', 'interrupted', 'unconfirmed'].includes(status) ? 'new-execution-required'
                 : status === 'completed' && !selected ? 'rebuild-current-inputs' : 'terminal',
-            current: current?.id === record.id, ...(selected?.buildRequestId === buildRequestId ? { result: selected } : {}) };
+            current: isCurrent, ...(selected ? { result: selected } : {}) };
     } catch { return null; }
 }
 

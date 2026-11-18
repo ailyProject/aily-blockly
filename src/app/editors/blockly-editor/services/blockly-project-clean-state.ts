@@ -4,6 +4,7 @@ import { assertAbsReadback } from '../../../integrations/blockly/abs/abs-readbac
 import { sameAbsProgram } from '../../../integrations/blockly/abs/abs-program-state';
 import type { AbsAbiBlock, AbsAbiWorkspace } from '../../../integrations/blockly/abs/abs-state';
 import { BlocklyProjectDocument, composeBlocklyPage } from './blockly-project-model';
+import { projectBuildDocument } from './blockly-project-revision';
 
 const same = (a: unknown, b: unknown) => a === undefined || b === undefined
   ? a === b : canonicalProjectJsonStringify(a) === canonicalProjectJsonStringify(b);
@@ -91,7 +92,7 @@ export function assertProjectLoadPreserved(before: BlocklyProjectDocument, after
 
 /** An editor-session record, not an ABS projection or a new persistent format. */
 export class BlocklyProjectCleanState {
-  private accepted?: { scope: readonly unknown[]; disk: string; document: BlocklyProjectDocument };
+  private accepted?: { scope: readonly unknown[]; disk: string; document: BlocklyProjectDocument; buildDocumentText?: string };
   private failure?: Error;
 
   constructor(private readonly runtimeView?: RuntimeView) {}
@@ -116,6 +117,13 @@ export class BlocklyProjectCleanState {
   readSavedAbiRecipe(scope: readonly unknown[]): string | undefined {
     if (this.failure || !this.accepted || !this.matches(scope)) return undefined;
     return this.accepted.disk;
+  }
+
+  compareBuildDocument(scope: readonly unknown[], documentText: string) {
+    if (this.failure || !this.accepted || !this.matches(scope)) return undefined;
+    const accepted = this.accepted;
+    accepted.buildDocumentText ??= canonicalProjectJsonStringify(projectBuildDocument(accepted.document));
+    return { abiText: accepted.disk, savedMatch: accepted.buildDocumentText === documentText ? 'matched' as const : 'different' as const };
   }
 
   reject(error: unknown): void {
@@ -154,6 +162,7 @@ export class BlocklyProjectCleanState {
       else delete original.viewState;
     }
     baseline.sharedModel = cloneProjectJson(after.sharedModel);
+    this.accepted.buildDocumentText = undefined;
     return baseline;
   }
 

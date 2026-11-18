@@ -29,6 +29,7 @@ describe('Blockly library failure recovery', () => {
     Object.assign(service, {
       workspaceEditGate: new BlocklyWorkspaceEditGate(),
       declarativeBlocks: new BlocklyDeclarativeBlockCatalog(),
+      buildCodePreparation: new BlocklyProjectCodePreparation(),
       projectCodePreparation: new BlocklyProjectCodePreparation(),
       pageReferenceContracts: new AbsReferenceContractCache(),
       generatorRuntime: runtime,

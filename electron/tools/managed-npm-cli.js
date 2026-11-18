@@ -2,7 +2,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
+const { spawn } = require('../owned-process');
 const semver = require('semver');
 
 const { isWin32 } = require('../platform');

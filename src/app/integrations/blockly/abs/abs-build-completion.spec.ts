@@ -44,9 +44,32 @@ describe('active Blockly compilation completion', () => {
   }));
 
   it('refuses a missing active executor instead of falling back to an expiring Action or disk build', async () => {
-    const f = fixture(); f.service.blocklyBuild = undefined;
-    await expectAsync(f.service.build()).toBeRejectedWithError('The active Blockly build executor is unavailable.');
-    expect(f.service.compileService.runCompileFromDisk).not.toHaveBeenCalled(); f.stop();
+    const f = fixture();
+    f.service.blocklyBuild = undefined;
+    f.stop();
+    for (const projectPath of [undefined, '/isolated']) {
+      await expectAsync(f.service.build(projectPath)).toBeRejectedWith(jasmine.objectContaining({
+        message: 'The active Blockly build executor is unavailable.', buildOutcome: 'not-started',
+      }));
+    }
+    expect(f.service.compileService.runCompileFromDisk).not.toHaveBeenCalled();
+  });
+
+  it('builds the mounted canvas for an explicit active Blockly path', async () => {
+    const f = fixture();
+    try {
+      const result = { state: 'done' };
+      f.complete({ success: true, result, checkpoint: {} });
+      expect(await f.service.build('/isolated', { requestId: 'explicit-build' })).toBe(result);
+      expect(f.service.blocklyBuild.build).toHaveBeenCalledOnceWith(jasmine.objectContaining({
+        projectPath: '/isolated', requestId: 'explicit-build',
+      }));
+      await expectAsync(f.service.build('/other')).toBeRejectedWith(jasmine.objectContaining({ buildOutcome: 'not-started' }));
+      expect(f.service.compileService.runCompileFromDisk).not.toHaveBeenCalled();
+      expect(f.service.blocklyBuild.build).toHaveBeenCalledTimes(1);
+    } finally {
+      f.stop();
+    }
   });
 
   it('distinguishes rejected editor admission from an actual compiler failure', async () => {

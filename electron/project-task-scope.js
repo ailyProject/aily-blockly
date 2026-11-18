@@ -45,10 +45,8 @@ function cancelProjectTaskScope(owner, options) {
 function matchesProjectTask(entry, owner, projectPath, projectSessionId) {
   if (entry.ownerWebContents !== owner) return false;
   const scope = readProjectTaskScope(entry);
-  if (scope) return scope.projectPath === normalizeProjectPath(projectPath)
+  return !!scope && scope.projectPath === normalizeProjectPath(projectPath)
     && scope.projectSessionId === projectSessionId;
-  const legacyProject = entry.buildWorkspacePath || entry.cwd;
-  return !!legacyProject && normalizeProjectPath(legacyProject) === normalizeProjectPath(projectPath);
 }
 
 module.exports = { assertProjectTaskActive, cancelProjectTaskScope, matchesProjectTask };

@@ -496,7 +496,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   /**
-   * 先 loadProject 设置 currentProjectPath，再安装依赖；最后启动 iframe（避免 installBoardDeps 读错工程路径）。
+   * 恢复已保存的工程后启动编辑器，后续依赖准备与 iframe 启动并行。
    */
   private async bootstrap(projectPath: string, historyRestored = false) {
     const generation = ++this.coderBootstrapGeneration;
@@ -527,11 +527,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         void runtimePreparation?.catch(() => {}); // initCoderEmbed owns error presentation.
         // Reopening (including a renderer refresh / Chat history restore) uses
         // the saved manifest. Reify also repairs an unsaved uninstall on restart.
-        await this.projectService.discardLibraryChanges(resolved, true, historyRestored);
+        const installError = await this.projectService.discardLibraryChanges(resolved, true, historyRestored, true);
         if (!isCurrent()) return;
         await this.loadProject(resolved, session);
         if (!isCurrent()) return;
-        const dependencies = this.ensureNpmDepsWithRetry(resolved, session);
+        const dependencies = installError === undefined ? this.ensureNpmDepsWithRetry(resolved, session) : undefined;
+        if (installError !== undefined) this.showCoderDependencyInstallFailure(resolved, session, installError);
         try {
           await this.initCoderEmbed(resolved, false, session, runtimePreparation);
           if (!isCurrent()) return;
@@ -702,6 +703,45 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /** 与 Blockly loadProject 一致：写入 ProjectService.currentBoardConfig */
   private async syncBoardConfigForHeader(session = this.dependencySession): Promise<void> {
     await this.projectService.syncCurrentBoardConfig(session);
+  }
+
+  private showCoderDependencyInstallFailure(projectPath: string, session: ProjectDependencySession, detail: string): void {
+    this.projectService.setProjectDependencyResult(session, false);
+    this.coderRuntime.getSession(projectPath).notice.update({
+      title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+      text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+      detail, state: 'error', sendToLog: true,
+      onRetry: () => {
+        if (!this.isCurrentCoderWorkspace(projectPath, session)
+          || this.projectService.isProjectDependencyPreparationInProgress(projectPath)) return;
+        void this.retryCoderDependencyInstall(projectPath, session);
+      },
+    });
+  }
+
+  private async retryCoderDependencyInstall(projectPath: string, session: ProjectDependencySession): Promise<void> {
+    try {
+      await this.projectService.runProjectDependencyTask(session, async () => {
+        const notice = this.coderRuntime.getSession(projectPath).notice;
+        notice.update({
+          title: this.translate.instant('NPM.INSTALLING_TITLE'),
+          text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+          state: 'doing', showProgress: false,
+        });
+        const installError = await this.projectService.discardLibraryChanges(projectPath, true, false, true);
+        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+        if (installError !== undefined) {
+          this.showCoderDependencyInstallFailure(projectPath, session, installError);
+          return;
+        }
+        notice.clear();
+        await this.ensureNpmDepsWithRetry(projectPath, session);
+      });
+    } catch (error) {
+      if (this.isCurrentCoderWorkspace(projectPath, session)) {
+        this.showCoderDependencyInstallFailure(projectPath, session, error instanceof Error ? error.message : String(error));
+      }
+    }
   }
 
   /**

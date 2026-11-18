@@ -6,6 +6,7 @@ const os = require('node:os');
 const { once } = require('node:events');
 const test = require('node:test');
 const { CommandManager } = require('../../electron/cmd');
+const { getOwnedProcessInfo } = require('../../electron/owned-process');
 const { createBuildWorkspaceSupervisor } = require('../../electron/build-workspace-supervisor');
 const { acquireBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
 const { EventEmitter } = require('node:events');
@@ -26,16 +27,23 @@ function cancellationFixture({ terminate, workspace, viaIpc = false, backgroundP
     clearTimeout: timer => { if (timer) timer.cancelled = true; },
     require: name => {
       if (name === 'electron') return { ipcMain: { handle: (name, handler) => handlers.set(name, handler) } };
-      if (name === 'child_process') return { spawn: () => { spawnCalls++; return child; } };
+      if (name === './owned-process') return {
+        spawn: () => { spawnCalls++; return child; },
+        getOwnedProcessInfo: () => null,
+      };
       if (name === './platform') return { isLinux: true };
-      if (name === './process-tree') return { killRegisteredProcessTree: (_pid, _label, options) => { killCalls++; killOptions.push(options); return terminate(); } };
+      if (name === './process-tree') return {
+        captureRegisteredProcessIdentity: () => Promise.resolve('test-process'),
+        killRegisteredProcessTree: (_pid, _label, options) => { killCalls++; killOptions.push(options); return terminate(); },
+      };
       if (name === './build-workspace-supervisor') return { createBuildWorkspaceSupervisor: () => workspace };
       return sourceRequire(name);
     },
   };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
   const api = context.module.exports, manager = new api.CommandManager();
-  if (!viaIpc) manager.executeCommand({ command: process.execPath, streamId: 'cancel', shellProfile: false, backgroundPreprocess, buildWorkspace: backgroundPreprocess ? '/project' : undefined });
+  if (!viaIpc) manager.executeCommand({ command: process.execPath, streamId: 'cancel', shellProfile: false, backgroundPreprocess,
+    buildWorkspace: workspace || backgroundPreprocess ? '/project' : undefined });
   return { manager, api, handlers, child, killOptions, get killCalls() { return killCalls; }, get spawnCalls() { return spawnCalls; },
     retryCleanup: () => {
       const timer = timers.shift();
@@ -43,6 +51,12 @@ function cancellationFixture({ terminate, workspace, viaIpc = false, backgroundP
       return !!timer;
     },
   };
+}
+
+function nextCommandExit(manager) {
+  return new Promise(resolve => {
+    const remove = manager.onProcessExit(event => { remove(); resolve(event); });
+  });
 }
 
 test('Windows taskkill has a finite deadline and timeout cannot confirm termination', async () => {
@@ -106,7 +120,7 @@ test('confirmed termination retries failed marker cleanup without killing the pr
   const first = f.manager.killProcess('cancel');
   f.child.emit('close', 1, null);
   finish(true);
-  assert.equal(await first, true);
+  assert.equal(await first, false);
   assert.equal(f.manager.getProcess('cancel'), f.child);
   assert.equal(f.retryCleanup(), true);
   assert.equal(f.killCalls, 1); assert.equal(attempts, 2);
@@ -119,13 +133,13 @@ test('persistent marker failure has bounded cleanup retries and never retargets 
     releaseAfterTermination: () => { attempts++; throw new Error('EPERM'); },
     canReleaseResources: () => false,
   } });
-  assert.equal(await f.manager.killProcess('cancel'), true);
+  assert.equal(await f.manager.killProcess('cancel'), false);
   f.child.emit('close', 1, null);
   while (f.retryCleanup()) {}
   assert.equal(f.killCalls, 1);
-  assert.equal(attempts, 5); // Initial attempt, close event, and three retries.
+  assert.equal(attempts, 6); // Initial attempt, close event, and four bounded checks.
   assert.equal(f.manager.getProcess('cancel'), f.child);
-  assert.equal(await f.manager.killProcess('cancel'), true);
+  assert.equal(await f.manager.killProcess('cancel'), false);
   assert.equal(f.killCalls, 1);
 });
 
@@ -184,17 +198,17 @@ for (const cancellation of ['command', 'project', 'shutdown']) test(`${cancellat
   const owner = { mainFrame: {}, isDestroyed: () => false, send() {} }, projectPath = path.resolve('pending-build-fixture');
   const event = { sender: owner, senderFrame: owner.mainFrame };
   const options = { command: process.execPath, streamId: 'pending-build', shellProfile: false,
-    buildWorkspace: projectPath, buildDeliveryRequest: 'request.json' };
+    buildWorkspace: projectPath, buildDeliveryRequest: 'request.json', projectPath, projectSessionId: 'first' };
   const running = f.handlers.get('cmd-run')(event, options);
   if (cancellation === 'command') assert.equal((await f.handlers.get('cmd-kill')(event, { streamId: options.streamId })).success, true);
-  if (cancellation === 'project') assert.equal(await f.api.killOwnerProjectCmdProcesses(owner, projectPath), true);
+  if (cancellation === 'project') assert.equal(await f.api.killOwnerProjectCmdProcesses(owner, projectPath, options.projectSessionId), true);
   if (cancellation === 'shutdown') { f.api.beginCommandShutdown(); assert.equal(await f.api.killAllCmdProcesses(), true); }
   resume();
   const result = await running;
   assert.equal(result.success, false); assert.match(result.error, /CANCELLED_BEFORE_LAUNCH/);
   assert.equal(f.spawnCalls, 0); assert.equal(f.killCalls, 0); assert.equal(abandoned, true);
   if (cancellation !== 'shutdown') {
-    assert.equal((await f.handlers.get('cmd-run')(event, { command: process.execPath, streamId: options.streamId })).success, true);
+    assert.equal((await f.handlers.get('cmd-run')(event, { command: process.execPath, streamId: 'next-build' })).success, true);
     f.child.emit('close', 0, null);
   }
 });
@@ -235,7 +249,7 @@ test('cancelled project scopes fence pending and late commands while allowing a 
   const late = await f.handlers.get('cmd-run')(event, { ...options, buildDeliveryRequest: undefined });
   assert.equal(late.success, false); assert.match(late.error, /PROJECT_TASK_CANCELLED/);
   assert.equal(f.spawnCalls, 0);
-  const reopened = await f.handlers.get('cmd-run')(event, { ...options, buildDeliveryRequest: undefined, projectSessionId: 'second' });
+  const reopened = await f.handlers.get('cmd-run')(event, { ...options, streamId: 'reopened-owned', buildDeliveryRequest: undefined, projectSessionId: 'second' });
   assert.equal(reopened.success, true);
   f.child.emit('close', 0, null);
 });
@@ -284,16 +298,22 @@ test('registered cancellation stops the owner and descendant before releasing it
   acquireBuildWorkspace(root, 'compile').release();
 });
 
-test('a delegated parent exiting with its build marker remains unresolved and cannot retarget its closed PID', async t => {
+test('a delegated parent needs native Job confirmation to release its remaining marker after exit', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
   const manager = new CommandManager(), streamId = 'abandoned-owner';
+  const closed = nextCommandExit(manager);
   const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
     args: ['-e', 'require(process.argv[1]).acquireBuildWorkspace(process.argv[2], "compile").markDelegated();process.exit(1)',
       path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] }).process;
-  await once(child, 'close');
-  assert.equal(manager.getProcess(streamId), child);
-  assert.throws(() => manager.executeCommand({ command: process.execPath, streamId }), /already registered/);
-  assert.equal(await manager.killProcess(streamId), false);
+  await closed;
+  if (getOwnedProcessInfo(child)) {
+    assert.equal(manager.getProcess(streamId), undefined);
+    assert.equal(fs.existsSync(path.join(root, '.build/aily-workspace.lock')), false);
+  } else {
+    assert.equal(manager.getProcess(streamId), child);
+    assert.throws(() => manager.executeCommand({ command: process.execPath, streamId }), /already registered/);
+    assert.equal(await manager.killProcess(streamId), false);
+  }
   // Fixture never spawned descendants. Explicit verified test cleanup only.
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
   manager.processes.delete(streamId);
@@ -307,10 +327,11 @@ for (const exit of ['process.exit(1)', "process.kill(process.pid,'SIGKILL')"]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const manager = new CommandManager(), streamId = 'early-exit';
-    const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
+    const closed = nextCommandExit(manager);
+    manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
       args: ['-e', `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');${exit}`,
-        path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] }).process;
-    await once(child, 'close');
+        path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] });
+    await closed;
     assert.equal(manager.getProcess(streamId), undefined);
     assert.equal(fs.existsSync(path.join(root, '.build/aily-workspace.lock')), false);
     assert.equal(await manager.killProcess(streamId), true);
@@ -320,9 +341,10 @@ for (const exit of ['process.exit(1)', "process.kill(process.pid,'SIGKILL')"]) {
 
 for (const code of [0, 7]) test(`registered installer is removed on a completed exit (${code})`, async () => {
   const manager = new CommandManager();
-  const child = manager.executeCommand({ command: process.execPath, args: ['-e', `process.exit(${code})`],
-    streamId: 'installer', shellProfile: false }).process;
-  await once(child, 'close');
+  const closed = nextCommandExit(manager);
+  manager.executeCommand({ command: process.execPath, args: ['-e', `process.exit(${code})`],
+    streamId: 'installer', shellProfile: false });
+  assert.equal((await closed).code, code);
   assert.equal(manager.getProcess('installer'), undefined);
 });
 
@@ -343,19 +365,20 @@ test('legacy borrowed AppData markers do not block a command without a token', a
   const markers = [path.join(lockRoot, 'writer.lock'), path.join(lockRoot, 'readers/legacy.lock')];
   for (const filename of markers) fs.writeFileSync(filename, marker);
   const manager = new CommandManager();
-  const child = manager.executeCommand({ command: process.execPath, args: ['-e', 'process.exit(0)'],
-    streamId: 'legacy-markers', shellProfile: false }).process;
-  const [code] = await once(child, 'close');
+  const closed = nextCommandExit(manager);
+  manager.executeCommand({ command: process.execPath, args: ['-e', 'process.exit(0)'],
+    streamId: 'legacy-markers', shellProfile: false });
+  const { code } = await closed;
   assert.equal(code, 0); assert.equal(manager.getProcess('legacy-markers'), undefined);
   for (const filename of markers) assert.equal(fs.readFileSync(filename, 'utf8'), marker);
 });
 
 test('failed installer termination never retargets a subsequently closed PID', async () => {
   const manager = new CommandManager();
+  const closed = nextCommandExit(manager);
   const child = manager.executeCommand({ command: process.execPath,
     args: ['-e', 'console.log("ready");setTimeout(()=>process.exit(0),200)'],
     streamId: 'uncertain-installer', shellProfile: false }).process;
-  const closed = once(child, 'close');
   await once(child.stdout, 'data');
   // Deterministic failed-stop injection: never target a foreign PID. The real
   // fixture exits on its own; the manager must not retarget its closed PID.
@@ -368,12 +391,12 @@ test('failed installer termination never retargets a subsequently closed PID', a
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
 });
 
-test('project stop targets its owner and exact project, including commands without a build workspace', async () => {
+test('project stop targets its owner and exact project opening, including commands without a build workspace', async () => {
   const manager = new CommandManager(), owner = {}, other = {};
   const root = path.resolve(os.tmpdir(), 'aily-stop-project');
   manager.processes.set('project', { ownerWebContents: owner, cwd: root });
   manager.processes.set('nested', { ownerWebContents: owner, cwd: path.join(root, '.temp') });
-  manager.processes.set('supervised', { ownerWebContents: owner, cwd: os.tmpdir(), buildWorkspacePath: root });
+  manager.processes.set('supervised', { ownerWebContents: owner, cwd: os.tmpdir(), buildWorkspacePath: root, projectPath: root, projectSessionId: 'first' });
   manager.processes.set('nested-build', { ownerWebContents: owner, cwd: path.join(root, 'firmware'), buildWorkspacePath: path.join(root, 'firmware') });
   manager.processes.set('other-workspace', { ownerWebContents: owner, cwd: root, buildWorkspacePath: `${root}-other` });
   manager.processes.set('other-tab', { ownerWebContents: other, cwd: root });
@@ -384,7 +407,7 @@ test('project stop targets its owner and exact project, including commands witho
   const stopped = [];
   manager.killProcess = async id => { stopped.push(id); return id !== 'supervised'; };
   assert.equal(await manager.killOwnerProjectProcesses(owner, root, 'first'), false);
-  assert.deepEqual(stopped, ['project', 'supervised', 'upload', 'scoped-shared-cwd']);
+  assert.deepEqual(stopped, ['supervised', 'scoped-shared-cwd']);
   assert.equal(await manager.killAllProcesses(), false);
   manager.processes.clear();
   assert.equal(await manager.killAllProcesses(), true);
@@ -397,8 +420,9 @@ test('command shutdown refuses native launches', () => {
 });
 
 
-for (const backgroundPreprocess of [false, true]) test(`native-ack priority is scoped to the registered background flag (${backgroundPreprocess})`, async () => {
+for (const backgroundPreprocess of [false, true]) test(`native cancellation uses the original registration (background ${backgroundPreprocess})`, async () => {
   const f = cancellationFixture({ terminate: async () => true, backgroundPreprocess });
   assert.equal(await f.manager.killProcess('cancel'), true);
-  assert.equal(f.killOptions[0]?.preferNativeAck, backgroundPreprocess);
+  assert.equal(f.killOptions[0]?.registered, f.child);
+  assert.equal(await f.killOptions[0]?.identity, 'test-process');
 });

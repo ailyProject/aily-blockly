@@ -8,9 +8,9 @@ export async function runProjectBuild(
   projectPath: string,
 ): Promise<HostToolResult> {
   try {
-    if (input.clearCache) await builderService.clearBuildCache(projectPath);
     if (input.preprocessOnly) {
-      builderService.triggerPreprocess('host_live_operation');
+      if (input.clearCache) await builderService.triggerPreprocessWithCacheClear(projectPath, 'host_live_operation');
+      else builderService.triggerPreprocess('host_live_operation');
       return {
         is_error: false,
         content: JSON.stringify({
@@ -20,7 +20,12 @@ export async function runProjectBuild(
       };
     }
 
-    const result = await builderService.build(undefined, { source: 'ai', requestId: input.requestId });
+    const result = await builderService.build(undefined, {
+      source: 'ai',
+      requestId: input.requestId,
+      expectedProjectPath: projectPath,
+      clearCache: input.clearCache,
+    });
     return {
       is_error: false,
       metadata: { buildResult: result },
@@ -39,12 +44,17 @@ export async function runProjectBuild(
         content: JSON.stringify({ success: false, ...cancelled }),
       };
     }
+    const staleSource = buildResult?.code === 'BUILD_SOURCE_STALE' ? buildResult : error;
+    const sourceFailure = staleSource?.code === 'BUILD_SOURCE_STALE'
+      ? { code: staleSource.code, sourceReason: staleSource.sourceReason }
+      : {};
     return {
       is_error: true,
-      metadata: { buildOutcome: error?.buildOutcome,
+      metadata: { buildOutcome: error?.buildOutcome, ...sourceFailure,
         buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr, buildLog: error?.buildLog } },
       content: JSON.stringify({
         success: false,
+        ...sourceFailure,
         message: `${error?.buildOutcome === 'not-started' ? '编译未开始' : '编译失败'}: ${buildResult?.text || error?.message || String(error)}`,
       }),
     };

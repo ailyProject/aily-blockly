@@ -33,6 +33,9 @@ export interface AbsReconcileOptions extends AbsSyntaxOptions {
   sourceEdits?: AbsSourceEdits;
   /** Host-only admission for an external bound candidate; not a wire option. */
   requireDeletionEvidence?: boolean;
+  /** Exact verified host source, supplied only by the fixed-candidate reader.
+   * Its unchanged state is read-only provenance; Working still owns all state. */
+  readonlyStateOrigin?: string;
   /** Pure definitions captured for this runtime session, never a global Blockly lookup. */
   fieldDefinition?: (blockType: string, fieldName: string, blockId?: string) => AbsFieldDefinition | undefined;
   newId?: (node: AbsSyntaxNode) => string;
@@ -112,7 +115,7 @@ async function reconcileDraft(
 ): Promise<AbsReconcileDraft> {
   // Detach before awaiting; mutable caller state cannot race baseline validation.
   const baseline = analysis.snapshot();
-  assertAbsStateUnchanged(editedAbs, baseline.abs);
+  assertAbsStateUnchanged(editedAbs, options.readonlyStateOrigin ?? baseline.abs);
   options = { ...options };
   const variableCreation = options.variableCreation ? JSON.parse(absJson(options.variableCreation)) : undefined;
   const nativeBinding = options.nativeBinding ? cloneBlocklyJson(options.nativeBinding) : undefined;

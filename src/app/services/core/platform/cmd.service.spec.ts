@@ -1,9 +1,93 @@
 import { CmdService } from './cmd.service';
+import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 
 describe('CmdService command lifecycle', () => {
   let oldCmd: any;
   beforeEach(() => { oldCmd = window['cmd']; });
   afterEach(() => { window['cmd'] = oldCmd; });
+
+  it('recovers a missing close for the original Blockly stream once', fakeAsync(() => {
+    const callbacks = new Map<string, (event: any) => void>();
+    const observer = jasmine.createSpy('close');
+    const status = jasmine.createSpy('status').and.resolveTo({
+      streamId: 'other', state: 'exited', code: 0, terminationConfirmed: true, ownershipReleased: true
+    });
+    const run = jasmine.createSpy('run').and.resolveTo({ success: true });
+    window['cmd'] = { run, status, onData: (id: string, fn: (event: any) => void) => {
+      callbacks.set(id, fn); return () => callbacks.delete(id);
+    } };
+    const service = new CmdService({ update() {} } as any);
+    service.spawn('node', [], { streamId: 'original', buildWorkspace: '/captured', observeExit: true }).subscribe(observer);
+    flushMicrotasks(); tick(500);
+    expect(observer).not.toHaveBeenCalled();
+    status.and.resolveTo({ streamId: 'original', state: 'exited', code: 0, terminationConfirmed: true, ownershipReleased: true });
+    tick(500);
+    expect(observer).toHaveBeenCalledOnceWith(jasmine.objectContaining({ type: 'close', streamId: 'original', recovered: true }));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(callbacks.size).toBe(0);
+  }));
+
+  it('returns an unconfirmed stop instead of leaving a fenced foreground caller waiting for IPC', fakeAsync(() => {
+    const kill = jasmine.createSpy('kill').and.returnValue(new Promise(() => {}));
+    window['cmd'] = { kill };
+    const service = new CmdService({ update() {} } as any);
+    const result = jasmine.createSpy('result');
+    void service.kill('original', 200).then(result);
+    tick(200);
+    expect(result).toHaveBeenCalledOnceWith(false);
+    expect(kill).toHaveBeenCalledOnceWith('original');
+  }));
+
+  it('settles a queued npm command by its own receipt and starts the next command once', fakeAsync(() => {
+    const listeners = new Map<string, (data: any) => void>();
+    const run = jasmine.createSpy('run').and.resolveTo({ success: true });
+    const status = jasmine.createSpy('status').and.resolveTo({
+      streamId: 'wrong', state: 'exited', code: 0, ownershipReleased: true
+    });
+    window['cmd'] = { run, status, onData: (id: string, fn: (event: any) => void) => {
+      listeners.set(id, fn);
+      return () => listeners.delete(id);
+    } };
+    const service = new CmdService({ update() {} } as any);
+    const first = jasmine.createSpy('first result');
+    const next = jasmine.createSpy('next result');
+    void service.runAsync('npm install', '/first', true, true, { streamId: 'first' }).then(first);
+    void service.runAsync('npm install', '/next', true, true, { streamId: 'next' }).then(next);
+
+    flushMicrotasks(); tick(500);
+    expect(first).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(1);
+    const lateClose = listeners.get('first')!;
+    status.and.resolveTo({ streamId: 'first', state: 'exited', code: 0, ownershipReleased: true });
+    tick(500);
+    expect(first).toHaveBeenCalledOnceWith(jasmine.objectContaining({ streamId: 'first', code: 0, recovered: true }));
+    expect(run.calls.allArgs().map(([options]) => options.streamId)).toEqual(['first', 'next']);
+    lateClose({ type: 'close', streamId: 'first', code: 0 });
+    expect(next).not.toHaveBeenCalled();
+    listeners.get('next')!({ type: 'close', streamId: 'next', code: 0 });
+    flushMicrotasks();
+    expect(next).toHaveBeenCalledOnceWith(jasmine.objectContaining({ streamId: 'next', code: 0 }));
+    expect(listeners.size).toBe(0);
+  }));
+
+  it('cancels only the exact dispatched queued command through its native owner', fakeAsync(() => {
+    const run = jasmine.createSpy('run').and.resolveTo({ success: true });
+    const kill = jasmine.createSpy('kill').and.resolveTo({ success: false });
+    const status = jasmine.createSpy('status').and.resolveTo({ state: 'running' });
+    window['cmd'] = { run, kill, status, onData: () => () => {} };
+    const service = new CmdService({ update() {} } as any);
+    const controller = new AbortController();
+    const reject = jasmine.createSpy('cancelled');
+    void service.runAsync('npm install', '/first', true, true, {
+      streamId: 'first', signal: controller.signal
+    }).catch(reject);
+    controller.abort();
+    flushMicrotasks();
+    expect(kill).toHaveBeenCalledOnceWith('first');
+    expect(reject).toHaveBeenCalledOnceWith(jasmine.objectContaining({ code: 'PROJECT_COMMAND_CANCELLED' }));
+    expect(status).not.toHaveBeenCalled();
+    expect(service.isProcessing()).toBeFalse();
+  }));
 
   it('still requests main-process cleanup after the output stream closes', async () => {
     let listener!: (event: any) => void;
