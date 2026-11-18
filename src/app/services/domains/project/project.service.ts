@@ -2643,6 +2643,7 @@ export class ProjectService {
   private get projectSaveReceipts(): ProjectSaveReceipts {
     return this.saveReceipts ??= new ProjectSaveReceipts({
       durableOnly: project => window['fs']?.nativeSaveReceiptVersion === 2 && this.getProjectMode(project) !== 'coder',
+      settledIdentities: window['fs']?.projectSaveIdentities,
       durableLookup: (path, request) => {
         const observe = this.application.observeProjectPublication;
         if (!observe) return Promise.reject(Object.assign(new Error('The document publication observer is unavailable.'),

@@ -19,6 +19,7 @@ const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirecto
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
     prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
+const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
 
 async function readDependencyEnvironmentCapability() {
   let capability;
@@ -721,6 +722,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   fs: {
     projectRecoveryReceipts: recoveryReceipts,
+    projectSaveIdentities: saveIdentities,
     projectRepairEnvironment: {
       forkPolicy: params => ipcRenderer.invoke('project-repair-fork-policy', params),
       admission: () => ipcRenderer.invoke('project-repair-admission'),
