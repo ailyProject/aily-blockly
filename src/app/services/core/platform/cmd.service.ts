@@ -11,6 +11,8 @@ export interface CmdOutput {
   signal?: string;
   error?: string;
   streamId: string;
+  /** A supervised background close may leave native workspace ownership unresolved. */
+  ownershipReleased?: boolean;
   /** close 事件时附带的累积 stderr 输出 */
   stderr?: string;
   /** close 事件时附带的累积 stdout 输出 */

@@ -47,6 +47,58 @@ function complete(config) {
     api.finishBuildExecution(config, true);
 }
 
+for (const status of ['completed', 'failed']) {
+    test(`observes the original ${status} outcome after status publication was interrupted`, t => {
+        const f = fixture(t), config = api.prepareBuildExecution(f.config);
+        const { folder } = api.recordFor(config);
+        const statusFile = path.join(folder, 'execution.json'), outcomeFile = path.join(folder, 'outcome.json');
+        const rename = fs.renameSync;
+        fs.renameSync = (source, target) => {
+            if (target === statusFile && fs.existsSync(outcomeFile)) throw new Error('Interrupted after durable outcome');
+            return rename(source, target);
+        };
+        try {
+            assert.throws(() => status === 'completed' ? complete(config) : api.finishBuildExecution(config, false),
+                /Interrupted after durable outcome/);
+        } finally { fs.renameSync = rename; }
+
+        const previousStatus = fs.readFileSync(statusFile), outcome = fs.readFileSync(outcomeFile);
+        assert.equal(JSON.parse(outcome).status, status);
+        const observed = api.inspectBuildExecution(f.root, f.config.buildRequestId);
+        assert.equal(observed.status, status);
+        assert.equal(observed.executionId, config.execution.id);
+        assert.equal(observed.nextAction, 'terminal');
+        assert.equal(Boolean(observed.result), status === 'completed');
+        assert.deepEqual(api.inspectBuildExecution(f.root, f.config.buildRequestId), observed);
+        assert.deepEqual(fs.readFileSync(statusFile), previousStatus);
+        assert.deepEqual(fs.readFileSync(outcomeFile), outcome);
+        assert.equal(api.cancelBuildExecution(config).status, status);
+
+        if (status === 'completed') {
+            fs.writeFileSync(path.join(config.currentProjectPath, '.build/firmware.bin'), 'changed output');
+            const invalidated = api.inspectBuildExecution(f.root, f.config.buildRequestId);
+            assert.equal(invalidated.status, 'completed');
+            assert.equal(invalidated.nextAction, 'rebuild-current-inputs');
+            assert.equal(invalidated.result, undefined);
+        }
+        const next = api.prepareBuildExecution({ ...f.config, buildRequestId: 'separate-request' });
+        assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'prepared');
+        assert.equal(api.inspectBuildExecution(f.root, f.config.buildRequestId).status, status);
+    });
+}
+
+test('rejects cancelled outcomes with a mismatched original execution binding', t => {
+    const f = fixture(t), config = api.prepareBuildExecution(f.config);
+    const file = path.join(api.recordFor(config).folder, 'outcome.json');
+    const receipt = api.cancelBuildExecution(config);
+    for (const mismatch of [{ version: 2 }, { id: 'other-execution' },
+        { buildRequestId: 'other-request' }, { inputDigest: 'other-input' }]) {
+        fs.writeFileSync(file, JSON.stringify({ ...receipt, ...mismatch }));
+        assert.equal(api.inspectBuildExecution(f.root, f.config.buildRequestId), null);
+        assert.throws(() => api.cancelBuildExecution(config), { code: 'BUILD_EXECUTION_INVALID' });
+    }
+});
+
 test('conversion evidence survives repeated view-only saves without weakening upload reuse', async t => {
     const f = fixture(t);
     const document = { pages: [{ id: 'main', blocks: { languageVersion: 0, blocks: [] }, viewState: { scrollX: 0, scrollY: 0, scale: 1 } }] };

@@ -269,7 +269,9 @@ describe('Blockly compile and upload handoff', () => {
     ]);
     window['fs'] = { readFileSync: (file: string) => files.get(file),
       existsSync: (file: string) => files.has(file), mkdirSync() {},
+      lstatSync: () => ({ _isSymbolicLink: false }),
       writeFileSync: (file: string, content: string) => files.set(file, content),
+      appendFileSync: (file: string, content: string) => files.set(file, files.get(file)! + content),
       renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
       replaceProjectText: async (request: any, check: () => void) => {
         check(); const file = `${request.projectPath}/${request.fileName}`;
@@ -308,8 +310,8 @@ describe('Blockly compile and upload handoff', () => {
       compileValidationService: { triggerAfterSuccessfulCompile() {} },
       appendCompileLog() {}, saveBuildInfo: async () => {}, handleCompileError() {},
     });
-    const start = async () => {
-      const result = service.build().catch((error: any) => error);
+    const start = async (requestId?: string) => {
+      const result = service.build(undefined, requestId).catch((error: any) => error);
       // Let asynchronous macro hashing/publication and request preparation finish.
       for (let n = 0; n < 100 && !service.cmdService.spawn.calls.count(); n++) {
         await new Promise(resolve => setTimeout(resolve, 1));
@@ -322,11 +324,16 @@ describe('Blockly compile and upload handoff', () => {
 
   for (const early of [false, true]) it(`persists a cancelled Blockly request after cleanup and before releasing workflow (early=${early})`, async () => {
     const f = compileFixture();
-    let stopped!: (value: boolean) => void, prepared!: () => void;
+    let stopped!: (value: boolean) => void, prepared!: () => void, persisted!: () => void;
+    let persisting!: () => void;
+    const metadataStarted = new Promise<void>(resolve => { persisting = resolve; });
     f.service.workflowService.currentState = ProcessState.BUILDING;
     f.service.workflowService.finishBuild.and.callFake(() => { f.service.workflowService.currentState = ProcessState.ERROR; });
     f.service.ensureCancelState = () => {};
-    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.resolveTo();
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.callFake(() => new Promise<void>(resolve => {
+      persisted = resolve;
+      persisting();
+    }));
     f.service.cmdService.kill = jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
     if (early) f.service.npmService.ensureLocalCompilerDependencies = () => new Promise<void>(resolve => { prepared = resolve; });
     const result = f.service.build().catch((error: any) => error);
@@ -336,11 +343,65 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
     expect(f.service.workflowService.finishBuild).not.toHaveBeenCalled();
     if (early) prepared(); else stopped(true);
+    await metadataStarted;
+    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true,
+      { config: early ? undefined : f.service.activeExecutionConfig });
+    expect(f.service.workflowService.finishBuild).not.toHaveBeenCalled();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.BUILDING);
+    persisted();
     const completed = await result;
     expect(completed).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled', state: 'warn', retryable: false }));
-    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(f.service.passed).toBeFalse();
+  });
+
+  for (const terminal of ['completed', 'failed', 'mismatched', 'unconfirmed']) it(`a late Blockly Stop preserves the ${terminal} request and its log tail`, async () => {
+    const f = compileFixture();
+    const requestId = 'native-terminal-before-stop';
+    const { result } = await f.start(requestId);
+    const binding = { version: 1, id: 'native-execution', inputDigest: 'digest', buildRequestId: requestId };
+    const config = { ...f.service.activeExecutionConfig, execution: binding };
+    f.service.activeExecutionConfig = config;
+    const nativeReply = terminal === 'mismatched' ? { ...binding, status: 'cancelled', id: 'other-execution' }
+      : terminal === 'unconfirmed' ? undefined : { ...binding, status: terminal };
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancelBuildExecution').and.returnValue(nativeReply);
+    f.service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(true);
+    f.service.ensureCancelState = jasmine.createSpy('ensureCancelState');
+
+    f.service.cancel(requestId);
+    expect(window['builder'].cancelBuildExecution).toHaveBeenCalledOnceWith(config);
+    expect(f.service.buildCancellation.signal.aborted).toBeFalse();
+    expect(f.command.observed).toBeTrue();
+    expect(f.service.cmdService.kill).not.toHaveBeenCalled();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.BUILDING);
+    f.command.next({ type: 'stdout', data: 'final compiler output\n' });
+    f.command.next({ type: 'close', code: terminal === 'failed' ? 1 : 0 });
+    f.command.complete();
+    const settled = await result;
+    expect(settled.state).toBe(terminal === 'failed' ? 'error' : 'done');
+    expect(settled.code).not.toBe('BUILD_CANCELLED');
+    expect(settled.buildLog).toEqual(jasmine.objectContaining({ requestId, complete: true }));
+    expect(f.files.get(settled.buildLog.path)).toContain('final compiler output');
+    expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('a confirmed native Blockly Stop aborts the matching request', async () => {
+    const f = compileFixture();
+    const requestId = 'native-cancelled-request';
+    const { result } = await f.start(requestId);
+    const binding = { version: 1, id: 'native-execution', inputDigest: 'digest', buildRequestId: requestId };
+    const config = { ...f.service.activeExecutionConfig, execution: binding };
+    f.service.activeExecutionConfig = config;
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancelBuildExecution').and.returnValue({ ...binding, status: 'cancelled' });
+    f.service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(true);
+    f.service.ensureCancelState = jasmine.createSpy('ensureCancelState');
+    const streamId = f.service.streamId;
+
+    f.service.cancel(requestId);
+    expect(window['builder'].cancelBuildExecution).toHaveBeenCalledOnceWith(config);
+    expect(f.service.buildCancellation.signal.aborted).toBeTrue();
+    expect(f.service.cmdService.kill).toHaveBeenCalledOnceWith(streamId);
+    expect(await result).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled' }));
   });
 
   for (const scenario of [

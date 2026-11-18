@@ -289,6 +289,34 @@ describe('BuilderService background preprocess ownership', () => {
       service.destroy();
     }));
 
+    for (const ownershipReleased of [true, false]) it(`observes native preprocess close after an unconfirmed save stop (released=${ownershipReleased})`, fakeAsync(() => {
+      const service = backgroundBuilder(); service.init();
+      service.blocklyService.dependencySubject.next('changed'); tick(500);
+      const subscription = service.preprocessProcess;
+      const streamId = service.preprocessStreamId;
+      service.cmdService.kill.and.resolveTo(false);
+      let stopFailure: Error | undefined;
+      service.pauseBackgroundPreprocessForSave('D:/owned').catch((error: Error) => { stopFailure = error; });
+      tick();
+      expect(stopFailure?.message).toContain('未确认停止');
+      expect(service.isPreprocessing()).toBeTrue();
+      expect(subscription.closed).toBeFalse();
+
+      service.backgroundOutput.next({ type: 'stdout', data: '[ERROR] obsolete diagnostics' });
+      service.backgroundOutput.next({ type: 'close', code: 0, ownershipReleased });
+      service.backgroundOutput.complete();
+      let drained = false;
+      service.waitForPreprocessDrain('D:/owned', () => false, 'upload', 20).then(() => { drained = true; }, () => {});
+      tick(20);
+      expect(drained).toBe(ownershipReleased);
+      expect(service.preprocessError).toBeNull();
+      expect(service.preprocessProcess).toBeNull();
+      expect(service.preprocessStreamId).toBe(ownershipReleased ? null : streamId);
+      expect(service.cmdService.kill).toHaveBeenCalledTimes(1);
+      service.cmdService.kill.and.resolveTo(true);
+      service.destroy(); tick();
+    }));
+
     it('installation invalidates background results without terminating their registered process', fakeAsync(() => {
       const service = backgroundBuilder(); service.init();
       service.blocklyService.dependencySubject.next('changed'); tick(500);

@@ -395,23 +395,23 @@ export class _BuilderService {
   }
 
   private cancelBackgroundPreprocess(): void {
-    const subscription = this.preprocessProcess;
     const streamId = this.preprocessStreamId;
-    this.preprocessProcess = null;
-
-    subscription?.unsubscribe?.();
-    if (streamId && !this.preprocessStop) {
-      const stopping = this.cmdService.kill(streamId).then(stopped => {
-        if (!stopped) throw new Error('预处理任务未确认停止。');
-        if (this.preprocessStreamId === streamId) this.preprocessStreamId = null;
-      }).finally(() => {
-        if (this.preprocessStop === stopping) this.preprocessStop = null;
-      });
-      this.preprocessStop = stopping;
-      void stopping.catch((error) => {
-        console.warn('终止预编译进程失败:', error);
-      });
-    }
+    if (!streamId || this.preprocessStop) return;
+    ++this.preprocessRunGeneration;
+    // Keep observing ownership even after the stream's diagnostics become stale.
+    const stopping = this.cmdService.kill(streamId).then(stopped => {
+      if (this.preprocessStreamId !== streamId) return;
+      if (!stopped) throw new Error('预处理任务未确认停止。');
+      this.preprocessProcess?.unsubscribe?.();
+      this.preprocessProcess = null;
+      this.preprocessStreamId = null;
+    }).finally(() => {
+      if (this.preprocessStop === stopping) this.preprocessStop = null;
+    });
+    this.preprocessStop = stopping;
+    void stopping.catch((error) => {
+      console.warn('终止预编译进程失败:', error);
+    });
   }
 
   private async writeTextFile(filePath: string, content: string): Promise<void> {
@@ -800,13 +800,14 @@ export class _BuilderService {
         this.preprocessStreamId = preprocessStreamId;
         this.pendingPrecompile = false;
         let settled = false;
+        let ownershipRetained = false;
         const isCurrent = () => this.initialized && runGeneration === this.preprocessRunGeneration
-          && currentProjectPath === this.projectService.currentProjectPath;
+          && currentProjectPath === this.projectService.currentProjectPath && this.preprocessStreamId === preprocessStreamId;
         const settleOwnedStream = () => {
           settled = true;
           if (this.preprocessStreamId === preprocessStreamId) {
             this.preprocessProcess = null;
-            this.preprocessStreamId = null;
+            if (!ownershipRetained) this.preprocessStreamId = null;
           }
         };
         // CmdService dispatches on call. From here, the child owns settlement.
@@ -818,6 +819,7 @@ export class _BuilderService {
           true,
         ).subscribe({
           next: (output) => {
+            if (output.type === 'close') ownershipRetained = output.ownershipReleased === false;
             if (!isCurrent()) return;
             // 将预编译普通输出发送到日志（错误信息先收集，最后统一发送）
             if (output.data) {
@@ -1440,9 +1442,9 @@ export class _BuilderService {
           cloudBuild = false;
           this.noticeService.update({ title: this.t('PREPARING_TITLE'),
             text: this.translate.instant('CLOUD_BUILD.SWITCHING_TO_LOCAL'), state: 'doing',
-            setTimeout: 0, stop: () => this.cancel() });
+            setTimeout: 0, stop: () => this.cancel(requestId) });
           await this.npmService.prepareLocalCompileBackend(requestedProjectPath,
-            () => cancellation.signal.aborted, () => this.cancel());
+            () => cancellation.signal.aborted, () => this.cancel(requestId));
         }
         if (this.configService.getCompileBackend() === 'cloud') {
           await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted);
@@ -1465,9 +1467,7 @@ export class _BuilderService {
             state: 'doing',
             progress: 0,
             setTimeout: 0,
-            stop: () => {
-              this.cancel();
-            }
+            stop: () => this.cancel(requestId)
           });
           
           console.log('检测到后台预编译正在运行，等待其完成...');
@@ -1583,6 +1583,7 @@ export class _BuilderService {
           };
           // Only a task that actually started in the cloud may return there.
           let allowCloudSwitch = cloudBuild;
+          let previousLocalExecutionId: string | undefined;
           while (true) {
             this.buildPromiseReject = reject;
             if (cloudBuild) {
@@ -1620,7 +1621,7 @@ export class _BuilderService {
               }
             }
             const executionConfig = await this.prepareExecution({ ...buildConfig, buildRequestId: requestId,
-              executionRetryOf: this.activeExecutionConfig?.execution?.id }, sourceWorkspace);
+              executionRetryOf: previousLocalExecutionId }, sourceWorkspace);
             this.activeExecutionConfig = executionConfig;
             if (cancellation.signal.aborted && executionConfig.execution) window['builder'].cancelBuildExecution(executionConfig);
             assertCurrent();
@@ -1656,9 +1657,7 @@ export class _BuilderService {
               state: 'doing',
               progress: 0,
               setTimeout: 0,
-              stop: () => {
-                this.cancel();
-              }
+              stop: () => this.cancel(requestId)
             });
 
             // 启动进度初始化定时器（3秒后如果还没有进度就显示初始进度）
@@ -1725,9 +1724,7 @@ export class _BuilderService {
                                 state: 'doing',
                                 progress: this.currentProgress,
                                 setTimeout: 0,
-                                stop: () => {
-                                  this.cancel();
-                                }
+                                stop: () => this.cancel(requestId)
                               });
 
                               if (builderProgress.status === 'complete' && builderProgress.percent === 100) {
@@ -1763,9 +1760,7 @@ export class _BuilderService {
                                 state: 'doing',
                                 progress: this.currentProgress,
                                 setTimeout: 0,
-                                stop: () => {
-                                  this.cancel();
-                                }
+                                stop: () => this.cancel(requestId)
                               });
                             }
                           }
@@ -2010,6 +2005,8 @@ export class _BuilderService {
                 return;
               }
               assertCurrent();
+              previousLocalExecutionId = executionConfig.execution?.id;
+              this.activeExecutionConfig = undefined;
               this.buildPromiseReject = reject;
               backendOperation.useCloud();
               cloudBuild = true;
@@ -2313,6 +2310,7 @@ export class _BuilderService {
    */
   private startProgressInitTimer(boardName: string) {
     let checkCount = 0;
+    const requestId = this.activeBuildRequestId;
     
     this.progressTimer = setInterval(() => {
       // 第一时间检查是否已取消
@@ -2348,9 +2346,7 @@ export class _BuilderService {
           state: 'doing',
           progress: this.currentProgress,
           setTimeout: 0,
-          stop: () => {
-            this.cancel();
-          }
+          stop: requestId ? () => this.cancel(requestId) : undefined
         });
       }
       // 之后每10秒缓慢增加1%，最多到15%
@@ -2370,9 +2366,7 @@ export class _BuilderService {
           state: 'doing',
           progress: this.currentProgress,
           setTimeout: 0,
-          stop: () => {
-            this.cancel();
-          }
+          stop: requestId ? () => this.cancel(requestId) : undefined
         });
       }
     }, 1000); // 每1秒检查一次
@@ -2451,6 +2445,21 @@ export class _BuilderService {
       console.log('没有进行中的编译，忽略取消请求');
       return;
     }
+
+    const execution = this.activeExecutionConfig;
+    if (execution?.execution && !this.activeCloudRequestId) {
+      if (execution.execution.buildRequestId !== this.activeBuildRequestId) return;
+      try {
+        // The exact native execution chooses the terminal result. Keep the
+        // original stream and log open when Stop did not win that result.
+        const outcome = window['builder'].cancelBuildExecution(execution);
+        if (outcome?.status !== 'cancelled' || outcome.version !== 1 || outcome.id !== execution.execution.id
+          || outcome.buildRequestId !== execution.execution.buildRequestId || outcome.inputDigest !== execution.execution.inputDigest) return;
+      } catch (error) {
+        console.warn('Could not confirm build cancellation; continuing to observe the original execution:', error);
+        return;
+      }
+    }
     
     console.log('开始取消编译流程...');
     if (hasActiveProcess || this.activeCloudRequestId) {
@@ -2459,10 +2468,6 @@ export class _BuilderService {
     
     // 立即设置取消标志，防止任何后续处理
     this.cancelled = true;
-    if (this.activeExecutionConfig?.execution) {
-      try { window['builder'].cancelBuildExecution(this.activeExecutionConfig); }
-      catch (error) { console.warn('Could not persist build cancellation; stopping the registered process tree:', error); }
-    }
     this.buildCancellation?.abort();
     // 取消远程请求后仍等待主进程完成撤销，避免下一轮编译与旧任务发布产物发生竞争。
     if (this.activeCloudRequestId && window['cloudBuild']?.cancel) {

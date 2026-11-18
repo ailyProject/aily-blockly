@@ -937,6 +937,8 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           signal,
           streamId,
           expected: result.stopRequested,
+          ...(options.backgroundPreprocess === true && options.buildWorkspace
+            ? { ownershipReleased: commandManager.getProcess(streamId) !== process } : {}),
         });
       });
 
