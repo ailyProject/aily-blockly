@@ -5,6 +5,9 @@ const vm = require('node:vm');
 const { createHash, webcrypto } = require('node:crypto');
 const test = require('node:test');
 const ts = require('typescript');
+const execution = require('../../child/scripts/build-execution-workspace');
+const upload = require('../../child/scripts/blockly-upload-state');
+const { acquireBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
 
 const repo = path.resolve(__dirname, '../..');
 const outputs = path.join(repo, 'tests/test-results/build-log-reference');
@@ -19,8 +22,12 @@ function production(relative, window, imports = {}) {
   return module.exports;
 }
 function fixture(t, replacement) {
-  const root = fs.mkdtempSync(path.join(outputs, 'owned-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(outputs, 'owned-')));
+  t.after(() => {
+    assert.equal(path.dirname(fs.realpathSync(root)), fs.realpathSync(outputs));
+    assert.match(path.basename(root), /^owned-/);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
   const api = replacement ? replacement(root) : fs;
   const window = { fs: api, path, crypto: webcrypto };
   const crypto = production('src/app/utils/crypto.utils.ts', window);
@@ -28,6 +35,86 @@ function fixture(t, replacement) {
     { '../../../utils/crypto.utils': crypto }).createProjectBuildLog };
 }
 const expectedPath = (root, id) => path.join(root, '.log/compile/requests', createHash('sha256').update(id).digest('hex') + '.log');
+
+test('cold observation recovers only the exact compilation source and log, independently of firmware selection', async t => {
+  const f = fixture(t);
+  f.window.builder = { inspectBuildExecution: execution.inspectBuildExecution };
+  const { ProjectBuildReceipts, readNativeBuildReceipt } =
+    production('src/app/services/integrations/automation/project-build-receipts.ts', f.window);
+  const write = (root, relative, content) => {
+    const filename = path.join(root, relative);
+    fs.mkdirSync(path.dirname(filename), { recursive: true });
+    fs.writeFileSync(filename, typeof content === 'string' ? content : JSON.stringify(content));
+  };
+  const board = '@aily-project/board-test';
+  write(f.root, 'package.json', { type: 'blockly', dependencies: { [board]: '1' } });
+  write(f.root, 'project.abi', 'original ABI');
+  write(f.root, 'node_modules/' + board + '/board.json', { compilerParam: '-b test:test:test' });
+  write(f.root, 'node_modules/' + board + '/package.json', { name: board });
+
+  const complete = async (id, code) => {
+    const log = await f.create(f.root, id);
+    const config = execution.prepareBuildExecution({ currentProjectPath: f.root, code, boardModule: board, buildRequestId: id });
+    await log.run(async () => {
+      const root = config.currentProjectPath;
+      const lease = acquireBuildWorkspace(root, 'compile');
+      try {
+        execution.startBuildExecution(config, lease);
+        write(root, '.temp/sketch/sketch.ino', code);
+        write(root, '.build/firmware.bin', 'firmware ' + id);
+        write(root, '.temp/preprocess.json', { success: true, envVars: { BUILD_PATH: path.join(root, '.build') },
+          upload: { command: 'flash "' + path.join(root, '.build/firmware.bin') + '"' } });
+        upload.publishBlocklyUploadState(config, upload.captureBlocklyUploadInputs(config));
+      } finally { lease.release(); }
+      execution.finishBuildExecution(config, true);
+      log.append('compiler output for ' + id);
+      return { state: 'done' };
+    });
+    return config.execution;
+  };
+  const firstSource = 'void setup() { delay(1379); }';
+  const a = await complete('older', firstSource);
+  const b = await complete('newer', 'void setup() { delay(2683); }');
+  const status = (id, project = f.root) => new ProjectBuildReceipts(undefined, undefined, readNativeBuildReceipt)
+    .status(project, { version: 1, requestId: id });
+  const old = (await status('older')).result;
+  const latest = (await status('newer')).result;
+  assert.equal(old.buildHistory.operation, 'compile');
+  assert.equal(old.buildHistory.buildRequestId, 'older');
+  assert.equal(old.buildHistory.executionId, a.id);
+  assert.equal(old.buildHistory.inputDigest, a.inputDigest);
+  assert.equal(old.buildHistory.sourceSha256, createHash('sha256').update(firstSource).digest('hex'));
+  assert.equal(old.buildLog.path, expectedPath(f.root, 'older'));
+  assert.equal(old.buildLog.complete, true);
+  assert.match(fs.readFileSync(old.buildLog.path, 'utf8'), /compiler output for older/);
+  assert.equal(old.buildInput, undefined);
+  assert.equal(latest.buildInput.executionId, b.id);
+  assert.equal(latest.buildLog.path, expectedPath(f.root, 'newer'));
+  assert.equal((await status('missing')).buildReceipt.state, 'unknown');
+  const otherProject = fixture(t);
+  assert.equal((await status('older', otherProject.root)).buildReceipt.state, 'unknown');
+
+  if (process.platform === 'win32') {
+    const realStat = fs.lstatSync;
+    const pathStat = t.mock.method(fs, 'lstatSync', (filename, ...options) => {
+      const actual = realStat(filename, ...options);
+      if (filename === old.buildLog.path) actual.dev = 0;
+      return actual;
+    });
+    try { assert.equal((await status('older')).result.buildLog?.complete, true); }
+    finally { pathStat.mock.restore(); }
+  }
+
+  fs.unlinkSync(old.buildLog.path + '.receipt.json');
+  const legacy = (await status('older')).result;
+  assert.equal(legacy.buildLog.path, old.buildLog.path);
+  assert.equal(legacy.buildLog.complete, false);
+  fs.copyFileSync(latest.buildLog.path, old.buildLog.path);
+  assert.equal((await status('older')).result.buildLog, undefined, 'the filename alone cannot bind the log');
+  fs.unlinkSync(old.buildLog.path);
+  fs.linkSync(latest.buildLog.path, old.buildLog.path);
+  assert.equal((await status('older')).result.buildLog, undefined, 'hard-linked logs are not owned by one request');
+});
 
 test('each admitted request preserves complete raw stdout/stderr and its control outcome', async t => {
   const f = fixture(t), id = 'actual-request:123';

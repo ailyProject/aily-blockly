@@ -15,6 +15,7 @@ export interface ProjectCreateGuard {
   readonly signal: AbortSignal;
   assertCurrent(): void;
   markCreated(project: string): void;
+  beginHandoff(): void;
   markActivated(): void;
 }
 
@@ -26,6 +27,7 @@ interface Entry {
   abort: AbortController;
   createdProject?: string;
   operationKey?: string;
+  handingOff: boolean;
   activationCommitted: boolean;
   result?: CreateResult;
   state: State;
@@ -56,7 +58,7 @@ export class ProjectCreateReceipts {
     let entry = this.exact(request);
     // Cancellation may arrive ahead of the original mutation.
     if (!entry && !this.entries.has(request.requestId)) entry = this.register(request);
-    if (entry?.state === 'pending' && !entry.activationCommitted) {
+    if (entry?.state === 'pending' && !entry.handingOff && !entry.activationCommitted) {
       entry.state = 'cancelled';
       entry.abort.abort(cancelled());
     }
@@ -77,12 +79,13 @@ export class ProjectCreateReceipts {
       requestId: request.requestId,
       signal: entry.abort.signal,
       assertCurrent: () => {
-        if (!entry.activationCommitted && (entry.abort.signal.aborted || Date.now() >= request.deadlineAt)) {
+        if (!entry.handingOff && !entry.activationCommitted && (entry.abort.signal.aborted || Date.now() >= request.deadlineAt)) {
           this.cancel(request);
           throw cancelled();
         }
       },
       markCreated: project => { entry.createdProject = project; },
+      beginHandoff: () => { guard.assertCurrent(); entry.handingOff = true; },
       markActivated: () => { guard.assertCurrent(); entry.activationCommitted = true; },
     };
     let onAbort!: () => void;
@@ -120,7 +123,7 @@ export class ProjectCreateReceipts {
       if (entry.state !== 'pending' && entry.request.deadlineAt < cutoff) this.entries.delete(id);
     }
     if (this.entries.size >= MAX_RECEIPTS) return undefined;
-    const entry: Entry = { request: { ...request }, abort: new AbortController(), activationCommitted: false, state: 'pending' };
+    const entry: Entry = { request: { ...request }, abort: new AbortController(), handingOff: false, activationCommitted: false, state: 'pending' };
     this.entries.set(request.requestId, entry);
     return entry;
   }

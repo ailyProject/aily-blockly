@@ -42,6 +42,9 @@ import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-s
 import { recoverAbsProjectOperation, settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
 import { AbsApplicationJournal } from '../../../integrations/blockly/abs/abs-application-journal';
 import { AbsOperationJournal } from '../../../integrations/blockly/abs/abs-operation-journal';
+import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions, originalAdmissionOutcome,
+  type OriginalRequestAdmissionIdentity } from '../../../integrations/blockly/abs/original-request-admission';
+import { nativeSaveIdentity } from '../../../integrations/blockly/abs/abs-native-save-result';
 import { inspectAbsBaselineRecovery, recoverAbsBaseline } from '../../../integrations/blockly/abs/abs-baseline-recovery';
 import { restoreAbsProjectCaches } from '../../../integrations/blockly/abs/abs-project-open';
 import { projectViewRecoveryFailure } from './project-view-recovery';
@@ -95,6 +98,7 @@ export class BlocklyLiveOperationBridgeService {
   private buildReceipts?: ProjectBuildReceipts;
   private forkReceipts?: ProjectForkReceipts;
   private createReceipts?: ProjectCreateReceipts;
+  private readonly pendingApplyAdmissions = new Set<string>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -179,6 +183,15 @@ export class BlocklyLiveOperationBridgeService {
     // File permission approval cannot authorize an internal recovery clone.
     if (payload.operation === 'project_fork') return forkProject(this.projectService, payload.path, payload.params || {});
     const blocklyProgram = this.projectService.getProjectMode(payload.path || this.projectService.currentProjectPath) !== 'coder';
+    // Bind the original request before the live readiness and mutation gates.
+    // Invalid protocol messages cannot acquire an admission record.
+    const applyId = payload.operation === 'abs_apply' && payload.params?.['requestId'];
+    if (blocklyProgram && window['fs']?.projectSyncStorageVersion === 2
+      && typeof applyId === 'string' && payload.params?.['version'] === 2 && /^[A-Za-z0-9-]{16,80}$/.test(applyId)) {
+      const rejection = rejectAbsLiveRequest('abs_apply', payload.params);
+      if (rejection) return { ...rejection, project: this.projectService.currentProjectPath };
+      return this.executeApplyAdmission(payload, applyId);
+    }
     if (blocklyProgram && publishesProjectProgram(payload)) {
       try { requireProjectProgramPublication(); }
       catch (error) { return { ok: false, operation: payload.operation, commandDispatched: false,
@@ -216,9 +229,12 @@ export class BlocklyLiveOperationBridgeService {
         // Observation never creates a task, acquires a write lease, or redirects
         // an old request to whichever project happens to be active now.
         if (payload.operation === 'project_save_status') return await this.projectService.getProjectSaveReceipt(project, request);
-        return await this.projectService.startProjectSaveReceipt(project, request, () => request.version === 2
-          ? this.executeAdmittedOperation({ ...payload, path: project, params: {} }, request)
-          : this.executeAdmittedOperation({ ...payload, path: project, params: {} }));
+        const admitted = { ...payload, path: project, params: {} };
+        return await this.projectService.startProjectSaveReceipt(project, request, () => {
+          if (request.version !== 2) return this.executeAdmittedOperation(admitted);
+          if (!blocklyProgram || window['fs']?.projectSyncStorageVersion !== 2) return this.executeAdmittedOperation(admitted, request);
+          return this.executeSaveAdmission(admitted, project, request);
+        });
       } catch (error) {
         return { ok: false, operation: payload.operation, project, code: (error as any)?.code || 'PROJECT_SAVE_RECEIPT_FAILED',
           observation: { resultKnown: false, operationCancelled: false },
@@ -281,6 +297,81 @@ export class BlocklyLiveOperationBridgeService {
       }
     }
     return this.executeAdmittedOperation(payload);
+  }
+
+  private async admissionGuard(requested: string | undefined): Promise<{ project: string; guard: () => void } | undefined> {
+    const project = this.projectService.currentProjectPath;
+    if (!project) return;
+    const current = this.projectService.captureCurrentProjectGuard();
+    if (requested && !await sameAbsProjectDirectory(requested, project, window['fs']?.realpathAsync, window['platform']?.isWindows === true)) return;
+    if (!current()) return;
+    return { project, guard: () => {
+      if (!current()) throw Object.assign(new Error('The original request project changed during admission.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+    } };
+  }
+
+  private async executeApplyAdmission(payload: BlocklyLiveOperationPayload, requestId: string): Promise<Record<string, any>> {
+    const scope = await this.admissionGuard(payload.path);
+    if (!scope) {
+      // Reject the stale route without reading or recording a different project's storage.
+      return { ok: false, operation: 'abs_apply', code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+        message: 'The original application target is no longer open in this host.' };
+    }
+    const { project, guard } = scope, key = project + '\0' + requestId;
+    if (this.pendingApplyAdmissions.has(key)) return {
+      ok: false, operation: 'abs_apply', project, code: 'ABS_APPLY_OBSERVATION_PENDING',
+      publication: { status: 'UNKNOWN' }, message: 'Observe the original application; it is still settling.',
+    };
+    this.pendingApplyAdmissions.add(key);
+    try {
+      const port = await openAbsHostStorage(project, guard);
+      const identity = { operation: 'abs_apply' as const, requestId };
+      const admissions = new OriginalRequestAdmissions(port, project);
+      if (await admissions.observe(identity) || await port.read(await applicationRequestKey(requestId)) !== null) {
+        return (await new AbsApplicationJournal(port, project).observe(requestId, guard)).result;
+      }
+      guard();
+      return await this.settleAdmissionFailure(admissions, identity, guard, markWriter => {
+        try { requireProjectProgramPublication(); }
+        catch (error) { return Promise.resolve(absPrecommitFailure('abs_apply', error)); }
+        return this.executeAdmittedOperation({ ...payload, path: project }, undefined, markWriter);
+      });
+    } finally {
+      this.pendingApplyAdmissions.delete(key);
+    }
+  }
+
+  private async executeSaveAdmission(payload: BlocklyLiveOperationPayload, path: string, request: ProjectSaveRequest) {
+    const scope = await this.admissionGuard(path);
+    if (!scope) return { ok: false, operation: request.operation, code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+      message: 'The original save target is no longer open in this host.' };
+    const { project, guard } = scope;
+    const port = await openAbsHostStorage(project, guard), root = port.attachment?.root ?? project;
+    const identity = nativeSaveAdmissionIdentity(await nativeSaveIdentity(root, request))!;
+    return this.settleAdmissionFailure(new OriginalRequestAdmissions(port, root), identity, guard,
+      markWriter => this.executeAdmittedOperation(payload, request, markWriter));
+  }
+
+  private async settleAdmissionFailure(admissions: OriginalRequestAdmissions, identity: OriginalRequestAdmissionIdentity,
+    guard: () => void, run: (markWriter: () => void) => Promise<Record<string, any>>) {
+    let writerReached = false, result: Record<string, any>;
+    try { result = await run(() => { guard(); writerReached = true; }); }
+    catch (error) {
+      if (writerReached) throw error;
+      result = { ok: false, code: (error as any)?.code, message: error instanceof Error ? error.message : String(error) };
+    }
+    // The ABS coordinator also reports prechecks inside apply as explicitly
+    // not-started. No other post-admission failure can acquire this proof.
+    const application = identity.operation === 'abs_apply';
+    if (result['ok'] !== false || writerReached && !(application && result['application']?.status === 'NOT_STARTED'
+      && result['publication']?.status === 'NOT_COMMITTED')) return result;
+    const code = result['code'] ?? result['reason'] ?? 'PROJECT_OPERATION_NOT_STARTED';
+    const message = result['message'] ?? 'The original operation was rejected before starting.';
+    const retained = await admissions.reject(identity, { code, message }, guard);
+    if (!retained) return { ok: false, operation: identity.operation, code: 'PROJECT_ADMISSION_OBSERVATION_REQUIRED',
+      message: 'The original operation has an execution record. Observe its result.' };
+    return { ...result, ...originalAdmissionOutcome(retained),
+      ...(application ? { application: { status: 'NOT_STARTED', requestId: identity.requestId } } : {}) };
   }
 
   /** A complete disk fork need not destroy an unserialisable source renderer.
@@ -387,10 +478,12 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeAdmittedOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest): Promise<Record<string, any>> {
+  private async executeAdmittedOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest,
+    markWriter?: () => void): Promise<Record<string, any>> {
     const rejection = rejectAbsLiveRequest(payload.operation || '', payload.params || {});
     if (rejection) return { ...rejection, project: this.projectService.currentProjectPath };
-    const execute = () => nativeSaveRequest ? this.executeOperation(payload, nativeSaveRequest) : this.executeOperation(payload);
+    const execute = () => markWriter ? this.executeOperation(payload, nativeSaveRequest, undefined, markWriter)
+      : nativeSaveRequest ? this.executeOperation(payload, nativeSaveRequest) : this.executeOperation(payload);
     // The coordinator consumes exact journal authority before invoking the
     // domain lifecycle gate. A generic mutation mask would block its own
     // reopen; all other recovery/writing operations retain their admission.
@@ -426,7 +519,8 @@ export class BlocklyLiveOperationBridgeService {
       && this.projectService.ownsLibraryHistoryNavigation(payload.params['token'], projectPath);
   }
 
-  private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol,
+    markWriter?: () => void): Promise<Record<string, any>> {
     if (payload.operation === 'project_create_status' || payload.operation === 'project_create_cancel'
       || payload.operation === 'project_create' && Object.hasOwn(payload.params || {}, 'createRequest')) {
       return this.executeProjectCreateSettlement(payload);
@@ -473,7 +567,8 @@ export class BlocklyLiveOperationBridgeService {
         inProgress: this.absApplyInProgress,
       };
     }
-    const inspection = ['project_load_status', 'app_info', 'search_boards_libraries'].includes(payload.operation || '');
+    const inspection = ['project_load_status', 'app_info', 'search_boards_libraries'].includes(payload.operation || '')
+      || payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_apply';
     const buildNotStarted = payload.operation === 'project_build' ? { buildOutcome: 'not-started' } : {};
     if (this.boardSwitchInProgress && !inspection) {
       return { ok: false, ...buildNotStarted, reason: 'board_switch_in_progress', message: '开发板正在切换，请等待当前操作完成。' };
@@ -793,7 +888,7 @@ export class BlocklyLiveOperationBridgeService {
         return importProjectMedia(currentProject, payload.params as any, undefined,
           target => this.absGenerationTools.captureMediaImportTarget(target));
       case 'abs_apply':
-        return this.runAbsOperation(() => this.executeAbsApply(payload.params || {}));
+        return this.runAbsOperation(() => this.executeAbsApply(payload.params || {}, markWriter));
       case 'abs_projection':
         return this.executeAbsProjection(payload.params || {});
       case 'abs_validate':
@@ -850,8 +945,10 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_upload':
         return this.executeProjectUpload(payload.params || {});
       case 'blocks_tidy':
+        markWriter?.();
         return this.runBlockWritingOperation(() => this.executeBlocksTidy(nativeSaveRequest));
       case 'project_save':
+        markWriter?.();
         return this.runBlockWritingOperation(() => this.executeProjectSave(nativeSaveRequest));
       case 'project_reload':
         return this.executeProjectReload(lifecycleOwner);
@@ -1115,7 +1212,7 @@ export class BlocklyLiveOperationBridgeService {
     if (this.nativeRecoveryRuntime?.key !== key) this.nativeRecoveryRuntime = { key, fingerprint };
   }
 
-  private async executeAbsApply(params: Record<string, any>) {
+  private async executeAbsApply(params: Record<string, any>, markWriter?: () => void) {
     let source: string;
     try {
       const fingerprint = await this.projectService.getBlocklyLibraryRuntimeFingerprint();
@@ -1130,6 +1227,7 @@ export class BlocklyLiveOperationBridgeService {
       type: 'editor_operation_progress', operationId, operationKind: 'blockly.abs.apply',
       phase, label: 'Apply ABS generation', detail, timestamp: Date.now(),
     });
+    markWriter?.();
     progress('started');
     const result = await this.ngZone.runOutsideAngular(() => this.absGenerationTools.execute('abs_apply', params, source,
       (blocks, batches) => progress('progress', `已装载 ${blocks} 个块，完成 ${batches} 批`)));
@@ -1358,7 +1456,8 @@ export class BlocklyLiveOperationBridgeService {
     return this.projectService.withProjectLifecycleAdmission(check, async owner => {
       const opened = await this.projectService.projectOpen(project, {
         reason: 'chat-tool-create', interactive: false, lifecycleOwner: owner,
-        createActivation: { signal: authority.signal, assertCurrent: check, markActivated: authority.markActivated },
+        createActivation: { signal: authority.signal, assertCurrent: check,
+          beginHandoff: authority.beginHandoff, markActivated: authority.markActivated },
       });
       if (opened) authority.markActivated();
       return opened;

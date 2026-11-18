@@ -2605,6 +2605,16 @@ function createWindow() {
   });
 
   registerWebBluetoothChooser(mainWindow);
+  const projectContents = mainWindow.webContents;
+  const publishOpenedProject = () => {
+    if (mainWindow?.webContents === projectContents) {
+      cliBridge?.updateProject(getOpenedProjectPathFromWindow());
+    }
+  };
+  projectContents.on('did-navigate', publishOpenedProject);
+  projectContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+    if (isMainFrame) publishOpenedProject();
+  });
   mainWindow.webContents.on('did-start-navigation', (details) => {
     if (!shouldBeginRendererGeneration(details)) {
       return;
@@ -2726,6 +2736,7 @@ function createWindow() {
   mainWindow.on("closed", () => {
     invalidateRendererGeneration('window-closed');
     mainWindow = null;
+    cliBridge?.updateProject(null);
     rendererCommandGate.notify();
     app.quit();
   });
