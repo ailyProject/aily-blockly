@@ -7,6 +7,27 @@ import { canTransferProjectAbi } from './utils/project-abi-transfer';
 import { BlocklyLibraryPackageService } from '@domain/dependencies/public-api';
 import { hashAbsText } from '../../integrations/blockly/abs/abs-identity-map';
 import { projectResourceGc } from './services/project-resource-gc.service';
+import { ProjectApplicationAdapter } from '../../integrations/project/project-application.adapter';
+
+describe('Blockly startup source and environment settlement', () => {
+  it('checks the original ABS journal before asking the dependency owner even without a linked environment', async () => {
+    const originalStorage = window['fs'], originalLibraries = window['libraryDependencies'];
+    const order: string[] = [];
+    const adapter = Object.create(ProjectApplicationAdapter.prototype) as ProjectApplicationAdapter;
+    window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async () => ({
+      read: async (key: string) => { order.push(key); return null; },
+      withLock: () => { throw Error('A project without a prepared transaction has no lock work.'); },
+    }) } as any;
+    window['libraryDependencies'] = { environmentVersion: 2, pendingEnvironment: async () => { order.push('dependencies'); return []; } };
+    try {
+      await adapter.settleEnvironmentBeforeOpen('D:/project', () => {});
+      expect(order).toEqual(['prepared.json', 'dependencies']);
+    } finally {
+      window['fs'] = originalStorage;
+      window['libraryDependencies'] = originalLibraries;
+    }
+  });
+});
 
 describe('legacy native-procedure library validation', () => {
   function fixture() {
