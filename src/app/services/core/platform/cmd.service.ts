@@ -11,6 +11,9 @@ export interface CmdOutput {
   signal?: string;
   error?: string;
   streamId: string;
+  /** A supervised background close may leave native workspace ownership unresolved. */
+  ownershipReleased?: boolean;
+  recovered?: boolean;
   /** close 事件时附带的累积 stderr 输出 */
   stderr?: string;
   /** close 事件时附带的累积 stdout 输出 */
@@ -27,8 +30,10 @@ export interface CmdOptions {
   forwardStdout?: boolean;
   /** Bind a build marker to this registered command's confirmed tree cancellation. */
   buildWorkspace?: string;
-  /** Advisory preprocess only: foreground save may use native tree-stop acknowledgement. */
+  /** Advisory preprocess keeps observing until the host releases ownership. */
   backgroundPreprocess?: boolean;
+  /** Observe the original native process even if its close notification is lost. */
+  observeExit?: boolean;
   /** Experimental full-delivery request; only the host compile entry may attest it. */
   buildDeliveryRequest?: string;
   projectPath?: string;
@@ -67,7 +72,7 @@ export class CmdService {
    * @returns Observable<CmdOutput>
    */
   spawn(command: string, args?: string[], options?: Partial<CmdOptions>, silent: boolean = false): Observable<CmdOutput> {
-    const { signal, onOutput, ...processOptions } = options || {};
+    const { signal, onOutput, observeExit, ...processOptions } = options || {};
     if (signal?.aborted) return new Observable(observer => observer.error(cancelledCommandError()));
     const requestedStreamId = typeof options?.streamId === 'string' ? options.streamId.trim() : '';
     const streamId = requestedStreamId || `cmd_${Date.now()}_${Math.random()}`;
@@ -85,19 +90,23 @@ export class CmdService {
     let collectedStdout = '';
     let settled = false;
     let removeListener: (() => void) | undefined;
+    let observation: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => subject.error(cancelledCommandError());
     const cleanup = () => {
       if (settled) return;
       settled = true;
       signal?.removeEventListener('abort', onAbort);
       removeListener?.();
-      this.subjects.delete(streamId);
+      clearTimeout(observation);
+      if (this.subjects.get(streamId) === subject) this.subjects.delete(streamId);
     };
     subject.subscribe({ error: cleanup, complete: cleanup });
 
     // 注册数据监听器
-    removeListener = window['cmd'].onData(streamId, (data: CmdOutput) => {
+    const receive = (data: CmdOutput): void => {
       if (settled || signal?.aborted) return;
+      if (observeExit && data.streamId !== streamId) return;
+      if (observeExit && processOptions.backgroundPreprocess && data.type === 'close' && data.ownershipReleased === false) return;
       // 累积 stderr/stdout 数据
       if (data.type === 'stderr' && data.data) {
         collectedStderr += data.data;
@@ -138,7 +147,22 @@ export class CmdService {
       if (data.type === 'close' || data.type === 'error') {
         subject.complete();
       }
-    });
+    };
+    removeListener = window['cmd'].onData(streamId, receive);
+    const observe = () => {
+      if (!observeExit || settled || typeof window['cmd'].status !== 'function') return;
+      observation = setTimeout(async () => {
+        try {
+          const status = await window['cmd'].status(streamId);
+          if (status?.streamId === streamId && status.state === 'exited'
+            && (Number.isInteger(status.code) || typeof status.signal === 'string')) {
+            receive({ type: 'close', streamId, code: status.code, signal: status.signal ?? undefined,
+              ownershipReleased: status.ownershipReleased === true, recovered: true });
+          }
+        } catch { /* Retain the event subscription and observe the original again. */ }
+        observe();
+      }, 500);
+    };
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) {
       onAbort();
@@ -155,6 +179,7 @@ export class CmdService {
       if (settled) return;
       subject.error(error);
     });
+    observe();
 
     return subject.asObservable();
   }
@@ -300,15 +325,21 @@ export class CmdService {
    * 终止命令执行
    * @param streamId 流ID
    */
-  async kill(streamId: string): Promise<boolean> {
+  async kill(streamId: string, waitMs?: number): Promise<boolean> {
     const subject = this.subjects.get(streamId);
     // The stream may close before main confirms that its process tree has stopped.
-    const result = await window['cmd'].kill(streamId);
-    if (result.success) {
-      subject?.complete();
-      this.subjects.delete(streamId);
+    let timer: number | undefined;
+    try {
+      const stop = window['cmd'].kill(streamId);
+      const result = waitMs === undefined ? await stop : await Promise.race([
+        stop,
+        new Promise<undefined>(resolve => { timer = window.setTimeout(() => resolve(undefined), waitMs); }),
+      ]);
+      if (result?.success) subject?.complete();
+      return result?.success === true;
+    } finally {
+      clearTimeout(timer);
     }
-    return result.success;
   }
 
   /**

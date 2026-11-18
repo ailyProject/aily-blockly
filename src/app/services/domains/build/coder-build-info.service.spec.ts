@@ -67,6 +67,7 @@ describe('Coder build metadata', () => {
       },
     };
     project = { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'coder-opening' }),
       ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
       getProjectDependencyBlockMessage: () => undefined,
       ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true) };
@@ -213,6 +214,9 @@ describe('Coder build metadata', () => {
     const pending = compiler.runCompileFromDisk({ requestId: 'owned-request-log' });
     for (let n = 0; n < 100 && !compiler.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
     expect(compiler.cmdService.spawn).toHaveBeenCalledTimes(1);
+    expect(compiler.cmdService.spawn.calls.first().args[2]).toEqual(jasmine.objectContaining({
+      projectPath: root, projectSessionId: 'coder-opening',
+    }));
     if (scenario.native) localCompileErrorEvents.forEach(event => listener({ ...event }));
     else {
     if (scenario.requestLog) listener({ type: 'stdout', data: '\n  RAW_MARGIN_PRESERVED  \r\n' });

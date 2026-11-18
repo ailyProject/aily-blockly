@@ -32,7 +32,7 @@ import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbs
 import { absWorkspaceProtocol } from '../../../integrations/blockly/abs/abs-workspace-protocol';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
-import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
+import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest } from './project-build-receipts';
 import { createProjectLifecycleAssertion, type ProjectLifecycleSnapshot } from './project-lifecycle-admission';
 import { forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
@@ -263,7 +263,9 @@ export class BlocklyLiveOperationBridgeService {
       try {
         const request = readProjectBuildRequest(payload.params?.['buildRequest']);
         if (!project) throw Object.assign(new Error('A build receipt requires its project path.'), { code: 'BUILD_RECEIPT_INVALID' });
-        const receipts = this.buildReceipts ??= new ProjectBuildReceipts();
+        const receipts = this.buildReceipts ??= new ProjectBuildReceipts(undefined, undefined, (target, requestId) =>
+          this.normalizePath(target) === this.normalizePath(this.projectService.currentProjectPath)
+            ? readNativeBuildReceipt(target, requestId) : undefined);
         if (payload.operation === 'project_build_status') return await receipts.status(project, request);
         const params = { ...payload.params };
         delete params['buildRequest'];

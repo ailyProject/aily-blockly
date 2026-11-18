@@ -80,9 +80,7 @@ function retirePreprocessInputs(store, id) {
             const record = json(filename);
             if (!isTerminal(record) || !/^[a-f0-9]{64}$/.test(record.inputDigest)
                 || typeof record.buildRequestId !== 'string' || !REQUEST_ID.test(record.buildRequestId)) return;
-            const outcome = json(path.join(folder, 'outcome.json'));
-            if (outcome?.version !== 1 || outcome.id !== id || outcome.status !== record.status
-                || outcome.inputDigest !== record.inputDigest || outcome.buildRequestId !== record.buildRequestId) return;
+            if (readOutcome({ folder, record })?.status !== record.status) return;
 
             if (!isUnindexedPreprocess(store, record)) return;
 
@@ -251,6 +249,15 @@ function recordFor(config) {
         || !samePath(record.logicalProjectPath, store.root) || JSON.stringify(record.sourceCapture) !== JSON.stringify(config.sourceCapture)) fail('Execution binding changed.');
     return { store, folder, root, record };
 }
+function readOutcome({ folder, record }) {
+    const outcome = readOptional(json, path.join(folder, 'outcome.json'));
+    if (!outcome) return null;
+    if (outcome.version !== 1 || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
+        || outcome.inputDigest !== record.inputDigest || !TERMINAL_STATUSES.includes(outcome.status)
+        || (TERMINAL_STATUSES.includes(record.status) && record.status !== outcome.status)) fail('Terminal execution receipt changed.');
+    return outcome;
+}
+
 function claimOutcome(value, status) {
     // Cancellation and completion use one immutable first-writer receipt. A
     // late Stop cannot rewrite a completed build, and a late compiler cannot
@@ -264,9 +271,8 @@ function claimOutcome(value, status) {
         return receipt;
     } catch (error) {
         if (error.code !== 'EEXIST') throw error;
-        const existing = json(filename);
-        if (existing.version !== 1 || existing.id !== receipt.id || existing.buildRequestId !== receipt.buildRequestId
-            || existing.inputDigest !== receipt.inputDigest || !TERMINAL_STATUSES.includes(existing.status)) fail('Terminal execution receipt changed.');
+        const existing = readOutcome(value);
+        if (!existing) fail('Terminal execution receipt disappeared.');
         return existing;
     }
 }
@@ -301,7 +307,12 @@ function finishBuildExecution(config, success) {
 function cancelBuildExecution(config) {
     if (!config?.execution) return;
     const value = recordFor(config);
-    if (!['prepared', 'running'].includes(value.record.status)) return { status: value.record.status };
+    if (TERMINAL_STATUSES.includes(value.record.status)) {
+        const outcome = readOutcome(value);
+        if (!outcome) fail('Terminal execution receipt is missing.');
+        return outcome;
+    }
+    if (!['prepared', 'running'].includes(value.record.status)) fail('Execution status is unknown.');
     return claimOutcome(value, 'cancelled');
 }
 
@@ -328,13 +339,13 @@ function abandonPreparedPreprocess(config) {
 }
 function completedExecution(projectPath) {
     const store = storage(projectPath), pointer = json(store.pointer);
-    if (!UUID.test(pointer.id)) return null;
-    const folder = path.join(store.parent, pointer.id), record = json(path.join(folder, 'execution.json')), root = path.join(folder, 'project');
-    const outcome = json(path.join(folder, 'outcome.json'));
-    if (outcome.status !== 'completed' || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
-        || outcome.inputDigest !== record.inputDigest) return null;
-    if (record.status !== 'completed' || record.operation !== 'compile' || record.id !== pointer.id
+    if (pointer.version !== 1 || !UUID.test(pointer.id)) return null;
+    const folder = directory(store.parent, pointer.id, false);
+    const record = json(path.join(folder, 'execution.json')), root = path.join(folder, 'project');
+    if (record.version !== 1 || !['running', 'completed'].includes(record.status)
+        || record.operation !== 'compile' || record.id !== pointer.id
         || record.buildRequestId !== pointer.buildRequestId || !samePath(record.logicalProjectPath, store.root)
+        || readOutcome({ folder, record })?.status !== 'completed'
         || !samePath(fs.realpathSync(root), root)) return null;
     // A directory or exit code alone is never a firmware receipt.
     const upload = require('./blockly-upload-state'), config = json(path.join(folder, 'config.json'), 160 * 1024 * 1024);
@@ -390,15 +401,17 @@ function resolveBuildProjectPath(projectPath) {
 function inspectBuildExecution(projectPath, buildRequestId) {
     try {
         const store = storage(projectPath), index = json(path.join(store.parent, 'requests', `${hash(buildRequestId)}.json`));
-        if (index.buildRequestId !== buildRequestId || !UUID.test(index.id)) return null;
-        const record = json(path.join(store.parent, index.id, 'execution.json'));
-        if (record.id !== index.id || record.buildRequestId !== buildRequestId || !samePath(record.logicalProjectPath, store.root)) return null;
+        if (index.version !== 1 || index.buildRequestId !== buildRequestId || !UUID.test(index.id)) return null;
+        const folder = directory(store.parent, index.id, false);
+        const record = json(path.join(folder, 'execution.json'));
+        if (record.version !== 1 || record.operation !== 'compile' || record.id !== index.id
+            || record.buildRequestId !== buildRequestId || !samePath(record.logicalProjectPath, store.root)) return null;
         let current;
         try { current = json(store.pointer); } catch { /* The exact request remains observable if pointer publication was interrupted. */ }
-        const selected = record.status === 'completed' ? resolveBuildExecution(projectPath) : null;
-        let status = record.status, ownerState;
-        try { if (json(path.join(store.parent, index.id, 'outcome.json')).status === 'cancelled') status = 'cancelled'; }
-        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        const outcome = readOutcome({ folder, record });
+        if (!outcome && !['prepared', 'running'].includes(record.status)) return null;
+        let status = outcome?.status ?? record.status, ownerState;
+        const selected = status === 'completed' ? resolveBuildExecution(projectPath) : null;
         if (status === 'prepared') ownerState = 'start-unobserved';
         if (status === 'running') {
             const owner = record.owner, boot = getSystemBootId();

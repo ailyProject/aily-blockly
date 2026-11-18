@@ -29,6 +29,7 @@ describe('Uploader command lifecycle during project close', () => {
       beginBuildBackendOperation: () => ({ local: false, release() {} }),
       isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', isProjectTransitionInProgress: () => false,
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'upload-opening' }),
       isAilyCodeProject: () => false, getBuildPath: async () => '/project/build',
       getBoardJson: async () => ({ name: 'board', uploadParam: 'flash' }),
       getBoardModule: async () => 'board', isCdcOnBootEnabledForProject: async () => false,
@@ -37,6 +38,7 @@ describe('Uploader command lifecycle during project close', () => {
     service.translate = { instant: (key: string) => key };
     service.serialService = { currentPort: 'COM1', currentPortInfo: { type: 'serial' } };
     service._builderService = { passed: true, lastCode: 'code', currentProjectPath: '/project',
+      getCurrentBuildPath: () => service.projectService.getBuildPath(),
       isPreprocessing: () => false, waitForUploadPreprocess: async () => {}, canReuseBuildForUpload: async () => true };
     service.blocklyService = { runWithPreparedProjectCode: async () => 'code' };
     service.workflowService = { startUpload: () => true, finishUpload: jasmine.createSpy('finishUpload') };
@@ -309,7 +311,7 @@ describe('Uploader command lifecycle during project close', () => {
     const operation = { local: false, release: jasmine.createSpy('release') };
     Object.assign(service.projectService, {
       beginBuildBackendOperation: () => operation, isCloudBuild: () => !operation.local,
-      getProjectDependencySession: () => ({}), assertProjectDependencySession() {},
+      assertProjectDependencySession() {},
     });
     service._builderService.canReuseBuildForUpload = async () => operation.local;
     service._builderService.build = async () => { operation.local = true; return { state: 'done' }; };
@@ -338,11 +340,12 @@ describe('Uploader command lifecycle during project close', () => {
       let result: any;
       start().then(value => { result = value; });
       flushMicrotasks();
+      const scope = { projectPath: '/project', projectSessionId: 'upload-opening' };
       if (mode === 'serial') {
         expect(service.cmdService.spawn).toHaveBeenCalledOnceWith('node', jasmine.any(Array),
-          { shellProfile: false, cwd: '/project' }, false);
+          { shellProfile: false, cwd: '/project', ...scope }, false);
       } else {
-        expect(service.cmdService.run).toHaveBeenCalledOnceWith(jasmine.any(String), '/project', false, false);
+        expect(service.cmdService.run).toHaveBeenCalledOnceWith(jasmine.any(String), '/project', false, false, scope);
       }
       output.complete();
       flushMicrotasks();

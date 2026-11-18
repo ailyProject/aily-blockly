@@ -172,6 +172,7 @@ export class CompileService {
       if (blocked) return blocked;
     }
 
+    const { projectPath, projectSessionId } = this.projectService.getProjectDependencySession(root);
     if (!this.application.startBuild()) {
       const state = this.application.currentProcessState;
       let msg = 'System is busy';
@@ -244,7 +245,7 @@ export class CompileService {
       }
 
       // Keep the root captured at submission, even if the UI switches projects.
-      return await this.runCompile(root, options, context);
+      return await this.runCompile(root, options, context, { projectPath, projectSessionId });
     } catch (error: any) {
       const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
       if (this.cancelled && !options.preprocessOnly) {
@@ -289,7 +290,9 @@ export class CompileService {
     return undefined;
   }
 
-  private async runCompile(root: string, options: DiskCompileOptions, context: DiskCompileContext): Promise<DiskCompileResult> {
+  private async runCompile(root: string, options: DiskCompileOptions, context: DiskCompileContext,
+    projectScope: Pick<ReturnType<ProjectService['getProjectDependencySession']>, 'projectPath' | 'projectSessionId'>,
+  ): Promise<DiskCompileResult> {
     const packagePath = this.electronService.pathJoin(root, 'package.json');
     const isAilyCodeProject = this.projectService.isAilyCodeProject(root);
     const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
@@ -453,7 +456,7 @@ export class CompileService {
           // the same mutable preparation twice with an unlocked gap in between.
           if (options.preprocessOnly) {
             const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
-            const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath }, (line) => {
+            const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath, ...projectScope }, (line) => {
               this.publishBuildLog(root, line.line, line.type);
             }, executionRoot, allowCloudSwitch ? localSwitch : undefined);
             if (this.cancelled) {
@@ -508,7 +511,7 @@ export class CompileService {
             setTimeout: 0,
             stop: () => this.cancel(),
           });
-          const cmp = await this.runOneShotCommand({ scriptPath: compileScriptPath, configFilePath,
+          const cmp = await this.runOneShotCommand({ scriptPath: compileScriptPath, configFilePath, ...projectScope,
             ...(options.recordProjectDelivery === true ? { buildDeliveryRequest: configFilePath } : {}) }, (line) => {
             if (this.consumeBuildProgressLine(line.line, boardName, progressState)) {
               return;
@@ -906,7 +909,7 @@ export class CompileService {
   }
 
   private runOneShotCommand(
-    request: { scriptPath: string; configFilePath: string; buildDeliveryRequest?: string },
+    request: { scriptPath: string; configFilePath: string; projectPath: string; projectSessionId: string; buildDeliveryRequest?: string },
     onLine?: (line: AilyBuilderOutputLine) => void,
     buildWorkspace?: string,
     localSwitch?: { boardName: string; isCurrent: () => boolean },
@@ -959,6 +962,7 @@ export class CompileService {
       this.activeStreamId = streamId;
       const command = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
         cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId,
+        projectPath: request.projectPath, projectSessionId: request.projectSessionId,
         ...(request.buildDeliveryRequest ? { buildDeliveryRequest: request.buildDeliveryRequest } : {}),
       }, true); // onLine owns the build log; CmdService must not replay its close-tail.
       const output = localSwitch ? withLocalBuildSwitch(command, {
