@@ -15,6 +15,10 @@ const sourceHashes = new Set([
   '649a4ad7fb764dba056225b26f1a3fe3d25d96caad1fb2cbc9a3541825623450',
   // Installed preview differs only by two unused GORP reads; model/scope effects are identical.
   'ec225f027de729fe77f5f33efc8afcbe61c2cacea61b94b7c014d2b4eba3122a',
+  // Audited model-symbol migration retains native declaration and scope effects.
+  'cd0babf0f0d0d7a5a89043e9e753bc1f58cfd33783479383ee60f7cce7d7ea17',
+  // Installed 1.0.1 keeps its prior deletion-listener and unused GORP differences.
+  'f017185f8de002b1b69e8b744d9a74adc03006c1540b3f88a894fe27ac52a67f',
 ]);
 const registrations = new WeakMap<object, { owner: object; capture(): VariableDeclarationRegistration }>();
 export function captureVariableDeclarationRegistration(registry: object): VariableDeclarationRegistration | undefined {
