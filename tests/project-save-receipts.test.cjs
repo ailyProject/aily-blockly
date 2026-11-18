@@ -7,11 +7,15 @@ const test = require('node:test');
 const ts = require('typescript');
 
 const filename = path.resolve(__dirname, '../src/app/services/domains/project/project-save-receipts.ts');
-const compiled = new Module(filename, module);
-compiled._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-}).outputText, filename);
-const { ProjectSaveReceipts, readProjectSaveRequest } = compiled.exports;
+const loadTypescript = file => {
+  const compiled = new Module(file, module);
+  compiled.require = name => loadTypescript(path.resolve(path.dirname(file), name + '.ts'));
+  compiled._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText, file);
+  return compiled.exports;
+};
+const { ProjectSaveReceipts, readProjectSaveRequest } = loadTypescript(filename);
 const request = (requestId = 'save-1', extra = {}) => ({ version: 1, requestId, operation: 'project_save', ...extra });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
@@ -72,13 +76,13 @@ test('cross-project and cross-operation identity reuse cannot execute or observe
   for (const op of [() => store.start('/another', request(), [], async () => assert.fail('must not run')),
     () => store.status('/another', request()),
     () => store.start('/isolated', request('save-1', { operation: 'blocks_tidy' }), [], async () => assert.fail('must not run'))])
-    assert.throws(op, { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
+    await assert.rejects(op, { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
 });
 
 test('same path reopened with another session cannot resubmit the old identity but can read its historical receipt', async () => {
   const store = new ProjectSaveReceipts();
   await store.execute('/isolated', request(), [{}], async () => ({ ok: true, projectSaved: true }));
-  assert.throws(() => store.start('/isolated', request(), [{}], async () => assert.fail('must not run')),
+  await assert.rejects(() => store.start('/isolated', request(), [{}], async () => assert.fail('must not run')),
     { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE' });
   assert.equal((await store.status('/isolated', request())).result.projectSaved, true);
 });
@@ -94,9 +98,9 @@ test('expired results retain consumed IDs instead of silently re-executing saves
   let now = 100; const store = new ProjectSaveReceipts({ now: () => now, retentionMs: 10 });
   await store.execute('/isolated', request(), [], async () => ({ ok: true })); now = 111;
   assert.equal((await store.status('/isolated', request())).code, 'PROJECT_SAVE_RECEIPT_EXPIRED');
-  assert.throws(() => store.start('/isolated', request(), [], async () => assert.fail('must not run')),
+  await assert.rejects(() => store.start('/isolated', request(), [], async () => assert.fail('must not run')),
     { code: 'PROJECT_SAVE_RECEIPT_EXPIRED' });
-  assert.throws(() => store.status('/another', request()), { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
+  await assert.rejects(() => store.status('/another', request()), { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
 });
 
 test('completed eviction preserves tombstones; running saves are never evicted', async () => {
@@ -112,7 +116,7 @@ test('completed eviction preserves tombstones; running saves are never evicted',
 test('finite identity exhaustion rejects admission and still observes existing consumed IDs', async () => {
   const store = new ProjectSaveReceipts({ completedLimit: 0, identityLimit: 1 });
   await store.execute('/isolated', request(), [], async () => ({ ok: true }));
-  assert.throws(() => store.start('/isolated', request('new'), [], async () => assert.fail('must not run')),
+  await assert.rejects(() => store.start('/isolated', request('new'), [], async () => assert.fail('must not run')),
     { code: 'PROJECT_SAVE_RECEIPT_CAPACITY' });
   assert.equal((await store.status('/isolated', request())).code, 'PROJECT_SAVE_RECEIPT_EXPIRED');
 });
@@ -128,13 +132,105 @@ test('a new intentional save gets a new task and never coalesces with earlier co
 test('Windows aliases bind to one normalized project but never to another', async () => {
   const store = new ProjectSaveReceipts(); await store.execute('C:\\Private\\Project', request(), [], async () => ({ ok: true }));
   assert.equal((await store.status('c:/private/project/', request())).saveReceipt.state, 'completed');
-  assert.throws(() => store.status('c:/private/other', request()), { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
+  await assert.rejects(() => store.status('c:/private/other', request()), { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
 });
 
-test('malformed identity, operation, budgets and non-absolute paths are rejected', () => {
+test('malformed identity, operation, budgets and non-absolute paths are rejected', async () => {
   for (const value of [null, {}, request('../id'), request('id', { version: 2 }), request('id', { operation: 'project_build' }),
     request('id', { waitMs: -1 }), request('id', { waitMs: 10001 }), request('id', { waitMs: 0.5 }), request('id', { force: true })])
     assert.throws(() => readProjectSaveRequest(value), { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
   const store = new ProjectSaveReceipts();
-  assert.throws(() => store.status('relative/project', request()), { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
+  await assert.rejects(() => store.status('relative/project', request()), { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
+});
+
+const durableRequest = number => request(`pub2-00000000-0000-4000-8000-${String(number).padStart(12, '0')}`, { version: 2 });
+const project = '/isolated';
+const exactTerminal = (input, attachmentRoot = project) => ({
+  ok: true, operation: 'project_save_status',
+  saveReceipt: { ...input, project, state: 'completed' },
+  result: { ok: true, projectSaved: true, publication: { status: 'COMMITTED' } },
+  publicationObservation: {
+    version: 1, durable: true, requestId: input.requestId, operation: input.operation, operationId: 'f'.repeat(36),
+    attachment: { version: 1, root: attachmentRoot, identity: { dev: '1', ino: '2', birthtimeNs: '3' } },
+    executor: { version: 1, hostPid: 101, storagePid: 102, instanceId: 'owner', processIdentity: null, bootId: null },
+    observer: { hostPid: 101 }, current: true,
+  },
+});
+
+function saveFixture(options = {}) {
+  const native = new Map(), remembered = new Map();
+  const durableLookup = async (target, input) => target === project ? native.get(input.requestId) ?? null : null;
+  const settledIdentities = {
+    inspect(id, binding) {
+      return !remembered.has(id) ? 'missing' : remembered.get(id) === binding ? 'matching' : 'different';
+    },
+    remember(id, binding) { remembered.set(id, binding); },
+    ...options.settledIdentities,
+  };
+  const create = () => new ProjectSaveReceipts({ ...options, durableOnly: true, durableLookup, settledIdentities });
+  return { create, native, remembered };
+}
+
+test('verified native terminal saves can exceed the default lifetime limit without dropping the original binding', async () => {
+  let now = 100, starts = 0;
+  const { create, native, remembered } = saveFixture({ now: () => now });
+  const store = create();
+  for (let i = 1; i <= 8193; i++) {
+    if (i === 8193) now += 24 * 60 * 60 * 1000;
+    const input = durableRequest(i);
+    const response = await store.execute(project, input, [], async () => {
+      starts++;
+      const receipt = exactTerminal(input);
+      native.set(input.requestId, receipt);
+      return receipt.result;
+    });
+    assert.equal(response.saveReceipt.state, 'completed');
+  }
+  assert.equal(starts, 8193);
+  assert.equal(remembered.size, 8193);
+  const original = durableRequest(1);
+  const noReplay = async () => assert.fail('a consumed ID must never write again');
+  const old = await store.start(project, original, [], noReplay);
+  assert.equal(old.result.projectSaved, true);
+  await assert.rejects(store.start('/other-project', original, [], noReplay), { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
+  native.delete(original.requestId); // A replacement root has no original journal.
+  const restarted = create();
+  assert.equal((await restarted.status(project, original)).code, 'PROJECT_SAVE_RECEIPT_EXPIRED');
+  await assert.rejects(restarted.start(project, original, [], noReplay), { code: 'PROJECT_SAVE_RECEIPT_EXPIRED' });
+  await assert.rejects(restarted.start(project, { ...original, operation: 'blocks_tidy' }, [], noReplay),
+    { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
+  assert.equal(starts, 8193);
+});
+
+test('receipt-only, wrong-attachment and failed index writes keep the conservative capacity fence', async () => {
+  for (const mode of ['unproven', 'wrong-attachment', 'failed-index']) {
+    const { create, native, remembered } = saveFixture({ identityLimit: 1, completedLimit: 0,
+      ...(mode === 'failed-index' ? { settledIdentities: { remember() { throw new Error('disk unavailable'); } } } : {}) });
+    const input = durableRequest(1);
+    const store = create();
+    const terminal = await store.execute(project, input, [], async () => {
+      const receipt = exactTerminal(input, mode === 'wrong-attachment' ? '/different-attachment' : project);
+      if (mode === 'unproven') delete receipt.publicationObservation;
+      native.set(input.requestId, receipt);
+      return receipt.result;
+    });
+    assert.equal(terminal.result.projectSaved, true);
+    assert.equal(remembered.size, 0);
+    await assert.rejects(store.start(project, durableRequest(2), [], async () => assert.fail('must not run unbounded writers')),
+      { code: 'PROJECT_SAVE_RECEIPT_CAPACITY' });
+    assert.equal((await store.status(project, input)).result.projectSaved, true);
+  }
+});
+
+test('the writer can retire an exact terminal identity without a connected observer', async () => {
+  const { create, native, remembered } = saveFixture({ identityLimit: 1 });
+  const store = create(), finished = deferred(), input = durableRequest(1);
+  const response = await store.start(project, input, [], () => finished.promise);
+  assert.equal(response.saveReceipt.state, 'running');
+  const receipt = exactTerminal(input);
+  native.set(input.requestId, receipt);
+  finished.resolve(receipt.result);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(remembered.has(input.requestId), true);
+  assert.equal((await store.status(project, input)).result.projectSaved, true);
 });

@@ -67,6 +67,26 @@ describe('original project creation settlement', () => {
     expect(receipts.observe(original)).toEqual(opened);
   });
 
+  it('holds source handoff ownership without reporting a target activation', async () => {
+    const receipts = new ProjectCreateReceipts();
+    const original = request(), handoff = deferred();
+    const first = receipts.run(original, async gate => {
+      gate.markCreated('/projectA');
+      gate.beginHandoff();
+      await handoff.pending;
+      expect(gate.signal.aborted).toBeFalse();
+      gate.markActivated();
+      return { ok: true };
+    });
+    expect(receipts.cancel(original).createReceipt).toEqual(jasmine.objectContaining({
+      state: 'pending', createdProject: '/projectA', activationCommitted: false,
+    }));
+    handoff.finish();
+    expect((await first).createReceipt).toEqual(jasmine.objectContaining({
+      state: 'completed', activationCommitted: true,
+    }));
+  });
+
   it('returns an expired request without starting any work', async () => {
     const receipts = new ProjectCreateReceipts();
     const original = { ...request(), deadlineAt: Date.now() - 1 };

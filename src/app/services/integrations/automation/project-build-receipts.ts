@@ -129,6 +129,8 @@ export function readNativeBuildReceipt(project: string, requestId: string): Pers
   return { state: 'completed', result: { project, operation: 'project_build', ok: value.status === 'completed',
     ...(value.status === 'completed' && value.result && value.buildInput ? { buildInput: value.buildInput } : {}),
     ...(value.buildSnapshot ? { buildSnapshot: value.buildSnapshot } : {}),
+    ...(value.buildHistory ? { buildHistory: value.buildHistory } : {}),
+    ...(value.buildLog ? { buildLog: value.buildLog } : {}),
     ...(value.status === 'failed' ? { buildOutcome: 'failed', message: '原编译失败。' } : {}),
     ...(value.status === 'cancelled' ? { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', message: '原编译已取消。' } : {}) } };
 }

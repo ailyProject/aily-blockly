@@ -13,7 +13,8 @@ import { AbsOperationJournal, type NativeSaveOperationRef } from './abs-operatio
 import { assertWorkspaceMigrationWritable, captureWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
 import { absWorkspaceProtocol } from './abs-workspace-protocol';
 import { AbsApplicationJournal } from './abs-application-journal';
-import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse } from './abs-native-save-result';
+import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse, nativeSaveAdmissionResponse } from './abs-native-save-result';
+import { nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
 import { blockStatePublicationIdentity, type NativeSaveResultFacts, type NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
 import type { ProjectSaveRequest, ProjectSaveOutcome, ProjectSaveReceiptResponse } from '@domain/project/public-api';
 import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent, requireProjectProgramPublication } from '@shared/public-api';
@@ -173,6 +174,11 @@ export class AbsWorkspaceSyncService {
     const port = await openAbsHostStorage(path, guard);
     const project = port.attachment?.root ?? path;
     const identity = await nativeSaveIdentity(project, request);
+    const admission = nativeSaveAdmissionIdentity(identity);
+    if (admission) {
+      const rejected = await new OriginalRequestAdmissions(port, project).observe(admission);
+      if (rejected) return nativeSaveAdmissionResponse(rejected, request, port.executor, originalTargetPid);
+    }
     const observed = await new AbsApplicationJournal(port, project).observeNativeSave(identity, guard);
     const response = nativeSaveObservationResponse(project, identity, observed, port.executor, originalTargetPid);
     return response && request.input ? { ...response, saveReceipt: { ...response.saveReceipt, input: structuredClone(request.input) } } : response;

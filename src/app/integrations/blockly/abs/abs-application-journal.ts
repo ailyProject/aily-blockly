@@ -10,6 +10,7 @@ import { nativeSaveCapability } from './abs-native-save-protocol';
 import type { NativeSaveIdentity, NativeSaveOperationRef, NativeSaveStageInput, NativeSaveResultFacts } from './abs-native-save-protocol';
 import type { AbsSyncStorageAccess } from './abs-baseline-store';
 import type { AbsOperationSnapshot } from './abs-operation-journal';
+import { applicationRequestKey, OriginalRequestAdmissions, originalAdmissionOutcome } from './original-request-admission';
 
 const stageKey = (id: string) => `recoveries/application-${id}.json`;
 const proofKey = (id: string) => `recoveries/application-commit-${id}.json`;
@@ -72,7 +73,7 @@ export class AbsApplicationJournal {
         throw fail('Only the original physical application writer can seal its rollback.');
       }
       const requestId = snapshot.application!.requestId;
-      const indexText = await storage.read(`recoveries/request-${(await hashAbsText(requestId)).slice(7)}.json`);
+      const indexText = await storage.read(await applicationRequestKey(requestId));
       const index = indexText === null ? null : JSON.parse(indexText);
       if (index?.version !== 1 || index.project !== this.project || index.operationId !== operationId
         || index.requestId !== requestId || index.snapshotHash !== pointer.hash) throw fail('The original application request changed.');
@@ -152,7 +153,13 @@ export class AbsApplicationJournal {
   }
 
   async observe(requestId: string, assertCurrent: () => void): Promise<{ projection?: AbsProjection; result: any }> {
-    const indexText = await this.port.read(`recoveries/request-${(await hashAbsText(requestId)).slice(7)}.json`);
+    const admission = await new OriginalRequestAdmissions(this.port, this.project).observe({ operation: 'abs_apply', requestId });
+    if (admission) {
+      assertCurrent();
+      return { result: { ...originalAdmissionOutcome(admission), application: { status: 'NOT_STARTED', requestId },
+        applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } } };
+    }
+    const indexText = await this.port.read(await applicationRequestKey(requestId));
     const unknown = (code: string) => ({ result: { ok: false, operation: 'abs_apply', project: this.project, code,
       publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false } } });
     if (indexText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN');
