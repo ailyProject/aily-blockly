@@ -1,0 +1,15 @@
+继续同一个项目和会话，只验证已登记临时 ABS 编辑后的真实重命名。先用 Pi read 检查上轮 {{REGISTERED_DELETE}} 仍不存在；不要恢复它。不要修改主工作区，不应用、不导入、不保存、不编译或烧录。
+
+执行下面一条准备命令，从本项目真实主源码复制一份独立临时源：
+```powershell
+{{REGISTERED_SETUP}}
+```
+使用 abs_export（必要时 tool_load 加载），project 为 {{PROJECT}}，outFile 精确为 {{REGISTERED_ALIAS}}，通过现有工具正常登记。用 Pi read 读取该别名开头 6 行。随后只用一次 Pi edit，在原第一行后增加下面一行注释，保留其余所有字节；不要整写或修改主源码：
+原第一行：{{REGISTERED_FIRST_LINE}}
+新增注释：{{REGISTERED_MARKER}}
+
+编辑后仅执行一次下列命令，目的文件应完整保留当前编辑内容，不得退回未编辑的版本：
+```powershell
+{{REGISTERED_COMMAND}}
+```
+最后用 Pi read 检查 {{REGISTERED_OLD}} 不存在，并读取 {{REGISTERED_NEW}} 开头 8 行确认唯一注释保留。目的文件按普通用户文件处理，不重新登记、不 apply。保留系统已有的原稿和编辑稿，不清理 History/backup，不要求用户手动恢复或重开项目。

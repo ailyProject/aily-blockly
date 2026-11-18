@@ -10,7 +10,8 @@ export interface BlocklyBuildInput {
 
 export interface BlocklyBuildOutcome {
   success: boolean;
-  result: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference };
+  result: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference;
+    buildSource?: Record<string, unknown> };
   checkpoint: BuildCheckpoint;
 }
 

@@ -1,5 +1,6 @@
 // 管理系统命令进程，并提供 Shell、路径和终端环境检测能力。
-const { spawn, exec } = require('child_process');
+const { exec } = require('child_process');
+const { spawn, getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -536,8 +537,14 @@ class CommandManager {
 
     this.processes.set(streamId, entry);
 
-    child.once('close', (code, signal) => {
+    child.once('close', async (code, signal) => {
       entry.closed = true;
+      if (getOwnedProcessInfo(child)) {
+        const stopped = await stopOwnedProcess(child).catch(() => false);
+        entry.terminationConfirmed = stopped;
+        entry.terminationUnconfirmed = !stopped;
+        if (stopped) entry.workspaceCleanupPending = !!entry.buildWorkspace;
+      }
       // During cancellation, wait for the tree result before forgetting the
       // command. Interrupted build markers still require confirmed cleanup.
       const recoveredBeforeDelegation = entry.buildWorkspace?.releaseAfterOwnerExit?.() === true;
@@ -625,7 +632,7 @@ class CommandManager {
     // Interrupted protected builds may stay registered after parent close.
     // That PID may now belong to someone else; only explicit recovery can
     // resolve unconfirmed ownership. Confirmed stops may retry file cleanup.
-    if (entry.closed && !entry.terminationConfirmed) return false;
+    if (entry.closed && !entry.terminationConfirmed && !getOwnedProcessInfo(entry.process)) return false;
     if (entry.process) {
       console.info('[PROC_TRACE][CMD_KILL]', {
         streamId,
@@ -638,7 +645,7 @@ class CommandManager {
       entry.stopPromise = (async () => {
         try {
           if (!entry.terminationConfirmed) {
-            const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`, { preferNativeAck: entry.backgroundPreprocess === true });
+            const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`, { ownedProcess: entry.process, preferNativeAck: entry.backgroundPreprocess === true });
             // A failed taskkill can race a supervised build's normal finish.
             // Its own marker cleanup confirms completion; parent close alone
             // cannot establish that installer/compiler descendants stopped.

@@ -82,6 +82,53 @@ describe('feedback diagnostics utilities', () => {
   });
 
   describe('sanitizeDiagnosticText', () => {
+    it('masks every home path in the mixed compiler command from issue 803', () => {
+      const command = String.raw`arm-none-eabi-g++ "-LC:\Users\16353\project\.build" "-TC:\Users\16353\sdk\flash.ld" "-Wl,-Map,C:\Users\16353\project\sketch.map" "-LC:/Users/16353/tools/CMSIS/" "C:\Users\16353\project\core.a"`;
+      const expected = command.replace(/16353/g, '[USER]');
+
+      expect(sanitizeDiagnosticText(command)).toBe(expected);
+      expect(sanitizeDiagnosticText(expected)).toBe(expected);
+    });
+
+    for (const { home, masked } of [
+      { home: String.raw`C:\Users\Alice 张😀`, masked: String.raw`C:\Users\[USER]` },
+      { home: 'C:/Users/Alice 张😀', masked: 'C:/Users/[USER]' },
+      { home: '/Users/Alice 张😀', masked: '/Users/[USER]' },
+      { home: '/home/Alice 张😀', masked: '/home/[USER]' },
+      { home: String.raw`D:\Profiles\Alice 张😀`, masked: String.raw`D:\Profiles\[USER]` },
+      { home: '/srv/profiles/Alice 张😀', masked: '/srv/profiles/[USER]' },
+    ]) {
+      it(`masks attached compiler arguments and linker paths under ${home}`, () => {
+        const command = [
+          ...['-I', '-L', '-B', '-T', '-o', '-isystem', '-iquote', '-idirafter', '-iprefix', '-iwithprefix', '-iwithprefixbefore', '-isysroot']
+            .map(flag => `"${flag}${home}/build"`),
+          `"-Wl,-Map,${home}/sketch.map"`,
+          `"-Wl,${home}/core.a"`,
+        ].join(' ');
+        const expected = command.split(home).join(masked);
+
+        expect(sanitizeDiagnosticText(command, [], undefined, home)).toBe(expected);
+        if (/^(?:[A-Za-z]:[\\/]Users[\\/]|\/(?:Users|home)\/)/.test(home)) {
+          expect(sanitizeDiagnosticText(command)).toBe(expected);
+        }
+        expect(sanitizeDiagnosticText(JSON.stringify({ command }), [], undefined, home))
+          .toBe(JSON.stringify({ command: expected }));
+        expect(sanitizeDiagnosticText(expected, [], undefined, home)).toBe(expected);
+      });
+    }
+
+    it('preserves later compiler arguments after a quoted terminal Windows home', () => {
+      const command = String.raw`"-LC:\Users\Alice Smith" "-IC:\SDK\include" -DNAME=build`;
+      expect(sanitizeDiagnosticText(command))
+        .toBe(String.raw`"-LC:\Users\[USER]" "-IC:\SDK\include" -DNAME=build`);
+    });
+
+    it('matches unquoted compiler arguments without expanding to embedded or ordinary paths', () => {
+      const command = String.raw`-IC:\Users\alice\include -L/home/alice/lib -T/srv/profiles/alice/flash.ld -Wl,-Map,/srv/profiles/alice/sketch.map prefix-L/srv/profiles/alice/file -L/srv/profiles/alice-other/lib -I/opt/sdk/include`;
+      const expected = String.raw`-IC:\Users\[USER]\include -L/home/[USER]/lib -T/srv/profiles/[USER]/flash.ld -Wl,-Map,/srv/profiles/[USER]/sketch.map prefix-L/srv/profiles/alice/file -L/srv/profiles/alice-other/lib -I/opt/sdk/include`;
+      expect(sanitizeDiagnosticText(command, [], undefined, '/srv/profiles/alice')).toBe(expected);
+    });
+
     it('redacts credentials and identity while preserving diagnostic paths and file names', () => {
       const result = sanitizeDiagnosticText([
         '\u001b[31mAuthorization: Bearer token-value\u001b[0m',

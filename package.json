@@ -14,9 +14,12 @@
     ],
     "appId": "blockly.aily.pro",
     "forceCodeSigning": false,
+    "beforePack": "scripts/prepare-windows-process-runtime.cjs",
     "afterPack": "scripts/package-child-resources.js",
     "asar": true,
     "asarUnpack": [
+      ".aily/windows-process-runtime/**/*.{node,exe,json}",
+      "electron/native/windows-process/**/*.{node,exe,json}",
       "electron/preload.js",
       "electron/node_modules/**/*.node",
       "electron/node_modules/@lydell/**",
@@ -52,7 +55,8 @@
           "!package-lock.json",
           "!.gitignore",
           "!dev-app-update.yml",
-          "!**/*.md"
+          "!**/*.md",
+          "!native/windows-process/**"
         ]
       },
       {
@@ -88,6 +92,15 @@
       }
     ],
     "win": {
+      "files": [
+        {
+          "from": ".aily/windows-process-runtime",
+          "to": "electron/native/windows-process",
+          "filter": [
+            "${arch}/*.{node,exe,json}"
+          ]
+        }
+      ],
       "target": "nsis",
       "sign": false,
       "signAndEditExecutable": true,
@@ -142,6 +155,7 @@
     }
   },
   "scripts": {
+    "prepare:windows-process": "node scripts/build-windows-process-runtime.cjs",
     "ng": "node scripts/run-angular.cjs",
     "start": "node scripts/run-angular.cjs serve",
     "watch": "node scripts/run-angular.cjs build --watch --configuration development",
@@ -244,6 +258,7 @@
     "karma-coverage": "~2.2.0",
     "karma-jasmine": "~5.1.0",
     "karma-jasmine-html-reporter": "~2.1.0",
+    "node-gyp": "12.4.0",
     "typescript": "~5.6.2",
     "wait-on": "^9.0.10"
   },

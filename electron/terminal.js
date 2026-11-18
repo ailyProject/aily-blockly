@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const { isWin32 } = require("./platform");
 const { killRegisteredProcessTree } = require('./process-tree');
+const { spawnPty } = require('./owned-process');
 
 // 匹配 PowerShell 提示符: PS D:\path>   以后需要匹配mac os和linux的提示符（陈吕洲 2025.3.4）
 const promptRegexMap = {
@@ -131,8 +132,8 @@ async function killAllTerminals() {
     .filter(([, ptyProcess]) => !!ptyProcess);
   console.info('[PROC_TRACE][PTY_KILL_ALL]', { count: entries.length, terminals: getActiveTerminals() });
   await Promise.all(entries.map(async ([key, ptyProcess]) => {
-    await killRegisteredProcessTree(ptyProcess?.pid, `pty:${key}`);
-    deleteTerminalEntry(ptyProcess);
+    const stopped = await killRegisteredProcessTree(ptyProcess?.pid, `pty:${key}`, { ownedProcess: ptyProcess });
+    if (stopped) deleteTerminalEntry(ptyProcess);
   }));
 }
 
@@ -178,7 +179,7 @@ function registerTerminalHandlers(mainWindow) {
       console.log(`启动终端，工作目录: ${cwd}`);
 
       const terminalEnv = buildTerminalEnv();
-      const ptyProcess = pty.spawn(shell, getShellArgs(), {
+      const ptyProcess = spawnPty(pty, shell, getShellArgs(), {
         name: "xterm-color",
         cols: args.cols || 80,  // 确保有合适的默认值
         rows: args.rows || 24,
@@ -211,8 +212,8 @@ function registerTerminalHandlers(mainWindow) {
         // 旧 PTY 在异步终止期间仍保留登记，确保应用退出清理可以再次兜底。
         terminals.delete("currentPid");
         terminals.set(previousTerminal.pid, previousTerminal);
-        void killRegisteredProcessTree(previousTerminal.pid, `pty:replace:${previousTerminal.pid}`)
-          .finally(() => deleteTerminalEntry(previousTerminal));
+        void killRegisteredProcessTree(previousTerminal.pid, `pty:replace:${previousTerminal.pid}`, { ownedProcess: previousTerminal })
+          .then(stopped => { if (stopped) deleteTerminalEntry(previousTerminal); });
       }
       registerTerminal(ptyProcess);
 
@@ -272,7 +273,7 @@ function registerTerminalHandlers(mainWindow) {
           return;
         }
         const terminalEnv = { ...buildTerminalEnv(), ...(args.env || {}) };
-        const ptyProcess = pty.spawn(shell, getCommandShellArgs(command), {
+        const ptyProcess = spawnPty(pty, shell, getCommandShellArgs(command), {
           name: "xterm-color",
           cols,
           rows,
@@ -540,8 +541,8 @@ function registerTerminalHandlers(mainWindow) {
       // 清理流回调
       cleanupTerminalStreams(ptyProcess);
 
-      void killRegisteredProcessTree(ptyProcess.pid, `pty:${pid || 'current'}`);
-      deleteTerminalEntry(ptyProcess);
+      void killRegisteredProcessTree(ptyProcess.pid, `pty:${pid || 'current'}`, { ownedProcess: ptyProcess })
+        .then(stopped => { if (stopped) deleteTerminalEntry(ptyProcess); });
     } else {
       console.warn('[PROC_TRACE][PTY_CLOSE_MISSING]', describeTerminalLookup(pid, ptyProcess));
     }

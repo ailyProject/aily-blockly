@@ -36,6 +36,10 @@ const encoder = new TextEncoder();
 const FEEDBACK_JSON_RETAIN_MAX_BYTES = FEEDBACK_DIAGNOSTICS_MAX_BYTES * 4;
 const FEEDBACK_JSON_SCAN_MAX_BYTES = 1024 * 1024;
 const REDACTED_DIAGNOSTIC_VALUE = '[REDACTED]';
+// GCC accepts paths attached to these flags, including inside quoted arguments.
+const COMPILER_PATH_PREFIX = String.raw`(?:^|[\s("'=:<>\[,;])-(?:[ILBTo]|isystem|iquote|idirafter|iprefix|iwithprefix(?:before)?|isysroot)`;
+const USER_PATH_PREFIX = String.raw`(^|file:\/\/|[\s("'=:<>\[,;]|${COMPILER_PATH_PREFIX})`;
+const WINDOWS_USER_PATH_PREFIX = String.raw`(^|[^A-Za-z0-9]|${COMPILER_PATH_PREFIX})`;
 
 export function resolveAccountStatusCode(
   initializationState: string | null | undefined,
@@ -701,19 +705,19 @@ function redactSupportedUserPaths(value: string, userHome?: string | null): stri
   redacted = redactExactUserHome(redacted, userHome);
   redacted = redacted
     .replace(
-      /(^|[^A-Za-z0-9])([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n]+)(?=[\\/])/gi,
+      new RegExp(String.raw`${WINDOWS_USER_PATH_PREFIX}([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n":<>|]+)(?=[\\/])`, 'gi'),
       '$1$2[USER]',
     )
     .replace(
-      /(^|[^A-Za-z0-9])([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n"'<>?#{}|&\[\]),;:]+?)(?=["')\],;:?#<>{}|&]|$)/gim,
+      new RegExp(String.raw`${WINDOWS_USER_PATH_PREFIX}([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n"'<>?#{}|&\[\]),;:]+?)(?=["')\],;:?#<>{}|&]|$)`, 'gim'),
       '$1$2[USER]',
     )
     .replace(
-      /(^|file:\/\/|[\s("'=:<>\[])(\/(?:home|Users)\/)([^/\r\n]+)(?=\/)/gi,
+      new RegExp(String.raw`${USER_PATH_PREFIX}(\/(?:home|Users)\/)([^/\r\n]+)(?=\/)`, 'gi'),
       '$1$2[USER]',
     )
     .replace(
-      /(^|file:\/\/|[\s("'=:<>\[])(\/(?:home|Users)\/)([^/\r\n"'<>?#{}|&\[\]),;:]+?)(?=["')\],;:?#<>{}|&]|$)/gim,
+      new RegExp(String.raw`${USER_PATH_PREFIX}(\/(?:home|Users)\/)([^/\r\n"'<>?#{}|&\[\]),;:]+?)(?=["')\],;:?#<>{}|&]|$)`, 'gim'),
       '$1$2[USER]',
     )
     .replace(
@@ -775,7 +779,7 @@ function redactExactUserHome(value: string, userHome?: string | null): string {
       for (const alias of usernameAliases) {
         redacted = redacted.replace(
           new RegExp(
-            `(^|file:\\/\\/|[\\s("'=:<>\\[])(${parentPattern})${alias}(?=[\\\\/]+|["')\\],;:\\s?#<>{}|&]|$)`,
+            `${USER_PATH_PREFIX}(${parentPattern})${alias}(?=[\\\\/]+|["')\\],;:\\s?#<>{}|&]|$)`,
             isWindowsHome ? 'gi' : 'g',
           ),
           '$1$2[USER]',

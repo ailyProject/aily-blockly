@@ -11,6 +11,7 @@ const inputManifest = require('./input-manifest');
 const { captureSnapshot, captureIdentity } = require('./snapshot');
 const ciResources = require('./ci-resource-preparation');
 const { collectCloudArtifacts, removeOwnedDirectory } = require('./artifact-store');
+const { captureCloudBuildAbi, publishCloudBuildSource } = require('./build-source');
 const { artifactUploadInfo: getArtifactUploadInfo } = require('./uploader');
 const { cloudUploadRequirements } = require('./cloud-recipe-upload');
 const { validateCloudRecipePlan } = require('./cloud-recipe-contract');
@@ -557,7 +558,7 @@ class CloudBuildBroker {
     if (typeof requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(requestId) || this.requests.has(requestId)) throw protocol.error('BUILD_BUSY', 'Cloud build request is invalid or already running.');
     const root = fs.realpathSync(input.config?.currentProjectPath);
     if ([...this.requests.values()].some(item => item.root === root)) throw protocol.error('BUILD_BUSY', 'This project already has a cloud task.');
-    const record = { requestId, root, sender, generation: owner.generation, config: input.config,
+    const record = { requestId, buildRequestId: input.buildRequestId || requestId, root, sender, generation: owner.generation, config: input.config,
       settings: { ...(input.settings || {}) }, controller: new AbortController(), logsController: new AbortController(), onProgress, startedAt: Date.now(),
       logComplete: false, logHistoryComplete: true,
       inputMetrics: { captureMs: 0, identityMs: 0, encodingMs: 0, encodedFiles: 0,
@@ -614,6 +615,7 @@ class CloudBuildBroker {
         record.inputMetrics.encodingMs += metrics.durationMs; record.inputMetrics.encodedFiles++;
       } }); }
       finally { record.inputMetrics.captureMs += performance.now() - captureStarted; }
+      record.sourceAbiHash = captureCloudBuildAbi(record.root);
       if ((input.action || 'compile') === 'compile') {
         record.ciPreparation = await ciResources.prepare(record.config, captured, record.profile, {
           appDataPath: this.getAppDataPath(), signal: record.controller.signal, limits: record.inputLimits,
@@ -775,7 +777,7 @@ class CloudBuildBroker {
       await this.importResult(record, result);
       this.progress(record, { stage: 'complete', progress: 100 });
       return { success: true, state: 'done', text: 'Cloud compilation complete.', jobId: record.jobId, inputDigest: record.snapshot.inputDigest,
-        artifactPath: this.active.get(root)?.directory, logComplete: record.logComplete };
+        artifactPath: this.active.get(root)?.directory, buildSource: record.buildSource, logComplete: record.logComplete };
       }
     } catch (error) {
       if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
@@ -837,6 +839,7 @@ class CloudBuildBroker {
       // No awaits after the byte checks: only the freshly checked request can
       // regain upload authority. A disk-only receipt never grants permission.
       lease.assertOwned();
+      record.buildSource = publishCloudBuildSource(record, previous.directory, previous.manifest.jobId);
     } catch { return null; } // Missing/corrupt/unavailable output falls back to a real build.
     finally { lease?.release(); }
     this.active.set(record.root, { ...previous, config: retainedBuildConfig(record.config), settings: record.settings,
@@ -845,7 +848,8 @@ class CloudBuildBroker {
     this.progress(record, { stage: 'complete', progress: 100, reused: true });
     // This is the original completed job, not a newly executed cloud task.
     return { success: true, state: 'done', reused: true, text: 'Reused verified cloud build result.',
-      jobId: previous.manifest.jobId, inputDigest: record.snapshot.inputDigest, artifactPath: previous.directory };
+      jobId: previous.manifest.jobId, inputDigest: record.snapshot.inputDigest, artifactPath: previous.directory,
+      buildSource: record.buildSource };
   }
   async cancelRemote(record) {
     if (!record.jobId && !record.posted) return;
@@ -981,6 +985,7 @@ class CloudBuildBroker {
         published = path.join(directory, `${record.jobId}-${crypto.randomUUID()}`);
         fs.writeFileSync(path.join(staging, 'aily-cloud-result.json'), JSON.stringify({ manifest, signature: result.signature }));
         fs.renameSync(staging, published);
+        record.buildSource = publishCloudBuildSource(record, published);
         // 已验证产物的复用和烧录权限只保存在当前进程内，不额外写入无读取方的磁盘指针。
         const config = retainedBuildConfig(record.config);
         this.active.set(record.root, { root: record.root, sender: record.sender, generation: record.generation, activationId: record.activationId,

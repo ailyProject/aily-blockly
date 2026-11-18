@@ -26,6 +26,7 @@ addEventListener('message', async ({ data }: MessageEvent) => {
     let value: any;
     if (data.method === 'init') {
       port = {
+        attachment: args[1],
         read: key => io('read', [key]),
         withLock: async operation => {
           const id = await io('lock');

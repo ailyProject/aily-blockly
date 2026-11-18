@@ -2,6 +2,7 @@ import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, absBaselineKey, type AbsSyncStorageAccess, type AbsSyncStoragePort } from './abs-baseline-store';
 import { generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
+import { acceptedSourceMatches } from './abs-workspace-mode';
 import type { AbsOperationSnapshot } from './abs-operation-journal';
 import { assertNativeSaveRef, nativeSaveCapability, nativeSaveError, readNativeSaveRequest, blockStatePublicationIdentity,
   type NativeSaveIdentity, type NativeSaveOperationRef, type NativeSaveStageInput,
@@ -92,7 +93,7 @@ export class NativeSavePublications {
   }
   private async output(staged: any, access: Pick<AbsSyncStorageAccess, 'read'> = this.port) {
     const binding = staged.record.evidence.binding;
-    const store = new AbsBaselineStore({ read: key => access.read(key), withLock: () => { throw nativeSaveError('Nested publication lock is not permitted.'); } }, binding.scope);
+    const store = new AbsBaselineStore({ ...this.port, read: key => access.read(key), withLock: () => { throw nativeSaveError('Nested publication lock is not permitted.'); } }, binding.scope);
     const ancestor = await store.inspectCommittedAncestor(binding.generation);
     if (!ancestor) return null;
     const abi = ancestor.abi;
@@ -122,8 +123,8 @@ export class NativeSavePublications {
     const resolved = await this.changedProof(staged);
     if (!resolved) return false;
     const pointer = await this.port.read('committed.json'), disk = await resolved.store.captureDisk();
-    if (await hash(pointer) === resolved.ancestor.pointerHash && (disk.abi !== resolved.abi
-      || disk.abs !== resolved.ancestor.projection.abs || disk.map !== absMapJson(resolved.ancestor.projection.map))) return false;
+    if (await hash(pointer) === resolved.ancestor.pointerHash
+      && !await resolved.store.matchesAcceptedDisk({ projection: resolved.ancestor.projection, abi: resolved.abi }, disk)) return false;
     await this.port.withLock(async access => {
       await this.original(ref, access);
       if (await access.read(stageKey(ref.operationId)) !== staged.text || await access.read('committed.json') !== pointer
@@ -143,7 +144,7 @@ export class NativeSavePublications {
     const output = await this.output(staged, access);
     if (!output || await hash(committedPointer) !== output.ancestor.pointerHash
       || !same(await output.store.captureDisk(access), original.disk) || output.abi !== original.disk.abi
-      || output.ancestor.projection.abs !== original.disk.abs || absMapJson(output.ancestor.projection.map) !== original.disk.map)
+      || !await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, original.disk))
       throw nativeSaveError('Unchanged save output differs from the retained original source.');
     guard(); await this.immutable(access, proofKey(ref.operationId), absJson({
       ...this.proof(ref, staged, output.ancestor.pointerHash, 'unchanged'), stageHash: await hashAbsText(staged.text),
@@ -156,7 +157,9 @@ export class NativeSavePublications {
         throw nativeSaveError('Invalid native NOT_COMMITTED terminal facts.');
     } else if (facts.publication?.status !== 'COMMITTED' || facts.projectSaved !== true || facts.requiresReload !== false
       || typeof facts.generatedCodePublished !== 'boolean' || typeof facts.partial !== 'boolean'
-      || typeof facts.publication.abiSaved !== 'boolean' || !facts.publication.absMirrored || !facts.publication.mapPublished || !facts.evidence
+      || typeof facts.publication.abiSaved !== 'boolean' || !facts.publication.mapPublished || !facts.evidence
+      || !facts.publication.absMirrored && !acceptedSourceMatches(facts.acceptedSource, facts.evidence.binding, this.port.attachment)
+      || facts.acceptedSource !== undefined && !acceptedSourceMatches(facts.acceptedSource, facts.evidence.binding, this.port.attachment)
       || facts.publication.generation !== facts.evidence.binding.generation) throw nativeSaveError('Invalid native committed terminal facts.');
   }
   async completeNativeSave(ref: NativeSaveOperationRef, facts: NativeSaveResultFacts, guard: () => void): Promise<void> {
@@ -170,6 +173,8 @@ export class NativeSavePublications {
         if (!staged.record || proofText === null || !same(staged.record.evidence, facts.evidence)) throw nativeSaveError('Native completion has no original source proof.');
         const proof = json(proofText);
         this.validateProof(proof, ref, staged, await hashAbsText(staged.text!));
+        if (facts.acceptedSource && facts.acceptedSource.committedHash !== proof.committedHash)
+          throw nativeSaveError('The accepted source proof points at another native commit.');
         if (proof.mode === 'changed' && !facts.publication.abiSaved) throw nativeSaveError('A changed save lacks its ABI commit fact.');
         if (!same(facts.blockState ?? null, staged.record.blockState ?? null)) throw nativeSaveError('Final state readback differs from the sealed native stage.');
       } else {
@@ -215,12 +220,26 @@ export class NativeSavePublications {
       if (!proof) return pending(); // Unchanged saves need their original under-lock seal.
     }
     const pointer = await this.port.read('committed.json'), disk = await output.store.captureDisk();
-    if (await hash(pointer) === proof.committedHash && (disk.abi !== output.abi || disk.abs !== output.ancestor.projection.abs
-      || disk.map !== absMapJson(output.ancestor.projection.map))) return pending();
+    if (await hash(pointer) === proof.committedHash
+      && !await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk)) return pending();
     if (await this.port.read('committed.json') !== pointer) return pending();
-    const current = await hash(pointer) === proof.committedHash && await this.port.read('prepared.json') === null;
-    const result: NativeSaveResultFacts = final?.result ?? { projectSaved: true, generatedCodePublished: false, partial: true,
-      publication: { status: 'COMMITTED', generation: staged.record.evidence.binding.generation, abiSaved: proof.mode === 'changed', absMirrored: true, mapPublished: true },
+    const acceptedSource = await output.store.acceptedSourceProof(staged.record.evidence.binding.generation, undefined, true);
+    const pointerHash = await hash(pointer);
+    const current = pointerHash === proof.committedHash
+      && await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk)
+      && (await output.store.workspaceMode() === 'project-v1'
+        ? acceptedSourceMatches(acceptedSource, staged.record.evidence.binding, this.port.attachment)
+          && acceptedSource.committedHash === pointerHash
+        : disk.abs === output.ancestor.projection.abs)
+      && await this.port.read('committed.json') === pointer
+      && await this.port.read('prepared.json') === null;
+    // The terminal receipt remains immutable; this read-only projection reports
+    // the author's current pending draft independently of that original commit.
+    const result: NativeSaveResultFacts = final ? { ...final.result, ...(acceptedSource ? { acceptedSource,
+      publication: { ...final.result.publication, ...(final.result.publication.acceptedSource ? { acceptedSource } : {}) } } : {}) }
+      : { projectSaved: true, generatedCodePublished: false, partial: true,
+      publication: { status: 'COMMITTED', generation: staged.record.evidence.binding.generation, abiSaved: proof.mode === 'changed', absMirrored: disk.abs === output.ancestor.projection.abs, mapPublished: true },
+      ...(acceptedSource ? { acceptedSource } : {}),
       requiresReload: false, evidence: staged.record.evidence,
       warnings: ['The original source commit is verified; its post-save outputs were not observed.'],
       derivedOutputs: { published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING' } };

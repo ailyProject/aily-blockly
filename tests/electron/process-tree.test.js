@@ -5,8 +5,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
-function fixture(snapshots, kills = []) {
-  const called = [], logs = [], snapshotCalls = [];
+function fixture(snapshots, kills = [], { deferSnapshots = false } = {}) {
+  const called = [], logs = [], snapshotCalls = [], pendingSnapshots = [];
   const context = { module: { exports: {} }, process: { env: { SystemRoot: 'C:\\Windows' } },
     console: { info: (_tag, value) => logs.push(value), warn() {} },
     setTimeout: callback => setImmediate(callback),
@@ -22,14 +22,16 @@ function fixture(snapshots, kills = []) {
         execFile(_exe, _args, _options, callback) {
           snapshotCalls.push(true);
           const next = snapshots.shift();
-          callback(next instanceof Error ? next : null, next instanceof Error ? '' : JSON.stringify(next));
+          const finish = () => callback(next instanceof Error ? next : null, next instanceof Error ? '' : JSON.stringify(next));
+          if (deferSnapshots) pendingSnapshots.push(finish); else finish();
         },
       };
       throw new Error(name);
     },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/process-tree.js'), 'utf8'), context);
-  return { stop: options => context.module.exports.killRegisteredProcessTree(10, 'cmd:build', options), called, logs, snapshotCalls };
+  return { stop: (options, pid = 10) => context.module.exports.killRegisteredProcessTree(pid, 'cmd:build', options),
+    finishSnapshot: () => pendingSnapshots.shift()(), called, logs, snapshotCalls };
 }
 const root = { pid: 10, parent: 1, created: '100' }, child = { pid: 11, parent: 10, created: '101' };
 
@@ -73,4 +75,50 @@ test('fast native failure stays unconfirmed without guessing from parent exit or
   const f = fixture([], [false]);
   assert.equal(await f.stop({ preferNativeAck: true }), false);
   assert.equal(f.snapshotCalls.length, 0);
+});
+
+test('concurrent Windows tree stops share a fresh snapshot before either tree is killed', async () => {
+  const other = { pid: 20, parent: 1, created: '102' };
+  const f = fixture([[root, child, other]], [true, true]);
+  assert.deepEqual(await Promise.all([f.stop(), f.stop(undefined, 20)]), [true, true]);
+  assert.equal(f.snapshotCalls.length, 1);
+  assert.deepEqual(f.called, [10, 20]);
+  assert.equal(f.logs[1].targetPids.includes(20), true);
+});
+
+test('a later stop gets a new snapshot instead of reusing stale process identities', async () => {
+  const f = fixture([[root, child], [{ ...root, created: '200' }]], [true, true]);
+  assert.equal(await f.stop(), true);
+  assert.equal(await f.stop(), true);
+  assert.equal(f.snapshotCalls.length, 2);
+  assert.deepEqual(Array.from(f.logs[1].targetPids), [10]);
+});
+
+test('a failed shared snapshot does not poison subsequent Windows stops', async () => {
+  const f = fixture([new Error('CIM unavailable'), [root, child], []], [true, false]);
+  assert.equal(await f.stop(), true);
+  assert.equal(await f.stop(), true);
+  assert.equal(f.snapshotCalls.length, 3);
+  assert.equal(f.logs[1].verifiedAfterFailure, true);
+});
+
+test('a stop requested after a query starts never joins that older in-flight snapshot', async () => {
+  const other = { pid: 20, parent: 1, created: '102' };
+  const f = fixture([[root, child], [other]], [true, true], { deferSnapshots: true });
+  const first = f.stop(); await Promise.resolve();
+  const second = f.stop(undefined, 20); await Promise.resolve();
+  assert.equal(f.snapshotCalls.length, 2); assert.deepEqual(f.called, []);
+  f.finishSnapshot(); assert.equal(await first, true); assert.deepEqual(f.called, [10]);
+  f.finishSnapshot(); assert.equal(await second, true); assert.deepEqual(f.called, [10, 20]);
+  assert.deepEqual(Array.from(f.logs[1].targetPids), [20]);
+});
+
+test('shared capture keeps each tree separate when only one native stop needs descendant recovery', async () => {
+  const other = { pid: 20, parent: 1, created: '102' };
+  const f = fixture([[root, child, other], [child], []], [false, true, true]);
+  assert.deepEqual(await Promise.all([f.stop(), f.stop(undefined, 20)]), [true, true]);
+  assert.deepEqual(f.called, [10, 20, 11]);
+  const recovered = f.logs.find(row => row.pid === 10);
+  assert.equal(recovered.verifiedAfterFailure, true);
+  assert(!recovered.targetPids.includes(20));
 });

@@ -4,6 +4,13 @@
  * 这里只描述数据，不包含展示、日志或 Angular 生命周期；具体渲染仍由
  * core/app-shell 的 NoticeService 负责。
  */
+export interface NoticeLogTarget {
+  timestamp?: number;
+  title?: string;
+  detail?: string;
+  mergeKey?: string;
+}
+
 export interface NoticeOptions {
   title?: string;
   text?: string;
@@ -16,6 +23,8 @@ export interface NoticeOptions {
   showDetail?: boolean;
   timestamp?: number;
   sendToLog?: boolean;
+  /** 底部日志中的原始记录；转发通知时保留，避免定位到后续无关输出。 */
+  logTarget?: NoticeLogTarget;
   closable?: boolean;
   /** Optional owner callback for dismissing a persistent informational notice. */
   onClose?: () => void;

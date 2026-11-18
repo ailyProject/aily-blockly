@@ -428,6 +428,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       '## Issue Description',
       this.feedbackContent.trim() || 'null',
       '## Environment',
+      '> Privacy: In automatically collected diagnostics, `[USER]` replaces the local username in paths and `[REDACTED]` hides sensitive values. These placeholders are added for feedback only; they are not the paths or values used by the program.',
       this.getBasicInfo(feedbackTime),
       await this.buildRuntimeDiagnostics(),
     ];

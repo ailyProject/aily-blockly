@@ -145,7 +145,7 @@ test('idle create prepares once and activates directly with the same admitted ow
   });
   let prepared = 0,
     opened = 0;
-  f.domain.projectNew = async (_data, options) => {
+  f.domain.projectNewWithResult = async (_data, options) => {
     prepared++;
     assert.equal(
       options.deferActivation,
@@ -153,7 +153,7 @@ test('idle create prepares once and activates directly with the same admitted ow
       'creation must not IPC-serialize or replace the original lease owner',
     );
     assert.equal(f.domain.projectLifecycle.hasActive('/projects/weather'), true);
-    return true;
+    return { ok: true, projectPath: path.join('/projects', 'weather') };
   };
   const projectOpen = f.domain.projectOpen.bind(f.domain);
   f.domain.projectOpen = async (target, options) => {
@@ -241,9 +241,9 @@ for (const failure of ['false', 'throw']) {
     });
     let creations = 0,
       activations = 0;
-    f.domain.projectNew = async () => {
+    f.domain.projectNewWithResult = async () => {
       creations++;
-      return true;
+      return { ok: true, projectPath: path.join('/projects', 'retained') };
     };
     f.domain.projectOpen = async () => {
       activations++;

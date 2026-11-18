@@ -1,5 +1,5 @@
 import { ensureProjectPartitionFile } from './project-partitions';
-import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject } from './coder/arduino-sketch';
+import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { projectViewOpenError } from './project-view-ownership';
@@ -66,6 +66,7 @@ import {
 } from './project-root-path';
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 import { deriveProjectPackageName } from './project-package-name';
+import { findReusableBlocklyBoardTemplate } from './blockly-project-template';
 import { projectSaveOutcomeError, type ProjectSaveOutcome, type ProjectSaveAsOutcome, type ProjectRecoveryCopyOptions } from './project-save-outcome';
 import { isProjectConflictChoice, isProjectConflictOffer, isProjectConflictResolution,
   type ProjectConflictChoice, type ProjectConflictOffer, type ProjectConflictResolution } from './project-conflict';
@@ -76,6 +77,7 @@ import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRe
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
 import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, type ProjectSaveReceiptResponse } from './project-save-receipts';
 import { ProjectRecoveryRequests } from './project-recovery-request';
+import { withCurrentProjectRecoveryStatus } from './project-recovery-status';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 import { readManagedLibraryEnvironment, type ManagedLibraryEnvironmentReference } from './project-managed-library-environment';
@@ -162,7 +164,8 @@ type ProjectCreationStage = 'validation' | 'board-install' | 'board-template' | 
 
 type ProjectCreationResult =
   | { ok: true; projectPath: string }
-  | { ok: false; stage: ProjectCreationStage; error: string; npmExitCode?: number };
+  | { ok: false; stage: ProjectCreationStage; error: string; npmExitCode?: number;
+      projectPath?: string; partialMutation?: true };
 
 export type ProjectState = 'default' | 'loading' | 'loaded' | 'closing' | 'saving' | 'saved' | 'error';
 
@@ -1585,6 +1588,7 @@ export class ProjectService {
   async projectNewWithResult(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<ProjectCreationResult> {
     let stage: ProjectCreationStage = 'validation';
     let npmExitCode: number | undefined;
+    let copiedBlocklyProjectPath: string | undefined;
     try {
       const templateDirectory = options.templateDirectory || 'template';
       const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
@@ -1597,10 +1601,13 @@ export class ProjectService {
         'node_modules',
         boardPackageName,
       );
-      const reusableTemplate = isCoderTemplate && isAilyBoardPackageName(boardPackageName)
-        ? findReusableCoderBoardTemplate(boardPackagePath, {
-          name: boardPackageName, version: newProjectData.board.version,
-        }, window['path'], window['fs'])
+      const selectedBoard = { name: boardPackageName, version: newProjectData.board.version };
+      const reusableTemplate = isAilyBoardPackageName(boardPackageName)
+        ? isCoderTemplate
+          ? findReusableCoderBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
+          : templateDirectory === 'template'
+            ? findReusableBlocklyBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
+            : undefined
         : undefined;
 
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
@@ -1621,10 +1628,10 @@ export class ProjectService {
       }
 
       stage = 'board-template';
-      const coderTemplate = reusableTemplate ?? (isCoderTemplate
+      const creationTemplate = reusableTemplate ?? (isCoderTemplate
         ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
         : undefined);
-      const templatePath = coderTemplate?.templatePath
+      const templatePath = creationTemplate?.templatePath
         ?? window['path'].join(boardPackagePath, templateDirectory);
       if (!window['fs'].existsSync(templatePath)) {
         throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
@@ -1633,11 +1640,14 @@ export class ProjectService {
       if (isCoderTemplate) {
         window['fs'].mkdirSync(projectPath);
         copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
-          useDefaultSource: coderTemplate?.useDefaultSource === true,
+          useDefaultSource: creationTemplate?.useDefaultSource === true,
         });
       } else {
         // 复制 Blockly 模板文件到项目目录
         this.importProjectDirectory(templatePath, projectPath);
+        // Only this completed copy proves a new partial project belongs to
+        // this request. An existing target or a copy that throws does not.
+        copiedBlocklyProjectPath = projectPath;
       }
 
       if (templateDirectory === 'template') {
@@ -1653,14 +1663,16 @@ export class ProjectService {
       }
       stage = 'activation';
       const created = await this.finishProjectCreation(projectPath, options);
-      if (!created) return { ok: false, stage, error: '主软件未能激活新建的项目' };
+      if (!created) return { ok: false, stage, error: '主软件未能激活新建的项目',
+        ...(copiedBlocklyProjectPath ? { projectPath: copiedBlocklyProjectPath, partialMutation: true as const } : {}) };
       this.metrics.record('project_created');
       return { ok: true, projectPath };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.message.error(`${this.translate.instant('PROJECT.CREATE_FAILED')}: ${message}`);
       this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
-      return { ok: false, stage, error: message, ...(npmExitCode === undefined ? {} : { npmExitCode }) };
+      return { ok: false, stage, error: message, ...(npmExitCode === undefined ? {} : { npmExitCode }),
+        ...(copiedBlocklyProjectPath ? { projectPath: copiedBlocklyProjectPath, partialMutation: true as const } : {}) };
     }
   }
 
@@ -2664,12 +2676,24 @@ export class ProjectService {
   /** Same-project recovery owns its own exact request. A lost response can only
    * observe that request; it cannot replay navigation or apply an AI candidate. */
   recoverFailedBlocklyProject(requestId: string, observe = false,
-    recoverReadyProject?: () => Promise<Record<string, any>>): Promise<Record<string, any>> {
+    recoverReadyProject?: () => Promise<Record<string, any>>,
+    prepareRecovery?: () => Promise<void>): Promise<Record<string, any>> {
     const path = this.currentProjectPath;
     if (!/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
+    const currentResult = (task: Promise<Record<string, any>>) => task.then(result => {
+      const sameProject = this.currentProjectPath === path;
+      const status = this.getBlocklyProjectLoadStatus(path);
+      const generation = this.electronService?.currentRendererGeneration;
+      return withCurrentProjectRecoveryStatus(result, {
+        version: 1, project: path, sameProject, ready: sameProject && status.ready,
+        projectSessionId: sameProject ? projectDataRuntime.getSessionToken() : null,
+        ...(Number.isSafeInteger(generation) ? { rendererGeneration: generation } : {}),
+        loadStatus: { ...status, project: path, ready: sameProject && status.ready },
+      });
+    });
     const receipts = this.failedLoadRecoveries ??= new Map();
     const original = receipts.get(requestId);
-    if (original) return original.path === path ? original.task : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    if (original) return original.path === path ? currentResult(original.task) : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
     const task = (async () => {
       const receipt = { version: 2, requestId, action: 'recover_project', candidateApplied: false };
       const current = () => {
@@ -2686,6 +2710,8 @@ export class ProjectService {
         if (previous.result) return { ...previous.result, recoveryObservation: { durable: true, resultKnown: true } };
         if (observe || previous.started || !await journal.begin(requestId)) return unknown();
         owned = true;
+        await prepareRecovery?.();
+        current();
         const result = await (async () => {
         if (recoverReadyProject) {
           const result = await recoverReadyProject();
@@ -2725,7 +2751,7 @@ export class ProjectService {
       }
     })();
     if (!observe) receipts.set(requestId, { path, task });
-    return task;
+    return currentResult(task);
   }
 
   /** Native bootstrap is available only in the exact same-build child created
@@ -3822,6 +3848,18 @@ export class ProjectService {
       }
     }
     return undefined;
+  }
+
+  /** Coder execution must choose a target before dependency preparation or port selection. */
+  async ensureCoderBoardSelected(projectPath = this.currentProjectPath): Promise<boolean> {
+    if (!projectPath || !this.configService.isCoderProduct() || !this.isAilyCodeProject(projectPath)) return true;
+    const project = projectPath === this.currentProjectPath ? this : this.getCoderProjectContext(projectPath);
+    const current = project.captureCurrentProjectGuard();
+    if (await project.getBoardModule()) return true;
+    if (!current()) return false;
+    this.message.warning(CODER_BOARD_REQUIRED_MESSAGE);
+    await this.application.openCoderBoardSelector(projectPath);
+    return false;
   }
 
   // 获取开发板模块的package.json

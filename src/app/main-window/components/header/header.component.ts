@@ -1473,6 +1473,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   async process(item: IMenuItem, event = null, source: 'manual' | 'ai' | 'system' = 'system') {
+    const stopping = ['play', 'upload'].includes(item.action) && (this.connectorState.running || item.state === 'running');
+    if (this.configService.isCoderProduct() && ['compile', 'play', 'upload'].includes(item.action)
+      && item.state !== 'doing' && !stopping && !await this.projectService.ensureCoderBoardSelected()) return;
     const dependencyBlock = this.dependencyBlockMessage(item);
     if (dependencyBlock) {
       this.message.info(dependencyBlock);

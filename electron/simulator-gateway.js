@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const { spawn: spawnOwned, stopOwnedProcess } = require('./owned-process');
 
 const START_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 5_000;
@@ -131,7 +132,7 @@ async function start({ app, projectPath, rendererOrigin, ownerId }) {
         args.push('--freertos-bridge', runtime.freeRtosBridgePath);
       }
     }
-    const child = spawn(process.execPath, args, {
+    const child = spawnOwned(process.execPath, args, {
       cwd: runtime.simulatorRoot,
       env: {
         ...process.env,
@@ -351,6 +352,8 @@ function hasChildExited(child) {
 }
 
 async function forceTerminateProcessTree(child) {
+  const owned = await stopOwnedProcess(child);
+  if (owned !== null) return owned;
   if (hasChildExited(child)) return;
   if (
     process.platform === 'win32'

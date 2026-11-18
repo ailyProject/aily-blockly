@@ -8,16 +8,16 @@ const { EventEmitter } = require('node:events');
 const os = require('node:os');
 
 function fixture({ native = false, cwd } = {}) {
-  const handlers = new Map(), children = [], timers = [], kills = [];
+  const handlers = new Map(), children = [], timers = [], kills = [], killOptions = [];
   const nativeResult = { code: undefined, signal: undefined, stdout: '', stderr: '' };
   const owner = Object.assign(new EventEmitter(), { id: 1, destroyed: false,
     isDestroyed() { return this.destroyed; }, destroy() { this.destroyed = true; this.emit('destroyed'); } });
   const state = { spawnError: undefined, kill: native
     ? pid => require('../../electron/process-tree').killRegisteredProcessTree(pid, 'npm-lifecycle-fixture')
-    : async () => true };
+    : async () => true, owned: false, stopOwned: async () => true };
   const dependencies = {
     electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler) } },
-    child_process: { spawn: (...args) => {
+    './owned-process': { spawn: (...args) => {
       if (state.spawnError) throw state.spawnError;
       const child = native ? require('node:child_process').spawn(args[0], { ...args[1], cwd })
         : Object.assign(new EventEmitter(), { pid: 100 + children.length, stdout: new EventEmitter(), stderr: new EventEmitter() });
@@ -28,8 +28,11 @@ function fixture({ native = false, cwd } = {}) {
         child.on('close', (code, signal) => Object.assign(nativeResult, { code, signal }));
       }
       children.push(child); return child;
+    }, getOwnedProcessInfo: () => state.owned ? { active: 1 } : null,
+    stopOwnedProcess: child => state.stopOwned(child) },
+    './process-tree': { killRegisteredProcessTree: async (pid, _label, options) => {
+      kills.push(pid); killOptions.push(options); return state.kill(pid);
     } },
-    './process-tree': { killRegisteredProcessTree: async pid => { kills.push(pid); return state.kill(pid); } },
     './project-task-scope': require('../../electron/project-task-scope'),
     './npm-mutation-queue': { acquireNpmMutation: () => null },
   };
@@ -45,7 +48,7 @@ function fixture({ native = false, cwd } = {}) {
   const run = (options = {}, sender = owner) => handlers.get('npm-run')({ sender }, {
     cmd: 'npm install fixture', ...options,
   });
-  return { api, run, owner, children, timers, kills, state, nativeResult };
+  return { api, run, owner, children, timers, kills, killOptions, state, nativeResult };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const busy = child => { child.stderr.emit('data', 'npm error EBUSY rename fixture'); child.emit('close', 1, null); };
@@ -160,6 +163,34 @@ test('abnormal exit stays unresolved without retrying busy output or targeting a
   assert.equal(await f.api.killAllNpmProcesses(), false);
   assert.equal(f.timers.length, 0);
   assert.equal(f.kills.length, 0);
+});
+
+for (const stopped of [false, true]) test(`npm error and abnormal close release ownership only after Job confirmation: ${stopped}`, async () => {
+  const f = fixture(); f.state.owned = true;
+  let stoppedChild;
+  f.state.stopOwned = async child => { stoppedChild = child; return stopped; };
+  const pending = f.run();
+  const rejected = assert.rejects(pending, /installer transport failed/);
+  f.children[0].emit('error', new Error('installer transport failed'));
+  f.children[0].emit('close', null, 'SIGKILL'); await rejected;
+  assert.equal(stoppedChild, f.children[0]);
+  assert.equal(f.api.getActiveNpmProcesses().length, stopped ? 0 : 1);
+  assert.equal(f.kills.length, 0);
+});
+
+test('npm cancellation carries the original child and its normal-completion guard together', async () => {
+  const f = fixture(), pending = f.run();
+  const rejected = assert.rejects(pending, /CANCELLED/);
+  let finish;
+  f.state.kill = () => new Promise(resolve => { finish = resolve; });
+  const stopping = f.api.killAllNpmProcesses();
+  const options = f.killOptions[0];
+  assert.equal(options.ownedProcess, f.children[0]);
+  assert.equal(options.originalProcessCompletedNormally(), false);
+  f.children[0].emit('close', 0, null); await rejected;
+  assert.equal(options.originalProcessCompletedNormally(), true);
+  finish(true); assert.equal(await stopping, true);
+  assert.equal(options.originalProcessCompletedNormally(), false);
 });
 
 test('project stop isolates npm owners and sessions and rejects late cancelled requests', async () => {

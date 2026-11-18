@@ -10,7 +10,7 @@ import {
   LogService,
   PlatformService,
 } from '@core/platform/public-api';
-import { ProjectService, coderSourceDirectory } from '@domain/project/public-api';
+import { ProjectService, coderSourceDirectory, CODER_BOARD_REQUIRED_MESSAGE } from '@domain/project/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { MetricsService } from '@core/metrics/public-api';
@@ -159,6 +159,11 @@ export class CompileService {
         success: false,
         result: { state: 'warn', text: 'No project is currently open; build cannot start.', buildOutcome: 'not-started' },
       };
+    }
+
+    if (this.configService.isCoderProduct() && this.projectService.isAilyCodeProject(root)
+      && !await this.projectService.ensureCoderBoardSelected(root)) {
+      return { success: false, result: { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' } };
     }
 
     // Ordinary local builds retain the existing readiness-before-admission flow.
@@ -886,6 +891,9 @@ export class CompileService {
     const fullDetail = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim();
     const clean = logSummaryOnly ? fullDetail : fullDetail.slice(0, 8000);
     appendProjectLog(projectPath, 'compile', 'ERROR', text || clean || '(no logs)');
+    if (logSummaryOnly) {
+      this.logService.update({ title, detail: text || '(no logs)', state: 'error' });
+    }
     this.application.updateNotice({
       title,
       text,
@@ -895,9 +903,6 @@ export class CompileService {
       setTimeout: 600000,
       sendToLog: !logSummaryOnly,
     });
-    if (logSummaryOnly) {
-      this.logService.update({ title, detail: text || '(no logs)', state: 'error' });
-    }
   }
 
   private runOneShotCommand(

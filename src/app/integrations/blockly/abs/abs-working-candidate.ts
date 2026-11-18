@@ -1,9 +1,12 @@
 import { decodeAbsMap, absMapJson } from './abs-map-json';
 import { AbsSyncError, type AbsProjection, type AbsIdentityMap } from './abs-state';
 import { absJson, hashAbsText, validateAbsProjection } from './abs-identity-map';
-import type { AbsProjectAttachment, AbsSyncStoragePort } from './abs-baseline-store';
+import type { AbsBaselineStore, AbsProjectAttachment, AbsSyncStoragePort } from './abs-baseline-store';
 import type { AbsSourceEdit, AbsSourceEdits } from './abs-edit-provenance';
 import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
+import { splitAbsState } from './abs-full-state';
+import { assertAbsContractsCompatible } from './abs-contract-compatibility';
+import { acceptedInputFormattingEdits } from './abs-accepted-input-edits';
 
 export interface WorkingCandidateRef { version: 1; id: string; revisionHash: string }
 interface ObjectRef { hash: string; bytes: number }
@@ -86,7 +89,8 @@ export function composeCandidateSplices(base: string, batches: AbsSourceEdits, e
 
 /** Exact refs only. Workspace heads, paths, and matching bodies never select a
  * revision here. Session/branch admission belongs to the SDK before dispatch. */
-export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], source: string) {
+export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], source: string,
+  originStore?: Pick<AbsBaselineStore, 'loadIntent' | 'readDerivedAbi' | 'inspectCommittedAncestor' | 'readAcceptedAuthorInput'>) {
   assertWorkingCandidateRef(ref);
   const read = (hash: string) => port.read(`history-objects/${hash}`);
   const seen = new Set<string>(), chain: CandidateRecord[] = [];
@@ -125,6 +129,19 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
     readCandidateObject(record.base.map, read), readCandidateObject(record.base.contracts, read),
   ]);
   if (chain[0].derivation?.kind !== 'capture' || chain[0].parent) fail('Candidate capture differs from its exact revision.');
+  let document: any, map: any, contracts: any;
+  try { document = JSON.parse(documentText); map = decodeAbsMap(JSON.parse(mapText)); contracts = JSON.parse(contractsText); }
+  catch { return fail('Frozen candidate projection is not JSON.'); }
+  if (map.scope?.projectKey !== scope.projectKey || typeof map.scope?.pageId !== 'string'
+    || record.scope.kind === 'pages' && !record.scope.pageIds.includes(map.scope.pageId)) fail('Frozen candidate projection belongs to another project/page.');
+  const baseline: AbsProjection = { document, workspace: composeBlocklyPage(document, map.scope.pageId), abs: baseAbs, map, contracts };
+  await validateAbsProjection(baseline);
+  const sourceState = splitAbsState(source).state, baseState = splitAbsState(baseAbs).state;
+  const needsOrigin = sourceState !== null && sourceState !== baseState || chain.some(item => item.derivation.kind === 'replace');
+  const stateOrigin = needsOrigin ? await readPublishedStateOrigin(record.base.published, baseline, source, originStore) : undefined;
+  const readonlyStateOrigin = stateOrigin?.source;
+  const allowedStates = [splitAbsState(baseAbs).state,
+    ...(readonlyStateOrigin === undefined ? [] : [splitAbsState(readonlyStateOrigin).state])];
   let exact = true; const batches: AbsSourceEdits = [];
   let previous = baseAbs;
   // Bounded prefetch avoids retaining every full source body in a long chain.
@@ -135,7 +152,12 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
       const index = offset + at, item = chain[index], body = bodies[at];
       if (!index) { if (body !== baseAbs) fail('Candidate capture source differs from its frozen base.'); }
       else if (item.derivation?.kind === 'fork') { if (body !== previous) fail('Fork source differs from its original revision.'); }
-      else if (item.derivation?.kind === 'replace' && item.derivation.mapping === 'unresolved') exact = false;
+      else if (item.derivation?.kind === 'replace' && item.derivation.mapping === 'unresolved') {
+        const bridge = exact ? readonlyStateReplacement(previous, body, allowedStates)
+          ?? (previous === baseAbs && body === stateOrigin?.acceptedInput ? acceptedInputFormattingEdits(baseline, body) : undefined) : undefined;
+        if (bridge) { composeCandidateSplices(previous, [bridge], body); batches.push(bridge); }
+        else if (body !== previous) exact = false;
+      }
       else {
         if (item.derivation?.kind !== 'splices') return fail('Invalid candidate ancestry derivation.');
         const edits = JSON.parse(await readCandidateObject(item.derivation.edits, read));
@@ -145,13 +167,60 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
     }
   }
   if (previous !== source) fail('Submitted source differs from its exact revision.');
-  let document: any, map: any, contracts: any;
-  try { document = JSON.parse(documentText); map = decodeAbsMap(JSON.parse(mapText)); contracts = JSON.parse(contractsText); }
-  catch { return fail('Frozen candidate projection is not JSON.'); }
-  if (map.scope?.projectKey !== scope.projectKey || typeof map.scope?.pageId !== 'string'
-    || record.scope.kind === 'pages' && !record.scope.pageIds.includes(map.scope.pageId)) fail('Frozen candidate projection belongs to another project/page.');
-  const baseline: AbsProjection = { document, workspace: composeBlocklyPage(document, map.scope.pageId), abs: baseAbs, map, contracts };
-  await validateAbsProjection(baseline);
   return { ref, record, baseline, sourceHashes: new Set(chain.map(item => `sha256:${item.source.hash}`)),
-    sourceEdits: exact ? composeCandidateSplices(baseAbs, batches, source) : undefined };
+    sourceEdits: exact ? composeCandidateSplices(baseAbs, batches, source) : undefined,
+    ...(readonlyStateOrigin !== undefined ? { readonlyStateOrigin } : {}) };
+}
+
+/** A verified state reserialization changes no readable program bytes. Preserve
+ * its exact edit interval before composing subsequent genuine Pi edits; a
+ * replacement with any program change remains unresolved. */
+function readonlyStateReplacement(before: string, after: string, allowed: Array<string | null>): AbsSourceEdit[] | undefined {
+  const next = splitAbsState(after);
+  if (next.state === null || !allowed.includes(next.state) || splitAbsState(before).program !== next.program) return undefined;
+  const marker = '\n# @project-state:', at = before.indexOf(marker);
+  if (at < 0 || after.indexOf(marker) !== at) return undefined;
+  const start = at + marker.length, previousEnd = before.indexOf('\n', start), nextEnd = after.indexOf('\n', start);
+  return [{ start, end: previousEnd < 0 ? before.length : previousEnd,
+    text: after.slice(start, nextEnd < 0 ? after.length : nextEnd) }];
+}
+
+/** A previous host snapshot can explain an untouched state section after a
+ * fresh export changes compatible runtime contracts. It never replaces the
+ * frozen Working document or grants authority to arbitrary parent sources. */
+async function readPublishedStateOrigin(published: unknown, baseline: AbsProjection, source: string,
+  store?: Pick<AbsBaselineStore, 'loadIntent' | 'readDerivedAbi' | 'inspectCommittedAncestor' | 'readAcceptedAuthorInput'>): Promise<{ source?: string; acceptedInput?: string } | undefined> {
+  const state = splitAbsState(source).state, fresh = splitAbsState(baseline.abs).state;
+  if (!store || !object(published)
+    || typeof published['generation'] !== 'string' || absJson(published['scope']) !== absJson(baseline.map.scope)) return undefined;
+  let original: AbsProjection, abi: string | null;
+  try {
+    original = await store.loadIntent(published['generation']);
+    abi = await store.readDerivedAbi(published['generation']);
+  } catch (error) {
+    if (error instanceof AbsSyncError && ['ABS_BASELINE_MISSING', 'ABS_SCOPE_INVALID'].includes(error.code)) return undefined;
+    throw error;
+  }
+  const binding = { generation: original.map.generation, scope: original.map.scope,
+    abiHash: abi === null ? null : await hashAbsText(abi), absHash: original.map.baseAbsHash,
+    mapHash: await hashAbsText(absMapJson(original.map)) };
+  if (absJson(binding) !== absJson(published)) return undefined;
+  const accepted = await store.inspectCommittedAncestor(published['generation']);
+  if (!accepted || accepted.projection.abs !== original.abs || accepted.abi !== abi) return undefined;
+  const input = await store.readAcceptedAuthorInput(published['generation']);
+  const provenance = input === null ? undefined : { acceptedInput: input };
+  // Formatting provenance is independent of whether the candidate needs a
+  // readonly-state exception (including a valid source with no state section).
+  if (state === null || state === fresh || fresh === null) return provenance;
+  if (state !== splitAbsState(original.abs).state) {
+    // A successful prior apply may retain raw B while publishing normalized C.
+    // Only C's own verified accepted input can explain B's unchanged state;
+    // neither a parent replacement nor another historical input is authority.
+    return input !== null && state === splitAbsState(input).state ? { source: input, ...provenance } : provenance;
+  }
+  const { contracts: _oldContracts, ...oldState } = JSON.parse(state);
+  const { contracts: _freshContracts, ...freshState } = JSON.parse(fresh);
+  if (absJson(oldState) !== absJson(freshState)) return provenance;
+  assertAbsContractsCompatible(original.contracts, baseline.contracts, baseline.workspace);
+  return { source: original.abs, ...provenance };
 }

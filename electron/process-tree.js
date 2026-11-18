@@ -106,7 +106,22 @@ async function terminateUnixProcessTree(pid, label, startedAt) {
   return success;
 }
 
+let pendingWindowsSnapshot = null;
+
 function windowsProcessSnapshot() {
+  // Batch requests made in this microtask turn, before launching the query.
+  // Never join a query already in progress: its captured identities could
+  // predate a later stop request. Retries always take another fresh snapshot.
+  if (!pendingWindowsSnapshot) {
+    pendingWindowsSnapshot = Promise.resolve().then(() => {
+      pendingWindowsSnapshot = null;
+      return readWindowsProcessSnapshot();
+    });
+  }
+  return pendingWindowsSnapshot;
+}
+
+function readWindowsProcessSnapshot() {
   const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   return new Promise((resolve, reject) => {
     execFile(powershell, ['-NoProfile', '-NonInteractive', '-Command',
@@ -189,6 +204,15 @@ async function terminateWindowsProcessTree(pid, label, startedAt, options = {}) 
 function killRegisteredProcessTree(pid, label, options = {}) {
   if (!Number.isInteger(pid) || pid <= 0) {
     return Promise.resolve(false);
+  }
+
+  if (isWin32 && options.ownedProcess) {
+    const { getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
+    if (getOwnedProcessInfo(options.ownedProcess)) {
+      // Failure must retain this exact Job. Never fall through to a PID scan
+      // that might now refer to a different task or main-software instance.
+      return stopOwnedProcess(options.ownedProcess).catch(() => false);
+    }
   }
 
   return new Promise((resolve) => {

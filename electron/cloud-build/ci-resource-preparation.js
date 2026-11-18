@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn } = require('../owned-process');
 const { killRegisteredProcessTree } = require('../process-tree');
 const protocol = require('./protocol');
 const contract = require('./ci-resource-contract');
@@ -132,7 +132,7 @@ async function runTool(executable, args, options, { signal, launch = spawn, onOu
     const stop = () => {
       if (stopping || closed) return;
       stopping = Number.isSafeInteger(child.pid) && child.pid > 1 && child.pid !== process.pid
-        ? Promise.resolve(stopTree(child.pid, 'cloud-ci-resources')).catch(() => false) : Promise.resolve(false);
+        ? Promise.resolve(stopTree(child.pid, 'cloud-ci-resources', { ownedProcess: child })).catch(() => false) : Promise.resolve(false);
       stopTimer = setTimeout(() => {
         if (!finished) { finished = true; signal?.removeEventListener('abort', stop); reject(cleanupFault()); }
       }, 15000);
