@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs');
+const { renameForAtomicReplace } = require('./atomic-replace');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
@@ -144,16 +145,9 @@ function replace(root, relative, content, assertOwned) {
     const temporary = `${filename}.${randomUUID()}.tmp`;
     try {
         fs.writeFileSync(temporary, content, { flag: 'wx' });
-        for (let attempt = 0; ; attempt++) {
-            // Windows readers can briefly deny replacement; retain the same
-            // atomic write and recheck ownership/paths before every attempt.
+        renameForAtomicReplace(temporary, filename, () => {
             assertOwned(); physical(root, relative);
-            try { fs.renameSync(temporary, filename); break; }
-            catch (error) {
-                if (process.platform !== 'win32' || attempt >= 4 || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
-                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * (2 ** attempt));
-            }
-        }
+        });
     } finally { fs.rmSync(temporary, { force: true }); }
 }
 

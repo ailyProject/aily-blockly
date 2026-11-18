@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
+const { renameForAtomicReplace } = require('./atomic-replace');
 const { tryAcquireFileLock } = require('./native-file-lock');
 const { collectLibraryPackages } = require('./library-packages');
 const { captureBuildSource } = require('./build-source-capture');
@@ -42,7 +43,7 @@ function write(filename, value) {
     try {
         const fd = fs.openSync(temp, 'wx', 0o600);
         try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        fs.renameSync(temp, filename);
+        renameForAtomicReplace(temp, filename);
     } finally { try { fs.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
 }
 function locked(store, action) {

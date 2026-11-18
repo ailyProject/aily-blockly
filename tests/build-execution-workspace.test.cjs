@@ -47,6 +47,48 @@ function complete(config) {
     api.finishBuildExecution(config, true);
 }
 
+test('publishes the next Windows build after a brief current receipt sharing violation',
+    { skip: process.platform !== 'win32' }, t => {
+        const f = fixture(t), first = api.prepareBuildExecution(f.config);
+        complete(first);
+        const pointer = path.join(f.root, '.aily/build-executions/current.json');
+        const previous = fs.readFileSync(pointer);
+        const rename = fs.renameSync;
+        let attempts = 0;
+        fs.renameSync = (source, target) => {
+            if (target === pointer && ++attempts === 1) {
+                assert.deepEqual(fs.readFileSync(pointer), previous);
+                throw Object.assign(new Error('Windows sharing violation'), { code: 'EPERM' });
+            }
+            return rename(source, target);
+        };
+        let next;
+        try { next = api.prepareBuildExecution({ ...f.config, buildRequestId: 'next-request' }); }
+        finally { fs.renameSync = rename; }
+        assert.equal(attempts, 2);
+        assert.equal(JSON.parse(fs.readFileSync(pointer)).id, next.execution.id);
+        assert.equal(api.inspectBuildExecution(f.root, first.execution.buildRequestId).status, 'completed');
+        assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'prepared');
+    });
+
+test('allows a restricted renderer to load and read a build receipt without shared memory', t => {
+    const f = fixture(t), config = api.prepareBuildExecution(f.config);
+    complete(config);
+    const modulePath = require.resolve('../child/scripts/atomic-replace');
+    const cached = require.cache[modulePath];
+    const sharedArrayBuffer = Object.getOwnPropertyDescriptor(globalThis, 'SharedArrayBuffer');
+    try {
+        delete require.cache[modulePath];
+        Object.defineProperty(globalThis, 'SharedArrayBuffer', { configurable: true, value: undefined });
+        assert.equal(typeof require(modulePath).renameForAtomicReplace, 'function');
+        assert.equal(api.inspectBuildExecution(f.root, config.execution.buildRequestId).status, 'completed');
+    } finally {
+        if (sharedArrayBuffer) Object.defineProperty(globalThis, 'SharedArrayBuffer', sharedArrayBuffer);
+        else delete globalThis.SharedArrayBuffer;
+        require.cache[modulePath] = cached;
+    }
+});
+
 for (const status of ['completed', 'failed']) {
     test(`observes the original ${status} outcome after status publication was interrupted`, t => {
         const f = fixture(t), config = api.prepareBuildExecution(f.config);
