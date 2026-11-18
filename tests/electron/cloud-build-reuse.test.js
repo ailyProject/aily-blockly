@@ -71,6 +71,40 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
 });
 
+test('cloud receipt distinguishes an unsaved capture and the next saved reuse of the same source', async t => {
+  const f = fixture(t), abi = path.join(f.root, 'project.abi');
+  f.config.sourceCapture = captureBuildSource(f.config, {
+    documentText: '{"value":"B"}', revision: 2, runtimeRevision: 1, pageId: 'main',
+  });
+  const query = f.broker.querySource;
+  f.broker.querySource = async (...args) => {
+    const answer = await query(...args);
+    answer.source.workspace = f.config.sourceCapture.workspace;
+    return answer;
+  };
+  const saving = (text, savedMatch) => {
+    fs.writeFileSync(abi, text);
+    f.config.savedBuildComparison = { savedAbiHash: `sha256:${protocol.sha256(text)}`, savedMatch };
+  };
+  saving('saved A', 'different');
+  const first = await f.run();
+  const expected = { version: 1, buildRequestId: 'run-1', inputDigest: first.inputDigest,
+    sourceSha256: protocol.sha256(f.config.code), documentSha256: protocol.sha256('{"value":"B"}'), workspaceRevision: 2,
+    savedAbiHash: `sha256:${protocol.sha256('saved A')}`, savedMatch: 'different' };
+  assert.deepEqual(first.buildSnapshot, expected);
+  assert.equal(first.buildSource.abiHash, expected.savedAbiHash);
+  saving('saved B', 'matched');
+  const second = await f.run();
+  assert.equal(second.reused, true);
+  assert.equal(f.jobs, 1);
+  assert.deepEqual(second.buildSnapshot, { ...expected, buildRequestId: 'run-2',
+    savedAbiHash: `sha256:${protocol.sha256('saved B')}`, savedMatch: 'matched' });
+  assert.deepEqual(first.buildSnapshot, expected);
+  fs.writeFileSync(abi, 'external edit');
+  const third = await f.run();
+  assert.equal(third.buildSnapshot.savedMatch, 'unknown');
+});
+
 test('cloud artifact consumption records uploader delegation before entering the native consumer', async t => {
   const f = fixture(t); await f.run();
   await f.broker.withCurrentArtifact(f.sender, f.root, async () => {

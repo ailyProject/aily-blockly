@@ -6,6 +6,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const { tryAcquireFileLock } = require('./native-file-lock');
 const { collectLibraryPackages } = require('./library-packages');
 const { captureBuildSource } = require('./build-source-capture');
+const { buildSnapshotReceipt } = require('./build-snapshot-receipt');
 const { getSystemBootId } = require('./system-boot-id');
 const { processIdentity } = require('./build-process-identity');
 const { inspectBuildWorkspaceIdle } = require('./build-workspace-lease');
@@ -223,7 +224,12 @@ function prepareBuildExecution(config, workspace, operation = 'compile') {
     if (typeof execution.buildRequestId !== 'string' || !REQUEST_ID.test(execution.buildRequestId)) fail('Invalid build request identity.');
     const prepared = { ...config, currentProjectPath: root, partitionFilePath: path.join(root, 'partitions.csv'), execution };
     delete prepared.sourceCapture;
+    delete prepared.savedBuildComparison;
     prepared.sourceCapture = captureBuildSource(prepared, workspace);
+    if (operation === 'compile') {
+        execution.buildSnapshot = buildSnapshotReceipt(prepared.sourceCapture, execution.buildRequestId,
+            inputDigest, config.savedBuildComparison, execution.abiHash);
+    }
     write(path.join(folder, 'execution.json'), { ...execution, status: 'prepared', sourceCapture: prepared.sourceCapture });
     write(path.join(folder, 'config.json'), prepared);
     if (operation === 'compile') locked(store, () => {
@@ -246,6 +252,7 @@ function recordFor(config) {
     const record = json(path.join(folder, 'execution.json'));
     if (record.id !== execution.id || record.inputDigest !== execution.inputDigest || record.buildRequestId !== execution.buildRequestId
         || record.abiHash !== execution.abiHash
+        || JSON.stringify(record.buildSnapshot) !== JSON.stringify(execution.buildSnapshot)
         || !samePath(record.logicalProjectPath, store.root) || JSON.stringify(record.sourceCapture) !== JSON.stringify(config.sourceCapture)) fail('Execution binding changed.');
     return { store, folder, root, record };
 }
@@ -429,6 +436,7 @@ function inspectBuildExecution(projectPath, buildRequestId) {
             }
         }
         return { version: 1, executionId: record.id, buildRequestId, status, inputDigest: record.inputDigest,
+            ...(record.buildSnapshot ? { buildSnapshot: record.buildSnapshot } : {}),
             ...(record.abiHash ? { buildInput: { version: 1, executionId: record.id, buildRequestId,
                 inputDigest: record.inputDigest, abiHash: record.abiHash } } : {}),
             ...(ownerState ? { ownerState } : {}),

@@ -411,3 +411,35 @@ test('R4 build input identifies detached original ABI across live edits, cancel,
     assert.deepEqual(api.inspectBuildExecution(f.root, 'original-request').buildInput, cancelled.buildInput);
     assert.throws(() => api.recordFor({ ...first, execution: { ...first.execution, abiHash: second.execution.abiHash } }), /binding changed/);
 });
+
+test('a dirty Blockly build retains its own source alongside the unchanged saved ABI', t => {
+    const f = fixture(t), sha = value => createHash('sha256').update(value).digest('hex');
+    const savedAbiHash = `sha256:${sha('original user program')}`;
+    const a = api.prepareBuildExecution({ ...f.config, savedBuildComparison: { savedAbiHash, savedMatch: 'matched' } },
+        { documentText: '{"value":"A"}', revision: 1, runtimeRevision: 1, pageId: 'main' });
+    complete(a);
+    assert.equal(api.inspectBuildExecution(f.root, f.config.buildRequestId).buildSnapshot.savedMatch, 'matched');
+
+    const b = { ...f.config, code: 'int value = 2;', buildRequestId: 'unsaved-b',
+        savedBuildComparison: { savedAbiHash, savedMatch: 'different' } };
+    const built = api.prepareBuildExecution(b, { documentText: '{"value":"B"}', revision: 2, runtimeRevision: 1, pageId: 'main' });
+    complete(built);
+    const observed = api.inspectBuildExecution(f.root, b.buildRequestId);
+    assert.equal(observed.status, 'completed');
+    assert.equal(observed.buildInput.abiHash, savedAbiHash);
+    assert.deepEqual(observed.buildSnapshot, { version: 1, buildRequestId: b.buildRequestId, inputDigest: built.execution.inputDigest,
+        sourceSha256: sha(b.code), documentSha256: sha('{"value":"B"}'), workspaceRevision: 2, savedAbiHash, savedMatch: 'different' });
+    assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), 'original user program');
+    assert.equal(api.canReuseBuildExecution(b), true);
+    assert.equal(api.canReuseBuildExecution({ ...b, code: 'int value = 3;' }), false);
+
+    f.put('project.abi', 'changed outside the editor');
+    const external = api.prepareBuildExecution({ ...b, buildRequestId: 'external-change' },
+        { documentText: '{"value":"B"}', revision: 2, runtimeRevision: 1, pageId: 'main' });
+    assert.equal(external.execution.buildSnapshot.savedMatch, 'unknown');
+    assert.notEqual(external.execution.buildSnapshot.savedAbiHash, savedAbiHash);
+    const historical = api.inspectBuildExecution(f.root, b.buildRequestId);
+    assert.equal(historical.current, false);
+    assert.equal(historical.result, undefined);
+    assert.deepEqual(historical.buildSnapshot, observed.buildSnapshot);
+});

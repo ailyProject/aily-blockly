@@ -1540,6 +1540,7 @@ export class BlocklyLiveOperationBridgeService {
       result: toolResult.metadata?.['buildResult'],
       ...(toolResult.metadata?.['buildResult']?.['buildInput'] ? { buildInput: toolResult.metadata['buildResult']['buildInput'] } : {}),
       ...(toolResult.metadata?.['buildResult']?.['buildSource'] ? { buildSource: toolResult.metadata['buildResult']['buildSource'] } : {}),
+      ...(toolResult.metadata?.['buildResult']?.['buildSnapshot'] ? { buildSnapshot: toolResult.metadata['buildResult']['buildSnapshot'] } : {}),
       ...(toolResult.metadata?.['buildResult']?.['buildLog'] ? { buildLog: toolResult.metadata['buildResult']['buildLog'] } : {}),
       toolResult,
     };

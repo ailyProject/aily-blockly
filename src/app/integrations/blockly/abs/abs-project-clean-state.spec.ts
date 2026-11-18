@@ -7,7 +7,8 @@ import { createAilyProjectDataValue, projectDataRuntime } from '@domain/project/
 import { ProjectApplicationAdapter } from '../../project/project-application.adapter';
 import { HeaderComponent } from '../../../main-window/components/header/header.component';
 import { ProjectNewComponent } from '../../../pages/project-new/project-new.component';
-import { cloneProjectJson } from '@domain/project/project-document/public-api';
+import { canonicalProjectJsonStringify, cloneProjectJson } from '@domain/project/project-document/public-api';
+import { projectBuildDocument } from '../../../editors/blockly-editor/services/blockly-project-revision';
 
 const source = (): BlocklyProjectDocument => ({ schemaVersion: 3, activePageId: 'main', openedPageIds: ['main'],
   $ailyProjectData: { schemaVersion: 1, mode: 'external-only' },
@@ -23,6 +24,18 @@ describe('project loaded-state admission and comparison', () => {
   beforeEach(() => {
     state = new BlocklyProjectCleanState(); before = source(); after = structuredClone(before);
     after.pages[0].content.blocks.blocks[0].extraState = { hasElse: true };
+  });
+  it('compares the prepared revision with the acknowledged hydrated document while ignoring camera and format metadata', () => {
+    const scope = ['project', 1];
+    state.remember(scope, 'externalized ABI bytes', after);
+    const current = structuredClone(after);
+    delete current['$ailyProjectData'];
+    current.pages[0].viewState = { scale: 2, scrollX: 10, scrollY: 20 };
+    const projected = () => canonicalProjectJsonStringify(projectBuildDocument(current));
+    expect(state.compareBuildDocument(scope, projected())).toEqual({ abiText: 'externalized ABI bytes', savedMatch: 'matched' });
+    current.pages[0].content.blocks.blocks[0].fields.TEST = 'edited after save';
+    expect(state.compareBuildDocument(scope, projected())).toEqual({ abiText: 'externalized ABI bytes', savedMatch: 'different' });
+    expect(state.compareBuildDocument(['different project', 1], projected())).toBeUndefined();
   });
   it('accepts native omitted defaults but still detects later edits and undo', () => {
     assertProjectLoadPreserved(before, after); state.remember(['project', 1], 'disk', after);

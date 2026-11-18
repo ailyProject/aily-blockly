@@ -64,6 +64,7 @@ export class ProjectBuildReceipts {
         error => { owned.result = { ok: false, operation: 'project_build', project,
           code: error?.code, buildOutcome: error?.buildOutcome,
           ...(error?.buildLog ? { buildLog: error.buildLog } : {}),
+          ...(error?.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
           message: error instanceof Error ? error.message : String(error) }; },
       ).then(() => {
         owned.completedAt = Date.now();
@@ -127,6 +128,7 @@ export function readNativeBuildReceipt(project: string, requestId: string): Pers
   if (!['completed', 'failed', 'cancelled'].includes(value.status)) return { state: 'unknown' };
   return { state: 'completed', result: { project, operation: 'project_build', ok: value.status === 'completed',
     ...(value.status === 'completed' && value.result && value.buildInput ? { buildInput: value.buildInput } : {}),
+    ...(value.buildSnapshot ? { buildSnapshot: value.buildSnapshot } : {}),
     ...(value.status === 'failed' ? { buildOutcome: 'failed', message: '原编译失败。' } : {}),
     ...(value.status === 'cancelled' ? { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', message: '原编译已取消。' } : {}) } };
 }

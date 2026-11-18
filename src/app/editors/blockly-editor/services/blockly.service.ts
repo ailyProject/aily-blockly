@@ -47,7 +47,7 @@ import {
 } from './blockly-project-model';
 import { captureBlocklyRootClassifier } from './blockly-root-role';
 import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
-import { BlocklyProjectRevision } from './blockly-project-revision';
+import { BlocklyProjectRevision, projectBuildDocument } from './blockly-project-revision';
 import { BlocklyProjectDirtyState } from './blockly-project-dirty-state';
 import { assertProjectLoadPreserved } from './blockly-project-clean-state';
 import { BlocklyCodePreparationInvalidatedError, BlocklyProjectCodePreparation, type PreparedBlocklyCode } from './prepared-project-code';
@@ -1289,10 +1289,7 @@ export class BlocklyService {
   }
 
   captureBuildSnapshot(owner?: BlocklyWorkspaceEditLease) {
-    const project = this.getProjectDocument(owner);
-    // Camera position is persisted for reopening the editor, but has no
-    // bearing on generated code. Keep all block data and page identities.
-    const document = { ...project, pages: project.pages.map(({ viewState, ...page }) => page) };
+    const document = projectBuildDocument(this.getProjectDocument(owner));
     const revision = this.buildRevision.observe(document);
     return { document, revision, documentText: this.buildRevision.documentText! };
   }

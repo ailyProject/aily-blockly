@@ -17,6 +17,7 @@ const { cloudUploadRequirements } = require('./cloud-recipe-upload');
 const { validateCloudRecipePlan } = require('./cloud-recipe-contract');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const { confirmBuildSource } = require(path.join(childRoot, 'scripts/build-source-capture'));
+const { buildSnapshotReceipt } = require(path.join(childRoot, 'scripts/build-snapshot-receipt'));
 const { acquireBuildWorkspace } = require(path.join(childRoot, 'scripts/build-workspace-lease'));
 
 // 默认部署仅由本代理使用，保留 provider 注入用于本地模拟；正式网关始终固定签名公钥。
@@ -577,6 +578,11 @@ class CloudBuildBroker {
       inputMetrics: { captureMs: 0, identityMs: 0, encodingMs: 0, encodedFiles: 0,
         manifestPrepareMs: 0, manifestResolveMs: 0, blobUploadMs: 0, commitMs: 0,
         rawBytes: 0, uniqueBytes: 0, transferredBytes: 0, uploadedBytes: 0, reusedBytes: 0, libraryHits: 0 } };
+    const capturedBuildSnapshot = () => {
+      const snapshot = buildSnapshotReceipt(record.config.sourceCapture, record.buildRequestId,
+        record.snapshot?.inputDigest, record.config.savedBuildComparison, record.sourceAbiHash);
+      return snapshot ? { buildSnapshot: snapshot } : {};
+    };
     // Keep the previous directory alive while checking this request, but revoke
     // its upload authority immediately. Only fresh inputs and a live target can
     // restore it; a failed/cancelled request must not retain the old authority.
@@ -643,7 +649,7 @@ class CloudBuildBroker {
       ciAttempt: for (let ciPass = 0; ciPass < 2; ciPass++) {
       if (previous) {
         const reused = await this.reuseCompletedResult(record, previous, input.action || 'compile');
-        if (reused) return { ...reused, logComplete: record.logHistoryComplete };
+        if (reused) return { ...reused, ...capturedBuildSnapshot(), logComplete: record.logHistoryComplete };
         await this.assertCurrent(record);
       }
       record.logComplete = false;
@@ -790,14 +796,14 @@ class CloudBuildBroker {
       await this.importResult(record, result);
       this.progress(record, { stage: 'complete', progress: 100 });
       return { success: true, state: 'done', text: 'Cloud compilation complete.', jobId: record.jobId, inputDigest: record.snapshot.inputDigest,
-        artifactPath: this.active.get(root)?.directory, buildSource: record.buildSource, logComplete: record.logComplete };
+        artifactPath: this.active.get(root)?.directory, buildSource: record.buildSource, ...capturedBuildSnapshot(), logComplete: record.logComplete };
       }
     } catch (error) {
       if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
       await this.cancelRemote(record).catch(() => {});
       const failure = error.cleanupConfirmed === false ? error
         : record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
-      throw Object.assign(failure, { logComplete: !record.controller.signal.aborted && record.logComplete });
+      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete });
     } finally {
       clearTimeout(deadline);
       try { if (typeof releasePowerSaveBlocker === 'function') releasePowerSaveBlocker(); }

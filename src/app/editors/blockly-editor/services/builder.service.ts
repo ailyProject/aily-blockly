@@ -1,4 +1,4 @@
-import { Injectable, NgZone } from '@angular/core';
+import { Injectable, NgZone, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import {
   CmdOutput,
@@ -17,9 +17,10 @@ import { MetricsService } from '@core/metrics/public-api';
 import { type BlockCodeMapping } from '../components/blockly/generators/arduino/arduino';
 
 import { BlocklyService } from './blockly.service';
+import { _ProjectService as BlocklyProjectService } from './project.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { BuilderService, CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint, type BlocklyBuildInput } from '@domain/build/public-api';
+import { BuilderService, CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint, type BlocklyBuildInput, type BuildSnapshot } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
@@ -99,6 +100,7 @@ export class _BuilderService {
       ProjectDebugConfigurationService,
     private metrics: MetricsService,
     private builderService: BuilderService,
+    @Optional() private blocklyProjectService?: BlocklyProjectService,
   ) { }
 
   // buildInProgress = false;
@@ -1456,6 +1458,7 @@ export class _BuilderService {
     this.activeBuildLog = requestLog;
     const unavailableCloudSource = () => ({ version: 1, kind: 'cloud-build-source', status: 'unavailable',
       project: requestedProjectPath, buildRequestId: requestLog.requestId, reason: 'build-not-completed' });
+    let cloudBuildSnapshot: BuildSnapshot | undefined;
     try {
     const outcome = await requestLog.run(async () => {
     let capturedCode: string | undefined;
@@ -1609,6 +1612,9 @@ export class _BuilderService {
             partitionFilePath: this.electronService.pathJoin(projectPath, 'partitions.csv'),
             ...(savedConfig.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}) };
           if (!sourceWorkspace) throw new Error('Build source workspace capture is unavailable.');
+          const savedBuildComparison = await this.blocklyProjectService?.compareSavedBuildDocument(projectPath, sourceWorkspace.documentText);
+          if (savedBuildComparison) buildConfig.savedBuildComparison = savedBuildComparison;
+          await this.blocklyService.readAfterWorkspaceEdit(assertFresh);
           if (!this.isolatedBuilds() || cloudBuild) buildConfig.sourceCapture = captureBuildSource(buildConfig, sourceWorkspace);
           if (graphSemanticRevision) {
             buildConfig.graphSemanticRevision = graphSemanticRevision;
@@ -1625,10 +1631,12 @@ export class _BuilderService {
           while (true) {
             this.buildPromiseReject = reject;
             if (cloudBuild) {
-              let state: ActionState | undefined;
+              let state: Awaited<ReturnType<_BuilderService['runCloudCompilation']>> | undefined;
               try {
                 state = await this.runCloudCompilation(buildConfig, boardName, assertCurrent);
+                cloudBuildSnapshot = state.buildSnapshot;
               } catch (error) {
+                cloudBuildSnapshot = error?.buildSnapshot;
                 if (error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
                 assertCurrent();
                 backendOperation.useLocal();
@@ -2136,18 +2144,24 @@ export class _BuilderService {
     });
     });
     const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, requestId);
+    const buildSnapshot = this.activeExecutionConfig?.execution?.buildSnapshot ?? cloudBuildSnapshot;
     return { ...outcome, ...(buildInput ? { buildInput } : {}),
+      ...(buildSnapshot ? { buildSnapshot } : {}),
       ...(cloudBuild && !(outcome as any).buildSource ? { buildSource: unavailableCloudSource() } : {}) };
     } catch (error) {
       const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, requestId);
+      const buildSnapshot = this.activeExecutionConfig?.execution?.buildSnapshot ?? cloudBuildSnapshot;
       if (buildInput && error && typeof error === 'object') Object.assign(error, { buildInput });
+      if (buildSnapshot && error && typeof error === 'object') Object.assign(error, { buildSnapshot });
       if (cloudBuild && error && typeof error === 'object') Object.assign(error, { buildSource: unavailableCloudSource() });
       throw error;
     } finally { if (this.activeBuildLog === requestLog) this.activeBuildLog = undefined; }
     }
 
   /** 复用 Blockly 的构建生命周期；传输、签名校验和产物发布由桌面主进程负责。 */
-  private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void): Promise<ActionState & { buildSource?: Record<string, unknown> }> {
+  private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void): Promise<ActionState & {
+    buildSource?: Record<string, unknown>; buildSnapshot?: BuildSnapshot;
+  }> {
     const requestLog = this.activeBuildLog;
     const bridge = window['cloudBuild'];
     if (!bridge?.run || !bridge?.cancel || !bridge?.onProgress) throw new Error('Cloud compilation bridge is unavailable.');
@@ -2201,11 +2215,13 @@ export class _BuilderService {
             setTimeout: 0, stop: () => this.cancel(requestId), onSwitchToLocal: requestLocal });
         },
       });
-      await checkCurrent();
+      try { await checkCurrent(); }
+      catch (error) { throw Object.assign(error, { buildSnapshot: result?.buildSnapshot }); }
       if (result?.success !== true || result?.state !== 'done') throw new Error(result?.text || 'Cloud compilation failed.');
       const seconds = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
       return { state: 'done', text: result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
         : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds }), desc: result.artifactPath,
+        ...(result.buildSnapshot ? { buildSnapshot: result.buildSnapshot } : {}),
         buildSource: result.buildSource || { version: 1, kind: 'cloud-build-source', status: 'unavailable',
           project: config.currentProjectPath, buildRequestId: requestLog?.requestId || requestId,
           reason: 'host-source-binding-unavailable' } };

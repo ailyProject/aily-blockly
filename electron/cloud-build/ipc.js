@@ -199,6 +199,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
     } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
       ...(error.code === 'BUILD_SOURCE_STALE' && error.sourceReason ? { sourceReason: error.sourceReason } : {}),
       ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
+      ...(error.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
       ...(typeof error.logComplete === 'boolean' ? { logComplete: error.logComplete } : {}) } }; }
   };
   ipcMain.handle('cloud-build', (event, payload) => {

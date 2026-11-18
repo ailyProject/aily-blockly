@@ -1,3 +1,5 @@
+import type { BuildSnapshot } from '@domain/build/public-api';
+
 /** 两种编辑器共用的云编译进度；事件只更新界面，成功状态仍以主进程校验后的结果为准。 */
 export interface CloudBuildProgressEvent {
   requestId?: string;
@@ -35,6 +37,7 @@ interface CloudBuildRunResult {
   fullStdErr?: string;
   logComplete?: boolean;
   buildSource?: Record<string, unknown>;
+  buildSnapshot?: BuildSnapshot;
 }
 
 interface CloudBuildProgressBridge {

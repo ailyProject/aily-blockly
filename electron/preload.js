@@ -76,6 +76,7 @@ async function invokeCloudBuild(payload) {
       message: envelope?.error?.message || 'Cloud build failed.',
       code: envelope?.error?.code || 'CLOUD_BUILD_ERROR',
       ...(envelope?.error?.sourceReason ? { sourceReason: envelope.error.sourceReason } : {}),
+      ...(envelope?.error?.buildSnapshot ? { buildSnapshot: envelope.error.buildSnapshot } : {}),
       ...(typeof envelope?.error?.logComplete === 'boolean' ? { logComplete: envelope.error.logComplete } : {}),
     };
   }
