@@ -5,6 +5,38 @@ const os = require('node:os');
 const path = require('node:path');
 const { LibraryDependencies, runDependencyWorker } = require('../../electron/library-dependencies');
 const { LibraryDependencySessions } = require('../../electron/library-dependency-sessions');
+const { randomUUID } = require('node:crypto');
+
+test('a refused original library request remains exact across host readers and never reacquires the writer', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-library-refusal-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const manifest = '{"name":"refused-library","dependencies":{}}';
+  fs.writeFileSync(path.join(root, 'package.json'), manifest);
+  const create = () => new LibraryDependencySessions(new LibraryDependencies({ run: () => assert.fail('No npm worker expected') }));
+  const sessions = create(), reader = create();
+  const { transaction } = await sessions.run('begin', root);
+  const original = { requestId: 'env1-' + randomUUID(), action: 'install', packages: ['test-refused@1.0.0'] };
+  await assert.rejects(sessions.run('mutate', root, original), { code: 'LIBRARY_OPERATION_BUSY', commandDispatched: false });
+  const receipt = (await reader.run('observeEnvironment', root, { requestId: original.requestId })).environment;
+  assert.equal(receipt.project, root);
+  assert.equal(receipt.requestId, original.requestId);
+  assert.equal(receipt.status, 'not-started');
+  assert.equal(receipt.code, 'LIBRARY_OPERATION_BUSY');
+  assert.equal(receipt.current, false);
+  assert.equal(receipt.candidateApplied, false);
+  assert.equal(receipt.admission.status, 'NOT_STARTED');
+  assert.match(receipt.admission.requestDigest, /^sha256:[a-f0-9]{64}$/);
+  await sessions.run('abort', root, undefined, transaction);
+  assert.deepEqual(reader.libraries.environment.pending(root), []);
+  assert.deepEqual((await reader.run('mutate', root, original)).environment, receipt);
+  await assert.rejects(reader.run('mutate', root, { ...original, packages: ['other@1.0.0'] }), /arguments changed/);
+  await assert.rejects(reader.run('removeLocal', root, original), /arguments changed/);
+  assert.equal((await reader.run('cancelEnvironment', root, { requestId: original.requestId })).environment.status, 'not-started');
+  assert.equal((await reader.run('observeEnvironment', root, { requestId: 'env1-' + randomUUID() })).environment.status, 'unknown');
+  const next = await reader.run('begin', root);
+  await reader.run('abort', root, undefined, next.transaction);
+  assert.equal(fs.readFileSync(path.join(root, 'package.json'), 'utf8'), manifest);
+});
 
 test('a missing project manifest reports unknown save state without creating project inputs', async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-missing-manifest-')));

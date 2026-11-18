@@ -10,6 +10,9 @@ const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex
 const stable = value => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
 const same = (left, right) => JSON.stringify(stable(left)) === JSON.stringify(stable(right));
+const librarySubmission = (operation, request) => ({
+  operation, requestDigest: digest(JSON.stringify(stable({ operation, request }))),
+});
 const fail = message => Object.assign(new Error(message), { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN' });
 const raw = file => { try { return fs.readFileSync(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const inputNames = ['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock', 'node_modules/.package-lock.json'];
@@ -151,6 +154,39 @@ class LibraryEnvironmentJournal {
   assertOriginal(operation) {
     if (!same(readRecord(path.join(operation.folder, 'checkpoint.json')), operation.record)) throw fail('The original environment checkpoint changed.');
   }
+  publishCheckpoint(root, record) {
+    const base = this.base(root);
+    const folder = path.join(base, `environment-${digest(record.requestId).slice(7)}`);
+    const staging = fs.mkdtempSync(path.join(base, '.environment-'));
+    const checkpoint = path.join(staging, 'checkpoint.json');
+    try {
+      immutable(checkpoint, record);
+      // Execution and admission refusal compete for the same nonempty,
+      // atomically published directory. A refusal cannot replace a writer.
+      try { fs.renameSync(staging, folder); }
+      catch (error) {
+        if (fs.existsSync(path.join(folder, 'checkpoint.json'))) return false;
+        throw error;
+      }
+      return true;
+    } finally {
+      try { fs.unlinkSync(checkpoint); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try { fs.rmdirSync(staging); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+  rejectAdmission(root, request, submission, error) {
+    if (this.find(root, request.requestId)) return false;
+    return this.publishCheckpoint(root, {
+      version: 1, requestId: request.requestId, project: root, attachment: rootAttachment(root), executor: storageExecutor(),
+      request, submission, admission: { status: 'NOT_STARTED', ...submission },
+      code: error.code, message: error.message, createdAt: Date.now(),
+    });
+  }
+  assertAdmission(folder, record) {
+    if (record.admission.status !== 'NOT_STARTED' || !same(record.submission, librarySubmission(record.admission.operation, record.request))
+      || !same(record.admission, { status: 'NOT_STARTED', ...record.submission })
+      || fs.readdirSync(folder).some(name => name !== 'checkpoint.json')) throw fail('The dependency admission terminal changed.');
+  }
   pending(root) {
     const base = path.join(root, '.aily/dependency-recovery');
     if (!fs.existsSync(base)) return [];
@@ -162,6 +198,7 @@ class LibraryEnvironmentJournal {
       if (!fs.existsSync(checkpoint)) return null;
       const record = readRecord(checkpoint);
       if (name !== `environment-${digest(record.requestId).slice(7)}`) throw fail('Dependency request index changed.');
+      if (record.admission) { this.assertAdmission(folder, record); return null; }
       if (fs.existsSync(path.join(folder, 'result.json'))) {
         const result = readRecord(path.join(folder, 'result.json'));
         if (result.version !== 1 || result.requestId !== record.requestId || !['completed', 'restored'].includes(result.status)) throw fail('The original environment terminal changed.');
@@ -176,7 +213,7 @@ class LibraryEnvironmentJournal {
       return { folder, record };
     }).filter(Boolean);
   }
-  begin(root, request, state, assertCurrent) {
+  begin(root, request, state, assertCurrent, submission) {
     if (this.owned.has(root)) {
       const owned = this.owned.get(root);
       if (request.requestId && request.requestId !== owned.record.requestId) throw fail('Another original environment request is still pending.');
@@ -185,16 +222,17 @@ class LibraryEnvironmentJournal {
     assertCurrent();
     const requestId = request.requestId ?? randomUUID();
     if (typeof requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) throw fail('Invalid original dependency request.');
-    const folder = directory(root, `.aily/dependency-recovery/environment-${digest(requestId).slice(7)}`);
+    const folder = path.join(this.base(root), `environment-${digest(requestId).slice(7)}`);
     if (fs.existsSync(path.join(folder, 'checkpoint.json'))) throw fail('An original dependency request must be observed, never executed again.');
     const record = JSON.parse(JSON.stringify({ version: 1, requestId, project: root, attachment: rootAttachment(root), executor: storageExecutor(),
-      request, before: inputs(root), state: state ?? null, createdAt: Date.now(),
+      request, before: inputs(root), state: state ?? null, createdAt: Date.now(), ...(submission ? { submission } : {}),
       ...(request.programRef ? { programSource: programSource(root), programPointer: programPointer(root) } : {}) }));
     if (request.programRef && (!same(request.programRef.attachment, record.attachment)
       || record.programPointer?.id !== request.programRef.operationId || record.programPointer?.state !== 'pending')) {
       throw fail('The environment must attach to its currently admitted native Working checkpoint.');
     }
-    immutable(path.join(folder, 'checkpoint.json'), record); assertCurrent();
+    if (!this.publishCheckpoint(root, record)) throw fail('An original dependency request must be observed, never executed again.');
+    assertCurrent();
     const operation = { folder, record }; this.owned.set(root, operation); return operation;
   }
   beginAttempt(root, state, assertCurrent) {
@@ -502,7 +540,8 @@ class LibraryEnvironmentJournal {
     if (!fs.existsSync(checkpoint)) return null;
     directory(root, path.relative(root, folder).replace(/\\/g, '/'));
     const record = readRecord(checkpoint); this.assertAttachment(root, record);
-    if (record.requestId !== requestId) throw fail('Dependency request binding changed.');
+    if (record.requestId !== requestId || record.project !== root) throw fail('Dependency request binding changed.');
+    if (record.admission) this.assertAdmission(folder, record);
     return { folder, record };
   }
   observe(root, requestId) {
@@ -510,6 +549,8 @@ class LibraryEnvironmentJournal {
     if (!original) return { status: 'unknown', requestId, current: false, candidateApplied: false };
     const { folder, record } = original;
     const identity = { version: 1, project: root, attachment: record.attachment, executor: record.executor, observer: storageExecutor() };
+    if (record.admission) return { ...identity, status: 'not-started', requestId, current: false, candidateApplied: false,
+      admission: record.admission, code: record.code, message: record.message };
     if (!fs.existsSync(path.join(folder, 'result.json'))) return { ...identity, status: 'unknown', requestId, current: false, candidateApplied: false };
     const result = readRecord(path.join(folder, fs.existsSync(path.join(folder, 'restoration.json')) ? 'restoration.json' : 'result.json'));
     const actual = inputs(root), expected = result.after ?? record.before;
@@ -535,4 +576,4 @@ class LibraryEnvironmentJournal {
   }
 }
 
-module.exports = { LibraryEnvironmentJournal, logicalRoot, tree };
+module.exports = { LibraryEnvironmentJournal, librarySubmission, logicalRoot, tree };

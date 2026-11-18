@@ -936,6 +936,11 @@ class CommandManager {
     return stopped.every(Boolean);
   }
 
+  hasOwnerProjectProcesses(owner, projectPath, projectSessionId) {
+    return [...this.processes.values(), ...this.pendingCommands.values()]
+      .some(entry => matchesProjectTask(entry, owner, projectPath, projectSessionId));
+  }
+
     /**
    * 杀掉所有指定名称的进程
    * @param {string} processName - 要杀掉的进程名称，例如 'node.exe'
@@ -1144,6 +1149,7 @@ module.exports = {
   killCmdProcess: (streamId) => commandManager.killProcess(streamId),
   killAllCmdProcesses: () => commandManager.killAllProcesses(),
   killOwnerProjectCmdProcesses: (owner, projectPath, projectSessionId) => commandManager.killOwnerProjectProcesses(owner, projectPath, projectSessionId),
+  hasOwnerProjectCmdProcesses: (owner, projectPath, projectSessionId) => commandManager.hasOwnerProjectProcesses(owner, projectPath, projectSessionId),
   beginCommandShutdown: () => { commandShutdown = true; },
   getActiveCmdProcesses: () => commandManager.getActiveProcessSummaries(),
   onCmdProcessMessage: (listener) => commandManager.onProcessMessage(listener),

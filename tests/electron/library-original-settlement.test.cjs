@@ -62,7 +62,9 @@ test('a busy identified install is never queued, and old status is readable duri
     await original.catch(() => {});
     await attempt?.catch(() => {});
   }
-  await assert.rejects(f.run('mutate', b), { code: 'LIBRARY_OPERATION_BUSY' });
+  const { environment: refused } = await f.run('mutate', b);
+  assert.equal(refused.status, 'not-started');
+  assert.equal(refused.code, 'LIBRARY_OPERATION_BUSY');
   assert.ok(!f.calls.some(item => item.id === b.requestId));
   assert.equal(f.manifest().dependencies?.['must-not-run'], undefined);
   const c = f.install('next');
@@ -70,11 +72,14 @@ test('a busy identified install is never queued, and old status is readable duri
   assert.equal(f.manifest().dependencies.next, '1.0.0');
 });
 
-test('an expired request cannot create a checkpoint or start a worker', async t => {
+test('an expired request records refusal without claiming execution or starting a worker', async t => {
   const f = fixture(t);
   const original = f.install('expired', Date.now() - 1000);
   await assert.rejects(f.run('mutate', original), { code: 'LIBRARY_OPERATION_EXPIRED' });
-  assert.equal(f.api.environment.find(f.root, original.requestId), null);
+  const { environment } = await f.run('observeEnvironment', { requestId: original.requestId });
+  assert.equal(environment.status, 'not-started');
+  assert.equal(environment.code, 'LIBRARY_OPERATION_EXPIRED');
+  assert.deepEqual(f.api.environment.pending(f.root), []);
   assert.deepEqual(f.calls, []);
   await f.run('mutate', f.install('next'));
   assert.equal(f.manifest().dependencies.next, '1.0.0');
@@ -117,7 +122,9 @@ test('identified install cannot publish a staged UI change between preparation a
     assert.ok(staged);
     await assert.rejects(f.run('mutate', original), { code: 'LIBRARY_CHANGES_UNSAVED', commandDispatched: false });
     assert.equal(f.api.states.get(f.root), staged);
-    assert.equal(f.api.environment.find(f.root, original.requestId), null);
+    const { environment } = await f.run('observeEnvironment', { requestId: original.requestId });
+    assert.equal(environment.status, 'not-started');
+    assert.equal(environment.code, 'LIBRARY_CHANGES_UNSAVED');
     assert.equal(f.calls.length, calls);
     assert.equal(f.manifest().dependencies, undefined);
   } finally { await f.run('historyDiscard', { token: history.token }); }
