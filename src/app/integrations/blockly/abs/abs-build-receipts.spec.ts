@@ -9,7 +9,7 @@ describe('live build receipt ownership', () => {
     const build = new Promise<Record<string, any>>(resolve => { finish = resolve; });
     Object.assign(service, {
       mutationSequence: 0,
-      projectService: { currentProjectPath: '/isolated', isProjectTransitionInProgress: () => false,
+      projectService: { currentProjectPath: '/isolated', getProjectMode: () => 'blockly', isProjectTransitionInProgress: () => false,
         isLibraryMutationInProgress: () => false },
       aiOperations: { setActive: (_id: string, active: boolean) => events.push(active) },
       executeOperation: jasmine.createSpy('build').and.returnValue(build),
@@ -93,7 +93,10 @@ describe('live build receipt ownership', () => {
 
   it('marks library readiness failures as not-started rather than compiler failures', async () => {
     const service: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
-    service.projectService = { currentProjectPath: '/isolated', ensureBlocklyLibraryRuntimeReady: async () => { throw new Error('runtime not ready'); } };
+    service.projectService = {
+      currentProjectPath: '/isolated', captureCurrentProjectGuard: () => () => true,
+      ensureBlocklyLibraryRuntimeReady: async () => { throw new Error('runtime not ready'); },
+    };
     expect(await service.executeProjectBuild({})).toEqual(jasmine.objectContaining({
       ok: false, buildOutcome: 'not-started', message: 'runtime not ready',
     }));

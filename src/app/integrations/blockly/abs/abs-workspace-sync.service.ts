@@ -1178,6 +1178,7 @@ export class AbsWorkspaceSyncService {
           await applicationJournal.completeNativeSave(checkpoint.native!.ref, {
             projectSaved: true, generatedCodePublished: outcome.derivedOutputs?.published !== false, partial,
             publication: { ...outcome.publication, status: 'COMMITTED' }, evidence: outcome.evidence!, requiresReload: false,
+            ...(outcome.publication.acceptedSource ? { acceptedSource: outcome.publication.acceptedSource } : {}),
             warnings: outcome.warnings, derivedOutputs: outcome.derivedOutputs as unknown as Record<string, unknown>,
             blockState: { ...receipt, output: outcome.evidence! },
           }, assertCurrent);

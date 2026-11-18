@@ -54,7 +54,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
   const assertCloudBackend = revision => {
     assertCloudSupported();
     if (currentBackend !== 'cloud') throw Object.assign(new Error('Cloud compilation is disabled.'), { code: 'CLOUD_BUILD_DISABLED' });
-    if (revision !== backendRevision) throw Object.assign(new Error('Cloud compilation settings changed.'), { code: 'BUILD_SOURCE_STALE' });
+    if (revision !== backendRevision) throw Object.assign(new Error('Cloud compilation settings changed.'), { code: 'BUILD_SOURCE_STALE', sourceReason: 'settings' });
   };
   const invalidateAll = () => {
     const cancelled = broker.invalidateAll();
@@ -197,7 +197,9 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       } else throw new Error('Unknown cloud build operation.');
       return { ok: true, result };
     } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
+      ...(error.code === 'BUILD_SOURCE_STALE' && error.sourceReason ? { sourceReason: error.sourceReason } : {}),
       ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
+      ...(error.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
       ...(typeof error.logComplete === 'boolean' ? { logComplete: error.logComplete } : {}) } }; }
   };
   ipcMain.handle('cloud-build', (event, payload) => {

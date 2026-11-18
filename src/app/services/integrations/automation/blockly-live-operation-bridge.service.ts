@@ -32,8 +32,9 @@ import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbs
 import { absWorkspaceProtocol } from '../../../integrations/blockly/abs/abs-workspace-protocol';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
-import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
+import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest } from './project-build-receipts';
 import { createProjectLifecycleAssertion, type ProjectLifecycleSnapshot } from './project-lifecycle-admission';
+import { ProjectCreateReceipts, readProjectCreateRequest, type ProjectCreateGuard } from './project-create-receipts';
 import { forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
 import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
@@ -93,6 +94,7 @@ export class BlocklyLiveOperationBridgeService {
   private mutationSequence = 0;
   private buildReceipts?: ProjectBuildReceipts;
   private forkReceipts?: ProjectForkReceipts;
+  private createReceipts?: ProjectCreateReceipts;
 
   constructor(
     private readonly configService: ConfigService,
@@ -263,7 +265,9 @@ export class BlocklyLiveOperationBridgeService {
       try {
         const request = readProjectBuildRequest(payload.params?.['buildRequest']);
         if (!project) throw Object.assign(new Error('A build receipt requires its project path.'), { code: 'BUILD_RECEIPT_INVALID' });
-        const receipts = this.buildReceipts ??= new ProjectBuildReceipts();
+        const receipts = this.buildReceipts ??= new ProjectBuildReceipts(undefined, undefined, (target, requestId) =>
+          this.normalizePath(target) === this.normalizePath(this.projectService.currentProjectPath)
+            ? readNativeBuildReceipt(target, requestId) : undefined);
         if (payload.operation === 'project_build_status') return await receipts.status(project, request);
         const params = { ...payload.params };
         delete params['buildRequest'];
@@ -390,7 +394,7 @@ export class BlocklyLiveOperationBridgeService {
     // The coordinator consumes exact journal authority before invoking the
     // domain lifecycle gate. A generic mutation mask would block its own
     // reopen; all other recovery/writing operations retain their admission.
-    if (payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'release') return execute();
+    if (payload.operation === 'library_mutation_abort' || (payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'release')) return execute();
     const journalReopen = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'reopen';
     const recoveryInspection = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'inspect';
     const candidateBackup = payload.operation === 'abs_recovery'
@@ -423,6 +427,10 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+    if (payload.operation === 'project_create_status' || payload.operation === 'project_create_cancel'
+      || payload.operation === 'project_create' && Object.hasOwn(payload.params || {}, 'createRequest')) {
+      return this.executeProjectCreateSettlement(payload);
+    }
     if (payload.lifecycle !== undefined && lifecycleOwner === undefined
       && ['project_create', 'project_open', 'project_close', 'project_reload'].includes(payload.operation || '')) {
       const assertCurrent = createProjectLifecycleAssertion(payload.lifecycle,
@@ -572,6 +580,10 @@ export class BlocklyLiveOperationBridgeService {
     if (payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'release') {
       this.projectService.releaseLibraryHistoryNavigation(payload.params['token']);
       return { ok: true };
+    }
+    if (payload.operation === 'library_mutation_abort') {
+      await this.projectService.abortLibraryMutation(payload.params?.['token'], payload.params?.['requestId'], payload.path);
+      return { ok: true, operation: payload.operation };
     }
     const requestedProject = payload.path;
     const currentProject = this.projectService.currentProjectPath;
@@ -810,12 +822,11 @@ export class BlocklyLiveOperationBridgeService {
       }
       case 'library_mutation_prepare': {
         const params = payload.params || {};
-        const result = await this.projectService.beginLibraryMutation(params['packages'], params['savedHashes'], params['removedPackages']);
+        const request = (params['requestId'] !== undefined || params['expiresAt'] !== undefined)
+          ? { requestId: params['requestId'], expiresAt: params['expiresAt'] } : undefined;
+        const result = await this.projectService.beginLibraryMutation(params['packages'], params['savedHashes'], params['removedPackages'], request);
         return { ok: true, operation: payload.operation, project: currentProject, ...result };
       }
-      case 'library_mutation_abort':
-        await this.projectService.abortLibraryMutation(payload.params?.['token']);
-        return { ok: true, operation: payload.operation, project: currentProject };
       case 'library_runtime_sync':
         // The native rebuild owns its workspace edit lease. Discovery and
         // dependency waits must leave the existing canvas interactive.
@@ -823,7 +834,7 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_abi_check':
         return this.executeProjectAbiCheck();
       case 'project_build':
-        return this.executeProjectBuild(payload.params || {});
+        return this.executeProjectBuild(payload.params || {}, currentProject);
       case 'get_board_config':
         return getBoardConfig(this.projectService, payload.params?.['section']);
       case 'board_switch':
@@ -928,7 +939,8 @@ export class BlocklyLiveOperationBridgeService {
       ok: true,
       operation: 'app_info',
       capabilities: { projectBuildReceipts: 1, projectForkReceipts: 1, projectRecoveryOpen: 1,
-        projectProgramPublication: 1, projectLifecycle: 1, projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1 },
+        projectProgramPublication: 1, projectLifecycle: 1, projectCreateSettlement: 1,
+        projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1 },
       lifecycle: { version: 1, sourceProject: this.projectService.currentProjectPath || null },
       app: {
         name: this.configService.getApplicationName(),
@@ -1306,15 +1318,64 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectCreateSettlement(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+    const params = payload.params || {};
+    const request = readProjectCreateRequest(params['createRequest']);
+    if (!request || request.rendererGeneration !== payload.rendererGeneration
+      || request.rendererGeneration !== this.electronService.currentRendererGeneration
+      || payload.operation !== 'project_create' && Object.keys(params).some(key => key !== 'createRequest')) {
+      return { ok: false, code: 'PROJECT_CREATE_RECEIPT_SCOPE_INVALID', commandDispatched: false,
+        message: 'Observe only the exact original creation in its renderer generation.' };
+    }
+    const receipts = this.createReceipts ??= new ProjectCreateReceipts();
+    if (payload.operation !== 'project_create') {
+      const state = payload.operation === 'project_create_cancel' ? receipts.cancel(request) : receipts.observe(request);
+      const project = state.createReceipt.createdProject;
+      const activationCurrent = state.createReceipt.activationCommitted && !!project
+        && this.normalizePath(this.projectService.currentProjectPath || '') === this.normalizePath(project);
+      // The loopback discovery project must remain the actual active tab.
+      return { ok: true, operation: payload.operation, createReceipt: state.createReceipt, activationCurrent,
+        ...(activationCurrent && project ? { projectType: this.projectService.getProjectMode(project) } : {}),
+        result: state.createReceipt.state === 'unknown' ? undefined : state };
+    }
+    const assertCurrent = createProjectLifecycleAssertion(payload.lifecycle,
+      () => this.projectService.currentProjectPath || null,
+      () => this.electronService.currentRendererGeneration, payload.rendererGeneration);
+    const operationKey = JSON.stringify([(payload.lifecycle as { sourceProject?: string | null }).sourceProject,
+      ...['name', 'path', 'boardName', 'board', 'boardVersion', 'version', 'boardNickname', 'nickname',
+        'prefix', 'devmode', 'developmentMode'].map(key => params[key])]);
+    return receipts.run(request, async guard => {
+      assertCurrent();
+      return this.executeProjectCreate(params, undefined, guard, assertCurrent);
+    }, operationKey);
+  }
+
+  private openCreatedProject(project: string, lifecycleOwner?: symbol, authority?: ProjectCreateGuard, assertSource?: () => void): Promise<boolean> {
+    if (!authority || !assertSource) return this.projectService.projectOpen(project,
+      { reason: 'chat-tool-create', interactive: false, lifecycleOwner });
+    authority.assertCurrent();
+    const check = () => { authority.assertCurrent(); assertSource(); };
+    return this.projectService.withProjectLifecycleAdmission(check, async owner => {
+      const opened = await this.projectService.projectOpen(project, {
+        reason: 'chat-tool-create', interactive: false, lifecycleOwner: owner,
+        createActivation: { signal: authority.signal, assertCurrent: check, markActivated: authority.markActivated },
+      });
+      if (opened) authority.markActivated();
+      return opened;
+    }, authority.signal);
+  }
+
+  private async executeProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol,
+    authority?: ProjectCreateGuard, assertSource?: () => void): Promise<Record<string, any> & { ok: boolean }> {
     await this.configService.init();
+    authority?.assertCurrent();
     const mode = this.configService.getPreferredChatAgentRuntimeMode();
     const modeError = getProjectCreationModeError(mode, params);
     if (modeError) {
       return { ok: false, operation: 'project_create', reason: 'project_mode_mismatch', developmentMode: mode, message: modeError };
     }
     if (mode === 'coder') {
-      return this.executeCoderProjectCreate(params, lifecycleOwner);
+      return this.executeCoderProjectCreate(params, lifecycleOwner, authority, assertSource);
     }
 
     const requestedName = String(params['name'] || '').trim();
@@ -1343,17 +1404,19 @@ export class BlocklyLiveOperationBridgeService {
       ? window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'))
       : `${newProjectData.path.replace(/[\\/]+$/, '')}/${newProjectData.name.replace(/\s/g, '_')}`;
 
+    authority?.assertCurrent();
     const creation = await this.projectService.projectNewWithResult(
       newProjectData,
-      { activationReason: 'chat-tool-create', ...(lifecycleOwner ? { deferActivation: true } : {}) },
+      { activationReason: 'chat-tool-create', ...(lifecycleOwner || authority ? { deferActivation: true } : {}),
+        ...(authority ? { createAuthority: authority } : {}) },
     );
     const created = creation.ok;
     const failure = creation.ok === false ? creation : undefined;
     let ok = created;
     let activationError: unknown;
-    if (created && lifecycleOwner) {
-      try { ok = await this.projectService.projectOpen(projectPath,
-        { reason: 'chat-tool-create', interactive: false, lifecycleOwner }); }
+    if (created && (lifecycleOwner || authority)) {
+      authority?.markCreated(projectPath);
+      try { ok = await this.openCreatedProject(projectPath, lifecycleOwner, authority, assertSource); }
       catch (error) { ok = false; activationError = error; }
     }
 
@@ -1384,7 +1447,8 @@ export class BlocklyLiveOperationBridgeService {
     };
   }
 
-  private async executeCoderProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeCoderProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol,
+    authority?: ProjectCreateGuard, assertSource?: () => void): Promise<Record<string, any> & { ok: boolean }> {
     const result = await executeCoderProjectCreateOperation(params, {
       normalizeBoardName: (value) => this.normalizeAilyBoardPackageName(value),
       getBoards: () => this.configService.getBoardListForSelector(),
@@ -1396,15 +1460,17 @@ export class BlocklyLiveOperationBridgeService {
         deferActivation: true,
         templateDirectory: 'template_arduino',
         activationReason: 'chat-tool-create',
+        ...(authority ? { createAuthority: authority } : {}),
       }),
-      openProject: (projectPath) => this.projectService.projectOpen(projectPath, {
-        reason: 'chat-tool-create',
-        lifecycleOwner,
-      }),
+      openProject: (projectPath) => {
+        authority?.markCreated(projectPath);
+        return this.openCreatedProject(projectPath, lifecycleOwner, authority, assertSource);
+      },
       recordBoardUsage: (boardName) => this.configService.recordBoardUsage(boardName),
     });
     return {
       ...result,
+      ok: result['ok'] === true,
       ...(result['ok'] === true && this.projectService.coderWorkspace
         ? { coderWorkspace: this.projectService.coderWorkspace }
         : {}),
@@ -1437,11 +1503,19 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeProjectBuild(params: Record<string, any>): Promise<Record<string, any>> {
+  private async executeProjectBuild(params: Record<string, any>, projectPath = this.projectService.currentProjectPath): Promise<Record<string, any>> {
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const assertCurrent = () => {
+      if (this.projectService.currentProjectPath !== projectPath || !projectCurrent()) {
+        throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { code: 'BUILD_SOURCE_STALE' });
+      }
+    };
     try {
-      await this.projectService.ensureBlocklyLibraryRuntimeReady(this.projectService.currentProjectPath);
+      assertCurrent();
+      await this.projectService.ensureBlocklyLibraryRuntimeReady(projectPath);
+      assertCurrent();
     } catch (error) {
-      return { ok: false, operation: 'project_build', project: this.projectService.currentProjectPath,
+      return { ok: false, operation: 'project_build', project: projectPath,
         buildOutcome: 'not-started', code: (error as any)?.code,
         message: error instanceof Error ? error.message : String(error) };
     }
@@ -1452,19 +1526,21 @@ export class BlocklyLiveOperationBridgeService {
         clearCache: params['clear_cache'] === true,
         requestId: params['buildLogRequestId'],
       },
-      this.projectService.currentProjectPath,
+      projectPath,
     );
     return {
       ok: toolResult.is_error !== true,
       operation: 'project_build',
-      project: this.projectService.currentProjectPath,
+      project: projectPath,
       message: this.extractToolContent(toolResult),
       metadata: toolResult.metadata,
       buildOutcome: toolResult.metadata?.['buildOutcome'],
       code: toolResult.metadata?.['code'],
+      ...(toolResult.metadata?.['sourceReason'] ? { sourceReason: toolResult.metadata['sourceReason'] } : {}),
       result: toolResult.metadata?.['buildResult'],
       ...(toolResult.metadata?.['buildResult']?.['buildInput'] ? { buildInput: toolResult.metadata['buildResult']['buildInput'] } : {}),
       ...(toolResult.metadata?.['buildResult']?.['buildSource'] ? { buildSource: toolResult.metadata['buildResult']['buildSource'] } : {}),
+      ...(toolResult.metadata?.['buildResult']?.['buildSnapshot'] ? { buildSnapshot: toolResult.metadata['buildResult']['buildSnapshot'] } : {}),
       ...(toolResult.metadata?.['buildResult']?.['buildLog'] ? { buildLog: toolResult.metadata['buildResult']['buildLog'] } : {}),
       toolResult,
     };

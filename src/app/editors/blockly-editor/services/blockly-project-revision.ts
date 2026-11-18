@@ -1,4 +1,10 @@
 import { canonicalProjectJsonStringify } from '@domain/project/public-api';
+import type { BlocklyProjectDocument } from './blockly-project-model';
+
+/** The viewport and the persisted data-format marker are outside generated source. */
+export function projectBuildDocument({ pages, $ailyProjectData, ...document }: BlocklyProjectDocument) {
+  return { ...document, pages: pages.map(({ viewState, ...page }) => page) };
+}
 
 /** Observed persisted state, independent of code-generation events (which omit layout/UI state).
  * Deliberately compares content until every custom serializer has a reliable invalidation contract.

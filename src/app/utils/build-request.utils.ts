@@ -5,6 +5,12 @@ interface BuildRequestFiles {
   write: (path: string, text: string) => unknown | Promise<unknown>;
 }
 
+export type BuildSourceChange = 'project' | 'workspace' | 'busy' | 'page' | 'generator' | 'blocks' | 'settings' | 'inputs';
+
+export function buildSourceStale(sourceReason: BuildSourceChange, detail: string) {
+  return Object.assign(new Error(`BUILD_SOURCE_STALE: ${detail}`), { code: 'BUILD_SOURCE_STALE', sourceReason });
+}
+
 /** Result metadata is not configuration. Only during generator preparation may
  * its owned macro fields change; freeze all macro inputs again before launch. */
 export function buildManifestForGuard(text: string, preparingGenerator = false): unknown {
@@ -24,7 +30,7 @@ export function buildManifestForGuard(text: string, preparingGenerator = false):
 export function captureBuildRequestGuard(read: () => unknown): () => void {
   const captured = JSON.stringify(read());
   return () => {
-    if (JSON.stringify(read()) !== captured) throw new Error('BUILD_SOURCE_STALE: Build configuration changed while preparing the request; build again.');
+    if (JSON.stringify(read()) !== captured) throw buildSourceStale('inputs', 'Build configuration changed while preparing the request.');
   };
 }
 

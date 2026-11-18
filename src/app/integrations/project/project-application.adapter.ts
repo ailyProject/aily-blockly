@@ -115,14 +115,13 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     // _BuilderService is component-scoped. Resolving it from this root
     // adapter creates an unused instance whose in-memory passed flag is false.
     // Read the actual matching build receipt from the current editor capture.
-    return await this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+    let verified = false;
+    const ready = await this.blocklyService.runWithBackgroundProjectCode(async (prepared, assertCurrent) => {
       assertCurrent();
-      if (!current()) return false;
       const config = { currentProjectPath: path, boardModule, code: prepared.code,
         projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
-      let verified: boolean;
       if (settings.getCompileBackend() === 'cloud') {
-        if (!prepared.sourceWorkspace || !window['cloudBuild']?.reusable) return false;
+        if (!prepared.sourceWorkspace || !window['cloudBuild']?.reusable) return;
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
         verified = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } }) === true;
       } else {
@@ -135,8 +134,8 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         verified = proof.status === 'verified';
       }
       assertCurrent();
-      return current() && verified;
-    });
+    }, () => !current(), false, 'build');
+    return ready && current() && verified;
   }
 
   async createBlocklyCoderProject(path: string): Promise<string> {
@@ -283,20 +282,34 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     return materialized;
   }
 
-  async prepareBlocklyLibraryEdit(projectPath: string, removedPackages: string[] = []) {
+  async prepareBlocklyLibraryEdit(projectPath: string, removedPackages: string[] = [], signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const workspace = this.blocklyService.workspace;
     if (!workspace || !this.isBlocklyLibraryRuntimeReady(projectPath)) throw new Error('Blockly library runtime is not ready.');
     this.blocklyService.assertWorkspaceEditAvailable();
     const releaseInput = fenceBlocklyWorkspaceInput(workspace.getParentSvg()?.parentElement ?? undefined, { allowNavigation: true });
     let resumePreprocess: (() => void) | undefined;
-    const release = () => { releaseInput(); resumePreprocess?.(); };
+    let inputReleased = false;
+    const release = () => {
+      signal?.removeEventListener('abort', release);
+      if (!inputReleased) {
+        inputReleased = true;
+        releaseInput();
+      }
+      const resume = resumePreprocess;
+      resumePreprocess = undefined;
+      resume?.();
+    };
+    signal?.addEventListener('abort', release, { once: true });
     try {
       resumePreprocess = await this.blocklyEditorProjectService.pauseBackgroundPreprocess(projectPath);
+      signal?.throwIfAborted();
       if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) {
         throw new Error('Project changed before the library transaction could start.');
       }
       workspace.cancelCurrentGesture();
       const document = await this.captureBlocklyLibraryDocument();
+      signal?.throwIfAborted();
       const used = this.blocklyService.getProjectUsedLibraryManifest(this.projectService.currentPackageData, document as BlocklyProjectDocument);
       if (removedPackages.some(name => used[name])) throw Object.assign(new Error('项目仍在使用待卸载库的积木，请先删除或替换这些积木。'), {code:'LIBRARY_IN_USE'});
       return { document, usedLibraries: Object.keys(used), release, record: (restore: (forward: boolean) => Promise<void | boolean>) => {
@@ -382,6 +395,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       || !this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) {
       throw new Error('Project changed while discovering libraries for runtime rebuild.');
     }
+    input.assertOwner?.();
     const loadedLibraryNames = Array.from(this.blocklyService.loadedLibraryInfos.values())
       .map((item) => item.packageName);
     const declaredLibraryNames = new Set(
@@ -424,7 +438,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       packageJson,
       libraryNames: orderedLibraryNames,
       projectService: this.projectService,
-    }, undefined, input.retainedDocument as BlocklyProjectDocument | undefined);
+    }, input.assertOwner, input.retainedDocument as BlocklyProjectDocument | undefined);
     return true;
   }
 

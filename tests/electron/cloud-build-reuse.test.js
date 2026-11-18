@@ -7,6 +7,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { CloudBuildBroker } = require('../../electron/cloud-build/broker');
 const protocol = require('../../electron/cloud-build/protocol');
+const { captureBuildSource } = require('../../child/scripts/build-source-capture');
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-reuse-')));
@@ -68,6 +69,40 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(await f.broker.reusable(f.sender, f.config, f.profile.profileDigest), true);
   assert.equal(f.events.at(-1).reused, true);
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
+});
+
+test('cloud receipt distinguishes an unsaved capture and the next saved reuse of the same source', async t => {
+  const f = fixture(t), abi = path.join(f.root, 'project.abi');
+  f.config.sourceCapture = captureBuildSource(f.config, {
+    documentText: '{"value":"B"}', revision: 2, runtimeRevision: 1, pageId: 'main',
+  });
+  const query = f.broker.querySource;
+  f.broker.querySource = async (...args) => {
+    const answer = await query(...args);
+    answer.source.workspace = f.config.sourceCapture.workspace;
+    return answer;
+  };
+  const saving = (text, savedMatch) => {
+    fs.writeFileSync(abi, text);
+    f.config.savedBuildComparison = { savedAbiHash: `sha256:${protocol.sha256(text)}`, savedMatch };
+  };
+  saving('saved A', 'different');
+  const first = await f.run();
+  const expected = { version: 1, buildRequestId: 'run-1', inputDigest: first.inputDigest,
+    sourceSha256: protocol.sha256(f.config.code), documentSha256: protocol.sha256('{"value":"B"}'), workspaceRevision: 2,
+    savedAbiHash: `sha256:${protocol.sha256('saved A')}`, savedMatch: 'different' };
+  assert.deepEqual(first.buildSnapshot, expected);
+  assert.equal(first.buildSource.abiHash, expected.savedAbiHash);
+  saving('saved B', 'matched');
+  const second = await f.run();
+  assert.equal(second.reused, true);
+  assert.equal(f.jobs, 1);
+  assert.deepEqual(second.buildSnapshot, { ...expected, buildRequestId: 'run-2',
+    savedAbiHash: `sha256:${protocol.sha256('saved B')}`, savedMatch: 'matched' });
+  assert.deepEqual(first.buildSnapshot, expected);
+  fs.writeFileSync(abi, 'external edit');
+  const third = await f.run();
+  assert.equal(third.buildSnapshot.savedMatch, 'unknown');
 });
 
 test('cloud artifact consumption records uploader delegation before entering the native consumer', async t => {
@@ -160,6 +195,23 @@ test('source changed during the final owner check rejects the cached result', as
   f.broker.querySource = async (...args) => { if (verifying) fs.writeFileSync(path.join(f.root, 'src/header.h'), '#define VALUE 3'); return originalSource(...args); };
   await assert.rejects(f.run(), { code: 'BUILD_SOURCE_STALE' });
   assert.equal(f.jobs, 1); assert.equal(f.broker.active.size, 0);
+});
+
+test('cloud compile refuses a block edit after submission and reports the specific cause', async t => {
+  const f = fixture(t);
+  f.config.sourceCapture = captureBuildSource(f.config, {
+    documentText: '{"blocks":[]}', revision: 1, runtimeRevision: 1, pageId: 'main',
+  });
+  const query = f.broker.querySource;
+  f.broker.querySource = async (...args) => {
+    const answer = await query(...args);
+    const workspace = f.config.sourceCapture.workspace;
+    answer.source.workspace = f.jobs ? { ...workspace, documentSha256: protocol.sha256('edited'), revision: 2 } : workspace;
+    return answer;
+  };
+  await assert.rejects(f.run(), { code: 'BUILD_SOURCE_STALE', sourceReason: 'blocks' });
+  assert.equal(f.jobs, 1);
+  assert.equal(f.broker.active.size, 0);
 });
 
 test('a same-version npm library edit invalidates reuse', async t => {

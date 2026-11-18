@@ -23,6 +23,7 @@ function evaluate(source, globals = {}) {
     clearTimeout,
     setImmediate,
     AbortSignal,
+    AbortController,
       Error,
     Map,
     Set,
@@ -93,6 +94,7 @@ function bridgeFixture(sourceProject = '', generation = 7) {
     window,
     ...protocol,
     ...readPureModule('src/app/services/integrations/automation/project-lifecycle-admission.ts'),
+    ...readPureModule('src/app/services/integrations/automation/project-create-receipts.ts'),
   };
   const Domain = sourceClass(
     'src/app/services/domains/project/project.service.ts',

@@ -21,14 +21,14 @@ test('cancelled scopes survive task cleanup and isolate owners, projects and reo
   assert.doesNotThrow(() => assertProjectTaskActive(owner, scope));
 });
 
-test('explicit ownership overrides cwd and legacy commands keep their exact project matching', () => {
+test('an exact project opening is required even when an unscoped command has the same cwd', () => {
   const owner = {};
   const entry = { ownerWebContents: owner, cwd: path.resolve('shared-appdata'), ...scope };
   assert.equal(matchesProjectTask(entry, owner, scope.projectPath, scope.projectSessionId), true);
   assert.equal(matchesProjectTask(entry, owner, entry.cwd, scope.projectSessionId), false);
   assert.equal(matchesProjectTask(entry, {}, scope.projectPath, scope.projectSessionId), false);
   assert.equal(matchesProjectTask(entry, owner, scope.projectPath, 'other-session'), false);
-  assert.equal(matchesProjectTask({ ownerWebContents: owner, cwd: scope.projectPath }, owner, scope.projectPath, scope.projectSessionId), true);
+  assert.equal(matchesProjectTask({ ownerWebContents: owner, cwd: scope.projectPath }, owner, scope.projectPath, scope.projectSessionId), false);
   assert.throws(() => assertProjectTaskActive(owner, { projectPath: scope.projectPath }), /Invalid project task scope/);
   assert.throws(() => assertProjectTaskActive(owner, { ...scope, projectPath: 'relative' }), /Invalid project task scope/);
 });

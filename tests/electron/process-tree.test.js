@@ -5,13 +5,18 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
-function fixture(snapshots, kills = [], { deferSnapshots = false } = {}) {
-  const called = [], logs = [], snapshotCalls = [], pendingSnapshots = [];
-  const context = { module: { exports: {} }, process: { env: { SystemRoot: 'C:\\Windows' } },
+function fixture(snapshots, kills = [], { deferSnapshots = false, boundResults = [], nativeJob } = {}) {
+  const called = [], logs = [], snapshotCalls = [], pendingSnapshots = [], bound = [], nativeStops = [];
+  const context = { module: { exports: {} }, Buffer, process: { env: { SystemRoot: 'C:\\Windows' } },
     console: { info: (_tag, value) => logs.push(value), warn() {} },
     setTimeout: callback => setImmediate(callback),
     require(name) {
       if (name === './platform') return { isWin32: true };
+      if (name === './owned-process') return {
+        getOwnedProcessInfo: registered => registered === nativeJob ? {} : null,
+        async stopOwnedProcess(registered) { nativeStops.push(registered); return false; },
+      };
+      if (name === 'node:fs') return fs;
       if (name === 'node:path') return path;
       if (name === 'child_process') return {
         exec(command, _options, callback) {
@@ -19,7 +24,13 @@ function fixture(snapshots, kills = [], { deferSnapshots = false } = {}) {
           const ok = kills.shift() === true;
           callback(ok ? null : new Error('native child exited during taskkill'), '', '');
         },
-        execFile(_exe, _args, _options, callback) {
+        execFile(_exe, args, _options, callback) {
+          const encoded = /FromBase64String\('([^']+)'\)/.exec(args.at(-1));
+          if (encoded) {
+            bound.push(...JSON.parse(Buffer.from(encoded[1], 'base64').toString('utf8')));
+            callback(boundResults.shift() || null, '');
+            return;
+          }
           snapshotCalls.push(true);
           const next = snapshots.shift();
           const finish = () => callback(next instanceof Error ? next : null, next instanceof Error ? '' : JSON.stringify(next));
@@ -31,7 +42,7 @@ function fixture(snapshots, kills = [], { deferSnapshots = false } = {}) {
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/process-tree.js'), 'utf8'), context);
   return { stop: (options, pid = 10) => context.module.exports.killRegisteredProcessTree(pid, 'cmd:build', options),
-    finishSnapshot: () => pendingSnapshots.shift()(), called, logs, snapshotCalls };
+    finishSnapshot: () => pendingSnapshots.shift()(), called, logs, snapshotCalls, bound, nativeStops };
 }
 const root = { pid: 10, parent: 1, created: '100' }, child = { pid: 11, parent: 10, created: '101' };
 
@@ -121,4 +132,47 @@ test('shared capture keeps each tree separate when only one native stop needs de
   const recovered = f.logs.find(row => row.pid === 10);
   assert.equal(recovered.verifiedAfterFailure, true);
   assert(!recovered.targetPids.includes(20));
+});
+
+test('a registered command never force-stops a replacement Windows PID', async () => {
+  const replacement = { ...root, created: '200' };
+  const f = fixture([[replacement]], [true]);
+  const registered = { pid: 10, exitCode: null, signalCode: null };
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100') }), false);
+  assert.deepEqual(f.called, []);
+});
+
+test('an exited registered Windows command never sends a later force-stop', async () => {
+  const f = fixture([[root]], [true]);
+  const registered = { pid: 10, exitCode: 0, signalCode: null };
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100') }), false);
+  assert.deepEqual(f.called, []);
+});
+
+test('a new child of an absent Windows parent is never attributed to its former identity', async () => {
+  const alreadyOwned = { ...child, created: '110' };
+  const ambiguous = { pid: 12, parent: 10, created: '120' };
+  const f = fixture([[root, alreadyOwned], [ambiguous], [ambiguous], [ambiguous], []]);
+  const registered = { pid: 10, exitCode: null, signalCode: null };
+  let observe;
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100'), observe: reader => { observe = reader; } }), false);
+  assert.deepEqual(f.bound.map(entry => entry.pid), [10, 11]);
+  assert.equal(await observe(), true);
+});
+
+test('a lost force-stop response can settle from the original tree proof without signaling again', async () => {
+  const f = fixture([[root], []], [], { boundResults: [new Error('helper exit acknowledgement lost')] });
+  const registered = { pid: 10, exitCode: null, signalCode: null };
+  assert.equal(await f.stop({ registered, identity: Promise.resolve('100') }), true);
+  assert.deepEqual(f.bound.map(entry => entry.pid), [10]);
+});
+
+test('a registered Job remains the sole stop target after its launcher exits', async () => {
+  const registered = { pid: 10, exitCode: 0, signalCode: null };
+  const f = fixture([], [], { nativeJob: registered });
+  assert.equal(await f.stop({ registered }), false);
+  assert.deepEqual(f.nativeStops, [registered]);
+  assert.deepEqual(f.snapshotCalls, []);
+  assert.deepEqual(f.called, []);
+  assert.deepEqual(f.bound, []);
 });

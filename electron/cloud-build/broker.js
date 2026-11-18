@@ -17,6 +17,7 @@ const { cloudUploadRequirements } = require('./cloud-recipe-upload');
 const { validateCloudRecipePlan } = require('./cloud-recipe-contract');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const { confirmBuildSource } = require(path.join(childRoot, 'scripts/build-source-capture'));
+const { buildSnapshotReceipt } = require(path.join(childRoot, 'scripts/build-snapshot-receipt'));
 const { acquireBuildWorkspace } = require(path.join(childRoot, 'scripts/build-workspace-lease'));
 
 // 默认部署仅由本代理使用，保留 provider 注入用于本地模拟；正式网关始终固定签名公钥。
@@ -41,6 +42,7 @@ function gatewayUrl(value) {
   return { url: url.toString().replace(/\/$/u, ''), local };
 }
 const abortFault = () => protocol.error('CANCELLED', 'Cloud build cancelled.');
+const staleSource = (sourceReason, message) => Object.assign(protocol.error('BUILD_SOURCE_STALE', message), { sourceReason });
 const AUTH_USER = Symbol('cloud-build-user');
 const CLIENT_INPUT_METRICS = ['captureMs', 'identityMs', 'manifestPrepareMs', 'manifestResolveMs', 'blobUploadMs', 'commitMs', 'encodingMs',
   'rawBytes', 'uniqueBytes', 'uploadedBytes', 'transferredBytes', 'reusedBytes', 'fileCount', 'blobCount', 'libraryCount', 'libraryHits', 'encodedFiles'];
@@ -494,13 +496,25 @@ class CloudBuildBroker {
     if (this.querySource) {
       const answer = await this.querySource(record.root, record.controller.signal);
       const source = answer?.source;
-      if (answer?.ok !== true || !source || fs.realpathSync(source.projectPath) !== record.root || source.boardModule !== record.config.boardModule
-          || (record.activationId && source.activationId !== record.activationId) || (source.mode === 'coder' && source.saved !== true)) {
-        throw protocol.error('BUILD_SOURCE_STALE', 'The active project/editor changed during the cloud build.');
+      if (answer?.ok !== true || !source) {
+        throw staleSource(answer?.sourceReason || 'workspace', answer?.message || 'The active editor source is unavailable.');
+      }
+      if (fs.realpathSync(source.projectPath) !== record.root || (record.activationId && source.activationId !== record.activationId)) {
+        throw staleSource('project', 'The active project changed during the cloud build.');
+      }
+      if (source.boardModule !== record.config.boardModule) throw staleSource('inputs', 'The active board changed during the cloud build.');
+      if (source.mode === 'coder' && source.saved !== true) {
+        throw protocol.error('BUILD_SOURCE_STALE', 'The Coder editor is unavailable or has unsaved changes.');
       }
       const captured = record.config.sourceCapture?.workspace;
-      if (captured && ['scope', 'documentSha256', 'revision', 'runtimeRevision', 'pageId'].some(key => source.workspace?.[key] !== captured[key])) {
-        throw protocol.error('BUILD_SOURCE_STALE', 'Blockly document or generator revision changed.');
+      if (captured) {
+        const live = source.workspace;
+        if (live?.scope !== captured.scope) throw staleSource('workspace', 'Blockly workspace source is unavailable.');
+        if (live.pageId !== captured.pageId) throw staleSource('page', 'Active Blockly page changed.');
+        if (live.runtimeRevision !== captured.runtimeRevision) throw staleSource('generator', 'Blockly generator changed.');
+        if (live.documentSha256 !== captured.documentSha256 || live.revision !== captured.revision) {
+          throw staleSource('blocks', 'Blockly source changed after code capture.');
+        }
       }
       record.activationId ||= source.activationId;
     }
@@ -509,7 +523,7 @@ class CloudBuildBroker {
       let identity;
       try { identity = ciResources.overlaySnapshot(captureIdentity(config, record.profile), record.ciPreparation, { identityOnly: true, limits: record.inputLimits }); }
       finally { if (record.inputMetrics) record.inputMetrics.identityMs += performance.now() - identityStarted; }
-      if (identity.inputDigest !== record.snapshot.inputDigest) throw protocol.error('BUILD_SOURCE_STALE', 'Project source, libraries, macros or board options changed.');
+      if (identity.inputDigest !== record.snapshot.inputDigest) throw staleSource('inputs', 'Project source, libraries, macros or board options changed.');
     }
     if (Number.isFinite(record.startedAt) && Date.now() - record.startedAt >= this.deadlineMs && !record.controller.signal.aborted) {
       record.controller.abort(protocol.error('BUILD_TIMEOUT', 'Cloud task exceeded its client deadline.'));
@@ -564,6 +578,11 @@ class CloudBuildBroker {
       inputMetrics: { captureMs: 0, identityMs: 0, encodingMs: 0, encodedFiles: 0,
         manifestPrepareMs: 0, manifestResolveMs: 0, blobUploadMs: 0, commitMs: 0,
         rawBytes: 0, uniqueBytes: 0, transferredBytes: 0, uploadedBytes: 0, reusedBytes: 0, libraryHits: 0 } };
+    const capturedBuildSnapshot = () => {
+      const snapshot = buildSnapshotReceipt(record.config.sourceCapture, record.buildRequestId,
+        record.snapshot?.inputDigest, record.config.savedBuildComparison, record.sourceAbiHash);
+      return snapshot ? { buildSnapshot: snapshot } : {};
+    };
     // Keep the previous directory alive while checking this request, but revoke
     // its upload authority immediately. Only fresh inputs and a live target can
     // restore it; a failed/cancelled request must not retain the old authority.
@@ -630,7 +649,7 @@ class CloudBuildBroker {
       ciAttempt: for (let ciPass = 0; ciPass < 2; ciPass++) {
       if (previous) {
         const reused = await this.reuseCompletedResult(record, previous, input.action || 'compile');
-        if (reused) return { ...reused, logComplete: record.logHistoryComplete };
+        if (reused) return { ...reused, ...capturedBuildSnapshot(), logComplete: record.logHistoryComplete };
         await this.assertCurrent(record);
       }
       record.logComplete = false;
@@ -777,14 +796,14 @@ class CloudBuildBroker {
       await this.importResult(record, result);
       this.progress(record, { stage: 'complete', progress: 100 });
       return { success: true, state: 'done', text: 'Cloud compilation complete.', jobId: record.jobId, inputDigest: record.snapshot.inputDigest,
-        artifactPath: this.active.get(root)?.directory, buildSource: record.buildSource, logComplete: record.logComplete };
+        artifactPath: this.active.get(root)?.directory, buildSource: record.buildSource, ...capturedBuildSnapshot(), logComplete: record.logComplete };
       }
     } catch (error) {
       if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
       await this.cancelRemote(record).catch(() => {});
       const failure = error.cleanupConfirmed === false ? error
         : record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
-      throw Object.assign(failure, { logComplete: !record.controller.signal.aborted && record.logComplete });
+      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete });
     } finally {
       clearTimeout(deadline);
       try { if (typeof releasePowerSaveBlocker === 'function') releasePowerSaveBlocker(); }

@@ -1125,6 +1125,17 @@
             "CANCELLED_TITLE": "编译已取消",
             "CANCELLED_WITH_TIME": "编译已取消 (耗时: {{seconds}}s)",
             "FAILED_TITLE": "编译失败",
+            "SOURCE_STALE": {
+                "project": "项目已切换或重新加载，请重新编译。",
+                "workspace": "积木工作区已更换或无法读取，请重新编译。",
+                "busy": "积木工作区暂时无法核对，请稍后重新编译。",
+                "page": "当前积木页面已切换，请重新编译。",
+                "generator": "积木代码生成器已变化，请重新编译。",
+                "blocks": "积木工程内容已变化，请重新编译。",
+                "settings": "编译设置已变化，请重新编译。",
+                "inputs": "工程文件、库或开发板配置已变化，请重新编译。",
+                "unknown": "编译输入已变化，请重新编译。"
+            },
             "BUSY_SYSTEM": "系统繁忙",
             "BUSY_BUILDING": "编译正在进行中",
             "BUSY_UPLOADING": "上传正在进行中",

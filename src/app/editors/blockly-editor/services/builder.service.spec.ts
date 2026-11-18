@@ -108,6 +108,24 @@ describe('BuilderService isolated derived outputs', () => {
 });
 
 describe('BuilderService background preprocess ownership', () => {
+  it('lets protected foreground work continue while a private preprocess stop is unconfirmed', async () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    const unsubscribe = jasmine.createSpy('unsubscribe');
+    let finish!: (value: boolean) => void;
+    service.cmdService = { kill: jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { finish = resolve; })) };
+    service.preprocessProcess = { unsubscribe };
+    service.preprocessStreamId = 'private-original';
+    service.isolatedPreprocessStreamId = 'private-original';
+    service.preprocessRunGeneration = 1;
+    await service.stopPreprocess();
+    expect(service.isPreprocessing()).toBeFalse();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('private-original');
+    service.preprocessStreamId = 'new-owner';
+    finish(false);
+    await Promise.resolve();
+    expect(service.preprocessStreamId).toBe('new-owner');
+  });
   it('reports an unconfirmed stop instead of treating false as successful cleanup', async () => {
     const service = Object.create(_BuilderService.prototype) as any;
     service.preprocessProcess = { unsubscribe: jasmine.createSpy('unsubscribe') };
@@ -287,6 +305,34 @@ describe('BuilderService background preprocess ownership', () => {
       expect(service.appendCompileLog).not.toHaveBeenCalled();
       expect(service.preprocessProcess).toBeNull(); expect(service.preprocessStreamId).toBeNull();
       service.destroy();
+    }));
+
+    for (const ownershipReleased of [true, false]) it(`observes native preprocess close after an unconfirmed save stop (released=${ownershipReleased})`, fakeAsync(() => {
+      const service = backgroundBuilder(); service.init();
+      service.blocklyService.dependencySubject.next('changed'); tick(500);
+      const subscription = service.preprocessProcess;
+      const streamId = service.preprocessStreamId;
+      service.cmdService.kill.and.resolveTo(false);
+      let stopFailure: Error | undefined;
+      service.pauseBackgroundPreprocessForSave('D:/owned').catch((error: Error) => { stopFailure = error; });
+      tick();
+      expect(stopFailure?.message).toContain('未确认停止');
+      expect(service.isPreprocessing()).toBeTrue();
+      expect(subscription.closed).toBeFalse();
+
+      service.backgroundOutput.next({ type: 'stdout', data: '[ERROR] obsolete diagnostics' });
+      service.backgroundOutput.next({ type: 'close', code: 0, ownershipReleased });
+      service.backgroundOutput.complete();
+      let drained = false;
+      service.waitForPreprocessDrain('D:/owned', () => false, 'upload', 20).then(() => { drained = true; }, () => {});
+      tick(20);
+      expect(drained).toBe(ownershipReleased);
+      expect(service.preprocessError).toBeNull();
+      expect(service.preprocessProcess).toBeNull();
+      expect(service.preprocessStreamId).toBe(ownershipReleased ? null : streamId);
+      expect(service.cmdService.kill).toHaveBeenCalledTimes(1);
+      service.cmdService.kill.and.resolveTo(true);
+      service.destroy(); tick();
     }));
 
     it('installation invalidates background results without terminating their registered process', fakeAsync(() => {
@@ -531,7 +577,7 @@ describe('BuilderService background preprocess ownership', () => {
     ]]);
     const prepared = { code: 'void setup() {}\n', artifacts: null, revision: 1, blockCodeMapText: JSON.stringify([...generatedMap]) };
     service.blocklyService.isWorkspaceEditBlocked = () => false;
-    service.blocklyService.getProjectPersistenceRevision = () => 1;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 1 });
     service.blocklyService.getActivePageId = () => 'main';
     service.blocklyService.publishPreparedCodeView = jasmine.createSpy('publishPreparedCodeView');
     service.blocklyService.runWithBackgroundProjectCode = async operation => { await operation(prepared, () => undefined); return true; };
@@ -555,9 +601,9 @@ describe('BuilderService background preprocess ownership', () => {
     service.blocklyService.getActivePageId = () => 'other';
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
     service.blocklyService.getActivePageId = () => 'main';
-    service.blocklyService.getProjectPersistenceRevision = () => 2;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
-    service.blocklyService.getProjectPersistenceRevision = () => 1;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 1 });
     service.projectService.currentProjectPath = 'D:/another-project';
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
     expect(service.blocklyService.publishPreparedCodeView).toHaveBeenCalledWith(prepared.code, prepared.blockCodeMapText);
@@ -693,7 +739,7 @@ describe('BuilderService non-interrupting code capture', () => {
     service.runBuilderPreprocessPhase = (_tag, task) => task();
     service.writeTextFileAtomic = jasmine.createSpy('write').and.resolveTo();
     let revision = 1;
-    service.blocklyService.getProjectPersistenceRevision = () => revision;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: revision });
     service.blocklyService.publishPreparedCodeView = jasmine.createSpy('preview');
     service.blocklyService.runWithBackgroundProjectCode.and.callFake(async operation => {
       await operation({ code: 'print("latest")', artifacts: null, revision }, () => undefined); return true;

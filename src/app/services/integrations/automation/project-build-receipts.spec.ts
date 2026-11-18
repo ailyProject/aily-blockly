@@ -1,5 +1,5 @@
 import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
-import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
+import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest } from './project-build-receipts';
 
 describe('project build receipt store', () => {
   const request = (requestId = 'build-1', waitMs = 0) => readProjectBuildRequest({ version: 1, requestId, waitMs });
@@ -28,6 +28,34 @@ describe('project build receipt store', () => {
     const answer = await new ProjectBuildReceipts().status('/isolated', request());
     expect(answer.buildReceipt.state).toBe('unknown');
     expect(answer.result).toBeUndefined();
+  });
+
+  it('uses an exact persisted receipt after renderer replacement without dispatching the original twice', async () => {
+    const read = jasmine.createSpy('read').and.returnValue({ state: 'completed', result: { ok: true } });
+    const store = new ProjectBuildReceipts(0, 0, read);
+    const mutate = jasmine.createSpy('mutate');
+    const first = await store.status('/isolated', request());
+    expect(first.buildReceipt.state).toBe('completed');
+    expect(first.result).toEqual({ ok: true });
+    const second = await store.start('/isolated', request(), 'original', mutate);
+    expect(second.result).toEqual(first.result);
+    expect(read.calls.allArgs()).toEqual([['/isolated', 'build-1'], ['/isolated', 'build-1']]);
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('reobserves historical source evidence without restoring superseded firmware authority', async () => {
+    const original = window['builder'];
+    const buildSnapshot = { version: 1, buildRequestId: 'build-1', inputDigest: '1'.repeat(64), sourceSha256: '2'.repeat(64),
+      savedAbiHash: `sha256:${'3'.repeat(64)}`, documentSha256: '4'.repeat(64), workspaceRevision: 2, savedMatch: 'different' };
+    window['builder'] = { inspectBuildExecution: () => ({ version: 1, buildRequestId: 'build-1', status: 'completed', current: false,
+      buildSnapshot, buildInput: { abiHash: buildSnapshot.savedAbiHash } }) };
+    try {
+      const store = new ProjectBuildReceipts(undefined, undefined, readNativeBuildReceipt);
+      const historical = await store.status('/isolated', request());
+      expect(historical.result?.['buildSnapshot']).toBe(buildSnapshot);
+      expect(historical.result?.['buildInput']).toBeUndefined();
+      expect((await store.status('/isolated', request('different-id'))).buildReceipt.state).toBe('unknown');
+    } finally { window['builder'] = original; }
   });
 
   it('reobserves the exact completed log without executing or recreating it', async () => {

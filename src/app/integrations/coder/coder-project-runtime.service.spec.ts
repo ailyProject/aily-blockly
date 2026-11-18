@@ -21,7 +21,7 @@ describe('Coder concurrent process integration', () => {
   let runtime: CoderProjectRuntimeService;
   let project: any;
   let serial: any;
-  let commands: { command: string; output: Subject<any>; id: string }[];
+  let commands: { command: string; output: Subject<any>; id: string; projectSessionId?: string }[];
   let killed: string[];
   let originals: any;
   const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -43,7 +43,7 @@ describe('Coder concurrent process integration', () => {
     });
     spyOn(CmdService.prototype, 'spawn').and.callFake((file, args, options) => {
       const output = new Subject<any>(); const id = options!.streamId!;
-      commands.push({command: [file, ...args].join(' '), output, id}); return output;
+      commands.push({ command: [file, ...args].join(' '), output, id, projectSessionId: options?.projectSessionId }); return output;
     });
     spyOn(CmdService.prototype, 'kill').and.callFake(async (id: string) => { killed.push(id); return true; });
     const contexts = new Map<string, any>();
@@ -61,6 +61,7 @@ describe('Coder concurrent process integration', () => {
       getCoderProjectContext(path: string) {
         if (!contexts.has(path)) contexts.set(path, {
           currentProjectPath: path, isCoderProjectContext: true,
+          getProjectDependencySession: () => ({ projectPath: path, projectSessionId: `opening:${path}` }),
           captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }),
           coderProjects: project.coderProjects, currentBoardConfig: {}, boardChangeSubject: new Subject(),
           isAilyCodeProject: () => true, beginCoderOperation: () => () => {},
@@ -203,6 +204,7 @@ describe('Coder concurrent process integration', () => {
     expect(commands.length).toBe(2);
     expect(commands[0].command).toContain('/a/.temp/compile-request-');
     expect(commands[1].command).toContain('/b/.temp/compile-request-');
+    expect(commands.map(command => command.projectSessionId)).toEqual(['opening:/a', 'opening:/b']);
     commands.forEach(started);
     project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
     runtime.cancel('/a', 'build');

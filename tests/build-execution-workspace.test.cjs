@@ -47,6 +47,100 @@ function complete(config) {
     api.finishBuildExecution(config, true);
 }
 
+test('publishes the next Windows build after a brief current receipt sharing violation',
+    { skip: process.platform !== 'win32' }, t => {
+        const f = fixture(t), first = api.prepareBuildExecution(f.config);
+        complete(first);
+        const pointer = path.join(f.root, '.aily/build-executions/current.json');
+        const previous = fs.readFileSync(pointer);
+        const rename = fs.renameSync;
+        let attempts = 0;
+        fs.renameSync = (source, target) => {
+            if (target === pointer && ++attempts === 1) {
+                assert.deepEqual(fs.readFileSync(pointer), previous);
+                throw Object.assign(new Error('Windows sharing violation'), { code: 'EPERM' });
+            }
+            return rename(source, target);
+        };
+        let next;
+        try { next = api.prepareBuildExecution({ ...f.config, buildRequestId: 'next-request' }); }
+        finally { fs.renameSync = rename; }
+        assert.equal(attempts, 2);
+        assert.equal(JSON.parse(fs.readFileSync(pointer)).id, next.execution.id);
+        assert.equal(api.inspectBuildExecution(f.root, first.execution.buildRequestId).status, 'completed');
+        assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'prepared');
+    });
+
+test('allows a restricted renderer to load and read a build receipt without shared memory', t => {
+    const f = fixture(t), config = api.prepareBuildExecution(f.config);
+    complete(config);
+    const modulePath = require.resolve('../child/scripts/atomic-replace');
+    const cached = require.cache[modulePath];
+    const sharedArrayBuffer = Object.getOwnPropertyDescriptor(globalThis, 'SharedArrayBuffer');
+    try {
+        delete require.cache[modulePath];
+        Object.defineProperty(globalThis, 'SharedArrayBuffer', { configurable: true, value: undefined });
+        assert.equal(typeof require(modulePath).renameForAtomicReplace, 'function');
+        assert.equal(api.inspectBuildExecution(f.root, config.execution.buildRequestId).status, 'completed');
+    } finally {
+        if (sharedArrayBuffer) Object.defineProperty(globalThis, 'SharedArrayBuffer', sharedArrayBuffer);
+        else delete globalThis.SharedArrayBuffer;
+        require.cache[modulePath] = cached;
+    }
+});
+
+for (const status of ['completed', 'failed']) {
+    test(`observes the original ${status} outcome after status publication was interrupted`, t => {
+        const f = fixture(t), config = api.prepareBuildExecution(f.config);
+        const { folder } = api.recordFor(config);
+        const statusFile = path.join(folder, 'execution.json'), outcomeFile = path.join(folder, 'outcome.json');
+        const rename = fs.renameSync;
+        fs.renameSync = (source, target) => {
+            if (target === statusFile && fs.existsSync(outcomeFile)) throw new Error('Interrupted after durable outcome');
+            return rename(source, target);
+        };
+        try {
+            assert.throws(() => status === 'completed' ? complete(config) : api.finishBuildExecution(config, false),
+                /Interrupted after durable outcome/);
+        } finally { fs.renameSync = rename; }
+
+        const previousStatus = fs.readFileSync(statusFile), outcome = fs.readFileSync(outcomeFile);
+        assert.equal(JSON.parse(outcome).status, status);
+        const observed = api.inspectBuildExecution(f.root, f.config.buildRequestId);
+        assert.equal(observed.status, status);
+        assert.equal(observed.executionId, config.execution.id);
+        assert.equal(observed.nextAction, 'terminal');
+        assert.equal(Boolean(observed.result), status === 'completed');
+        assert.deepEqual(api.inspectBuildExecution(f.root, f.config.buildRequestId), observed);
+        assert.deepEqual(fs.readFileSync(statusFile), previousStatus);
+        assert.deepEqual(fs.readFileSync(outcomeFile), outcome);
+        assert.equal(api.cancelBuildExecution(config).status, status);
+
+        if (status === 'completed') {
+            fs.writeFileSync(path.join(config.currentProjectPath, '.build/firmware.bin'), 'changed output');
+            const invalidated = api.inspectBuildExecution(f.root, f.config.buildRequestId);
+            assert.equal(invalidated.status, 'completed');
+            assert.equal(invalidated.nextAction, 'rebuild-current-inputs');
+            assert.equal(invalidated.result, undefined);
+        }
+        const next = api.prepareBuildExecution({ ...f.config, buildRequestId: 'separate-request' });
+        assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'prepared');
+        assert.equal(api.inspectBuildExecution(f.root, f.config.buildRequestId).status, status);
+    });
+}
+
+test('rejects cancelled outcomes with a mismatched original execution binding', t => {
+    const f = fixture(t), config = api.prepareBuildExecution(f.config);
+    const file = path.join(api.recordFor(config).folder, 'outcome.json');
+    const receipt = api.cancelBuildExecution(config);
+    for (const mismatch of [{ version: 2 }, { id: 'other-execution' },
+        { buildRequestId: 'other-request' }, { inputDigest: 'other-input' }]) {
+        fs.writeFileSync(file, JSON.stringify({ ...receipt, ...mismatch }));
+        assert.equal(api.inspectBuildExecution(f.root, f.config.buildRequestId), null);
+        assert.throws(() => api.cancelBuildExecution(config), { code: 'BUILD_EXECUTION_INVALID' });
+    }
+});
+
 test('conversion evidence survives repeated view-only saves without weakening upload reuse', async t => {
     const f = fixture(t);
     const document = { pages: [{ id: 'main', blocks: { languageVersion: 0, blocks: [] }, viewState: { scrollX: 0, scrollY: 0, scale: 1 } }] };
@@ -358,4 +452,36 @@ test('R4 build input identifies detached original ABI across live edits, cancel,
     assert.notEqual(failed.buildInput.abiHash, expected);
     assert.deepEqual(api.inspectBuildExecution(f.root, 'original-request').buildInput, cancelled.buildInput);
     assert.throws(() => api.recordFor({ ...first, execution: { ...first.execution, abiHash: second.execution.abiHash } }), /binding changed/);
+});
+
+test('a dirty Blockly build retains its own source alongside the unchanged saved ABI', t => {
+    const f = fixture(t), sha = value => createHash('sha256').update(value).digest('hex');
+    const savedAbiHash = `sha256:${sha('original user program')}`;
+    const a = api.prepareBuildExecution({ ...f.config, savedBuildComparison: { savedAbiHash, savedMatch: 'matched' } },
+        { documentText: '{"value":"A"}', revision: 1, runtimeRevision: 1, pageId: 'main' });
+    complete(a);
+    assert.equal(api.inspectBuildExecution(f.root, f.config.buildRequestId).buildSnapshot.savedMatch, 'matched');
+
+    const b = { ...f.config, code: 'int value = 2;', buildRequestId: 'unsaved-b',
+        savedBuildComparison: { savedAbiHash, savedMatch: 'different' } };
+    const built = api.prepareBuildExecution(b, { documentText: '{"value":"B"}', revision: 2, runtimeRevision: 1, pageId: 'main' });
+    complete(built);
+    const observed = api.inspectBuildExecution(f.root, b.buildRequestId);
+    assert.equal(observed.status, 'completed');
+    assert.equal(observed.buildInput.abiHash, savedAbiHash);
+    assert.deepEqual(observed.buildSnapshot, { version: 1, buildRequestId: b.buildRequestId, inputDigest: built.execution.inputDigest,
+        sourceSha256: sha(b.code), documentSha256: sha('{"value":"B"}'), workspaceRevision: 2, savedAbiHash, savedMatch: 'different' });
+    assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), 'original user program');
+    assert.equal(api.canReuseBuildExecution(b), true);
+    assert.equal(api.canReuseBuildExecution({ ...b, code: 'int value = 3;' }), false);
+
+    f.put('project.abi', 'changed outside the editor');
+    const external = api.prepareBuildExecution({ ...b, buildRequestId: 'external-change' },
+        { documentText: '{"value":"B"}', revision: 2, runtimeRevision: 1, pageId: 'main' });
+    assert.equal(external.execution.buildSnapshot.savedMatch, 'unknown');
+    assert.notEqual(external.execution.buildSnapshot.savedAbiHash, savedAbiHash);
+    const historical = api.inspectBuildExecution(f.root, b.buildRequestId);
+    assert.equal(historical.current, false);
+    assert.equal(historical.result, undefined);
+    assert.deepEqual(historical.buildSnapshot, observed.buildSnapshot);
 });

@@ -75,6 +75,8 @@ async function invokeCloudBuild(payload) {
       name: 'CloudBuildError',
       message: envelope?.error?.message || 'Cloud build failed.',
       code: envelope?.error?.code || 'CLOUD_BUILD_ERROR',
+      ...(envelope?.error?.sourceReason ? { sourceReason: envelope.error.sourceReason } : {}),
+      ...(envelope?.error?.buildSnapshot ? { buildSnapshot: envelope.error.buildSnapshot } : {}),
       ...(typeof envelope?.error?.logComplete === 'boolean' ? { logComplete: envelope.error.logComplete } : {}),
     };
   }
@@ -925,6 +927,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   cmd: {
     run: (options) => ipcRenderer.invoke('cmd-run', options),
     kill: (streamId) => ipcRenderer.invoke('cmd-kill', { streamId }),
+    status: (streamId) => ipcRenderer.invoke('cmd-status', { streamId }),
     killByName: (processName) => ipcRenderer.invoke('cmd-kill-by-name', { processName }),
     input: (streamId, input) => ipcRenderer.invoke('cmd-input', { streamId, input }),
     onData: (streamId, callback) => {

@@ -25,7 +25,8 @@ test('cold packaged Electron prepares archives and persists libraries through th
     await fs.mkdir(path.join(source, 'electron'), { recursive: true });
     for (const name of ['library-dependencies.js', 'library-history.js', 'library-dependency-sessions.js', 'library-dependency-worker.js',
       'library-dependency-conflicts.js', 'library-local-changes.js', 'project-file-access.js', 'project-file-lock-owner.js',
-      'library-environment-journal.js', 'library-manifest-input.js', 'project-companion.js', 'child-script-path.js', 'owned-process.js']) {
+      'library-environment-journal.js', 'library-manifest-input.js', 'project-companion.js', 'child-script-path.js',
+      'owned-process.js', 'process-tree.js', 'platform.js']) {
       await fs.copyFile(path.join(workspace, 'electron', name), path.join(source, 'electron', name));
     }
     const child = path.join(resources, 'child');

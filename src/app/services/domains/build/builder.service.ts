@@ -10,7 +10,7 @@ import { CompileService } from './compile.service';
 import { isBuildCancelled } from './build-cancellation';
 import { persistBuildResult, type BuildCheckpoint, type BuildResultSnapshot } from './build-result-snapshot';
 import { BUILD_ACTION_PORT, type BuildActionPort } from './ports/build-action.port';
-import { BLOCKLY_BUILD_PORT, type BlocklyBuildPort, type BlocklyBuildOutcome } from './ports/blockly-build.port';
+import { BLOCKLY_BUILD_PORT, type BlocklyBuildPort } from './ports/blockly-build.port';
 
 export interface BuildFinishedEvent {
   projectPath?: string;
@@ -68,13 +68,29 @@ export class BuilderService {
   /*
    * 开始编译
    */
-  async build(projectPath?: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string } = {}) {
-    const targetPath = projectPath || this.projectService.currentProjectPath;
-    if (this.coderExecution && this.projectService.isAilyCodeProject(targetPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.build(targetPath, options);
+  async build(projectPath?: string, options: {
+    preprocessOnly?: boolean;
+    source?: BuildResultSnapshot['source'];
+    requestId?: string;
+    expectedProjectPath?: string;
+    clearCache?: boolean;
+  } = {}) {
+    const activePath = this.projectService.currentProjectPath;
+    const targetPath = projectPath || activePath;
+    if (options.expectedProjectPath !== undefined && (activePath !== options.expectedProjectPath || targetPath !== activePath)) {
+      throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { buildOutcome: 'not-started' });
+    }
+    const coder = this.projectService.isAilyCodeProject(targetPath);
+    if (this.coderExecution && coder && !this.projectService.isCoderProjectContext) return this.coderExecution.build(targetPath, options);
+    if (!coder && (!activePath || targetPath !== activePath || this.projectService.isProjectOpening)) {
+      throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { buildOutcome: 'not-started' });
+    }
     const finish = this.projectService.beginCoderOperation('build', targetPath);
     try {
-      if (projectPath || this.projectService.isAilyCodeProject(targetPath)) return await this.buildFromProjectPath(targetPath, options);
-      return await this.buildCurrentBlocklyProject({ source: options.source, requestId: options.requestId });
+      if (coder) return await this.buildFromProjectPath(targetPath, options);
+      return await this.buildCurrentBlocklyProject(targetPath, {
+        source: options.source, requestId: options.requestId, clearCache: options.clearCache,
+      });
     } finally {
       finish();
     }
@@ -87,6 +103,7 @@ export class BuilderService {
    */
   async buildActiveBlocklyProject(input: ActiveBlocklyProjectBuildInput) {
     const projectPath = String(input?.projectPath || '').trim();
+    const activePath = this.projectService.currentProjectPath;
     const graphSemanticRevision = String(
       input?.graphSemanticRevision || '',
     );
@@ -102,14 +119,14 @@ export class BuilderService {
       this.projectService.isProjectOpening
       || !this.isSameProjectPath(
         projectPath,
-        this.projectService.currentProjectPath,
+        activePath,
       )
       || this.projectService.isAilyCodeProject(projectPath)
       || !this.blocklyBuild?.isAvailable()
     ) {
       throw new Error('The requested Blockly Project is not active.');
     }
-    return this.buildCurrentBlocklyProject({
+    return this.buildCurrentBlocklyProject(activePath, {
       source: 'ai',
       graphSemanticRevision,
       requestId,
@@ -117,30 +134,20 @@ export class BuilderService {
   }
 
   private async buildCurrentBlocklyProject(
+    projectPath: string,
     payload: {
       source?: BuildResultSnapshot['source'];
       graphSemanticRevision?: string;
       requestId?: string;
+      clearCache?: boolean;
     },
   ) {
-    const projectPath = this.projectService.currentProjectPath;
     let checkpoint: BuildCheckpoint | undefined;
-    let editorExecution = false;
     try {
-      await this.persistActiveCoderProjectBeforeBuild(
-        projectPath,
-      );
-      let completion: BlocklyBuildOutcome;
-      if (this.blocklyBuild?.isAvailable()) {
-        editorExecution = true;
-        completion = await this.blocklyBuild.build({ projectPath, ...payload });
-      } else if (!this.actionService.hasListener('builder-compile-begin')) {
-        // A disk/Coder route has no mounted Blockly build executor.
-        const r = await this.compileService.runCompileFromDisk({ projectPath, requestId: payload.requestId });
-        completion = { success: r.success, result: r.result, checkpoint: {} };
-      } else {
-        throw Object.assign(new Error('The active Blockly build executor is unavailable.'), { buildOutcome: 'not-started' });
+      if (!this.blocklyBuild?.isAvailable()) {
+        throw new Error('The active Blockly build executor is unavailable.');
       }
+      const completion = await this.blocklyBuild.build({ projectPath, ...payload });
 
       checkpoint = completion.checkpoint;
       const buildResult = completion.result;
@@ -156,6 +163,7 @@ export class BuilderService {
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildLog = buildResult?.buildLog;
         error.buildInput = (buildResult as any)?.buildInput;
+        error.buildSnapshot = buildResult?.buildSnapshot;
         error.buildOutcome = (buildResult as any)?.buildOutcome;
         error.buildResult = buildResult;
         if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
@@ -169,7 +177,7 @@ export class BuilderService {
     } catch (error: any) {
       if (!error || typeof error !== 'object') error = new Error(String(error));
       // Editor admission (busy/stale/unmounted) does not attest a compiler exit.
-      if (editorExecution && !checkpoint?.startedAt) error.buildOutcome = 'not-started';
+      if (!checkpoint?.startedAt) error.buildOutcome = 'not-started';
       // console.error('编译失败:', error);
       this.notifyBuildCompletion(error, false);
       if (checkpoint?.startedAt && error?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
@@ -308,6 +316,21 @@ export class BuilderService {
       } else {
         console.warn('预编译触发失败:', result);
       }
+    });
+  }
+
+  /** Only the mounted editor may admit a cache-mutating advisory request. */
+  triggerPreprocessWithCacheClear(projectPath: string, reason: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.actionService.dispatch<Record<string, unknown>>(
+        'preprocess-trigger', { reason, projectPath, clearCache: true }, feedback => {
+          if (feedback.success && feedback.data?.['success'] === true) resolve();
+          else reject(feedback.data?.['error'] ?? Object.assign(
+            new Error(feedback.error || 'The active Blockly preprocessing executor is unavailable.'),
+            { buildOutcome: 'not-started' },
+          ));
+        }, 0, { requireHandler: true },
+      );
     });
   }
 

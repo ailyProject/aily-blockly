@@ -150,6 +150,8 @@ interface ProjectOpenOptions {
   recoveryReopen?: { assertCurrent(): void };
   /** Recovery-copy navigation preserves the original source recovery view. */
   retainRecovery?: true;
+  /** Internal create-only authority. The final activation checks before changing the view. */
+  createActivation?: { signal: AbortSignal; assertCurrent(): void; markActivated(): void };
 }
 
 interface ProjectCreationOptions {
@@ -158,6 +160,7 @@ interface ProjectCreationOptions {
   deferActivation?: boolean;
   /** Board package template directory. Blockly uses `template`; Coder uses `template_arduino`. */
   templateDirectory?: 'template' | typeof CODER_TEMPLATE_DIRECTORY;
+  createAuthority?: { requestId: string; signal: AbortSignal; assertCurrent(): void; markCreated(project: string): void };
 }
 
 type ProjectCreationStage = 'validation' | 'board-install' | 'board-template' | 'project-files' | 'activation';
@@ -273,19 +276,37 @@ export class ProjectService {
     return true;
   }
 
+  private pendingLibraryMutation?: {
+    requestId?: string; projectPath: string; deadline: number; controller: AbortController;
+    timer?: ReturnType<typeof setTimeout>; release: () => void;
+  };
+  private libraryRequestExpirations = new Map<string, number>();
   private libraryMutation?: {
     projectPath: string; token: string; before: unknown;
     packages: string[]; removedPackages: string[];
     edit: Awaited<ReturnType<NonNullable<ProjectApplicationPort['prepareBlocklyLibraryEdit']>>>;
     lease: ProjectLifecycleLease;
     timer?: ReturnType<typeof setTimeout>;
+    requestId?: string; deadline?: number;
   };
 
-  isLibraryMutationInProgress(projectPath = this.currentProjectPath): boolean {
-    return [this.libraryMutation, this.libraryHistoryNavigation].some(operation => operation && this.isSameProjectPath(projectPath, operation.projectPath));
+  private claimLibraryRequest(projectPath: string, requestId: string, deadline: number): boolean {
+    const requests = this.libraryRequestExpirations ??= new Map();
+    const now = Date.now();
+    for (const [id, expiry] of requests) if (expiry <= now) requests.delete(id);
+    const key = JSON.stringify([this.normalizeProjectPath(projectPath), requestId]);
+    if (requests.has(key)) return false;
+    requests.set(key, deadline);
+    return true;
   }
 
-  async beginLibraryMutation(packages: string[], _legacySavedHashes?: Record<string, string>, removedPackages: string[] = []): Promise<{ token: string }> {
+  isLibraryMutationInProgress(projectPath = this.currentProjectPath): boolean {
+    return [this.pendingLibraryMutation, this.libraryMutation, this.libraryHistoryNavigation]
+      .some(operation => operation && this.isSameProjectPath(projectPath, operation.projectPath));
+  }
+
+  async beginLibraryMutation(packages: string[], _legacySavedHashes?: Record<string, string>, removedPackages: string[] = [],
+    request?: {requestId?: string; expiresAt?: number}): Promise<{ token: string }> {
     const projectPath = this.currentProjectPath;
     if (!Array.isArray(packages) || !packages.length || packages.some(spec => typeof spec !== 'string'
       || !isAilyLibraryPackageName(spec.indexOf('@', 1) < 0 ? spec : spec.slice(0, spec.indexOf('@', 1))))) {
@@ -296,31 +317,88 @@ export class ProjectService {
       || !packages.map(packageName).includes(packageName(spec)))) throw new Error('待卸载库与事务包名不匹配。');
     const removedNames = removedPackages.map(packageName);
     if (!window['libraryDependencies']) throw new Error('库管理通道尚未就绪，请重新启动软件。');
+    const requestId = request?.requestId;
+    const now = Date.now(), deadline = Math.min(request?.expiresAt ?? Infinity, now + 300_000);
+    const expired = () => Object.assign(new Error('The original library operation no longer owns this project.'), {code:'LIBRARY_OPERATION_EXPIRED'});
+    if (request && (typeof requestId !== 'string' || !/^env1-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestId)
+      || !Number.isSafeInteger(request.expiresAt) || deadline <= now || !this.claimLibraryRequest(projectPath, requestId, deadline))) throw expired();
     if (this.isLibraryMutationInProgress(projectPath) || this.application.hasActiveBlocklyBuildOrUpload(projectPath, true)) {
       throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', '请等待当前库操作或编译上传完成。');
     }
-    const lease = this.acquireProjectLifecycle([projectPath], undefined, false);
+    const lease = this.acquireProjectLifecycle([projectPath], undefined, false), unchanged = this.captureCurrentProjectGuard();
+    const controller = new AbortController();
     let edit: Awaited<ReturnType<NonNullable<ProjectApplicationPort['prepareBlocklyLibraryEdit']>>> | undefined;
+    let historyToken: string | undefined, released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      edit?.release();
+      edit = undefined;
+      lease.release();
+    };
+    const pending: NonNullable<ProjectService['pendingLibraryMutation']> = {projectPath, requestId, deadline, controller, release};
+    this.pendingLibraryMutation = pending;
+    const assertCurrent = () => {
+      if (!unchanged() || this.pendingLibraryMutation !== pending || controller.signal.aborted || Date.now() >= deadline) throw expired();
+    };
+    pending.timer = setTimeout(() => this.releasePendingLibraryMutation(pending), Math.max(0, deadline - Date.now()));
     try {
-      // Keep the live document fenced in memory. Library edits publish only
-      // dependency files; neither dirty canvas content nor ABS candidates are saved.
-      edit = await this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames);
-      await this.saveLibraryChanges(projectPath);
-      const { token } = await window['libraryDependencies'].historyBegin(projectPath, { packages });
-      this.libraryMutation = { projectPath, token, before: edit.document, packages: packages.map(packageName), removedPackages: removedNames, edit, lease };
-      // A disconnected AI transport must never leave input blocked forever.
-      this.libraryMutation.timer = setTimeout(() => { void this.abortLibraryMutation(token).catch(error => console.warn('Library transaction expiry:', error)); }, 300_000);
+      // The live input fence belongs to the same request even before history returns a token.
+      edit = await this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames, controller.signal);
+      assertCurrent();
+      if (!requestId) await this.saveLibraryChanges(projectPath);
+      assertCurrent();
+      const { token } = await window['libraryDependencies'].historyBegin(projectPath, requestId
+        ? { packages, requestId, expiresAt: deadline } : { packages });
+      historyToken = token;
+      assertCurrent();
+      clearTimeout(pending.timer);
+      this.pendingLibraryMutation = undefined;
+      const mutation = { projectPath, token, requestId, deadline, before: edit.document, packages: packages.map(packageName), removedPackages: removedNames, edit, lease };
+      this.libraryMutation = mutation;
+      this.libraryMutation.timer = setTimeout(() => { void this.abortLibraryMutation(token, requestId, projectPath); }, Math.max(0, deadline - Date.now()));
       return { token };
-    } catch (error) { edit?.release(); lease.release(); throw error; }
+    } catch (error) {
+      if (released) edit?.release();
+      this.releasePendingLibraryMutation(pending);
+      if (historyToken) this.discardLibraryMutationHistory(projectPath, historyToken);
+      throw error;
+    }
   }
 
-  async abortLibraryMutation(token: string): Promise<void> {
-    const mutation = this.libraryMutation;
-    if (!mutation || mutation.token !== token) return;
-    clearTimeout(mutation.timer);
+  private releasePendingLibraryMutation(pending: NonNullable<ProjectService['pendingLibraryMutation']>): void {
+    if (this.pendingLibraryMutation !== pending) return;
+    this.pendingLibraryMutation = undefined;
+    clearTimeout(pending.timer);
+    pending.release();
+    pending.controller.abort();
+    this.libraryChangesChanged?.next();
+  }
+
+  private discardLibraryMutationHistory(projectPath: string, token: string): void {
+    try { void window['libraryDependencies']?.historyDiscard(projectPath, { token })?.catch(() => {}); } catch {}
+  }
+
+  private releaseLibraryMutation(mutation: NonNullable<ProjectService['libraryMutation']>): void {
+    if (this.libraryMutation !== mutation) return;
     this.libraryMutation = undefined;
-    try { await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token }); }
-    finally { mutation.edit.release(); mutation.lease.release(); this.libraryChangesChanged?.next(); }
+    clearTimeout(mutation.timer);
+    mutation.edit.release();
+    mutation.lease.release();
+    this.libraryChangesChanged?.next();
+  }
+
+  async abortLibraryMutation(token?: string, requestId?: string, projectPath = this.currentProjectPath): Promise<void> {
+    if (typeof requestId === 'string' && /^env1-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestId) && projectPath) {
+      this.claimLibraryRequest(projectPath, requestId, Date.now() + 300_000);
+      const pending = this.pendingLibraryMutation;
+      if (pending?.requestId === requestId && this.isSameProjectPath(projectPath, pending.projectPath)) this.releasePendingLibraryMutation(pending);
+    }
+    const mutation = this.libraryMutation;
+    if (!mutation || !this.isSameProjectPath(projectPath, mutation.projectPath)
+      || (requestId !== undefined ? mutation.requestId !== requestId || (token !== undefined && token !== mutation.token) : !token || mutation.token !== token)) return;
+    this.releaseLibraryMutation(mutation);
+    this.discardLibraryMutationHistory(mutation.projectPath, mutation.token);
   }
 
   async finishLibraryMutation(token: string, reconcile = false, managedEnvironment?: ManagedLibraryEnvironmentReference,
@@ -329,28 +407,30 @@ export class ProjectService {
     if (!mutation || mutation.token !== token || mutation.projectPath !== this.currentProjectPath) {
       throw new Error('Library mutation expired or belongs to another project.');
     }
-    clearTimeout(mutation.timer);
     try {
       const current = this.captureCurrentProjectGuard();
       const assertCurrent = () => {
         assertOwner?.();
-        if (!current() || this.libraryMutation !== mutation || this.currentProjectPath !== mutation.projectPath) {
+        if (!current() || this.libraryMutation !== mutation || this.currentProjectPath !== mutation.projectPath
+          || (mutation.deadline !== undefined && Date.now() >= mutation.deadline)) {
           throw new Error('Library runtime refresh no longer owns the original project mutation.');
         }
       };
       assertCurrent();
       if (managedEnvironment) {
+        if (mutation.requestId && managedEnvironment.requestId !== mutation.requestId) throw new Error('The dependency result belongs to another request.');
         await readManagedLibraryEnvironment(mutation.projectPath, managedEnvironment, mutation, assertCurrent);
         // The original Main already reified and saved this exact dependency
         // environment. Refresh only the live runtime, never reify it again.
-        this.acceptLibraryStatus(mutation.projectPath, await window['libraryDependencies'].status(mutation.projectPath));
+        const status = await window['libraryDependencies'].status(mutation.projectPath);
         assertCurrent();
+        this.acceptLibraryStatus(mutation.projectPath, status);
       } else if (reconcile) {
         this.acceptLibraryStatus(mutation.projectPath,
           await window['libraryDependencies'].discard(mutation.projectPath, {reconcile:true,historyRestored:true}));
         await window['libraryDependencies'].prepare(mutation.projectPath);
       }
-      await this.ensureBlocklyLibraryRuntimeReady(mutation.projectPath);
+      await this.ensureBlocklyLibraryRuntimeReady(mutation.projectPath, assertCurrent);
       assertCurrent();
       if (managedEnvironment) await readManagedLibraryEnvironment(mutation.projectPath, managedEnvironment, mutation, assertCurrent);
       const after = await this.application.captureBlocklyLibraryDocument!();
@@ -361,14 +441,13 @@ export class ProjectService {
         const documents = { before: mutation.before, after };
         mutation.edit.record(forward => this.restoreLibraryMutation(mutation, forward, documents));
       }
-      else await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token });
+      else this.discardLibraryMutationHistory(mutation.projectPath, token);
     } catch (error) {
       // Keep the installed files and native recovery evidence; never hide a partial outcome.
-      try { await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token }); } catch {}
+      if (this.libraryMutation === mutation) this.discardLibraryMutationHistory(mutation.projectPath, token);
       throw error;
     } finally {
-      if (this.libraryMutation === mutation) this.libraryMutation = undefined;
-      mutation.edit.release(); mutation.lease.release(); this.libraryChangesChanged?.next();
+      this.releaseLibraryMutation(mutation);
     }
   }
 
@@ -511,13 +590,18 @@ export class ProjectService {
     this.libraryChangesChanged?.next();
   }
 
-  async discardLibraryChanges(projectPath = this.currentProjectPath, reconcile = false, historyRestored = false): Promise<void> {
+  async discardLibraryChanges(projectPath = this.currentProjectPath, reconcile = false, historyRestored = false,
+    allowInstallFailure = false): Promise<string | undefined> {
     if (!projectPath || !window['libraryDependencies']) return;
     const restoreCoderSources = !reconcile && this.hasCachedLibraryChanges(projectPath)
       && this.getProjectMode(projectPath) === 'coder';
-    this.acceptLibraryStatus(projectPath, await window['libraryDependencies'].discard(projectPath, { reconcile, historyRestored }));
+    const status = await window['libraryDependencies'].discard(projectPath, {
+      reconcile, historyRestored, ...(allowInstallFailure ? { allowInstallFailure } : {}),
+    });
+    this.acceptLibraryStatus(projectPath, status);
     if (restoreCoderSources) await this.application.materializeCoderProjectLibraries(projectPath);
     this.libraryChangesChanged?.next();
+    return status.installError;
   }
 
   /** Native quit has already been confirmed. It never rebuilds a departing editor. */
@@ -1281,10 +1365,12 @@ export class ProjectService {
     finally { lease.release(); }
   }
 
-  async withProjectLifecycleAdmission<T>(assertCurrent: () => void, operation: (owner: symbol) => Promise<T>): Promise<T> {
+  async withProjectLifecycleAdmission<T>(assertCurrent: () => void, operation: (owner: symbol) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const lease = this.acquireProjectLifecycle([this.currentProjectPath, '*']);
+    const release = () => lease.release();
+    signal?.addEventListener('abort', release, { once: true });
     try { assertCurrent(); return await operation(lease.token); }
-    finally { lease.release(); }
+    finally { signal?.removeEventListener('abort', release); release(); }
   }
 
   private acquireProjectLifecycle(paths: string[], owner?: symbol, checkMutation = true): ProjectLifecycleLease {
@@ -1588,11 +1674,14 @@ export class ProjectService {
   async projectNewWithResult(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<ProjectCreationResult> {
     let stage: ProjectCreationStage = 'validation';
     let npmExitCode: number | undefined;
-    let copiedBlocklyProjectPath: string | undefined;
+    let copiedProjectPath: string | undefined;
+    const authority = options.createAuthority;
+    const check = () => authority?.assertCurrent();
     try {
       const templateDirectory = options.templateDirectory || 'template';
       const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
       await this.assertProjectCreationMode(isCoderTemplate ? 'coder' : 'blockly');
+      check();
       const appDataPath = window['path'].getAppDataPath();
       const projectPath = this.buildProjectPath(newProjectData);
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
@@ -1619,7 +1708,14 @@ export class ProjectService {
           prefixPath: appDataPath,
           registry: this.configService.getNpmRegistryForProject({ devmode: newProjectData.devmode }),
         });
-        const npmInstallResult = await this.cmdService.runAsync(installCommand, undefined, true, false);
+        check();
+        const npmInstallResult = authority
+          ? await this.cmdService.runAsync(installCommand, undefined, true, false, {
+            streamId: `cmd_create_board_${authority.requestId}`,
+            projectPath, projectSessionId: authority.requestId, signal: authority.signal, observeExit: true,
+          })
+          : await this.cmdService.runAsync(installCommand, undefined, true, false);
+        check();
         if (npmInstallResult.type === 'error' || npmInstallResult.code !== 0) {
           npmExitCode = npmInstallResult.code;
           throw new Error(npmInstallResult.error || npmInstallResult.stderr || npmInstallResult.stdout
@@ -1628,6 +1724,7 @@ export class ProjectService {
       }
 
       stage = 'board-template';
+      check();
       const creationTemplate = reusableTemplate ?? (isCoderTemplate
         ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
         : undefined);
@@ -1637,8 +1734,11 @@ export class ProjectService {
         throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
       }
       stage = 'project-files';
+      check();
       if (isCoderTemplate) {
         window['fs'].mkdirSync(projectPath);
+        copiedProjectPath = projectPath;
+        authority?.markCreated(projectPath);
         copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
           useDefaultSource: creationTemplate?.useDefaultSource === true,
         });
@@ -1647,12 +1747,14 @@ export class ProjectService {
         this.importProjectDirectory(templatePath, projectPath);
         // Only this completed copy proves a new partial project belongs to
         // this request. An existing target or a copy that throws does not.
-        copiedBlocklyProjectPath = projectPath;
+        copiedProjectPath = projectPath;
+        authority?.markCreated(projectPath);
       }
 
       if (templateDirectory === 'template') {
-        await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
+        await this.initializeProjectDataSchema(projectPath, authority ? check : undefined, undefined, { deferToLoad: true });
       }
+      check();
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
         coderTemplate: isCoderTemplate,
       });
@@ -1664,15 +1766,17 @@ export class ProjectService {
       stage = 'activation';
       const created = await this.finishProjectCreation(projectPath, options);
       if (!created) return { ok: false, stage, error: '主软件未能激活新建的项目',
-        ...(copiedBlocklyProjectPath ? { projectPath: copiedBlocklyProjectPath, partialMutation: true as const } : {}) };
+        ...(copiedProjectPath ? { projectPath: copiedProjectPath, partialMutation: true as const } : {}) };
       this.metrics.record('project_created');
       return { ok: true, projectPath };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.message.error(`${this.translate.instant('PROJECT.CREATE_FAILED')}: ${message}`);
-      this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
+      if (!authority?.signal.aborted) {
+        this.message.error(`${this.translate.instant('PROJECT.CREATE_FAILED')}: ${message}`);
+        this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
+      }
       return { ok: false, stage, error: message, ...(npmExitCode === undefined ? {} : { npmExitCode }),
-        ...(copiedBlocklyProjectPath ? { projectPath: copiedBlocklyProjectPath, partialMutation: true as const } : {}) };
+        ...(copiedProjectPath ? { projectPath: copiedProjectPath, partialMutation: true as const } : {}) };
     }
   }
 
@@ -1849,6 +1953,7 @@ export class ProjectService {
 
   // 打开项目
   async projectOpen(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}) {
+    options.createActivation?.assertCurrent();
     const selectedSketch = /\.ino$/i.test(projectPath) ? projectPath : undefined;
     projectPath = normalizeProjectOpenPath(projectPath);
     if (selectedSketch && this.getProjectMode(projectPath) === 'blockly') {
@@ -1879,6 +1984,12 @@ export class ProjectService {
     const promise = this.projectOpenInternal(projectPath, options, current => { session = current; });
     const task = { path: projectPath, paths, promise, lease };
     this.projectOpenTask = task;
+    const release = () => {
+      task.lease.release();
+      if (this.projectOpenTask === task) this.projectOpenTask = null;
+    };
+    const signal = options.createActivation?.signal;
+    signal?.addEventListener('abort', release, { once: true });
     try {
       const opened = await promise;
       if (!opened) {
@@ -1886,6 +1997,7 @@ export class ProjectService {
       }
       return opened;
     } catch (error) {
+      if (signal?.aborted) throw error;
       if (session) this.dependencyLifecycle.finishPreparation(session);
       if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return false;
       // Router/editor teardown can fail before the new Blockly component exists
@@ -1895,18 +2007,18 @@ export class ProjectService {
       }
       throw error;
     } finally {
-      task.lease.release();
-      if (this.projectOpenTask?.promise === promise) {
-        this.projectOpenTask = null;
-      }
+      signal?.removeEventListener('abort', release);
+      release();
     }
   }
 
-  async rebuildBlocklyRuntimeAfterLibraryChange(projectPath = this.currentProjectPath): Promise<void> {
+  async rebuildBlocklyRuntimeAfterLibraryChange(projectPath = this.currentProjectPath, assertOwner?: () => void): Promise<void> {
     if (!projectPath) {
       return;
     }
+    assertOwner?.();
     await this.getPackageJson(projectPath);
+    assertOwner?.();
     const packageContent = this.getEffectivePackageText(projectPath);
     const runtimeSignature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
     const activeTask = this.blocklyLibraryRuntimeRebuildTask;
@@ -1917,7 +2029,7 @@ export class ProjectService {
 
     // This is deliberately an in-place library-layer rebuild. It must not call
     // projectOpen(), Router navigation, location.reload(), or webContents.reload().
-    const promise = this.rebuildActiveBlocklyLibraryRuntime(projectPath, packageContent, runtimeSignature);
+    const promise = this.rebuildActiveBlocklyLibraryRuntime(projectPath, packageContent, runtimeSignature, undefined, assertOwner);
     this.blocklyLibraryRuntimeRebuildTask = {
       path: projectPath,
       runtimeSignature,
@@ -1972,18 +2084,21 @@ export class ProjectService {
   }
 
   /** Synchronize installed library content before starting a new operation. */
-  async ensureBlocklyLibraryRuntimeReady(projectPath = this.currentProjectPath): Promise<void> {
+  async ensureBlocklyLibraryRuntimeReady(projectPath = this.currentProjectPath, assertOwner?: () => void): Promise<void> {
     if (!projectPath || !this.isSameProjectPath(projectPath, this.currentProjectPath)) {
       return;
     }
 
+    assertOwner?.();
     if (window['libraryDependencies']) {
       const state = await window['libraryDependencies'].status(projectPath);
+      assertOwner?.();
       this.acceptLibraryStatus(projectPath, state);
       if (state.treeNeedsReconcile) throw Object.assign(new Error('The dependency choice is retained but not saved. Complete the normal project save before runtime or ABS operations.'),
         { code: 'LIBRARY_DEPENDENCY_SAVE_REQUIRED' });
     }
     await this.getPackageJson(projectPath);
+    assertOwner?.();
     const packageContent = this.getEffectivePackageText(projectPath);
     const runtimeSignature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
     const activeTask = this.blocklyLibraryRuntimeRebuildTask;
@@ -1997,7 +2112,7 @@ export class ProjectService {
       return;
     }
 
-    await this.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+    await this.rebuildBlocklyRuntimeAfterLibraryChange(projectPath, assertOwner);
   }
 
   hasBlocklyRuntimeRecovery(projectPath = this.currentProjectPath): boolean {
@@ -2086,6 +2201,7 @@ export class ProjectService {
     packageContent: string,
     runtimeSignature: string,
     retainedDocument?: unknown,
+    assertOwner?: () => void,
   ): Promise<boolean> {
     return this.application.rebuildActiveBlocklyLibraryRuntime({
       projectPath,
@@ -2093,6 +2209,7 @@ export class ProjectService {
       runtimeSignature,
       previousRuntimeSignature: this.blocklyLibraryRuntimeSignatures.get(projectPath),
       retainedDocument,
+      assertOwner,
     });
   }
 
@@ -2157,6 +2274,17 @@ export class ProjectService {
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
     const isSwitchingProject = !!previousProjectPath
       && !this.isSameProjectPath(previousProjectPath, projectPath);
+    const creation = options.createActivation;
+    const checkCreation = async (commit = false) => {
+      try {
+        creation?.assertCurrent();
+        if (commit) creation?.markActivated();
+      }
+      catch (error) {
+        if (isSwitchingProject || !previousProjectPath) await window['projectLock']?.release(projectPath);
+        throw error;
+      }
+    };
 
     // 判断路径是否存在
     if (!this.electronService.exists(projectPath)) {
@@ -2167,6 +2295,7 @@ export class ProjectService {
 
     // Reject before acquiring locks, closing windows, changing routes or publishing activation.
     if (!(await this.ensureProjectModeAllowed(projectPath))) return false;
+    creation?.assertCurrent();
 
     const recovery = activationReason === 'abs-journal-reopen' ? options.recoveryReopen : undefined;
     if (activationReason === 'abs-journal-reopen' && !recovery) throw new Error('Journal reopen requires in-process recovery authority.');
@@ -2192,6 +2321,7 @@ export class ProjectService {
             if (options.interactive === false) throw projectViewOpenError(projectPath, lock);
             this.message.error('工程已被其他窗口占用'); return false;
           }
+          if (creation) await checkCreation();
         }
         try {
           if (findArduinoSketchEntry(projectPath)) prepareArduinoSketchProject(projectPath);
@@ -2200,9 +2330,11 @@ export class ProjectService {
           throw error;
         }
       }
+      if (creation) await checkCreation(true);
       if (isSwitchingProject && this.getProjectMode(previousProjectPath) === 'blockly') {
         try {
           await this.stopProjectCommands(previousProjectPath);
+          creation?.assertCurrent();
           if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, !options.retainRecovery))) {
             if (!retained) await window['projectLock']?.release(projectPath);
             return false;
@@ -2261,8 +2393,12 @@ export class ProjectService {
         this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
         return false;
       }
+      if (creation) await checkCreation();
     }
 
+    // Prior to this boundary only the new target has been locked. Cancellation
+    // can release view admission immediately; later work may change the source.
+    if (creation) await checkCreation(true);
     if (isSwitchingProject && !(await this.application.closeConnectionGraphWindows())) {
       if (this.electronService.isElectron && window['projectLock']
         && !this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
@@ -2275,6 +2411,7 @@ export class ProjectService {
       this.warnConnectionGraphWindowCloseFailure();
       return false;
     }
+    if (creation) await checkCreation();
 
     if (recovery) {
       const libraries = await window['libraryDependencies']?.status(projectPath);
@@ -2300,6 +2437,7 @@ export class ProjectService {
       && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
       const reconcilesHistory = activationReason === 'chat-tool-reload'
         && this.isSameProjectPath(previousProjectPath, projectPath);
+      if (creation) await checkCreation();
       if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, isSwitchingProject && !options.retainRecovery))) {
         if (isSwitchingProject) await window['projectLock']?.release(projectPath);
         return false;

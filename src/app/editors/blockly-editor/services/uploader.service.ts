@@ -373,7 +373,7 @@ export class _UploaderService {
         backendOperation = this.projectService.beginBuildBackendOperation(projectPath);
         this.cloudUploadInProgress = cloud;
 
-        const dependencySession = cloud ? this.projectService.getProjectDependencySession(projectPath) : undefined;
+        const dependencySession = this.projectService.getProjectDependencySession(projectPath);
         const activationCurrent = this.projectService.captureCurrentProjectGuard();
         const firmware = prepared?.preparedFirmware;
         const reuseCloud = prepared?.reuseCloudFirmware === true;
@@ -382,7 +382,7 @@ export class _UploaderService {
           if (this.cancelled || !activationCurrent() || this.projectService.currentProjectPath !== projectPath
               || (initialCloud && !backendOperation.local) !== this.projectService.isCloudBuild()) throw new Error('Upload project, settings or activation changed or was cancelled.');
 
-          if (dependencySession) this.projectService.assertProjectDependencySession(dependencySession);
+          if (initialCloud) this.projectService.assertProjectDependencySession(dependencySession);
           if (prepared && (prepared.projectPath !== projectPath || prepared.port !== this.serialService.currentPort
             || this.projectService.isAilyCodeProject(projectPath) || this.projectService.isCloudBuild() !== reuseCloud)) {
             throw Object.assign(new Error('Prepared firmware upload no longer owns the requested project and port.'),
@@ -961,7 +961,7 @@ export class _UploaderService {
         }) : this.cmdService.spawn(
           'node',
           [uploadScriptPath, configFilePath],
-          { shellProfile: false, cwd: currentProjectPath },
+          { shellProfile: false, cwd: currentProjectPath, projectPath, projectSessionId: dependencySession.projectSessionId },
           false,
         )).subscribe({
           next: async (output: CmdOutput) => {
@@ -1697,6 +1697,7 @@ export class _UploaderService {
 
     const currentProjectPath = this.projectService.currentProjectPath;
     const cloudUploadId = this.cloudUploadInProgress ? this.activeCloudUploadId : null;
+    const { projectPath, projectSessionId } = this.projectService.getProjectDependencySession(currentProjectPath);
     let uploadCmd: string;
 
     if (!cloudUploadId) {
@@ -1835,7 +1836,7 @@ export class _UploaderService {
         }
       (cloudUploadId
         ? this.createCloudLocalUploadStream(cloudUploadId,{portType:'network-ota',networkTarget:target})
-        : this.cmdService.run(uploadCmd, currentProjectPath, false, false)).subscribe({
+        : this.cmdService.run(uploadCmd, currentProjectPath, false, false, { projectPath, projectSessionId })).subscribe({
           next: (output: CmdOutput) => {
             this.streamId = output.streamId;
 
@@ -2333,6 +2334,8 @@ export class _UploaderService {
    */
   async flashSoftdevice(softdeviceName: string, serialPort: string): Promise<{ success: boolean; message: string }> {
     try {
+      const currentProjectPath = this.projectService.currentProjectPath;
+      const { projectPath, projectSessionId } = this.projectService.getProjectDependencySession(currentProjectPath);
       // 获取 softdevice hex 文件路径
       const hexPath = await this.projectService.getSoftdeviceHexPath(softdeviceName);
 
@@ -2359,8 +2362,6 @@ export class _UploaderService {
       // 准备上传配置 - 使用与 upload.js 相同的配置格式
       const boardModule = await this.projectService.getBoardModule();
       const appDataPath = window['path'].getAppDataPath();
-      const currentProjectPath = this.projectService.currentProjectPath;
-
       // 创建一个临时的 buildPath，用于存放 softdevice hex 文件
       const tempBuildPath = this.projectService.isAilyCodeProject(currentProjectPath)
         ? window['path'].join(currentProjectPath, '.build', 'softdevice')
@@ -2433,7 +2434,7 @@ export class _UploaderService {
           throw new Error('Upload cancelled: project is closing or has changed.');
         }
 
-        this.cmdService.run(uploadCmd, currentProjectPath, false, false).subscribe({
+        this.cmdService.run(uploadCmd, currentProjectPath, false, false, { projectPath, projectSessionId }).subscribe({
           next: (output: CmdOutput) => {
             if (output.type === 'close') {
               if ((output.code ?? 0) !== 0 || output.signal) {
