@@ -30,7 +30,7 @@ import {
   parseLegacyAilyBuilderProgressLine
 } from '../../../utils/aily-builder-progress.utils';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
-import { writeBuildRequest, captureBuildRequestGuard, buildManifestForGuard } from '../../../utils/build-request.utils';
+import { writeBuildRequest, captureBuildRequestGuard, buildManifestForGuard, buildSourceStale } from '../../../utils/build-request.utils';
 import { BlocklyCodePreparationInvalidatedError, type PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
@@ -273,11 +273,14 @@ export class _BuilderService {
     const sequence = this.codePreparationSequence;
     const assertContext = () => {
       if (isCancelled()) throw new BlocklyCodePreparationInvalidatedError(this.t('CANCELLED_TITLE'));
-      if (sequence !== this.codePreparationSequence || projectPath !== this.projectService.currentProjectPath
-        || workspace !== this.blocklyService.workspace || session !== projectDataRuntime.getSessionToken()
-        || runtimeRevision !== getActiveProjectGeneratorRevision() || pageId !== this.blocklyService.getActivePageId()) {
-        throw new BlocklyCodePreparationInvalidatedError('BUILD_SOURCE_STALE: Project context changed while waiting for code capture.');
+      if (projectPath !== this.projectService.currentProjectPath || session !== projectDataRuntime.getSessionToken()) {
+        throw buildSourceStale('project', 'Project changed before code capture.');
       }
+      if (sequence !== this.codePreparationSequence || workspace !== this.blocklyService.workspace) {
+        throw buildSourceStale('workspace', 'Workspace changed before code capture.');
+      }
+      if (pageId !== this.blocklyService.getActivePageId()) throw buildSourceStale('page', 'Active page changed before code capture.');
+      if (runtimeRevision !== getActiveProjectGeneratorRevision()) throw buildSourceStale('generator', 'Generator changed before code capture.');
     };
     const interacting = () => this.blocklyService.isWorkspaceEditBlocked() || isBlocklyWorkspaceInteracting(workspace);
     while (true) {
@@ -288,7 +291,7 @@ export class _BuilderService {
           const ready = await this.blocklyService.runWithBackgroundProjectCode(async (prepared, assertCurrent) => {
             assertContext();
             result = await consume(prepared, () => { assertContext(); assertCurrent(); });
-          }, () => isCancelled() || sequence !== this.codePreparationSequence || interacting(), force);
+          }, () => isCancelled() || sequence !== this.codePreparationSequence || interacting(), force, 'build');
           assertContext();
           if (ready) return result!;
         } catch (error) {
@@ -365,14 +368,18 @@ export class _BuilderService {
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
         const runtimeRevision = getActiveProjectGeneratorRevision();
         const dataSession = projectDataRuntime.getSessionToken(), pageId = this.blocklyService.getActivePageId();
-        // Keep checking the exact captured revision through request-file IO and
-        // until child launch. A stale result must never be sent to the compiler.
+        // Match the captured build revision before launch and before accepting
+        // a result. Save-only view changes are outside that revision.
         const assertFresh = () => {
-          if (projectPath !== this.projectService.currentProjectPath || workspace !== this.blocklyService.workspace
-            || this.blocklyService.isWorkspaceEditBlocked() || runtimeRevision !== getActiveProjectGeneratorRevision()
-            || dataSession !== projectDataRuntime.getSessionToken() || pageId !== this.blocklyService.getActivePageId()
-            || prepared.revision !== this.blocklyService.getProjectPersistenceRevision()) {
-            throw new Error('BUILD_SOURCE_STALE: Workspace changed after code capture; build again.');
+          if (projectPath !== this.projectService.currentProjectPath || dataSession !== projectDataRuntime.getSessionToken()) {
+            throw buildSourceStale('project', 'Project changed after code capture.');
+          }
+          if (workspace !== this.blocklyService.workspace) throw buildSourceStale('workspace', 'Workspace changed after code capture.');
+          if (this.blocklyService.isWorkspaceEditBlocked()) throw buildSourceStale('busy', 'Workspace is unavailable for source verification.');
+          if (pageId !== this.blocklyService.getActivePageId()) throw buildSourceStale('page', 'Active page changed after code capture.');
+          if (runtimeRevision !== getActiveProjectGeneratorRevision()) throw buildSourceStale('generator', 'Generator changed after code capture.');
+          if (prepared.revision !== this.blocklyService.captureBuildSnapshot().revision) {
+            throw buildSourceStale('blocks', 'Blockly source changed after code capture.');
           }
         };
         return { code: prepared.code, projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
@@ -1291,7 +1298,14 @@ export class _BuilderService {
     }
 
 
-  // 添加这个错误处理方法
+  private buildErrorText(error: any): string {
+    const detail = String(error?.message || error?.text || error);
+    if (error?.code !== 'BUILD_SOURCE_STALE' && !detail.startsWith('BUILD_SOURCE_STALE:')) return detail;
+    const key = `SOURCE_STALE.${error?.sourceReason || 'unknown'}`;
+    const message = this.t(key);
+    return message === `BLOCKLY_EDITOR.BUILD.${key}` ? detail : message;
+  }
+
   private handleCompileError(errorMessage: string, sendToLog: boolean = true, details?: string, onRetryLocally?: () => void, logSummaryOnly = false): void {
     // 计算编译耗时
     const buildEndTime = Date.now();
@@ -1387,7 +1401,7 @@ export class _BuilderService {
       try {
         if (preparation.clearCache) await this.clearOwnedBuildCache(project, projectCurrent);
         if (!projectCurrent() || project !== this.projectService.currentProjectPath) {
-          throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed.'), { buildOutcome: 'not-started' });
+          throw Object.assign(buildSourceStale('project', 'Build project changed.'), { buildOutcome: 'not-started' });
         }
         const result = await this.generateAndWritePythonEntry();
         this.workflowService.finishBuild(true);
@@ -1452,9 +1466,11 @@ export class _BuilderService {
       preparing = (async () => {
       try {
         if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
-        if (!projectCurrent() || requestedProjectPath !== this.projectService.currentProjectPath
-          || requestedSettingsKey !== this.compileSettingsKey()) {
-          throw Object.assign(new Error('BUILD_SOURCE_STALE: Build context changed before compilation.'), { buildOutcome: 'not-started' });
+        if (!projectCurrent() || requestedProjectPath !== this.projectService.currentProjectPath) {
+          throw Object.assign(buildSourceStale('project', 'Build project changed before compilation.'), { buildOutcome: 'not-started' });
+        }
+        if (requestedSettingsKey !== this.compileSettingsKey()) {
+          throw Object.assign(buildSourceStale('settings', 'Build settings changed before compilation.'), { buildOutcome: 'not-started' });
         }
         this.currentProjectPath = requestedProjectPath;
         this.streamId = null; // 初始化为 null
@@ -1556,9 +1572,8 @@ export class _BuilderService {
           assertPackage(); assertBoard();
           await this.projectService.ensureCustomPartitionFile(projectPath, () => {
             assertPackage(); assertBoard();
-            if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()) {
-              throw new Error('BUILD_SOURCE_STALE: Build configuration changed or was cancelled.');
-            }
+            if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
+            if (requestedSettingsKey !== this.compileSettingsKey()) throw buildSourceStale('settings', 'Build settings changed.');
           });
           // 获取最新代码，并在同一次同步 generator 调用内冻结其块映射。
           const {
@@ -1574,7 +1589,7 @@ export class _BuilderService {
             checkpoint,
             () => cancellation.signal.aborted,
           );
-          assertPackage(); assertBoard(); assertFresh();
+          await this.blocklyService.readAfterWorkspaceEdit(() => { assertPackage(); assertBoard(); assertFresh(); });
           // Generator-owned macros are now published. From here through launch,
           // all configuration, including those macros, must remain unchanged.
           assertPackage = captureBuildRequestGuard(() => readManifest());
@@ -1599,9 +1614,10 @@ export class _BuilderService {
             buildConfig.graphSemanticRevision = graphSemanticRevision;
           }
           const assertCurrent = () => {
+            if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
+            if (projectPath !== this.projectService.currentProjectPath) throw buildSourceStale('project', 'Build project changed.');
+            if (requestedSettingsKey !== this.compileSettingsKey()) throw buildSourceStale('settings', 'Build settings changed.');
             assertPackage(); assertBoard(); assertFresh();
-            if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()
-              || projectPath !== this.projectService.currentProjectPath) throw new Error('BUILD_SOURCE_STALE: Build configuration changed or was cancelled.');
           };
           // Only a task that actually started in the cloud may return there.
           let allowCloudSwitch = cloudBuild;
@@ -1625,12 +1641,12 @@ export class _BuilderService {
                 assertCurrent();
               }
               if (state) {
-                assertCurrent();
+                await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
                 const codeHash = await this.electronService.calculateHash(code);
-                assertCurrent();
+                await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
                 const duration = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
                 await this.saveBuildInfo(projectPath, 'success', duration, codeHash, true);
-                assertCurrent();
+                await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
                 this.metrics.record('build_succeeded');
                 this.compileValidationService.triggerAfterSuccessfulCompile();
                 this.passed = true;
@@ -1646,9 +1662,9 @@ export class _BuilderService {
               executionRetryOf: previousLocalExecutionId }, sourceWorkspace);
             this.activeExecutionConfig = executionConfig;
             if (cancellation.signal.aborted && executionConfig.execution) window['builder'].cancelBuildExecution(executionConfig);
-            assertCurrent();
+            await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
             const configFilePath = await this.writeCompileRequest(executionConfig);
-            assertPackage(); assertBoard(); assertFresh();
+            await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
 
             // 运行编译脚本
             const compileScriptPath = this.electronService.pathJoin(window['path'].getAilyChildPath(), 'scripts', 'compile.js');
@@ -1688,8 +1704,7 @@ export class _BuilderService {
             this.logService.update({ detail: compileCommand, state: 'info' });
             // Launch Node directly so a native crash keeps its real exit code and
             // project paths are passed as arguments without another shell parser.
-            assertPackage(); assertBoard(); assertFresh();
-            if (cancellation.signal.aborted) throw new Error('Build cancelled before launch.');
+            assertCurrent();
             this.buildCompleted = false;
             this.isErrored = false;
             this.hasReceivedRealProgress = false;
@@ -1913,7 +1928,7 @@ export class _BuilderService {
                     this.workflowService.finishBuild(false, error.message || 'Build error'); // 确保完成工作流状态
                     reject({ state: 'error', text: error.message, fullStdErr: detail });
                   },
-                  complete: () => {
+                  complete: async () => {
                     this.clearProgressTimer(); // 清理定时器
                     console.log("编译命令完成： buildCompleted=", this.buildCompleted, "isErrored=", this.isErrored, "cancelled=", this.cancelled, "lastProgress=", lastProgress);
 
@@ -1936,6 +1951,19 @@ export class _BuilderService {
                     this.buildCompleted = !this.isErrored && !this.cancelled && processExitCode === 0 && !processSignal;
 
                     if (this.buildCompleted && !this.isErrored && !this.cancelled) {
+                      try {
+                        const pending = this.blocklyService.readAfterWorkspaceEdit(assertFresh);
+                        if (pending) await pending;
+                      } catch (error) {
+                        this.buildCompleted = false;
+                        this.buildPromiseReject = null;
+                        reject(error);
+                        return;
+                      }
+                      if (cancellation.signal.aborted) {
+                        reject(buildCancelledResult(this.t('CANCELLED_TITLE')));
+                        return;
+                      }
                       this.metrics.record('build_succeeded');
                       console.log('编译命令执行完成');
                       console.log(`编译耗时: ${buildDuration} 秒`);
@@ -2024,6 +2052,7 @@ export class _BuilderService {
               resolve(localResult);
               return;
             } catch (error) {
+              if (error?.code === 'BUILD_SOURCE_STALE') throw error;
               if (error?.code !== CLOUD_BUILD_CLOUD_REQUESTED) {
                 // Local completion handlers already publish the final workflow state.
                 reject(error);
@@ -2062,10 +2091,13 @@ export class _BuilderService {
           reject(buildCancelledResult(this.t('CANCELLED_TITLE')));
           return;
         }
-        const fullErrorMessage = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
-        this.handleCompileError(error.message || error.text || String(error), true, fullErrorMessage, cloudBuild ? retry : undefined, cloudBuild);
-        this.workflowService.finishBuild(false, error.message);
-        reject({ state: 'error', text: error.message, fullStdErr: fullErrorMessage,
+        const message = this.buildErrorText(error);
+        const detail = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
+        const fullErrorMessage = message === error?.message || detail.includes(message) ? detail : `${message}\n${detail}`;
+        this.handleCompileError(message, true, fullErrorMessage, cloudBuild ? retry : undefined, cloudBuild);
+        this.workflowService.finishBuild(false, message);
+        reject({ state: 'error', text: message, fullStdErr: fullErrorMessage,
+          ...(error?.code === 'BUILD_SOURCE_STALE' ? { code: error.code, sourceReason: error.sourceReason } : {}),
           ...(error?.buildOutcome ? { buildOutcome: error.buildOutcome } : {}) });
       }
       })().catch(reject);
@@ -2123,9 +2155,10 @@ export class _BuilderService {
     // Each attempt needs a new gateway identity; a cancelled job must never be reused.
     const requestId = crypto.randomUUID();
     this.activeCloudRequestId = requestId;
-    assertCurrent();
+    const checkCurrent = () => this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
+    await checkCurrent();
     const profile = await this.projectService.getCloudBoardProfile({ refresh: true });
-    assertCurrent();
+    await checkCurrent();
     if (profile.capabilities?.compile !== true) throw new Error('This cloud target does not support compilation.');
     const settings = this.configService.getCloudBuildSettings();
     let switchToLocal: (() => boolean) | undefined;
@@ -2141,9 +2174,9 @@ export class _BuilderService {
       const result = await runCloudBuildWithProgress({ requestId, buildRequestId: requestLog?.requestId || requestId,
         config, settings, profileDigest: profile.profileDigest, action: 'compile' }, bridge, {
         prepareTool: async tool => {
-          assertCurrent();
+          await checkCurrent();
           await this.npmService.installCloudUploadTool(tool, dependencySession);
-          assertCurrent();
+          await checkCurrent();
         },
         localSwitch: action => {
           switchToLocal = action;
@@ -2154,6 +2187,7 @@ export class _BuilderService {
           if (this.cancelled || this.activeCloudRequestId !== requestId) return false;
           try { assertCurrent(); return true; } catch { return false; }
         },
+        assertCurrent: checkCurrent,
         log: (text, stream) => {
           this.logService.update({ detail: text, state: stream === 'stderr' ? 'error' : 'doing' });
           this.appendCompileLog(text, stream === 'stderr' ? 'ERROR' : 'INFO');
@@ -2167,7 +2201,7 @@ export class _BuilderService {
             setTimeout: 0, stop: () => this.cancel(requestId), onSwitchToLocal: requestLocal });
         },
       });
-      assertCurrent();
+      await checkCurrent();
       if (result?.success !== true || result?.state !== 'done') throw new Error(result?.text || 'Cloud compilation failed.');
       const seconds = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
       return { state: 'done', text: result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })

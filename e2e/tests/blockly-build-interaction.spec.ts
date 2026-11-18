@@ -75,6 +75,14 @@ test('build capture and compile-error notices do not cancel active Blockly inter
     await expect.poll(() => win.evaluate(() => ({ captured: (window as any).__buildProbe.captured, error: (window as any).__buildProbe.error })))
       .toEqual({ captured: true, error: null });
 
+    await win.evaluate(() => {
+      const w = window as any, workspace = w.blocklyWorkspace;
+      workspace.zoomCenter(1);
+      workspace.scroll(workspace.scrollX - 40, workspace.scrollY - 30);
+      w.__buildProbe.snapshot.assertFresh();
+      workspace.centerOnBlock('build-probe');
+    });
+
     // The source-freshness safety check still rejects a real edit after capture.
     // Its exact error notification must not cancel the *new* gesture either.
     await beginDrag();
@@ -82,7 +90,7 @@ test('build capture and compile-error notices do not cancel active Blockly inter
       const w = window as any, probe = w.__buildProbe;
       w.blocklyWorkspace.getBlockById('build-probe').setFieldValue('changed after capture', 'TEXT');
       try { probe.snapshot.assertFresh(); return false; }
-      catch (error) { probe.builder.handleCompileError(error.message, true); return error.message.startsWith('BUILD_SOURCE_STALE:'); }
+      catch (error) { probe.builder.handleCompileError(probe.builder.buildErrorText(error), true); return error.sourceReason === 'blocks'; }
     })).toBe(true);
     await win.waitForTimeout(1300);
     expect(await win.evaluate(() => (window as any).blocklyWorkspace.isDragging())).toBe(true);

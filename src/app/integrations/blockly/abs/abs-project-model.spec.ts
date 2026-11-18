@@ -201,6 +201,7 @@ describe('Blockly service document boundary', () => {
     Object.assign(internal, {
       _workspace: live, projectDocumentSchemaVersion: 3, documentMetadata: {},
       projectRevision: new BlocklyProjectRevision(), workspaceEditGate: new BlocklyWorkspaceEditGate(),
+      buildRevision: new BlocklyProjectRevision(), buildCodePreparation: new BlocklyProjectCodePreparation(),
       projectCodePreparation: new BlocklyProjectCodePreparation(),
       pageReferenceContracts: new AbsReferenceContractCache(),
       declarativeBlocks: new BlocklyDeclarativeBlockCatalog(),

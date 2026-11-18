@@ -577,7 +577,7 @@ describe('BuilderService background preprocess ownership', () => {
     ]]);
     const prepared = { code: 'void setup() {}\n', artifacts: null, revision: 1, blockCodeMapText: JSON.stringify([...generatedMap]) };
     service.blocklyService.isWorkspaceEditBlocked = () => false;
-    service.blocklyService.getProjectPersistenceRevision = () => 1;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 1 });
     service.blocklyService.getActivePageId = () => 'main';
     service.blocklyService.publishPreparedCodeView = jasmine.createSpy('publishPreparedCodeView');
     service.blocklyService.runWithBackgroundProjectCode = async operation => { await operation(prepared, () => undefined); return true; };
@@ -601,9 +601,9 @@ describe('BuilderService background preprocess ownership', () => {
     service.blocklyService.getActivePageId = () => 'other';
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
     service.blocklyService.getActivePageId = () => 'main';
-    service.blocklyService.getProjectPersistenceRevision = () => 2;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
-    service.blocklyService.getProjectPersistenceRevision = () => 1;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 1 });
     service.projectService.currentProjectPath = 'D:/another-project';
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
     expect(service.blocklyService.publishPreparedCodeView).toHaveBeenCalledWith(prepared.code, prepared.blockCodeMapText);
@@ -739,7 +739,7 @@ describe('BuilderService non-interrupting code capture', () => {
     service.runBuilderPreprocessPhase = (_tag, task) => task();
     service.writeTextFileAtomic = jasmine.createSpy('write').and.resolveTo();
     let revision = 1;
-    service.blocklyService.getProjectPersistenceRevision = () => revision;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: revision });
     service.blocklyService.publishPreparedCodeView = jasmine.createSpy('preview');
     service.blocklyService.runWithBackgroundProjectCode.and.callFake(async operation => {
       await operation({ code: 'print("latest")', artifacts: null, revision }, () => undefined); return true;

@@ -15,8 +15,9 @@ describe('Read-only live build source query', () => {
     project = { currentProjectPath: root, currentProjectPath$: new BehaviorSubject(root), projectActivation$: new Subject(),
       isProjectTransitionInProgress: () => false, getProjectMode: () => 'blockly', getRuntimeBoardModule: () => 'board-test',
       getBoardModule: async () => 'board-test' };
-    blockly = { workspace: {}, isWorkspaceEditInProgress: () => false, getActivePageId: () => 'main',
-      captureProjectSnapshot: () => ({ document: { blocks: {} }, revision: 4 }) };
+    blockly = { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
+      captureBuildSnapshot: () => ({ documentText: '{"blocks":{}}', revision: 4 }),
+      readAfterWorkspaceEdit: (read: () => unknown) => read() };
     coder = { hasSavedProject: jasmine.createSpy('hasSavedProject').and.resolveTo(true) };
     electron = { currentRendererGeneration: 3 };
     service = new BuildSourceQueryService(project, electron, {
@@ -32,16 +33,18 @@ describe('Read-only live build source query', () => {
     expect(coder.hasSavedProject).not.toHaveBeenCalled();
     service.initialize(); expect(ipc.on).toHaveBeenCalledTimes(1);
   });
-  for (const change of ['revision', 'page', 'workspace', 'activation', 'project', 'busy']) {
+  for (const change of ['blocks', 'page', 'workspace', 'activation', 'project', 'busy']) {
     it(`refuses ${change} drift while hashing`, async () => {
       const reading = service.read(root);
-      if (change === 'revision') blockly.captureProjectSnapshot = () => ({ document: { blocks: {} }, revision: 5 });
+      if (change === 'blocks') blockly.captureBuildSnapshot = () => ({ documentText: '{"blocks":{}}', revision: 5 });
       if (change === 'page') blockly.getActivePageId = () => 'other';
       if (change === 'workspace') blockly.workspace = {};
       if (change === 'activation') project.projectActivation$.next({});
       if (change === 'project') project.currentProjectPath = '/projects/other';
-      if (change === 'busy') blockly.isWorkspaceEditInProgress = () => true;
-      await expectAsync(reading).toBeRejected();
+      if (change === 'busy') blockly.isWorkspaceEditBlocked = () => true;
+      await expectAsync(reading).toBeRejectedWith(jasmine.objectContaining({
+        code: 'BUILD_SOURCE_STALE', sourceReason: change === 'activation' ? 'project' : change,
+      }));
     });
   }
   it('changes activation identity after switching away and back', async () => {
@@ -82,7 +85,7 @@ describe('Coder live persistence boundary', () => {
   const root = '/projects/coder';
   let service: CodeEditorProProjectService, bridge: any;
   beforeEach(() => {
-    service = new CodeEditorProProjectService({} as any, {} as any, {} as any);
+    service = new CodeEditorProProjectService({} as any, { hasUnsavedLibraryChanges: async () => false } as any, {} as any);
     bridge = { saveAll: jasmine.createSpy('saveAll'), hasUnsavedChanges: jasmine.createSpy('dirty').and.resolveTo(false) };
   });
   it('missing, dirty or unmounted editors are not known saved', async () => {

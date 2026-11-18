@@ -300,7 +300,8 @@ describe('Blockly compile and upload handoff', () => {
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
       platformService: { za7: '/tool' }, configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} }, translate: { instant: (x: string) => x },
       blocklyService: { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
-        getProjectPersistenceRevision: () => 1, publishPreparedCodeView() {} },
+        captureBuildSnapshot: () => ({ revision: 1 }), publishPreparedCodeView() {},
+        readAfterWorkspaceEdit: (read: () => unknown) => read() },
       runWithInteractiveProjectCode: async (_workspace: unknown, consume: any) => consume(prepared, () => {}),
       waitForOneIdleBoundary: async () => {}, runBuilderPreprocessPhase: (_tag: string, fn: any) => fn(),
       waitForAilyBuilderReady: async () => {}, writeCompileRequest: jasmine.createSpy('request').and.resolveTo('/request'),
@@ -566,6 +567,15 @@ describe('Blockly compile and upload handoff', () => {
     f.command.next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
     f.command.next({ type: 'close', code: 1 }); f.command.complete();
     expect((await result).state).toBe('error'); expect(f.service.passed).toBeFalse();
+    expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
+  });
+
+  it('rejects the completed compiler result when a Blockly edit supersedes its captured inputs', async () => {
+    const f = compileFixture(), { result } = await f.start();
+    f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    expect(await result).toEqual(jasmine.objectContaining({ state: 'error', code: 'BUILD_SOURCE_STALE', sourceReason: 'blocks' }));
+    expect(f.service.passed).toBeFalse();
     expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
   });
 

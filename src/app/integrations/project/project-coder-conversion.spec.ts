@@ -14,6 +14,11 @@ describe('Blockly to Coder current source capture', () => {
       projectMacros: [{name: 'DRIVER', value: 'DRIVER=913'}],
       sourceWorkspace: {documentText: '{"blocks":{}}', revision: 7, runtimeRevision: 2, pageId: 'main'},
     }, () => {}) };
+    adapter.blocklyService.runWithBackgroundProjectCode = async (callback: any, isInteracting: () => boolean) => {
+      if (isInteracting()) return false;
+      await adapter.blocklyService.runWithPreparedProjectCode(callback);
+      return !isInteracting();
+    };
     window['path'] = {join: (...parts: string[]) => parts.join('/')};
     window['fs'] = {blocklyCoderConversionVersion: 2, readFileSync: jasmine.createSpy('read').and.returnValue(JSON.stringify({
       MACROS: [['USER=1'], ['DRIVER=731']], ailyGeneratorMacros: {DRIVER: 'DRIVER=731'},

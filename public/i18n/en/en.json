@@ -1129,6 +1129,17 @@
             "CANCELLED_TITLE": "Build cancelled",
             "CANCELLED_WITH_TIME": "Build cancelled (time: {{seconds}}s)",
             "FAILED_TITLE": "Build failed",
+            "SOURCE_STALE": {
+                "project": "The project was switched or reloaded. Build again.",
+                "workspace": "The Blockly workspace was replaced or is unavailable. Build again.",
+                "busy": "The Blockly workspace cannot be verified right now. Try building again shortly.",
+                "page": "The active Blockly page changed. Build again.",
+                "generator": "The Blockly code generator changed. Build again.",
+                "blocks": "The Blockly project changed. Build again.",
+                "settings": "The build settings changed. Build again.",
+                "inputs": "Project files, libraries, or board settings changed. Build again.",
+                "unknown": "Build inputs changed. Build again."
+            },
             "BUSY_SYSTEM": "System is busy",
             "BUSY_BUILDING": "Build already in progress",
             "BUSY_UPLOADING": "Upload already in progress",

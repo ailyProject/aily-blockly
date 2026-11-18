@@ -162,7 +162,9 @@ export class BlocklyService {
   private readonly projectDocumentSchemaVersion = 3;
   private readonly projectOperations = new SerialOperationQueue();
   private readonly projectRevision = new BlocklyProjectRevision();
+  private readonly buildRevision = new BlocklyProjectRevision();
   private readonly projectCodePreparation = new BlocklyProjectCodePreparation();
+  private readonly buildCodePreparation = new BlocklyProjectCodePreparation();
   private readonly workspaceRecoveryRequiredSubject = new BehaviorSubject<boolean>(false);
   readonly workspaceRecoveryRequired$ = this.workspaceRecoveryRequiredSubject.asObservable();
   private readonly workspaceEditGate = new BlocklyWorkspaceEditGate(required => this.workspaceRecoveryRequiredSubject.next(required));
@@ -233,8 +235,9 @@ export class BlocklyService {
       this.clearAiWaitWriting();
       this.workspaceEditGate.reset();
       this.projectRevision.invalidate();
+      this.buildRevision.invalidate();
       this.projectDirtyState?.reset();
-      this.projectCodePreparation.clear();
+      this.clearPreparedCode();
       this.pageReferenceContracts.clear();
     }
     this._workspace = workspace;
@@ -1263,6 +1266,12 @@ export class BlocklyService {
     return this.projectOperations.run(() => { this.assertWorkspaceEditAvailable(); return operation(); });
   }
 
+  /** A save can briefly own the canvas after zoom or pan. Recheck once the
+   * queued writer releases it instead of treating ownership as a source edit. */
+  readAfterWorkspaceEdit<T>(read: () => T): T | Promise<T> {
+    return this.isWorkspaceEditInProgress() ? this.projectOperations.run(async () => read()) : read();
+  }
+
   /** Recovery owns reads and new-destination publication only. Never lends an
    * editor lease, resets quarantine or overlaps an active native writer. */
   runRecoveryCopyOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -1277,6 +1286,20 @@ export class BlocklyService {
     const revision = this.projectRevision.observe(document);
     this.projectDirtyState?.observeSnapshot(this.projectRevision.documentText);
     return { document, revision, documentText: this.projectRevision.documentText };
+  }
+
+  captureBuildSnapshot(owner?: BlocklyWorkspaceEditLease) {
+    const project = this.getProjectDocument(owner);
+    // Camera position is persisted for reopening the editor, but has no
+    // bearing on generated code. Keep all block data and page identities.
+    const document = { ...project, pages: project.pages.map(({ viewState, ...page }) => page) };
+    const revision = this.buildRevision.observe(document);
+    return { document, revision, documentText: this.buildRevision.documentText! };
+  }
+
+  private clearPreparedCode(): void {
+    this.projectCodePreparation.clear();
+    this.buildCodePreparation.clear();
   }
 
   /** Recovery may inspect a quarantined canvas, never mutate it or clear its
@@ -1353,7 +1376,10 @@ export class BlocklyService {
     operation: (prepared: PreparedBlocklyCode & { code: string }, assertCurrent: () => void) => Promise<void> | void,
     isInteracting: () => boolean,
     force = false,
+    purpose: 'document' | 'build' = 'document',
   ): Promise<boolean> {
+    const preparation = purpose === 'build' ? this.buildCodePreparation : this.projectCodePreparation;
+    const captureSnapshot = () => purpose === 'build' ? this.captureBuildSnapshot() : this.captureProjectSnapshot();
     const workspace = this.workspace, pageId = this.getActivePageId();
     const generator = getActiveProjectGenerator(), session = projectDataRuntime.getSessionToken();
     const runtimeRevision = getActiveProjectGeneratorRevision();
@@ -1368,16 +1394,16 @@ export class BlocklyService {
       try {
         const capture = () => {
           assertContext();
-          return { ...this.captureProjectSnapshot(), workspace, generator, dataSession: session,
+          return { ...captureSnapshot(), workspace, generator, dataSession: session,
             runtimeRevision, pageId };
         };
         const yieldToBrowser = () => new Promise<void>(resolve => setTimeout(resolve, 0));
-        const prepared = await this.projectCodePreparation.prepare(capture, force, yieldToBrowser);
+        const prepared = await preparation.prepare(capture, force, yieldToBrowser);
         if (!prepared || prepared.code === null) throw new Error(prepared?.error ?? 'Blockly generator runtime is not active');
         await yieldToBrowser();
         const assertCurrent = () => {
           assertContext();
-          if (prepared.revision !== this.captureProjectSnapshot().revision) {
+          if (prepared.revision !== captureSnapshot().revision) {
             throw new BlocklyCodePreparationInvalidatedError('Project changed before background code publication.');
           }
         };
@@ -2039,7 +2065,7 @@ export class BlocklyService {
   loadLibBlocks(blocks, libStaticPath, libPackageName = '', libVersion = '', libLocalPath?: string,
     owner?: BlocklyWorkspaceEditLease) {
     this.assertWorkspaceEditAvailable(owner);
-    this.projectCodePreparation.clear();
+    this.clearPreparedCode();
     this.pageReferenceContracts.clear();
     for (let index = 0; index < blocks.length; index++) {
       let block = blocks[index];
@@ -2416,7 +2442,7 @@ export class BlocklyService {
     const owner = this.generatorRuntime.getActiveGenerator();
     try {
       const source = this.electronService.readFile(filePath);
-      this.projectCodePreparation.clear();
+      this.clearPreparedCode();
       // Runtime 已按项目模式隔离全局；这里统一登记当前 Python 或 Arduino 脚本实际注册的块。
       const result = this.generatorRuntime.loadGenerator(filePath, source);
       await result.contractsReady;
@@ -2683,7 +2709,7 @@ export class BlocklyService {
   }
 
   private resetDocumentState() {
-    this.projectCodePreparation.clear();
+    this.clearPreparedCode();
     this.documentMetadata = {};
     const initialPage = this.createEmptyPageSnapshot('page-1', this.buildDefaultPageTitle(1));
     this.pagesSubject.next([initialPage]);

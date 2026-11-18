@@ -12,6 +12,7 @@ export interface CloudBuildProgressEvent {
 }
 
 interface CloudBuildProgressCallbacks {
+  assertCurrent?: () => void | Promise<void>;
   isCurrent: () => boolean;
   log: (text: string, stream: 'stdout' | 'stderr') => void;
   /** Request-owned persistence must not depend on UI throttling or visibility. */
@@ -161,6 +162,14 @@ export async function runCloudBuildWithProgress(
   let toolPreparation: Promise<void> | undefined;
   let switching = false;
   let settled = false;
+  const assertCurrent = async () => {
+    if (!switching && callbacks.isCurrent()) return;
+    if (!switching && callbacks.assertCurrent) {
+      await callbacks.assertCurrent();
+      if (!switching && callbacks.isCurrent()) return;
+    }
+    throw Object.assign(new Error('Cloud build source changed.'), { code: 'BUILD_SOURCE_STALE' });
+  };
   let cancellation: Promise<{ error?: unknown }> | undefined;
   const buffer = new CloudBuildProgressBuffer({ ...callbacks, isCurrent: () => !switching && callbacks.isCurrent() });
   // Keep this invocation's raw output independently of the throttled UI buffer.
@@ -173,14 +182,14 @@ export async function runCloudBuildWithProgress(
         logs.push(event.log);
         callbacks.rawLog?.(event.log, event.stream === 'stderr' ? 'stderr' : 'stdout');
       }
-      if (event?.requestId === request.requestId && !switching && callbacks.isCurrent()) {
+      if (event?.requestId === request.requestId && !switching) {
         if (event.stage === 'ci-tools-required' && event.nonce && !toolPreparation) {
           toolPreparation = (async () => {
             let error: string | undefined;
             try {
               if (!callbacks.prepareTool || !bridge.completeCIToolPreparation || !Array.isArray(event.requirements)) throw new Error('CI resource tool preparation is unavailable.');
               for (const tool of event.requirements) {
-                if (switching || !callbacks.isCurrent()) throw new Error('Cloud build source changed.');
+                await assertCurrent();
                 if (!tool.installed) await callbacks.prepareTool(tool);
               }
             } catch (failure) { error = failure?.message || String(failure); }
@@ -190,19 +199,19 @@ export async function runCloudBuildWithProgress(
           toolPreparation.catch(() => {});
           return;
         }
-        buffer.push(event);
+        if (callbacks.isCurrent()) buffer.push(event);
       }
     });
     const running = (async () => {
       const requirements = await bridge.preparationRequirements?.(request) || [];
       for (const tool of requirements) {
-        if (switching || !callbacks.isCurrent()) throw Object.assign(new Error('Cloud build source changed.'), { code: 'BUILD_SOURCE_STALE' });
+        await assertCurrent();
         if (!tool.installed) {
           if (!callbacks.prepareTool) throw new Error('Cloud resource tool preparation is unavailable.');
           await callbacks.prepareTool(tool);
         }
       }
-      if (switching || !callbacks.isCurrent()) throw Object.assign(new Error('Cloud build source changed.'), { code: 'BUILD_SOURCE_STALE' });
+      await assertCurrent();
       return bridge.run(request);
     })();
     callbacks.localSwitch?.(() => {
