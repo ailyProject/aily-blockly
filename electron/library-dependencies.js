@@ -604,7 +604,7 @@ class LibraryDependencies {
     return this.queue(project, root => this.locked(root, () => this.history.preview(root, token, forward)));
   }
 
-  discard(project, { reconcile = false, historyRestored = false } = {}) {
+  discard(project, { reconcile = false, historyRestored = false, allowInstallFailure = false } = {}) {
     return this.queue(project, root => this.locked(root, async assertCurrent => {
       const state = this.states.get(root);
       const priorEnvironment = this.environment.owned.get(root);
@@ -618,13 +618,20 @@ class LibraryDependencies {
       }
       // Read the CURRENT saved manifest: Chat restore/external edits are never
       // overwritten with an old in-memory baseline.
-      this.environment.begin(root, { operation: 'library-reconcile' }, this.states.get(root), assertCurrent);
-      await this.run(root, {
-        add: [], remove: [], options: state?.options,
-        // Only Coder's clean reopen uses the fast tree check. Blockly retains
-        // its existing npm reconciliation, including Chat history reloads.
-        reconcileOnly: reconcile && !state && !historyRestored && isCoderProject(root),
-      });
+      // Only Coder's clean reopen uses the fast tree check. Blockly retains
+      // its existing npm reconciliation, including Chat history reloads.
+      const cleanCoderReopen = reconcile && !state && isCoderProject(root);
+      const reconcileOnly = cleanCoderReopen && !historyRestored;
+      const preparation = this.environment.begin(root, { operation: 'library-reconcile' }, state, assertCurrent);
+      try {
+        await this.run(root, { add: [], remove: [], options: state?.options, reconcileOnly });
+      } catch (error) {
+        if (!allowInstallFailure || !cleanCoderReopen || pendingLocalChanges || priorEnvironment) throw error;
+        // Open the editor only after the failed install has restored the saved
+        // inputs. A failed or ambiguous restoration still rejects the open.
+        this.environment.restore(root, preparation, assertCurrent);
+        return { ...this.status(root), installError: error instanceof Error ? error.message : String(error) };
+      }
       this.states.delete(root);
       await this.locals.restore(root);
       const operation = this.environment.owned.get(root);

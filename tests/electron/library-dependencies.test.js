@@ -46,6 +46,36 @@ test('clean reconciliation is fast only for Coder; Blockly, unknown, dirty and h
   await check(true);
 });
 
+test('a clean Coder open can report an install failure after restoring its dependency inputs', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-coder-open-install-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const manifest = { name: 'coder-open', type: 'coder', dependencies: { 'test-package': '1.2.3' } };
+  const manifestPath = path.join(root, 'package.json');
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  const api = new LibraryDependencies({ run: async (_root, _request, hooks) => {
+    await hooks.beforeReify(['node_modules/test-package'], undefined, { 'package-lock.json': '{}' });
+    fs.mkdirSync(path.join(root, 'node_modules', 'test-package'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'package-lock.json'), '{}');
+    throw new Error('No matching version found for test-package@1.2.3.');
+  } });
+
+  const result = await api.discard(root, { reconcile: true, allowInstallFailure: true });
+  assert.equal(result.installError, 'No matching version found for test-package@1.2.3.');
+  assert.equal(result.environment.status, 'restored');
+  assert.equal(result.dirty, false);
+  assert.deepEqual(result.manifest, manifest);
+  assert.equal(fs.existsSync(path.join(root, 'package-lock.json')), false);
+  assert.equal(fs.existsSync(path.join(root, 'node_modules', 'test-package')), false);
+
+  const afterHistoryRestore = await api.discard(root, { reconcile: true, historyRestored: true, allowInstallFailure: true });
+  assert.equal(afterHistoryRestore.installError, result.installError);
+  assert.equal(afterHistoryRestore.environment.status, 'restored');
+
+  await api.patch(root, { nickname: 'pending metadata' });
+  await assert.rejects(api.discard(root, { reconcile: true, allowInstallFailure: true }), /No matching version/);
+  assert.equal(api.status(root).dirty, true);
+});
+
 async function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-library-save-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
