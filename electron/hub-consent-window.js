@@ -11,7 +11,7 @@ function createHubConsentPresenter({ window, BrowserWindow, ipcMain, prepareChro
       if (mode !== 'light' && mode !== 'dark') return;
       theme = mode; publishTheme?.(mode);
     },
-    confirm({ account, origin, region, expiresAt }) {
+    confirm({ account, origin, region, expiresAt, onShown }) {
       dismiss?.();
       if (window.isDestroyed()) return Promise.resolve(false);
       return new Promise(resolve => {
@@ -76,6 +76,7 @@ function createHubConsentPresenter({ window, BrowserWindow, ipcMain, prepareChro
           catch (error) { console.warn('[HubLogin] Native window unavailable:', error.message); cancel(); return; }
           if (window.isMinimized()) window.restore();
           window.show(); consent.show(); consent.focus();
+          onShown?.();
         });
         void contents.loadFile(path.join(__dirname, 'hub-consent.html')).catch(cancel);
       });

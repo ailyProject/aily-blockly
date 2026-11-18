@@ -63,6 +63,7 @@ async function deliverHubBrowserResult(request, callbackUrl, fetcher = fetch) {
       if (!response.ok || result?.status !== 200) throw new Error('Receipt service unavailable');
       if (result.data?.delivery === 'tab') return true;
       if (result.data?.delivery === 'fallback') return false;
+      if (result.data?.delivery === 'cancelled') return 'cancelled';
       if (result.data?.delivery !== 'waiting') throw new Error('Invalid receipt response');
       failures = 0;
     } catch {
@@ -73,6 +74,18 @@ async function deliverHubBrowserResult(request, callbackUrl, fetcher = fetch) {
     }
   }
   return true;
+}
+
+async function reportHubBrowserOpened(request, fetcher = fetch) {
+  if (!request.receipt_uri || !request.receipt_token || request.expiresAt <= Date.now()) return;
+  // Use the sibling of the result URL already validated by parseHubBrowserLogin.
+  const endpoint = new URL('opened', request.receipt_uri);
+  try {
+    const response = await fetcher(endpoint.href, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(4000),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: request.state, receiptToken: request.receipt_token }) });
+    await response.body?.cancel();
+  } catch { /* Status reporting is best effort and never delays consent or result delivery. */ }
 }
 
 function owners(product, directory = registryDirectory()) {
@@ -108,7 +121,7 @@ async function forwardHubBrowserLogin(value, product, options = {}) {
   throw new Error('Hub client unavailable');
 }
 
-function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresenter, browserReturn = createBrowserReturn(), product, development = false, directory = registryDirectory(), deliverResult = deliverHubBrowserResult }) {
+function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresenter, browserReturn = createBrowserReturn(), product, development = false, directory = registryDirectory(), deliverResult = deliverHubBrowserResult, reportOpened = reportHubBrowserOpened }) {
   const contents = window.webContents;
   const consent = consentPresenter || createHubConsentPresenter({ window, BrowserWindow, ipcMain });
   const suffix = randomBytes(12).toString('hex');
@@ -181,7 +194,10 @@ function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresent
       if (active !== current || closed) return false;
       if (['light', 'dark'].includes(input.theme)) consent.setTheme?.(input.theme);
       const approved = await consent.confirm({ account: input.account,
-        origin: new URL(current.redirect_uri).origin, region: current.region, expiresAt: current.expiresAt });
+        origin: new URL(current.redirect_uri).origin, region: current.region, expiresAt: current.expiresAt,
+        onShown: () => {
+          if (active === current && !closed && current.receipt_uri) void reportOpened(current);
+        } });
       return approved === true && active === current && current.expiresAt > Date.now() && ownFrame(event);
     } finally { confirming = false; }
   });
@@ -195,13 +211,13 @@ function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresent
     const current = active, target = browserTarget;
     try {
       const delivered = await deliverResult(current, callbackUrl);
-      if (delivered) {
+      if (delivered === true) {
         const captured = await target;
         if (active === current && !closed) {
           try { await browserReturn.restore(captured); } catch { /* Focus failure must not reopen a tab. */ }
         }
       }
-      return delivered;
+      return delivered === true || delivered === 'cancelled';
     } catch { return false; }
   });
   return { ready, accept, close() {
@@ -216,6 +232,6 @@ function createHubBrowserBridge({ window, ipcMain, BrowserWindow, consentPresent
   } };
 }
 
-module.exports = { isHubBrowserLogin, parseHubBrowserLogin, forwardHubBrowserLogin, createHubBrowserBridge, deliverHubBrowserResult,
+module.exports = { isHubBrowserLogin, parseHubBrowserLogin, forwardHubBrowserLogin, createHubBrowserBridge, deliverHubBrowserResult, reportHubBrowserOpened,
   hasHubBrowserOwner: (product, options = {}) => owners(product, options.directory)
     .some(owner => !options.receipts || owner.protocolVersion >= 2) };

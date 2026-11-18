@@ -58,14 +58,21 @@ const input = () => ({ account: '测试账号 B · b@example.test', origin: 'htt
 
 test('consent gates its owner without mouse pass-through and only its exact sandboxed frame can approve', async t => {
   const f = fixture(); t.after(() => f.presenter.cancel());
-  const pending = f.presenter.confirm(input()), view = f.views[0], channels = view.channels();
+  let opened = 0;
+  const pending = f.presenter.confirm({ ...input(), onShown() {
+    assert.equal(f.views[0].visible, true);
+    assert.equal(f.views[0].webContents.focused, true);
+    opened++;
+  } }), view = f.views[0], channels = view.channels();
   assert.equal(view.options.parent, f.window); assert.equal(view.options.modal, process.platform !== 'darwin');
   assert.equal(view.options.frame, true); assert.equal(view.options.transparent, false);
   assert.equal(view.options.titleBarStyle, 'default'); assert.equal(view.options.closable, true);
   assert.equal(view.options.skipTaskbar, true); assert.deepEqual(f.window.contentView.children, []);
   assert.equal(view.options.webPreferences.sandbox, true); assert.equal(view.options.webPreferences.nodeIntegration, false);
   assert.equal(view.options.webPreferences.contextIsolation, true); assert.equal(view.options.webPreferences.webSecurity, true);
-  assert.equal(view.visible, false); view.emit('ready-to-show'); assert.equal(view.visible, true);
+  assert.equal(view.visible, false); assert.equal(opened, 0);
+  view.emit('ready-to-show');
+  assert.equal(view.visible, true); assert.equal(opened, 1);
   assert.equal(f.gateActive, true);
   assert.equal(f.handlers.get(channels.data)(view.event()).account, input().account);
   assert.equal(f.handlers.get(channels.data)({ sender: view.webContents, senderFrame: {} }), null);

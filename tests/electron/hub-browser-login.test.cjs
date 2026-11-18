@@ -4,7 +4,7 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { parseHubBrowserLogin, createHubBrowserBridge, forwardHubBrowserLogin, hasHubBrowserOwner, deliverHubBrowserResult } = require('../../electron/hub-browser-login');
+const { parseHubBrowserLogin, createHubBrowserBridge, forwardHubBrowserLogin, hasHubBrowserOwner, deliverHubBrowserResult, reportHubBrowserOpened } = require('../../electron/hub-browser-login');
 const makeUrl = (state = 's'.repeat(43), callback = 'https://hub.aily.pro/auth/callback', product = 'abis') =>
   `${product}://auth/hub/login?` + new URLSearchParams({ state, code_challenge: 'c'.repeat(43), redirect_uri: callback });
 
@@ -63,10 +63,23 @@ test('browser receipt delivery waits for acknowledgment and preserves closed-tab
   };
   assert.equal(await deliverHubBrowserResult(request, callback, fetcher), true); assert.equal(calls, 2);
   assert.equal(await deliverHubBrowserResult(request, callback, async () => Response.json({ status: 200, data: { delivery: 'fallback' } })), false);
+  assert.equal(await deliverHubBrowserResult(request, callback, async () => Response.json({ status: 200, data: { delivery: 'cancelled' } })), 'cancelled');
   let unavailable = 0;
   assert.equal(await deliverHubBrowserResult(request, callback, async () => { unavailable++; throw new Error('Network unavailable'); }), true);
   assert.equal(unavailable, 3, 'uncertain network delivery must not open a duplicate callback tab');
   assert.equal(await deliverHubBrowserResult(request, callback.replace('hub.aily.pro', 'evil.example'), fetcher), false);
+});
+
+test('opening status posts only to the validated receipt sibling with the current flow secret', async () => {
+  const state = 's'.repeat(43), receiptToken = 'r'.repeat(43), endpoint = 'https://hubapi.aily.pro/api/v1/hub/auth/desktop/browser/';
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push({ url, redirect: options.redirect, body: JSON.parse(options.body) });
+    return Response.json({}, { status: 404 }); // Older services can still receive the final result.
+  };
+  await reportHubBrowserOpened({ state, receipt_uri: endpoint + 'result', receipt_token: receiptToken, expiresAt: Date.now() + 1000 }, fetcher);
+  await reportHubBrowserOpened({ state, receipt_uri: endpoint + 'result', receipt_token: receiptToken, expiresAt: 0 }, fetcher);
+  assert.deepEqual(calls, [{ url: endpoint + 'opened', redirect: 'error', body: { state, receiptToken } }]);
 });
 
 test('only the active host frame can deliver its current login result', async t => {
@@ -108,6 +121,9 @@ test('fallback, interrupted flows and activation failure do not change receipt d
   await f.bridge.ready; f.bridge.accept(makeUrl());
   const state = 's'.repeat(43), callback = 'https://hub.aily.pro/auth/desktop?state=' + state;
   assert.equal(await f.deliver(state, callback), false); assert.equal(restored, 0);
+  delivery = 'cancelled';
+  assert.equal(await f.deliver(state, callback), true, 'prevent the renderer from opening a cancelled result');
+  assert.equal(restored, 0, 'do not refocus the original browser for a cancelled web flow');
   delivery = true;
   assert.equal(await f.deliver(state, callback), true); assert.equal(restored, 1);
   delivery = new Promise(resolve => { settle = resolve; });
