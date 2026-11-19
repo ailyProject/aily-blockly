@@ -32,7 +32,10 @@ export interface AbsCurrentDocumentRecovery {
   candidate: { hash: string; bytes: number; intentGeneration: string };
   oldWriter: AbsStorageExecutorObservation & { state: 'exited' };
   candidateApplied: false; originalPublication: 'UNKNOWN';
+  settlement?: { version: 1; recordHash: string };
 }
+type RestoredApplicationRecord = { version: 1; kind: 'restored-working-document'; project: string; operationPointer: string;
+  stagedHash: string | null; recovery: Omit<AbsCurrentDocumentRecovery, 'settlement'> };
 export interface AbsUnpublishedDocumentSave {
   version: 1; kind: 'source-not-published'; requestId: string; operationId: string;
   attachment: AbsProjectAttachment; originalExecutor: AbsStorageExecutor; observerExecutor: AbsStorageExecutor;
@@ -46,7 +49,10 @@ interface LocationOperation {
 }
 const currentKey = 'operation.json';
 const snapshotKey = (id: string) => `recoveries/operation-${id}.json`;
+export const restoredApplicationKey = (id: string) => `recoveries/application-restored-${id}.json`;
 const conflict = () => new AbsSyncError('ABS_OPERATION_CONFLICT', 'A different document operation is retained; inspect it before replacing its recovery snapshot.');
+const exitedApplicationWriter = (value?: AbsStorageExecutorObservation): value is AbsCurrentDocumentRecovery['oldWriter'] =>
+  value?.version === 1 && value.state === 'exited' && ['system-restarted', 'process-exited', 'process-reused'].includes(value.reason);
 
 /** Durable recovery facts, never a workspace lease or authority to replay a candidate. */
 export class AbsOperationJournal {
@@ -175,7 +181,21 @@ export class AbsOperationJournal {
    * executor qualifies. The caller verifies complete live S1 under this one
    * existing file lock; it must not flush or acquire a nested storage lock. */
   async inspectRestoredApplication(requestId: string, assertCurrent: () => void,
-    readback: (document: unknown) => Promise<void>): Promise<AbsCurrentDocumentRecovery | null> {
+    readback?: (document: unknown) => Promise<void>): Promise<AbsCurrentDocumentRecovery | null> {
+    return this.readRestoredApplication(requestId, assertCurrent, readback);
+  }
+
+  /** Retain the observed writer fence with its original request before another
+   * document operation replaces the current pointer. The original apply stays UNKNOWN. */
+  async recordRestoredApplication(id: string, assertCurrent: () => void, readback: (document: unknown) => Promise<void>) {
+    const operation = await this.inspect();
+    if (operation?.id === id && operation.kind === 'abs-apply' && operation.application) {
+      await this.readRestoredApplication(operation.application.requestId, assertCurrent, readback, true);
+    }
+  }
+
+  private async readRestoredApplication(requestId: string, assertCurrent: () => void,
+    readback?: (document: unknown) => Promise<void>, retain = false): Promise<AbsCurrentDocumentRecovery | null> {
     if (!this.port.attachment || !this.port.executor || !this.port.observeExecutor) return null;
     const observer = nativeSaveCapability(this.port);
     return this.port.withLock<AbsCurrentDocumentRecovery | null>(async storage => {
@@ -186,7 +206,11 @@ export class AbsOperationJournal {
       const index = JSON.parse(indexText);
       if (index.version !== 1 || index.project !== this.project || index.requestId !== requestId
         || !/^[a-f0-9-]{36}$/.test(index.operationId) || !/^sha256:[a-f0-9]{64}$/.test(index.snapshotHash)) throw conflict();
-      const pointerText = await storage.read(currentKey);
+      const recoveryKey = restoredApplicationKey(index.operationId);
+      const recoveryText = await storage.read(recoveryKey);
+      const retained = recoveryText === null ? null : JSON.parse(recoveryText) as RestoredApplicationRecord;
+      if (!retained && !readback) return null;
+      const pointerText = retained ? retained.operationPointer : await storage.read(currentKey);
       if (pointerText === null) return null;
       const pointer = this.pointer(pointerText);
       if (pointer.id !== index.operationId || pointer.hash !== index.snapshotHash || pointer.state !== 'restored') return null;
@@ -209,36 +233,64 @@ export class AbsOperationJournal {
         || await hashAbsText(record.candidate.source) !== record.candidate.hash
         || validation.base.generation !== record.candidate.generation
         || validation.base.scope.projectKey !== this.project) throw conflict();
-      const unchanged = async () => {
+      if (record.disk.abi === null || record.disk.abs === null || record.disk.map === null || record.committed === null) return null;
+      const stageKey = `recoveries/application-${pointer.id}.json`, staged = await storage.read(stageKey);
+      const unchanged = async (historical: boolean) => {
         assertCurrent();
-        if (await storage.read(indexKey) !== indexText || await storage.read(currentKey) !== pointerText
+        if (await storage.read(indexKey) !== indexText || await storage.read(recoveryKey) !== recoveryText
           || await storage.read(snapshotKey(pointer.id)) !== snapshotText
-          || absJson(await this.disk(storage)) !== absJson(record.disk)
-          || await storage.read('committed.json') !== record.committed || await storage.read('prepared.json') !== null) return false;
-        for (const key of [`recoveries/application-${pointer.id}.json`, `recoveries/application-commit-${pointer.id}.json`,
+          || await storage.read(stageKey) !== staged
+          || (!historical && (await storage.read(currentKey) !== pointerText || absJson(await this.disk(storage)) !== absJson(record.disk)
+            || await storage.read('committed.json') !== record.committed || await storage.read('prepared.json') !== null))) return false;
+        for (const key of [`recoveries/application-commit-${pointer.id}.json`,
           `recoveries/application-result-${pointer.id}.json`]) if (await storage.read(key) !== null) return false;
         assertCurrent(); return true;
       };
-      if (record.disk.abi === null || record.disk.abs === null || record.disk.map === null || record.committed === null || !await unchanged()) return null;
-      const oldWriter = await this.port.observeExecutor!(original.executor);
-      if (oldWriter?.version !== 1 || oldWriter.state !== 'exited'
-        || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
-      await readback(record.document);
+      if (!await unchanged(!!retained)) return null;
+      const writer = await this.port.observeExecutor!(original.executor);
+      if (!exitedApplicationWriter(writer)) return null;
+      if (staged !== null && !await this.matchesRestoredStage(storage, record, staged)) return null;
+      const oldWriter = retained ? retained.recovery?.oldWriter : writer;
+      if (!exitedApplicationWriter(oldWriter)) return null;
+      const recoveryObserver = retained ? nativeSaveCapability({ attachment: observer.attachment, executor: retained.recovery.observerExecutor }).executor
+        : observer.executor;
+      if (!retained) await readback!(record.document);
       assertCurrent();
-      if (!await unchanged()) return null;
+      if (!await unchanged(!!retained)) return null;
       const finalWriter = await this.port.observeExecutor!(original.executor);
-      if (absJson(finalWriter) !== absJson(oldWriter)) return null;
-      assertCurrent();
-      return { version: 1, scope: 'restored-working-document', state: 'restored', requestId, operationId: pointer.id,
+      if (!exitedApplicationWriter(finalWriter) || !retained && absJson(finalWriter) !== absJson(writer)) return null;
+      const recovery: RestoredApplicationRecord['recovery'] = { version: 1, scope: 'restored-working-document', state: 'restored', requestId, operationId: pointer.id,
         snapshotHash: index.snapshotHash, operationPointerHash: await hashAbsText(pointerText),
         documentHash: await hashAbsText(absJson(record.document)), attachment: observer.attachment,
-        originalExecutor: original.executor, observerExecutor: observer.executor,
+        originalExecutor: original.executor, observerExecutor: recoveryObserver,
         saved: { abiHash: await hashAbsText(record.disk.abi), absHash: await hashAbsText(record.disk.abs),
           mapHash: await hashAbsText(record.disk.map), committedHash: await hashAbsText(record.committed) },
         candidate: { hash: record.candidate.hash, bytes: validation.candidate.bytes,
           intentGeneration: validation.intentGeneration ?? validation.base.generation },
-        oldWriter: oldWriter as AbsCurrentDocumentRecovery['oldWriter'], candidateApplied: false, originalPublication: 'UNKNOWN' };
+        oldWriter, candidateApplied: false, originalPublication: 'UNKNOWN' };
+      const marker: RestoredApplicationRecord = { version: 1, kind: 'restored-working-document', project: this.project,
+        operationPointer: pointerText, stagedHash: staged === null ? null : await hashAbsText(staged), recovery };
+      assertCurrent();
+      if (retained) {
+        if (absJson(marker) !== absJson(retained)) throw conflict();
+        return { ...recovery, settlement: { version: 1, recordHash: await hashAbsText(recoveryText!) } };
+      }
+      if (!retain) return recovery;
+      const text = absJson(marker);
+      if (!await storage.replace(recoveryKey, null, text)) throw conflict();
+      return { ...recovery, settlement: { version: 1, recordHash: await hashAbsText(text) } };
     });
+  }
+
+  private async matchesRestoredStage(storage: AbsSyncStorageAccess, operation: AbsOperationSnapshot, staged: string): Promise<boolean> {
+    const record = JSON.parse(staged), evidence = record.outcome?.evidence;
+    const binding = evidence?.binding;
+    if (record.version !== 1 || record.project !== this.project || record.operationId !== operation.id
+      || absJson(record.validation) !== absJson(operation.application!.validation) || binding?.scope?.projectKey !== this.project
+      || typeof binding.scope.pageId !== 'string' || typeof binding.generation !== 'string' || binding.generation === operation.candidate!.generation
+      || record.outcome?.publication?.status !== 'COMMITTED' || record.outcome.publication.generation !== binding.generation) return false;
+    return new AbsBaselineStore(this.port, binding.scope).matchesRestoredApplicationStage(storage, evidence,
+      operation.candidate!.source, operation.disk, operation.committed!);
   }
 
   /** Discovery only. A different path cannot authorize restoring this view;

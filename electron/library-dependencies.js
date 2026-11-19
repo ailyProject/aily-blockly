@@ -169,7 +169,8 @@ class LibraryDependencies {
   beginEnvironmentAttempt(project, request, control) {
     return this.queue(project, root => this.locked(root, assertCurrent => {
       control?.assertActive();
-      this.environment.begin(root, request ? { ...request, operation: 'library-change' } : { operation: 'library-edit-session' }, this.states.get(root), assertCurrent);
+      this.environment.begin(root, request ? { ...request, operation: 'library-change' } : { operation: 'library-edit-session' },
+        this.states.get(root), assertCurrent, control?.submission);
       return this.environment.beginAttempt(root, this.states.get(root), assertCurrent);
     }));
   }

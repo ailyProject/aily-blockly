@@ -234,3 +234,92 @@ test('the writer can retire an exact terminal identity without a connected obser
   assert.equal(remembered.has(input.requestId), true);
   assert.equal((await store.status(project, input)).result.projectSaved, true);
 });
+
+test('a later exact status retires a save that was initially unconfirmed and lets the next ID write', async () => {
+  const { create, native, remembered } = saveFixture({ identityLimit: 1, completedLimit: 0 });
+  const store = create(), a = durableRequest(1), b = durableRequest(2);
+  let writes = 0;
+  const first = await store.execute(project, a, [], async () => {
+    writes++;
+    native.set(a.requestId, { ok: true, operation: 'project_save_status',
+      saveReceipt: { ...a, project, state: 'unknown' }, code: 'ABS_NATIVE_SAVE_OBSERVATION_PENDING' });
+    return { ok: true, projectSaved: true };
+  });
+  assert.equal(first.saveReceipt.state, 'unknown');
+  assert.equal(remembered.has(a.requestId), false);
+
+  native.set(a.requestId, exactTerminal(a));
+  const recovered = await store.status(project, a);
+  assert.equal(recovered.result.projectSaved, true);
+  assert.equal(remembered.has(a.requestId), true);
+  const next = await store.execute(project, b, [], async () => {
+    writes++;
+    const receipt = exactTerminal(b);
+    native.set(b.requestId, receipt);
+    return receipt.result;
+  });
+  assert.equal(next.saveReceipt.state, 'completed');
+  await store.start(project, a, [], async () => assert.fail('must observe the original terminal save'));
+  assert.equal(writes, 2);
+});
+
+test('an original v2 publication observed by a replacement host backfills the index before a project path replacement', async () => {
+  const { create, native, remembered } = saveFixture();
+  const a = durableRequest(1), wrongInput = { ...a, operation: 'blocks_tidy' }, restarted = create();
+  const durableA = exactTerminal(a);
+  const durableObserve = async () => durableA;
+  await assert.rejects(restarted.status(project, wrongInput, durableObserve), { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
+  assert.equal(remembered.has(a.requestId), false);
+
+  // Project publication status runs the same registry lookup with an exact
+  // original executor checked by the independent native observation port.
+  const cold = await restarted.status(project, a, durableObserve);
+  assert.equal(cold.publicationObservation.executor.hostPid, 101);
+  assert.equal(cold.result.projectSaved, true);
+  assert.equal(remembered.has(a.requestId), true);
+  assert.equal(native.has(a.requestId), false, 'replacement physical root has none of the old project journal');
+  const third = create();
+  const noReplay = async () => assert.fail('a known old ID must not run against replacement content');
+  await assert.rejects(third.start(project, a, [], noReplay), { code: 'PROJECT_SAVE_RECEIPT_EXPIRED' });
+  await assert.rejects(third.start('/other-project', a, [], noReplay), { code: 'PROJECT_SAVE_RECEIPT_CONFLICT' });
+});
+
+test('an index write interrupted at completion can be retried by exact observation without repeating the writer', async () => {
+  let indexWrites = 0;
+  const { create, native, remembered } = saveFixture({ identityLimit: 1, settledIdentities: {
+    remember(id, binding) {
+      if (++indexWrites === 1) throw new Error('interrupted index write');
+      remembered.set(id, binding);
+    },
+  } });
+  const store = create(), a = durableRequest(1);
+  let writes = 0;
+  const original = await store.execute(project, a, [], async () => {
+    writes++;
+    const receipt = exactTerminal(a);
+    native.set(a.requestId, receipt);
+    return receipt.result;
+  });
+  assert.equal(original.saveReceipt.state, 'completed');
+  assert.equal(remembered.has(a.requestId), false);
+  assert.equal((await store.status(project, a)).saveReceipt.state, 'completed');
+  assert.equal(remembered.has(a.requestId), true);
+  assert.equal(indexWrites, 2);
+  assert.equal(writes, 1);
+});
+
+test('a durable observation does not release a still-running in-memory writer', async () => {
+  const { create, native, remembered } = saveFixture({ identityLimit: 1 });
+  const store = create(), a = durableRequest(1), b = durableRequest(2), reading = deferred(), writer = deferred();
+  const terminal = exactTerminal(a);
+  const overlapping = store.status(project, a, () => reading.promise);
+  assert.equal((await store.start(project, a, [], () => writer.promise)).saveReceipt.state, 'running');
+  native.set(a.requestId, terminal);
+  reading.resolve(terminal);
+  assert.equal((await overlapping).saveReceipt.state, 'running');
+  assert.equal(remembered.has(a.requestId), true);
+  await assert.rejects(store.start(project, b, [], async () => assert.fail('the old writer still owns its slot')),
+    { code: 'PROJECT_SAVE_RECEIPT_CAPACITY' });
+  writer.resolve(terminal.result);
+  assert.equal((await store.status(project, { ...a, waitMs: 100 })).saveReceipt.state, 'completed');
+});

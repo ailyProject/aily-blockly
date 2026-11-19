@@ -3,6 +3,7 @@
 export { AbsBaselineStore, absBaselineKey } from '../../../src/app/integrations/blockly/abs/abs-baseline-store';
 export { AbsOperationJournal } from '../../../src/app/integrations/blockly/abs/abs-operation-journal';
 export { AbsApplicationJournal } from '../../../src/app/integrations/blockly/abs/abs-application-journal';
+export { recoverAbsProjectOperation } from '../../../src/app/integrations/blockly/abs/abs-project-restart';
 export { absJson, hashAbsText, createAbsProjection } from '../../../src/app/integrations/blockly/abs/abs-identity-map';
 export { generationEvidence } from '../../../src/app/integrations/blockly/abs/abs-generation-protocol';
 export { ProjectSaveReceipts } from '../../../src/app/services/domains/project/project-save-receipts';

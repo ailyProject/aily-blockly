@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const { librarySubmission } = require('./library-environment-journal');
 const stableRequest = value => Array.isArray(value) ? value.map(stableRequest) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stableRequest(value[key])])) : value;
 const sameRequest = (left, right) => JSON.stringify(stableRequest({ ...left, operation: 'library-change' }))
@@ -134,18 +135,29 @@ class LibraryDependencySessions {
       throw notStarted('LIBRARY_OPERATION_INVALID', 'Invalid library request deadline.');
     this.pruneRequests(now);
     const originalRequest = { requestId, ...input };
+    const submission = librarySubmission(operation, originalRequest);
     const key = root + '\0' + requestId;
     const previous = this.requests.get(key);
     const retained = this.libraries.environment.find(root, requestId);
-    if (previous?.request && !sameRequest(previous.request, originalRequest)
-      || retained && !sameRequest(retained.record.request, originalRequest))
+    if (previous?.submission && previous.submission.requestDigest !== submission.requestDigest
+      || retained && (retained.record.submission
+        ? retained.record.submission.requestDigest !== submission.requestDigest
+        : !sameRequest(retained.record.request, originalRequest)))
       throw new Error('Original environment arguments changed.');
     if (retained || previous?.done) return this.libraries.observeEnvironment(root, request);
-    if (previous?.failure) throw previous.failure;
+    const refuse = error => {
+      if (!this.libraries.environment.rejectAdmission(root, originalRequest, submission, error)) {
+        const stored = this.libraries.environment.find(root, requestId)?.record;
+        if (!stored || stored.submission?.requestDigest !== submission.requestDigest) throw new Error('Original environment arguments changed.');
+        return this.libraries.observeEnvironment(root, request);
+      }
+      throw error;
+    };
+    if (previous?.failure) return refuse(notStarted(previous.failure.code, previous.failure.message));
 
     const deadline = Math.min(expiresAt ?? Infinity, now + this.timeoutMs);
     const control = {
-      request: originalRequest, retainUntil: deadline,
+      submission, retainUntil: deadline,
       assertActive() {
         if (control.failure) throw control.failure;
         if (Date.now() >= deadline) {
@@ -155,10 +167,11 @@ class LibraryDependencySessions {
       },
     };
     this.requests.set(key, control);
-    control.assertActive();
+    try { control.assertActive(); }
+    catch (error) { return refuse(error); }
     if (this.sessions.has(root) || this.libraries.queues.has(root)) {
       control.failure = notStarted('LIBRARY_OPERATION_BUSY', 'A dependency writer already owns this project. This installation was not started.');
-      throw control.failure;
+      return refuse(control.failure);
     }
     const done = Promise.withResolvers();
     control.done = done.promise;
@@ -166,6 +179,7 @@ class LibraryDependencySessions {
       fault('LIBRARY_OPERATION_EXPIRED', 'The original library request expired.')), deadline - Date.now());
     timer.unref?.();
     try { return await this.runMutation(operation, root, originalRequest, control); }
+    catch (error) { if (error.commandDispatched === false) return refuse(error); throw error; }
     finally { clearTimeout(timer); control.settled = true; done.resolve(); }
   }
 

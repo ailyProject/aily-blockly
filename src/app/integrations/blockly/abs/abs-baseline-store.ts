@@ -250,6 +250,17 @@ export class AbsBaselineStore {
     return (await this.readGeneration(this.port, generation, true)).record.abi;
   }
 
+  /** Check only the original staged input retained after an interrupted apply.
+   * An immutable generation record is not evidence that it was published. */
+  async matchesRestoredApplicationStage(storage: AbsSyncStorageAccess, evidence: Awaited<ReturnType<typeof generationEvidence>>,
+    inputAbs: string, disk: AbsDiskSnapshot, committed: string): Promise<boolean> {
+    const { record } = await this.readGeneration(storage, evidence.binding.generation);
+    return record.mode === 'import' && record.inputAbs === inputAbs && record.abi !== null
+      && record.previousPointer === committed && record.previousCommitted === await hashAbsText(committed)
+      && absJson(record.expected) === absJson(await this.hashDisk(disk))
+      && absJson(await generationEvidence(record.projection, record.abi)) === absJson(evidence);
+  }
+
   /** Read only this exact accepted candidate input, never an arbitrary draft or
    * historical state. Its normalized output remains the semantic authority. */
   async readAcceptedAuthorInput(generation: string): Promise<string | null> {

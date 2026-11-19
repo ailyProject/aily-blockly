@@ -777,10 +777,10 @@ async function runProjectLibraryOperation(operation, projectPath, request, trans
     }
   }
 }
-const { registerNpmHandlers, killAllNpmProcesses, killOwnerProjectNpmProcesses, getActiveNpmProcesses, beginNpmShutdown } = require("./npm");
-const { cancelProjectTaskScope } = require('./project-task-scope');
+const { registerNpmHandlers, killAllNpmProcesses, killOwnerProjectNpmProcesses, hasOwnerProjectNpmProcesses, getActiveNpmProcesses, beginNpmShutdown } = require("./npm");
+const { cancelProjectTaskScope, isProjectTaskScopeCancelled, readProjectTaskScope } = require('./project-task-scope');
 const { registerUpdaterHandlers } = require("./updater");
-const { registerCmdHandlers, killAllCmdProcesses, killOwnerProjectCmdProcesses, getActiveCmdProcesses, beginCommandShutdown } = require("./cmd");
+const { registerCmdHandlers, killAllCmdProcesses, killOwnerProjectCmdProcesses, hasOwnerProjectCmdProcesses, getActiveCmdProcesses, beginCommandShutdown } = require("./cmd");
 const { registerAilyServicesStreamHandlers, cancelAllAilyServicesStreams, getActiveAilyServicesStreams } = require("./aily-services-stream");
 const {
   executeWebviewFetch,
@@ -3473,6 +3473,18 @@ ipcMain.handle("select-folder", async (event, data) => {
 });
 
 // 跨版本项目占用：尝试获取 / 释放锁、前置其他进程窗口
+ipcMain.handle('project-commands-stop-status', (event, data) => {
+  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false };
+  let scope;
+  try { scope = readProjectTaskScope(data); } catch { return { ok: false }; }
+  if (!scope) return { ok: false };
+  const owner = event.sender, { projectPath, projectSessionId } = scope;
+  if (!isProjectTaskScopeCancelled(owner, scope)) return { ok: true, ...scope, state: 'unknown' };
+  const active = hasOwnerProjectCmdProcesses(owner, projectPath, projectSessionId)
+    || hasOwnerProjectNpmProcesses(owner, projectPath, projectSessionId);
+  return { ok: true, ...scope, state: active ? 'stopping' : 'stopped' };
+});
+
 ipcMain.handle('project-commands-stop', async (event, data) => {
   if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
       || typeof data?.projectPath !== 'string' || !path.isAbsolute(data.projectPath)) {

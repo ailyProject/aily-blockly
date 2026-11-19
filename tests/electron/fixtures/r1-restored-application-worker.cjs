@@ -17,7 +17,7 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
   const baseProjection = legacy === 'advanced-intent' ? input.next.projection : input.baseProjection;
   const disk = await store.captureDisk();
   const document = structuredClone(baseProjection.document);
-  document.extension.dirtyS1 = { keepAllPages: true };
+  if (legacy !== 'identical-document') document.extension.dirtyS1 = { keepAllPages: true };
   const source = legacy === 'advanced-intent' ? input.baseProjection.abs.replace('root(VALUE=100)', 'root(VALUE=102)') : input.next.inputAbs;
   const requestId = 'r1-restored-original-request';
   const start = input.baseProjection.abs.indexOf('100');
@@ -27,10 +27,22 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
     candidate: { hash: await kernel.hashAbsText(source), bytes: Buffer.byteLength(source) }, workspaceRevision: 1 };
   const operationId = await journal.begin({ kind: 'abs-apply', document, disk,
     candidate: { source, hash: validation.candidate.hash, generation: validation.base.generation }, application: { requestId, validation } }, guard);
+  const ready = () => process.send({ event: 'ready', requestId, operationId, document, executor: port.executor, attachment: port.attachment });
+  const waitForKill = () => new Promise(() => { process.on('message', () => {}); });
+  if (legacy === 'staged-before-abi') {
+    await store.stage(input.next, input.expectedPointerHash);
+    const evidence = await kernel.generationEvidence(input.next.projection, input.next.abi);
+    await new kernel.AbsApplicationJournal(port, project).stage(operationId, validation, {
+      evidence, publication: { status: 'COMMITTED', generation: evidence.binding.generation },
+    }, guard);
+    await store.commit(evidence.binding.generation, guard, async () => {
+      // The production prepared pointer exists; the ABI writer has not begun.
+      ready(); await waitForKill();
+    });
+    return;
+  }
   // A pure kernel fixture, not a claim that this Node worker loaded a GUI.
   // The packaged prepreview driver separately verifies actual S1 readback.
   await journal.restored(operationId, guard);
-  process.send({ event: 'ready', requestId, operationId, document, executor: port.executor, attachment: port.attachment });
-  process.on('message', () => {}); // Keep the real original process alive until the parent explicitly kills it.
-  await new Promise(() => {});
+  ready(); await waitForKill();
 })().catch(error => { process.send?.({ event: 'error', code: error.code, message: error.message }); process.exitCode = 1; });
