@@ -13,9 +13,14 @@ function npmIpcFixture({ acquireNpmMutation, native = false } = {}) {
   const mainWindow = { isDestroyed: () => false, webContents: owner };
   const owned = require('../../../electron/owned-process');
   const spawn = (...args) => {
+    const options = args[2] || args[1];
     const child = native ? owned.spawn(...args)
       : Object.assign(new EventEmitter(), { pid: 40000 + children.length,
         stdout: new EventEmitter(), stderr: new EventEmitter() });
+    child.zipEnvironment = {
+      AILY_ZIP_URL: options.env?.AILY_ZIP_URL,
+      AILY_ZIP_URLS: options.env?.AILY_ZIP_URLS,
+    };
     children.push(child);
     return child;
   };
