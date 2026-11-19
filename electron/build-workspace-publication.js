@@ -43,6 +43,7 @@ module.exports = {
   inspectBuildExecution: (project, requestId) => require(childScriptPath('build-execution-workspace.js')).inspectBuildExecution(project, requestId),
   cancelBuildExecution: config => require(childScriptPath('build-execution-workspace.js')).cancelBuildExecution(config),
   canReuseBlocklyUpload: config => require(childScriptPath('build-execution-workspace.js')).canReuseBuildExecution(config),
+  canReuseCoderUpload: config => runExecutionWorker({ action: 'check-coder-upload', config }).then(value => value.reusable),
   captureBuildSource: (config, workspace) => {
     return require(childScriptPath('build-source-capture.js')).captureBuildSource(config, workspace);
   },

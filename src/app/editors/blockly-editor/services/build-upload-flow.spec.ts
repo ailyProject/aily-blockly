@@ -252,6 +252,18 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.builder.build).not.toHaveBeenCalled(); expect(window['builder'].canReuseBlocklyUpload).not.toHaveBeenCalled();
   });
 
+  for (const reusable of [true, false]) it(`uses the local Coder receipt before upload (reusable=${reusable})`, async () => {
+    const f = uploadFixture();
+    f.project.isAilyCodeProject = () => true;
+    window['builder'].canReuseCoderUpload = async () => true;
+    const check = jasmine.createSpy('checkCoderBuild').and.returnValues(Promise.resolve(reusable), Promise.resolve(true));
+    f.uploader.hostBuilderService.canReuseBuildForUpload = check;
+    await f.run();
+    expect(check).toHaveBeenCalledTimes(reusable ? 1 : 2);
+    expect(f.uploader.hostBuilderService.build).toHaveBeenCalledTimes(reusable ? 0 : 1);
+    expect(f.events).toEqual(['upload']);
+  });
+
   for (const coder of [false, true]) it(`continues ${coder ? 'Coder' : 'Blockly'} upload with local firmware after a task-only switch`, async () => {
     const f = uploadFixture();
     const operation = { local: false, release: jasmine.createSpy('release') };

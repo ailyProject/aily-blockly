@@ -504,6 +504,7 @@ export class _UploaderService {
         // 但仍复用后续同一套板卡上传脚本、进度、错误和资源恢复流程；
         // 唯一差异是从 package.json.entry 构建并使用 Coder 的实际产物目录。
         const isAilyCodeProject = this.projectService.isAilyCodeProject(projectPath);
+        const verifyLocalCoderBuild = isAilyCodeProject && !!window['builder']?.canReuseCoderUpload;
         let buildPath: string;
 
         if (firmware) {
@@ -512,7 +513,8 @@ export class _UploaderService {
           try {
             this.coderBuildActive = true;
 
-            const reusable = cloud && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled);
+            const reusable = (cloud || verifyLocalCoderBuild)
+              && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled);
 
             assertContext();
 
@@ -524,12 +526,14 @@ export class _UploaderService {
 
               cloud = initialCloud && !backendOperation.local;
 
-              if (cloud && !await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled)) {
+              if ((cloud || verifyLocalCoderBuild)
+                && !await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled)) {
                 throw new Error('BUILD_SOURCE_STALE: Coder inputs changed during compilation; build again before upload.');
               }
             }
 
             buildPath = await this.projectService.getBuildPath();
+            assertContext();
 
             if (!buildPath || !window['fs'].existsSync(buildPath)) {
               throw new Error(`Coder build output directory does not exist: ${buildPath || '(empty)'}`);
@@ -830,6 +834,7 @@ export class _UploaderService {
             currentProjectPath: uploadProjectPath,
             buildPath: execution?.buildPath ?? buildPath,
             ...(execution ? { preprocessPath: execution.preprocessPath, buildExecution: execution } : {}),
+            ...(verifyLocalCoderBuild && !cloud ? { verifyCoderBuild: true } : {}),
             boardModule,
             appDataPath: window['path'].getAppDataPath(),
             serialPort: capturedSerialPort,
@@ -958,7 +963,8 @@ export class _UploaderService {
         }) : this.cmdService.spawn(
           'node',
           [uploadScriptPath, configFilePath],
-          { shellProfile: false, cwd: currentProjectPath, projectPath, projectSessionId: dependencySession.projectSessionId },
+          { shellProfile: false, cwd: currentProjectPath, projectPath, projectSessionId: dependencySession.projectSessionId,
+            ...(verifyLocalCoderBuild && !cloud ? { buildWorkspace: currentProjectPath } : {}) },
           false,
         )).subscribe({
           next: async (output: CmdOutput) => {
