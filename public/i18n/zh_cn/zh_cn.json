@@ -1281,6 +1281,8 @@
         "CLOUD_BOARD_NOT_ENABLED": "此开发板版本尚未启用云编译。",
         "CLOUD_BOARD_UNSUPPORTED": "此开发板版本暂不支持云编译。",
         "CLOUD_BOARD_OFFLINE": "此开发板的云编译节点暂时离线，请稍后重试。",
+        "OPI_FLASH_REQUIRES_OPI_PSRAM": "使用 OPI Flash 前，请先选择 OPI PSRAM",
+        "CHANGE_OPI_FLASH_FIRST": "使用 OPI Flash 时须保留 OPI PSRAM，请先切换 Flash Mode",
         "SDK_CONFIG_NOT_READY": "SDK 尚未就绪，部分开发板配置暂不可用",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",
         "BOARD_SWITCH_SUCCESS": "开发板切换成功",

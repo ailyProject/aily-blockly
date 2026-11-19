@@ -4966,6 +4966,27 @@ export class ProjectService {
       menuItem.children = children;
     }
 
+    // Arduino's generic ESP32-S3 SDK ships opi_opi, but no opi_qspi variant.
+    // Apply the dependency to the effective SDK selections, including defaults.
+    if (!cloudProfile && boardName === 'esp32s3' && boardConfig) {
+      const flash = menu.find(item => item.key === 'FlashMode')?.children;
+      const psram = menu.find(item => item.key === 'PSRAM')?.children;
+      const opiFlash = flash?.find(item => item.data === 'opi');
+      const opiPsram = psram?.find(item => item.data === 'opi');
+      if (opiFlash && opiPsram && psram) {
+        if (!opiPsram.check) {
+          opiFlash.disabled = true;
+          opiFlash.tooltip = this.translate.instant('PROJECT.OPI_FLASH_REQUIRES_OPI_PSRAM');
+        }
+        if (opiFlash.check) {
+          for (const item of psram.filter(option => option !== opiPsram)) {
+            item.disabled = true;
+            item.tooltip = this.translate.instant('PROJECT.CHANGE_OPI_FLASH_FIRST');
+          }
+        }
+      }
+    }
+
     if (packageJsonChanged) {
       await this.setPackageJson(packageJson);
       assertCurrent();
