@@ -322,7 +322,7 @@ function applySecurityHeaders(response, options = {}) {
 
 function isStrictPublicFile(rootDirectory, relativePath, fsImplementation) {
   const extensions = new Set(['.html', '.js', '.mjs', '.css', '.json', '.map', '.svg', '.png', '.jpg', '.jpeg',
-    '.gif', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.wasm', '.txt', '.bin', '.hex', '.elf', '.data', '.rom', '.dat']);
+    '.gif', '.webp', '.ico', '.glb', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.wasm', '.txt', '.bin', '.hex', '.elf', '.data', '.rom', '.dat']);
   if (!extensions.has(path.extname(relativePath).toLowerCase())) return false;
   let candidate = rootDirectory;
   for (const part of relativePath.split('/')) {
@@ -465,6 +465,7 @@ function mimeType(filePath) {
     case '.gif': return 'image/gif';
     case '.webp': return 'image/webp';
     case '.ico': return 'image/x-icon';
+    case '.glb': return 'model/gltf-binary';
     case '.woff': return 'font/woff';
     case '.woff2': return 'font/woff2';
     case '.ttf': return 'font/ttf';
