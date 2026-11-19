@@ -10,6 +10,7 @@ const ts = require('typescript');
 const vm = require('node:vm');
 const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
 const { LibraryEnvironmentJournal } = require('../../electron/library-environment-journal');
+const { LibraryDependencies } = require('../../electron/library-dependencies');
 const guard = () => {};
 let kernel, bundle, parent, inspectSuccessor;
 test.before(() => {
@@ -29,7 +30,7 @@ test.before(() => {
     { module, exports: module.exports, ...kernel });
   inspectSuccessor = module.exports.inspectEnvironmentSuccessor;
 });
-async function fixture(t) {
+async function fixture(t, { authorDraft } = {}) {
   const root = fs.mkdtempSync(path.join(parent, 'project-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const child = fork(path.resolve('tests/electron/fixtures/r0-publication-worker.cjs'), ['fixture', root, bundle],
@@ -37,6 +38,12 @@ async function fixture(t) {
   const close = once(child, 'close'), [message] = await once(child, 'message');
   assert.notEqual(message.event, 'failure', JSON.stringify(message)); assert.equal((await close)[0], 0);
   const input = JSON.parse(fs.readFileSync(path.join(root, 'r0-input.json'), 'utf8'));
+  if (authorDraft !== undefined) {
+    fs.writeFileSync(path.join(root, '.aily/workspace-mode.json'), '{"version":1,"mode":"project-v1"}');
+    fs.writeFileSync(path.join(root, 'project.abs'), authorDraft);
+    input.next.expected.abs = authorDraft;
+    input.next.authorIntent = 'preserve';
+  }
   const io = await openProjectSyncStorage(root, guard), operations = new kernel.AbsOperationJournal(io, root);
   const applications = new kernel.AbsApplicationJournal(io, root);
   const request = { version: 2, requestId: 'pub2-' + randomUUID(), operation: 'project_save',
@@ -70,21 +77,64 @@ test('real native NOT_COMMITTED restores only its original linked environment an
   assert.deepEqual(await new kernel.AbsBaselineStore(ctx.io, { projectKey: ctx.root, pageId: 'main' }).captureDisk(), beforeProgram);
   assert.deepEqual(ctx.environments.pendingReferences(ctx.root), []);
 });
-test('real native COMMITTED retains the new environment while using original output evidence', async t => {
-  const ctx = await fixture(t), store = new kernel.AbsBaselineStore(ctx.io, { projectKey: ctx.root, pageId: 'main' });
+async function commitNative(ctx) {
+  const store = new kernel.AbsBaselineStore(ctx.io, { projectKey: ctx.root, pageId: 'main' });
   await store.stage(ctx.input.next, ctx.input.expectedPointerHash);
   const evidence = await kernel.generationEvidence(ctx.input.next.projection, ctx.input.next.abi);
   await ctx.applications.stageNativeSave({ ref: ctx.ref, evidence, inputAbiHash: await kernel.hashAbsText(ctx.input.next.expected.abi) }, guard);
   const publication = await store.commit('r0-next', guard, async (text, expected, access) => assert.equal(await access.replace('project.abi', expected, text), true));
   assert.equal(publication.status, 'COMMITTED'); assert.equal(await ctx.applications.sealNativeSave(ctx.ref, guard), true);
   await ctx.applications.completeNativeSave(ctx.ref, { projectSaved: true, generatedCodePublished: true, partial: false,
-    publication, evidence, requiresReload: false }, guard);
+    publication, evidence, requiresReload: false,
+    ...(publication.acceptedSource ? { acceptedSource: publication.acceptedSource } : {}) }, guard);
   await ctx.operations.finish(ctx.ref.operationId, guard);
   const observation = await ctx.applications.observeNativeSave(ctx.request, guard);
   assert.equal(observation.current, true);
+  return observation;
+}
+test('real native COMMITTED retains the new environment while using original output evidence', async t => {
+  const ctx = await fixture(t), observation = await commitNative(ctx);
+  const absFile = path.join(ctx.root, 'project.abs'), exact = fs.readFileSync(absFile);
+  fs.appendFileSync(absFile, '\n# unexpected overlay-v1 mirror change');
+  assert.throws(() => ctx.environments.settleLinked(ctx.root, { requestId: ctx.environmentId, programRef: ctx.ref, observation }, guard),
+    { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN' });
+  fs.writeFileSync(absFile, exact);
   const result = ctx.environments.settleLinked(ctx.root, { requestId: ctx.environmentId, programRef: ctx.ref, observation }, guard);
   assert.equal(result.status, 'completed'); assert.equal(result.current, true);
   assert.equal(fs.readFileSync(path.join(ctx.root, 'package.json'), 'utf8'), ctx.desired);
+});
+test('real Main settles the exact committed board environment while preserving dirty author ABS', async t => {
+  const draft = '# This unapplied ABS draft must survive verbatim.\n';
+  const ctx = await fixture(t, { authorDraft: draft }), observation = await commitNative(ctx);
+  const main = new LibraryDependencies();
+  const request = { requestId: ctx.environmentId, programRef: ctx.ref, observation };
+  assert.equal(observation.result.acceptedSource.authorSource.pending, true);
+  assert.notEqual(observation.result.evidence.binding.absHash, await kernel.hashAbsText(draft));
+  const files = ['project.abi', 'project.abs', 'project.abs.map.json', 'package.json', '.aily/abs-sync/committed.json'];
+  const capture = () => files.map(relative => fs.readFileSync(path.join(ctx.root, relative)));
+  const before = capture();
+  const baseline = path.join(ctx.root, '.aily/abs-sync/baselines/r0-next.json');
+  const exact = fs.readFileSync(baseline);
+  const reject = { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN' };
+  fs.unlinkSync(baseline);
+  await assert.rejects(main.settleLinkedEnvironment(ctx.root, request), reject);
+  fs.writeFileSync(baseline, Buffer.concat([exact, Buffer.from('\n')]));
+  await assert.rejects(main.settleLinkedEnvironment(ctx.root, request), reject);
+  fs.writeFileSync(baseline, exact);
+  const foreign = structuredClone(request);
+  foreign.observation.result.acceptedSource.attachment.identity.ino = '0';
+  await assert.rejects(main.settleLinkedEnvironment(ctx.root, foreign), reject);
+  assert.deepEqual(capture(), before);
+  assert.deepEqual(await main.pendingEnvironment(ctx.root), [{ requestId: ctx.environmentId, programRef: ctx.ref }]);
+  await assert.rejects(main.locked(ctx.root, () => {}), { code: 'LIBRARY_ENVIRONMENT_PROGRAM_PENDING' });
+
+  const result = await main.settleLinkedEnvironment(ctx.root, request);
+  assert.equal(result.environment.status, 'completed');
+  assert.equal(result.environment.current, true);
+  assert.deepEqual(await main.pendingEnvironment(ctx.root), []);
+  assert.equal(await main.locked(ctx.root, () => 'new dependency operation admitted'), 'new dependency operation admitted');
+  assert.deepEqual(capture(), before);
+  assert.equal(fs.readFileSync(path.join(ctx.root, 'project.abs'), 'utf8'), draft);
 });
 test('unknown active native owner and a superseding owner cannot authorize old environment rollback', async t => {
   const ctx = await fixture(t), before = fs.readFileSync(path.join(ctx.root, 'package.json'), 'utf8');
