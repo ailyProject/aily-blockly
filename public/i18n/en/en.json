@@ -516,6 +516,7 @@
         },
         "BOARD": {
             "SEARCH": "Search Board",
+            "CLEAR_SEARCH": "Clear search",
             "READ_DOC": "Documentation",
             "ADD_BOARD": "Add Board",
             "DEV": "dev",

@@ -447,6 +447,7 @@
         },
         "BOARD": {
             "SEARCH": "Rechercher une Carte",
+            "CLEAR_SEARCH": "Effacer la recherche",
             "READ_DOC": "Lire la Documentation",
             "ADD_BOARD": "Ajouter une Carte",
             "DEV": "dev",

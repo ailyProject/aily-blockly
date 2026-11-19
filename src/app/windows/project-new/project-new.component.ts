@@ -21,7 +21,7 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { UiService } from '@core/app-shell/public-api';
 import { CloudService } from '../../tools/cloud-space/services/cloud.service';
 import { firstValueFrom, Subject, Subscription } from 'rxjs';
-import { debounceTime, takeUntil } from 'rxjs/operators';
+import { debounceTime, filter, takeUntil } from 'rxjs/operators';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import type { NewProjectData } from '../../types/project-new';
 import {
@@ -150,6 +150,7 @@ export class ProjectNewComponent implements OnDestroy {
   ) {
     this.searchSubject.pipe(
       debounceTime(200),
+      filter(() => this.isBoardSearchPending),
       takeUntil(this.destroy$),
     ).subscribe(() => this.refreshBoardListForCurrentFilters());
 
@@ -301,6 +302,12 @@ export class ProjectNewComponent implements OnDestroy {
   search(keyword: string): void {
     this.keyword = keyword;
     this.searchSubject.next();
+  }
+
+  clearBoardSearch(): void {
+    this.keyword = '';
+    this.refreshBoardListForCurrentFilters();
+    this.boardSearchInput?.nativeElement.focus();
   }
 
   selectBoard(boardInfo: BoardInfo | null): void {

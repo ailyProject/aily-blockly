@@ -281,7 +281,6 @@
   gap: 12px;
 
   .search-field {
-    position: relative;
     flex-shrink: 0;
 
     nz-input-group {
@@ -290,18 +289,33 @@
     }
 
     .search-shortcut {
-      position: absolute;
-      right: 8px;
-      top: 50%;
-      transform: translateY(-50%);
       font-size: 11px;
       color: var(--aily-text-hint);
       pointer-events: none;
       line-height: 1;
     }
 
-    ::ng-deep .ant-input {
-      padding-right: 38px;
+    .search-clear {
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: 0;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--aily-text-secondary);
+      cursor: pointer;
+
+      &:hover {
+        background: var(--aily-bg-hover);
+        color: var(--aily-text-primary);
+      }
+
+      &:focus-visible {
+        outline: 1px solid var(--aily-color-primary-alt);
+        outline-offset: 1px;
+      }
     }
   }
 
