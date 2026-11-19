@@ -1010,6 +1010,8 @@
             "PROCESS_START_FAILED": "Impossible de démarrer le processus de compilation",
             "INCOMPLETE": "La compilation ne s’est pas terminée",
             "FAILED_WITH_TIME": "Échec de la compilation (durée: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "L’outil de compilation n’a pas pu charger la bibliothèque d’exécution Python. Consultez le journal de compilation.",
+            "TOOL_LOAD_XTENSA_CONFIG": "Le compilateur n’a pas pu charger la configuration de la puce Xtensa. Consultez le journal de compilation.",
             "ABNORMAL_END_TITLE": "Compilation terminée anormalement",
             "ABNORMAL_END_WITH_TIME": "Le processus de compilation s’est terminé anormalement (durée: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "Compilation terminée",

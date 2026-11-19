@@ -324,6 +324,29 @@ describe('Blockly compile and upload handoff', () => {
     return { service, files, command, start };
   }
 
+  for (const exitCode of [0, 1]) it(`uses a tool loading diagnostic only for a failed build (exit=${exitCode})`, async () => {
+    const f = compileFixture();
+    const requestId = 'tool-loading-original';
+    const code = 'TOOL_LOAD_PYTHON_DLL';
+    const diagnostic = '[AILY_TOOL_LOAD_FAILURE] ' + JSON.stringify({ version: 1, code, stage: 'objcopy' });
+    const nativeError = "[PYI-1:ERROR] Failed to load Python DLL 'python313.dll'";
+    f.service.handleCompileError = jasmine.createSpy('handleCompileError');
+    const { result } = await f.start(requestId);
+    f.command.next({ type: 'stderr', data: nativeError + '\n' + diagnostic.slice(0, 28) });
+    f.command.next({ type: 'stderr', data: diagnostic.slice(28) + '\nBuild terminated\n' });
+    f.command.next({ type: 'close', code: exitCode });
+    f.command.complete();
+
+    const settled = await result;
+    expect(settled.state).toBe(exitCode ? 'error' : 'done');
+    expect(settled.buildLog).toEqual(jasmine.objectContaining({ requestId, complete: true }));
+    expect(f.files.get(settled.buildLog.path)).toContain(diagnostic);
+    if (exitCode) {
+      expect(settled.text).toBe('BLOCKLY_EDITOR.BUILD.' + code);
+      expect(f.service.handleCompileError).toHaveBeenCalledOnceWith(settled.text, false, jasmine.stringContaining(nativeError));
+    } else expect(f.service.handleCompileError).not.toHaveBeenCalled();
+  });
+
   for (const early of [false, true]) it(`persists a cancelled Blockly request after cleanup and before releasing workflow (early=${early})`, async () => {
     const f = compileFixture();
     let stopped!: (value: boolean) => void, prepared!: () => void, persisted!: () => void;

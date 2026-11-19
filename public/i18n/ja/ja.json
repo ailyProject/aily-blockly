@@ -1010,6 +1010,8 @@
             "PROCESS_START_FAILED": "ビルドプロセスを開始できませんでした",
             "INCOMPLETE": "ビルドは完了していません",
             "FAILED_WITH_TIME": "ビルドに失敗しました (所要時間: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "ビルドツールが Python ランタイム DLL を読み込めませんでした。ビルドログを確認してください。",
+            "TOOL_LOAD_XTENSA_CONFIG": "コンパイラが Xtensa チップ設定を読み込めませんでした。ビルドログを確認してください。",
             "ABNORMAL_END_TITLE": "ビルドが異常終了しました",
             "ABNORMAL_END_WITH_TIME": "ビルドプロセスが異常終了しました (所要時間: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "ビルド完了",

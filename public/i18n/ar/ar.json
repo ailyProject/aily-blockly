@@ -1010,6 +1010,8 @@
             "PROCESS_START_FAILED": "فشل بدء عملية البناء",
             "INCOMPLETE": "لم يكتمل البناء",
             "FAILED_WITH_TIME": "فشل البناء (الوقت: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "تعذر على أداة البناء تحميل مكتبة تشغيل Python. راجع سجل البناء.",
+            "TOOL_LOAD_XTENSA_CONFIG": "تعذر على المترجم تحميل إعدادات شريحة Xtensa. راجع سجل البناء.",
             "ABNORMAL_END_TITLE": "انتهى البناء بشكل غير طبيعي",
             "ABNORMAL_END_WITH_TIME": "انتهت عملية البناء بشكل غير طبيعي (الوقت: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "اكتمل البناء",
