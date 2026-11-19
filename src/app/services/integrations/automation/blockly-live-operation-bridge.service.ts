@@ -677,7 +677,10 @@ export class BlocklyLiveOperationBridgeService {
       return { ok: true };
     }
     if (payload.operation === 'library_mutation_abort') {
-      await this.projectService.abortLibraryMutation(payload.params?.['token'], payload.params?.['requestId'], payload.path);
+      const current = this.projectService.currentProjectPath;
+      const matches = payload.path && current && await sameAbsProjectDirectory(payload.path, current,
+        window['fs']?.realpathAsync, window['platform']?.isWindows === true);
+      await this.projectService.abortLibraryMutation(payload.params?.['token'], payload.params?.['requestId'], matches ? current : payload.path);
       return { ok: true, operation: payload.operation };
     }
     const requestedProject = payload.path;

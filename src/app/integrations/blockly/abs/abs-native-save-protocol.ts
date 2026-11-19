@@ -79,8 +79,15 @@ export async function nativeSaveIndexKey(requestId: string): Promise<string> {
  * operation pointer was never written. A copied root cannot adopt its result. */
 export async function readNativeSaveRequest(port: Pick<AbsSyncStoragePort, 'read' | 'attachment' | 'executor'>,
   project: string, request: NativeSaveIdentity) {
+  return readNativeSaveAtAttachment(port, project, request, nativeSaveCapability(port).attachment);
+}
+
+/** Inspect original on-disk provenance during a qualified copy. The returned
+ * reference keeps its old attachment; it grants no right to observe a result. */
+export async function readNativeSaveAtAttachment(port: Pick<AbsSyncStoragePort, 'read'>,
+  project: string, request: NativeSaveIdentity, attachment: AbsProjectAttachment) {
   assertNativeSaveIdentity(request);
-  const context = nativeSaveCapability(port), indexText = await port.read(await nativeSaveIndexKey(request.requestId));
+  const indexText = await port.read(await nativeSaveIndexKey(request.requestId));
   if (indexText === null) return null;
   let index: any, snapshot: NativeSaveSnapshot;
   try {
@@ -101,7 +108,7 @@ export async function readNativeSaveRequest(port: Pick<AbsSyncStoragePort, 'read
     nativeSaveCapability({ attachment: snapshot.attachment, executor: snapshot.executor });
   } catch (error) { throw nativeSaveError((error as Error).message); }
   if (absJson(snapshot.nativeSave) !== absJson(request)) throw nativeSaveError('This original ID belongs to a different native input.', 'ABS_NATIVE_SAVE_REQUEST_CONFLICT');
-  if (absJson(snapshot.attachment) !== absJson(context.attachment))
+  if (absJson(snapshot.attachment) !== absJson(attachment))
     throw nativeSaveError('The original native request belongs to a different physical project attachment.', 'ABS_NATIVE_SAVE_ATTACHMENT_CHANGED');
   return { snapshot, snapshotHash: index.snapshotHash as string, ref: {
     operationId: snapshot.id, request: snapshot.nativeSave, attachment: snapshot.attachment, executor: snapshot.executor,

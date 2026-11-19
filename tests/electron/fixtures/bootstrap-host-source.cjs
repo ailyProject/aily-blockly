@@ -160,7 +160,7 @@ function bridgeFixture(sourceProject = '', generation = 7) {
   }
   return { bridge, domain, calls, window, generation, originalMethods };
 }
-function mainRouteFixture(sourceProject = '/source') {
+function mainRouteFixture(sourceProject = '/source', transport = async () => ({ ok: true })) {
   const calls = [],
     globals = {
       fs: { existsSync: () => true },
@@ -168,7 +168,7 @@ function mainRouteFixture(sourceProject = '/source') {
       getOpenedProjectPathFromWindow: () => sourceProject,
       requestMainWindow: async (...args) => {
         calls.push(args[2]);
-        return { ok: true };
+        return transport(...args);
       },
       ...require('../../../electron/live-operation-project-routing'),
     };

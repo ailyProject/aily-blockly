@@ -1,26 +1,88 @@
 import { absMapJson } from './abs-map-json';
-import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store';
-import { AbsOperationJournal } from './abs-operation-journal';
+import { AbsBaselineStore, type AbsJournalRecovery, type AbsSyncStoragePort } from './abs-baseline-store';
+import { AbsOperationJournal, type LocationOperation } from './abs-operation-journal';
 import { AbsApplicationJournal } from './abs-application-journal';
 import { inspectAbsBaselineRecovery, recoverAbsBaseline } from './abs-baseline-recovery';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
+import { nativeSaveCapability, readNativeSaveAtAttachment } from './abs-native-save-protocol';
+
+const movedOperation = (retained: LocationOperation | null, port: AbsSyncStoragePort, project: string) => !!retained
+  && (retained.operation.project !== project || !!(retained.operation.attachment && port.attachment
+    && absJson(retained.operation.attachment) !== absJson(port.attachment)));
+const unprovenCopy = () => new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN',
+  'The copied transaction and the saved source or original writer could not be verified. All versions were retained.');
+const matchesLocationAuthor = async (current: NonNullable<Awaited<ReturnType<AbsBaselineStore['readCommittedSnapshot']>>>, abs: string | null) =>
+  abs === current.projection.abs || abs !== null && current.workspaceMode === 'project-v1'
+  && current.authorSource?.hash === await hashAbsText(abs);
+
+async function settleCopiedTransaction(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
+  const observed = new Map<string, string | null>();
+  const digest = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
+  const read = async (key: string) => {
+    const value = await port.read(key);
+    const hash = await digest(value);
+    if (observed.has(key) && observed.get(key) !== hash) throw unprovenCopy();
+    observed.set(key, hash);
+    return value;
+  };
+  const inspection = { ...port, read };
+  const retained = await new AbsOperationJournal(inspection, project).inspectLocation(), source = retained?.operation;
+  if (!retained || !source || !movedOperation(retained, port, project) || !port.attachment || !port.retireCopiedLock
+    || !port.observeExecutor || !source.committed || (!source.application && !source.nativeSave)) throw unprovenCopy();
+  const original = nativeSaveCapability(source);
+  if (original.attachment.root !== source.project || (await port.observeExecutor(original.executor)).state !== 'exited')
+    throw unprovenCopy();
+  const pageId = (source.document as { activePageId?: unknown }).activePageId;
+  if (typeof pageId !== 'string' || !pageId) throw unprovenCopy();
+  if (source.nativeSave) {
+    const save = await readNativeSaveAtAttachment(inspection, source.project, source.nativeSave, original.attachment);
+    if (!save || save.ref.operationId !== source.id) throw unprovenCopy();
+  } else if (!source.candidate) throw unprovenCopy();
+  const scope = { projectKey: source.project, pageId };
+  const recovery = await new AbsBaselineStore(inspection, scope).inspectCopiedJournalRecovery({
+    disk: source.disk, committed: source.committed, ...(source.candidate ? { candidate: source.candidate.source } : {}),
+  });
+  if (!recovery || source.application && !await new AbsOperationJournal(inspection, source.project)
+      .matchesCopiedApplication(retained, recovery.generation, pageId)) throw unprovenCopy();
+  assertCurrent();
+  await port.retireCopiedLock({ original, expected: Object.fromEntries(observed) });
+  return {
+    recovery,
+    store: new AbsBaselineStore({ ...port, withLock: operation => port.withLock(async storage => {
+      for (const [key, hash] of observed) if (await digest(await storage.read(key)) !== hash) throw unprovenCopy();
+      assertCurrent();
+      return operation(storage);
+    }) }, scope),
+  };
+}
 
 /** Finish only the transaction whose actual ABI was already committed. An
  * unstarted transaction is abandoned; candidate input is never replayed. */
 export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
   if (await port.read('prepared.json') === null) return;
   const retained = await new AbsOperationJournal(port, project).inspectLocation();
-  if (retained?.operation.nativeSave) {
+  const moved = movedOperation(retained, port, project);
+  let recovery: AbsJournalRecovery | null;
+  try { recovery = await new AbsBaselineStore(port, { projectKey: project, pageId: '' }).inspectJournalRecovery(); }
+  catch (error) {
+    if (!moved || (error as { code?: string })?.code !== 'PROJECT_FILE_LOCK_CHANGED') throw error;
+    recovery = null;
+  }
+  // A second interruption may already have a new target-local metadata
+  // generation. Recovery still uses its own scope; the old request stays historical.
+  const copied = moved && (!recovery || recovery.scope.projectKey !== project || retained?.operation.project === project)
+    ? await settleCopiedTransaction(port, project, assertCurrent) : null;
+  if (!moved && retained?.operation.nativeSave) {
     const original = retained.operation;
     const ref = await new AbsOperationJournal(port, original.project).findDocumentSave(original.nativeSave!, assertCurrent);
     if (!ref) throw new AbsSyncError('ABS_NATIVE_SAVE_OBSERVATION_INVALID', 'The interrupted native publication has no original admission.');
   }
-  const recovery = await new AbsBaselineStore(port, { projectKey: project, pageId: '' }).inspectJournalRecovery();
+  recovery = copied?.recovery ?? recovery;
   assertCurrent();
   if (!recovery) throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', 'The interrupted save conflicts with current files. All versions were retained.');
-  if (recovery.scope.projectKey !== project) throw new AbsSyncError('ABS_SCOPE_INVALID', 'An interrupted transaction belongs to another project; its identity was not rebound.');
-  const store = new AbsBaselineStore(port, recovery.scope);
+  if (!copied && recovery.scope.projectKey !== project) throw new AbsSyncError('ABS_SCOPE_INVALID', 'An interrupted transaction belongs to another project; its identity was not rebound.');
+  const store = copied?.store ?? new AbsBaselineStore(port, recovery.scope);
   if (recovery.action === 'abandon') await store.abandon(recovery.generation, recovery.token);
   else {
     const result = await store.recover(assertCurrent, recovery);
@@ -35,13 +97,14 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
   await settleAbsProjectTransaction(port, project, assertCurrent);
   const journal = new AbsOperationJournal(port, project), retained = await journal.inspectLocation();
   let operation = retained?.operation ?? null;
-  if (operation?.nativeSave) {
+  const moved = movedOperation(retained, port, project);
+  if (operation?.nativeSave && !moved) {
     const original = await new AbsOperationJournal(port, operation.project).findDocumentSave(operation.nativeSave, assertCurrent);
     if (!original) throw new AbsSyncError('ABS_NATIVE_SAVE_OBSERVATION_INVALID', 'The retained native operation has no original admission.');
   }
-  if (retained && operation!.project !== project) {
+  if (retained && moved) {
     const store = new AbsBaselineStore(port, { projectKey: project, pageId: '' });
-    const current = await store.inspectCommitted(), disk = await store.captureDisk();
+    const current = await store.readCommittedSnapshot(), disk = await store.captureDisk();
     const committed = await port.read('committed.json'), original = operation!;
     const scope = current?.projection.map.scope;
     const page = (original.document as any)?.activePageId;
@@ -57,7 +120,7 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
       && await store.isMetadataOnlyContinuation(original.committed, original.disk.abi);
     const savedAbi = current ? await store.readDerivedAbi(current.projection.map.generation) : null;
     const completeMirrors = !!current && disk.abi !== null && disk.abi === savedAbi
-      && disk.abs === current.projection.abs && disk.map === absMapJson(current.projection.map);
+      && await matchesLocationAuthor(current, disk.abs) && disk.map === absMapJson(current.projection.map);
     // The same-root restart path retires an obsolete view once a later complete
     // save won. A location change must retain that newer source too; it is never
     // proof that the old unknown application/request succeeded.
@@ -71,13 +134,14 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
         || !unchangedPointer && (!metadataContinuation || !completeMirrors))) {
       throw new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN', 'The old operation and current complete saved source do not prove a location-only change. All versions were retained.');
     }
+    if (original.executor && (!port.observeExecutor || (await port.observeExecutor(original.executor)).state !== 'exited')) throw unprovenCopy();
     assertCurrent();
     await journal.archiveLocation(retained, disk, committed, assertCurrent);
     if (scope.projectKey !== project) await recoverAbsBaseline(port, project, assertCurrent);
-    const after = await store.inspectCommitted(), afterDisk = await store.captureDisk(), afterPointer = await port.read('committed.json');
+    const after = await store.readCommittedSnapshot(), afterDisk = await store.captureDisk(), afterPointer = await port.read('committed.json');
     if (!after || !afterPointer || after.projection.map.scope.projectKey !== project || after.projection.map.scope.pageId !== scope.pageId
       || afterDisk.abi !== disk.abi || await store.readDerivedAbi(after.projection.map.generation) !== disk.abi
-      || afterDisk.abs !== after.projection.abs || afterDisk.map !== absMapJson(after.projection.map)
+      || !await matchesLocationAuthor(after, afterDisk.abs) || afterDisk.map !== absMapJson(after.projection.map)
       || afterPointer !== committed && !await store.isMetadataOnlyContinuation(committed, disk.abi!)) {
       throw new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN', 'Location recovery no longer matches its preserved complete source. No retained view was applied.');
     }

@@ -88,6 +88,41 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     if (!Buffer.from(text, 'utf8').equals(bytes)) throw fault('ABS_STORAGE_ENCODING_INVALID', 'Sync files must contain exact UTF-8; invalid bytes were retained.');
     return text;
   };
+  const retireCopiedLock = async ({ original, expected } = {}) => {
+    const required = ['prepared.json', 'committed.json', 'operation.json', ...mirrors];
+    const sha256 = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+    if (!original?.attachment || !original.executor || !expected || Array.isArray(expected)
+      || required.some(key => !sha256(expected[key]))
+      || !Object.keys(expected).some(key => baseline.test(key))
+      || !Object.keys(expected).some(key => /^recoveries\/operation-[a-f0-9-]{36}\.json$/.test(key)))
+      throw fault('PROJECT_FILE_LOCK_CHANGED', 'Missing exact source and journal evidence for the copied lock.');
+    const verify = () => {
+      guard(); assertNoPreparedWorkspaceMigration(access);
+      for (const [key, expectedHash] of Object.entries(expected)) {
+        if (hash(readBytes(key)) !== expectedHash)
+          throw fault('ABS_TRANSACTION_CONFLICT', 'The copied journal changed before lock recovery.');
+      }
+      const pointer = JSON.parse(readText('operation.json'));
+      const prepared = JSON.parse(readText('prepared.json'));
+      const snapshotKey = `recoveries/operation-${pointer.id}.json`;
+      const snapshot = JSON.parse(readText(snapshotKey));
+      if (expected[snapshotKey] !== pointer.hash || snapshot.id !== pointer.id
+        || !sha256(prepared.hash) || expected[`baselines/${prepared.generation}.json`] !== prepared.hash
+        || snapshot.project !== original.attachment.root
+        || JSON.stringify(snapshot.attachment) !== JSON.stringify(original.attachment)
+        || JSON.stringify(snapshot.executor) !== JSON.stringify(original.executor))
+        throw fault('PROJECT_FILE_LOCK_CHANGED', 'The copied journal does not bind the retained native lock owner.');
+    };
+    verify();
+    const lock = await acquireProjectFileLock(access, guard, options.timeoutMs, {
+      original, archive: () => {
+        verify();
+        return locate(`recoveries/copied-lock-${randomUUID()}.json`, true);
+      },
+    });
+    const warnings = lock.release();
+    if (warnings.length) throw fault('ABS_COMMIT_UNCERTAIN', warnings.join('; '));
+  };
   return {
     attachment: access.attachment,
     executor,
@@ -97,6 +132,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       guard(); return result;
     },
     read: async key => { guard(); return readText(key); },
+    retireCopiedLock,
     withLock: async (operation, observeScope = false) => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
       const lock = await acquireProjectFileLock(access, guard, options.timeoutMs);
@@ -240,6 +276,7 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
     read: key => storage.read(key),
     withLock: operation => withBridgeLock(operation, false),
     readResult: key => resultOf(() => storage.read(key)),
+    retireCopiedLockResult: proof => resultOf(() => storage.retireCopiedLock(proof)),
     withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),
   };
 }

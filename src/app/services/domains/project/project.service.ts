@@ -341,28 +341,44 @@ export class ProjectService {
     const assertCurrent = () => {
       if (!unchanged() || this.pendingLibraryMutation !== pending || controller.signal.aborted || Date.now() >= deadline) throw expired();
     };
+    let cancelPreparation!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      cancelPreparation = () => reject(expired());
+      controller.signal.addEventListener('abort', cancelPreparation, { once: true });
+    });
+    void cancelled.catch(() => {});
     pending.timer = setTimeout(() => this.releasePendingLibraryMutation(pending), Math.max(0, deadline - Date.now()));
     try {
       // The live input fence belongs to the same request even before history returns a token.
-      edit = await this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames, controller.signal);
+      const editor = this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames, controller.signal).then(value => {
+        if (released) value.release();
+        else edit = value;
+        return value;
+      });
+      const preparedEdit = await Promise.race([editor, cancelled]);
       assertCurrent();
       if (!requestId) await this.saveLibraryChanges(projectPath);
       assertCurrent();
-      const { token } = await window['libraryDependencies'].historyBegin(projectPath, requestId
-        ? { packages, requestId, expiresAt: deadline } : { packages });
-      historyToken = token;
+      const history = window['libraryDependencies'].historyBegin(projectPath, requestId
+        ? { packages, requestId, expiresAt: deadline } : { packages }).then((value: {token: string}) => {
+        if (released) this.discardLibraryMutationHistory(projectPath, value.token);
+        else historyToken = value.token;
+        return value;
+      });
+      const { token } = await Promise.race([history, cancelled]);
       assertCurrent();
       clearTimeout(pending.timer);
       this.pendingLibraryMutation = undefined;
-      const mutation = { projectPath, token, requestId, deadline, before: edit.document, packages: packages.map(packageName), removedPackages: removedNames, edit, lease };
+      const mutation = { projectPath, token, requestId, deadline, before: preparedEdit.document, packages: packages.map(packageName), removedPackages: removedNames, edit: preparedEdit, lease };
       this.libraryMutation = mutation;
       this.libraryMutation.timer = setTimeout(() => { void this.abortLibraryMutation(token, requestId, projectPath); }, Math.max(0, deadline - Date.now()));
       return { token };
     } catch (error) {
-      if (released) edit?.release();
       this.releasePendingLibraryMutation(pending);
       if (historyToken) this.discardLibraryMutationHistory(projectPath, historyToken);
       throw error;
+    } finally {
+      controller.signal.removeEventListener('abort', cancelPreparation);
     }
   }
 
@@ -1041,6 +1057,7 @@ export class ProjectService {
   private readonly projectLifecycle = new ProjectLifecycleGate();
   private dependencyLifecycleState?: ProjectDependencyLifecycle;
   private projectCommandStopCloud?: WeakMap<ProjectDependencySession, Promise<void>>;
+  private projectCommandStopObservation?: WeakMap<ProjectDependencySession, Promise<boolean>>;
   private boardSwitchLifecycle: { projectPath: string; token: symbol } | null = null;
   private loadingBlocklyProjectPath = '';
   private loadedBlocklyProjectPath = '';
@@ -3415,19 +3432,37 @@ export class ProjectService {
   ): Promise<boolean> {
     const lifecycle = this.dependencyLifecycle;
     if (!session?.signal.aborted || lifecycle.get(projectPath) !== session) return false;
-    let result;
-    try {
-      result = await window['ipcRenderer'].invoke('project-commands-stop-status', {
-        projectPath: session.projectPath, projectSessionId: session.projectSessionId,
-      });
-    } catch { return false; }
-    if (!result?.ok || result.state !== 'stopped' || result.projectSessionId !== session.projectSessionId
-      || typeof result.projectPath !== 'string'
-      || lifecycle.get(result.projectPath) !== session) return false;
-    try { await this.invalidateProjectCommandCloud(session); } catch { return false; }
-    await lifecycle.waitForIdle(session);
-    lifecycle.release(session);
-    return true;
+    const pending = this.projectCommandStopObservation ??= new WeakMap();
+    const existing = pending.get(session);
+    if (existing) return existing;
+    const scope = { projectPath: session.projectPath, projectSessionId: session.projectSessionId };
+    const observe = async () => {
+      const ipc = window['ipcRenderer'];
+      const read = async () => {
+        const result = await ipc.invoke('project-commands-stop-status', scope);
+        return result?.ok && result.projectSessionId === scope.projectSessionId
+          && typeof result.projectPath === 'string' && lifecycle.get(result.projectPath) === session
+          && lifecycle.get(projectPath) === session ? result.state : undefined;
+      };
+      try {
+        let state = await read();
+        if (state === 'unknown') {
+          // Main never registered this exact stop. Reconcile its idempotent
+          // control, then verify the original scope before releasing it.
+          if (lifecycle.get(projectPath) !== session) return false;
+          try { await ipc.invoke('project-commands-stop', scope); } catch { /* Verify even when its acknowledgement is lost. */ }
+          state = await read();
+        }
+        if (state !== 'stopped') return false;
+        await this.invalidateProjectCommandCloud(session);
+        await lifecycle.waitForIdle(session);
+        lifecycle.release(session);
+        return true;
+      } catch { return false; }
+    };
+    const attempt = observe().finally(() => { pending.delete(session); });
+    pending.set(session, attempt);
+    return attempt;
   }
 
   private invalidateProjectCommandCloud(session: ProjectDependencySession): Promise<void> {
@@ -3451,7 +3486,7 @@ export class ProjectService {
     const cloudInvalidation = this.invalidateProjectCommandCloud(session);
     const commandStop = this.electronService.isElectron
       ? window['ipcRenderer'].invoke('project-commands-stop', {
-        projectPath, projectSessionId: session.projectSessionId,
+        projectPath: session.projectPath, projectSessionId: session.projectSessionId,
       }) : Promise.resolve({ ok: true });
     const [cloudStopped, commandsStopped] = await Promise.allSettled([cloudInvalidation, commandStop]);
     if ((cloudStopped.status === 'rejected' || commandsStopped.status === 'rejected' || !commandsStopped.value?.ok)
