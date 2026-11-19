@@ -71,11 +71,16 @@ export class AbsOperationJournal {
       if (pointerText === null) return null;
       const pointer = this.pointer(pointerText);
       if (pointer.id !== ref.operationId || pointer.hash !== original.snapshotHash || pointer.state === 'completed') return null;
+      const disk = await this.disk(storage), source = original.snapshot.disk;
+      if (disk.abi !== source.abi || disk.map !== source.map) return null;
+      const draftChanged = disk.abs !== source.abs;
+      const accepted = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' });
       const unchanged = async () => {
         guard();
         return await storage.read(currentKey) === pointerText
-          && absJson(await this.disk(storage)) === absJson(original.snapshot.disk)
+          && absJson(await this.disk(storage)) === absJson(disk)
           && await storage.read('committed.json') === original.snapshot.committed
+          && (!draftChanged || await accepted.workspaceMode(storage) === 'project-v1')
           && await storage.read('prepared.json') === null
           && await storage.read(`recoveries/application-commit-${ref.operationId}.json`) === null
           && await storage.read(`recoveries/application-result-${ref.operationId}.json`) === null;
@@ -83,9 +88,14 @@ export class AbsOperationJournal {
       if (!await unchanged()) return null;
       const oldWriter = await this.port.observeExecutor!(ref.executor);
       if (oldWriter.state !== 'exited' || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
+      if (draftChanged) {
+        const committed = await accepted.readCommittedSnapshot();
+        if (!committed || committed.projection.map.scope.projectKey !== this.project
+          || !await accepted.matchesAcceptedDisk(committed, disk)) return null;
+      }
       const hash = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
-      const saved = { abiHash: await hash(original.snapshot.disk.abi), absHash: await hash(original.snapshot.disk.abs),
-        mapHash: await hash(original.snapshot.disk.map), committedHash: await hash(original.snapshot.committed),
+      const saved = { abiHash: await hash(disk.abi), absHash: await hash(disk.abs),
+        mapHash: await hash(disk.map), committedHash: await hash(original.snapshot.committed),
         operationPointerHash: await hashAbsText(pointerText) };
       if (!await unchanged() || absJson(await this.port.observeExecutor!(ref.executor)) !== absJson(oldWriter)) return null;
       guard();

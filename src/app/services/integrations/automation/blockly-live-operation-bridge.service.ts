@@ -51,6 +51,7 @@ import { projectViewRecoveryFailure } from './project-view-recovery';
 import { importProjectMedia } from '../../../integrations/blockly/project-media-import';
 import { getBoardConfig, setBoardConfig } from '../../../integrations/blockly/board-config-operation';
 import { switchProjectBoard } from '../../../integrations/blockly/board-switch-operation';
+import { settleOriginalBoardEnvironment } from '../../../integrations/blockly/environment-settlement';
 import type { EditorOperationEvent } from '../../../integrations/blockly/editor-operation-event';
 import type { HostToolResult } from '../../../integrations/blockly/host-tool-result';
 import {
@@ -200,6 +201,7 @@ export class BlocklyLiveOperationBridgeService {
     if (blocklyProgram && window['fs']?.nativeSaveReceiptVersion === 2 && ['project_save', 'blocks_tidy'].includes(payload.operation || '')
       && !Object.hasOwn(payload.params || {}, 'saveRequest')) return { ok: false, code: 'PROJECT_SAVE_PROTOCOL_UPGRADE_REQUIRED',
         operation: payload.operation, commandDispatched: false, message: 'A native save requires the matching original durable request.' };
+    if (payload.operation === 'project_board_environment_settle') return this.executeBoardEnvironmentSettlement(payload, blocklyProgram);
     if (payload.operation === 'project_publication_status') {
       const params = payload.params || {}, project = params['project'] ?? payload.path;
       try {
@@ -308,6 +310,37 @@ export class BlocklyLiveOperationBridgeService {
     return { project, guard: () => {
       if (!current()) throw Object.assign(new Error('The original request project changed during admission.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
     } };
+  }
+
+  private async executeBoardEnvironmentSettlement(payload: BlocklyLiveOperationPayload, blocklyProgram: boolean) {
+    const params = payload.params || {}, project = payload.path, operation = 'project_board_environment_settle';
+    const hostPid = params['originalTargetPid'];
+    let requestId: string | undefined;
+    try {
+      const request = readProjectSaveRequest(params['saveRequest']);
+      requestId = request.requestId;
+      if (!blocklyProgram || request.version !== 2 || request.operation !== 'project_save' || !request.input
+        || !Number.isSafeInteger(hostPid) || hostPid < 1 || typeof project !== 'string' || !window['path']?.isAbsolute(project)
+        || Object.keys(params).some(key => !['saveRequest', 'originalTargetPid'].includes(key))) {
+        throw Object.assign(new Error('Board settlement requires an exact project and original publication.'),
+          { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
+      }
+      const scope = await this.admissionGuard(project);
+      if (!scope) throw Object.assign(new Error('The original board project is no longer open in this host.'),
+        { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+      const host = window['libraryDependencies'];
+      if (host?.environmentVersion !== 2 || typeof host.pendingEnvironment !== 'function' || typeof host.settleLinkedEnvironment !== 'function')
+        throw Object.assign(new Error('The matching linked dependency publisher is unavailable.'),
+          { code: 'LIBRARY_ENVIRONMENT_UNAVAILABLE' });
+      const io = await openAbsHostStorage(scope.project, scope.guard);
+      const identity = await nativeSaveIdentity(io.attachment?.root ?? scope.project, request);
+      const environmentStatus = await settleOriginalBoardEnvironment(io, scope.project, { request: identity, hostPid }, host, scope.guard);
+      return { ok: true, operation, project, requestId, environmentStatus };
+    } catch (error) {
+      return { ok: false, operation, project, requestId, environmentStatus: 'pending',
+        code: (error as any)?.code ?? 'LIBRARY_ENVIRONMENT_UNCERTAIN',
+        message: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   private async executeApplyAdmission(payload: BlocklyLiveOperationPayload, requestId: string): Promise<Record<string, any>> {

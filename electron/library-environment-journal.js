@@ -29,8 +29,7 @@ function programSource(root, access = createProjectFileAccess(root, root)) {
   return Object.fromEntries(['project.abi', 'project.abs', 'project.abs.map.json', '.aily/abs-sync/committed.json', '.aily/abs-sync/operation.json']
     .map(name => { const bytes = access.readRegular(path.join(root, name)); return [name, bytes === null ? null : digest(bytes)]; }));
 }
-function programPointer(root) {
-  const access = createProjectFileAccess(root, root);
+function programPointer(root, access = createProjectFileAccess(root, root)) {
   const text = access.readRegular(path.join(root, '.aily/abs-sync/operation.json'));
   return text === null ? null : JSON.parse(text.toString('utf8'));
 }
@@ -40,42 +39,103 @@ function parseProgramRecord(bytes) {
   catch { return undefined; }
 }
 
+function programWorkspaceMode(read) {
+  const selected = read('.aily/workspace-mode.json');
+  if (selected === null) return 'overlay-v1';
+  const mode = parseProgramRecord(selected);
+  if (mode?.version === 1 && Object.keys(mode).sort().join(',') === 'mode,version') return mode.mode;
+}
+
+function readAcceptedProgram(root, access, read, committedHash) {
+  const committed = read('.aily/abs-sync/committed.json'), pointer = parseProgramRecord(committed);
+  if (!pointer || digest(committed) !== committedHash || pointer.schemaVersion !== 1
+    || typeof pointer.generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(pointer.generation)) return null;
+  const baselines = '.aily/abs-sync/baselines';
+  try { access.checkDirectory(path.join(root, baselines)); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  const bytes = read(`${baselines}/${pointer.generation}.json`);
+  if (bytes === null || digest(bytes) !== pointer.hash) return null;
+  const baseline = parseProgramRecord(bytes);
+  const accepted = baseline?.schemaVersion === 2 ? baseline.snapshot : baseline?.schemaVersion === 1 ? baseline.projection?.abs : undefined;
+  const context = baseline?.schemaVersion === 2 ? baseline.context : baseline?.projection?.map;
+  const verifyPointer = read('.aily/abs-sync/committed.json');
+  if (typeof accepted !== 'string' || context?.generation !== pointer.generation
+    || typeof context.scope?.projectKey !== 'string' || !path.isAbsolute(context.scope.projectKey)
+    || path.relative(root, context.scope.projectKey) !== '' || typeof context.scope.pageId !== 'string' || !context.scope.pageId
+    || !verifyPointer?.equals(committed)) return null;
+  return { context, absHash: digest(accepted) };
+}
+
 /** The author ABS is an independent draft in project-v1. Verify the accepted
  * output selected by the locked project instead of using the draft as a mirror. */
 function matchesCurrentProgram(root, result, attachment) {
   const access = createProjectFileAccess(root, root);
   const actual = programSource(root, access);
   const read = relative => access.readRegular(path.join(root, relative));
-  const hash = bytes => bytes === null ? null : digest(bytes);
   const binding = result.evidence?.binding;
   if (!binding || binding.abiHash !== actual['project.abi'] || binding.mapHash !== actual['project.abs.map.json']) return false;
 
-  const selected = read('.aily/workspace-mode.json'), mode = parseProgramRecord(selected);
-  if (selected === null) return binding.absHash === actual['project.abs'];
-  if (mode?.version !== 1 || Object.keys(mode).sort().join(',') !== 'mode,version') return false;
-  if (mode.mode === 'overlay-v1') return binding.absHash === actual['project.abs'];
+  const mode = programWorkspaceMode(read);
+  if (mode === 'overlay-v1') return binding.absHash === actual['project.abs'];
 
   const proof = result.acceptedSource, generation = binding.generation;
-  if (mode.mode !== 'project-v1' || !access.attachment || proof?.version !== 1 || proof.workspaceMode !== 'project-v1'
+  if (mode !== 'project-v1' || !access.attachment || proof?.version !== 1 || proof.workspaceMode !== 'project-v1'
     || !same(proof.attachment, attachment) || !same(proof.attachment, access.attachment) || !same(proof.binding, binding)
     || typeof generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(generation)
     || result.publication.generation !== generation || typeof binding.scope?.projectKey !== 'string'
     || !path.isAbsolute(binding.scope.projectKey) || path.relative(access.attachment.root, binding.scope.projectKey) !== ''
     || typeof binding.scope.pageId !== 'string' || !binding.scope.pageId) return false;
 
-  const committed = read('.aily/abs-sync/committed.json'), pointer = parseProgramRecord(committed);
-  if (!pointer || hash(committed) !== proof.committedHash || actual['.aily/abs-sync/committed.json'] !== proof.committedHash
-    || pointer.schemaVersion !== 1 || pointer.generation !== generation) return false;
-  const baselines = '.aily/abs-sync/baselines';
-  try { access.checkDirectory(path.join(root, baselines)); }
-  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-  const bytes = read(`${baselines}/${generation}.json`);
-  if (bytes === null || hash(bytes) !== pointer.hash) return false;
-  const baseline = parseProgramRecord(bytes);
-  const accepted = baseline?.schemaVersion === 2 ? baseline.snapshot : baseline?.schemaVersion === 1 ? baseline.projection?.abs : undefined;
-  const context = baseline?.schemaVersion === 2 ? baseline.context : baseline?.projection?.map;
-  return typeof accepted === 'string' && context?.generation === generation && same(context.scope, binding.scope)
-    && digest(accepted) === binding.absHash && hash(read('.aily/abs-sync/committed.json')) === proof.committedHash;
+  if (actual['.aily/abs-sync/committed.json'] !== proof.committedHash) return false;
+  const accepted = readAcceptedProgram(root, access, read, proof.committedHash);
+  return accepted?.context.generation === generation && same(accepted.context.scope, binding.scope)
+    && accepted.absHash === binding.absHash;
+}
+
+/** Compare the exact old published bytes and preserve the current draft as a
+ * separate witness. The author exception requires a verified accepted head. */
+function matchesAuthorDraftProgram(root, access, actual) {
+  const read = relative => access.readRegular(path.join(root, relative));
+  if (programWorkspaceMode(read) !== 'project-v1' || !actual['project.abi']) return false;
+  const accepted = readAcceptedProgram(root, access, read, actual['.aily/abs-sync/committed.json']);
+  const map = parseProgramRecord(read('project.abs.map.json'));
+  return !!accepted && map?.generation === accepted.context.generation && same(map.scope, accepted.context.scope)
+    && map.savedAbiHash === accepted.context.savedAbiHash && map.baseAbsHash === accepted.absHash;
+}
+
+function matchesOriginalProgram(root, access, original, actual) {
+  if (!original) return false;
+  const unchanged = Object.keys(original).filter(name => !['project.abs', '.aily/abs-sync/operation.json'].includes(name))
+    .every(name => original[name] === actual[name]);
+  return unchanged && (original['project.abs'] === actual['project.abs'] || matchesAuthorDraftProgram(root, access, actual));
+}
+
+/** An admitted successor may retain a different author draft from the one it
+ * opened with. Check its immutable request and source snapshot under Main's lock. */
+function matchesNativeSuccessor(root, access, pointer, successor, actual) {
+  const ref = successor?.ref, requestId = ref?.request?.requestId;
+  if (successor?.kind !== 'native-admission' || ref?.request?.version !== 2
+    || typeof requestId !== 'string' || !/^pub2-[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/.test(requestId)
+    || ref.operationId !== pointer.id || successor.snapshotHash !== pointer.hash
+    || !['pending', 'restored', 'completed'].includes(pointer.state) || !same(ref.attachment, access.attachment)) return false;
+  const folder = path.join(root, '.aily/abs-sync/recoveries');
+  const snapshotBytes = access.readRegular(path.join(folder, `operation-${pointer.id}.json`));
+  if (snapshotBytes === null || digest(snapshotBytes) !== pointer.hash) return false;
+  const snapshot = parseProgramRecord(snapshotBytes);
+  const requestKey = digest('native-save-v2\0' + requestId).slice(7);
+  const index = parseProgramRecord(access.readRegular(path.join(folder, `request-${requestKey}.json`)));
+  if (snapshot?.version !== 1 || snapshot.kind !== 'document-save' || snapshot.id !== pointer.id || snapshot.project !== root
+    || !same(snapshot.nativeSave, ref.request) || !same(snapshot.attachment, ref.attachment) || !same(snapshot.executor, ref.executor)
+    || index?.version !== 2 || index.kind !== 'native-save' || index.project !== root || index.operationId !== pointer.id
+    || index.snapshotHash !== pointer.hash || !same(index.request, ref.request)
+    || !same(index.attachment, ref.attachment) || !same(index.executor, ref.executor)) return false;
+
+  const hash = value => typeof value === 'string' ? digest(value) : value === null ? null : undefined;
+  const committed = pointer.sourceCommitted ?? snapshot.committed, disk = snapshot.disk;
+  if (!disk || hash(disk.abi) !== actual['project.abi'] || hash(disk.map) !== actual['project.abs.map.json']
+    || hash(committed) !== actual['.aily/abs-sync/committed.json']
+    || pointer.sourceCommitted !== undefined && pointer.sourceAbiHash !== actual['project.abi']) return false;
+  return hash(disk.abs) === actual['project.abs'] || matchesAuthorDraftProgram(root, access, actual);
 }
 
 function directory(root, relative) {
@@ -529,18 +589,17 @@ class LibraryEnvironmentJournal {
       const result = this.observe(root, request.requestId); this.latest.set(root, result); return result;
     }
     if (observation?.state === 'completed' && same(observation.ref, ref) && observation.result?.publication?.status === 'NOT_COMMITTED') {
-      const actual = programSource(root), pointer = programPointer(root), original = operation.record.programPointer;
+      const access = createProjectFileAccess(root, root);
+      const actual = programSource(root, access), pointer = programPointer(root, access), original = operation.record.programPointer;
       if (pointer?.version === 1 && /^[0-9a-f-]{36}$/.test(pointer.id || '') && /^sha256:[0-9a-f]{64}$/.test(pointer.hash || '')
         && pointer.id !== ref.operationId && this.observe(root, request.requestId).current === true) {
         const successor = request.successor, saved = successor?.saved;
         const stamped = { 'project.abi': saved?.abiHash, 'project.abs': saved?.absHash, 'project.abs.map.json': saved?.mapHash,
           '.aily/abs-sync/committed.json': saved?.committedHash, '.aily/abs-sync/operation.json': saved?.operationPointerHash };
-        const native = successor?.kind === 'native-admission' && successor.ref?.request?.version === 2
-          && successor.ref.operationId === pointer.id && successor.snapshotHash === pointer.hash
-          && same(successor.ref.attachment, ref.attachment);
         const published = successor?.kind === 'complete-published-successor' && /^sha256:[0-9a-f]{64}$/.test(saved?.committedHash || '')
           && saved.committedHash !== operation.record.programSource['.aily/abs-sync/committed.json'];
-        if (successor?.version === 1 && same(successor.attachment, ref.attachment) && same(actual, stamped) && (native || published)) {
+        if (successor?.version === 1 && same(successor.attachment, ref.attachment) && same(actual, stamped)
+          && (published || matchesNativeSuccessor(root, access, pointer, successor, actual))) {
           immutable(resolution, { version: 1, requestId: request.requestId, status: 'superseded', programRef: ref,
             successor, candidateApplied: false });
           return { ...this.observe(root, request.requestId), current: false, superseded: true };
@@ -548,8 +607,7 @@ class LibraryEnvironmentJournal {
       }
       if (!original || pointer?.version !== 1 || pointer.id !== ref.operationId || pointer.id !== original.id
         || pointer.hash !== original.hash || !['pending', 'restored'].includes(pointer.state)
-        || Object.keys(operation.record.programSource).filter(name => name !== '.aily/abs-sync/operation.json')
-          .some(name => operation.record.programSource[name] !== actual[name])) throw fail('A newer source owner superseded the failed original environment operation.');
+        || !matchesOriginalProgram(root, access, operation.record.programSource, actual)) throw fail('A newer source owner superseded the failed original environment operation.');
       const restored = this.restore(root, operation, assertCurrent);
       if (!same(programSource(root), actual)) throw fail('The failed original source changed during environment restoration.');
       immutable(resolution, { version: 1, requestId: request.requestId, status: 'restored', programRef: ref, publication: 'NOT_COMMITTED' });
@@ -566,8 +624,11 @@ class LibraryEnvironmentJournal {
     const expected = { 'project.abi': fact.saved?.abiHash, 'project.abs': fact.saved?.absHash,
       'project.abs.map.json': fact.saved?.mapHash, '.aily/abs-sync/committed.json': fact.saved?.committedHash,
       '.aily/abs-sync/operation.json': fact.saved?.operationPointerHash };
-    const actual = programSource(root);
-    if (!same(actual, expected) || Object.keys(source).filter(name => name !== '.aily/abs-sync/operation.json').some(name => source[name] !== actual[name])) {
+    const access = createProjectFileAccess(root, root);
+    const actual = programSource(root, access), pointer = programPointer(root, access), original = operation.record.programPointer;
+    if (!original || pointer?.version !== 1 || pointer.id !== ref.operationId || pointer.id !== original.id
+      || pointer.hash !== original.hash || pointer.hash !== fact.snapshotHash || !['pending', 'restored'].includes(pointer.state)
+      || !same(actual, expected) || !matchesOriginalProgram(root, access, source, actual)) {
       throw fail('The unpublished source or recovery pointer changed after native observation.');
     }
     const restored = this.restore(root, operation, assertCurrent);
