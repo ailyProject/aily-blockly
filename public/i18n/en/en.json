@@ -1174,6 +1174,8 @@
             "PROCESS_START_FAILED": "Failed to start build process",
             "INCOMPLETE": "Build did not complete",
             "FAILED_WITH_TIME": "Build failed (time: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "The build tool could not load the Python runtime DLL. See the build log.",
+            "TOOL_LOAD_XTENSA_CONFIG": "The compiler could not load the Xtensa chip configuration. See the build log.",
             "ABNORMAL_END_TITLE": "Build ended abnormally",
             "ABNORMAL_END_WITH_TIME": "Build process ended abnormally (time: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "Build complete",

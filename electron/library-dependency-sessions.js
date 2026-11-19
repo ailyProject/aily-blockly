@@ -1,5 +1,7 @@
 const { randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { librarySubmission } = require('./library-environment-journal');
+const { rootAttachment, storageExecutor } = require('./project-file-lock-owner');
 const stableRequest = value => Array.isArray(value) ? value.map(stableRequest) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stableRequest(value[key])])) : value;
 const sameRequest = (left, right) => JSON.stringify(stableRequest({ ...left, operation: 'library-change' }))
@@ -33,16 +35,7 @@ class LibraryDependencySessions {
     if (operation === 'capabilities') return this.capabilities();
     if (operation === 'status') return this.readStatus(project);
     const root = this.libraries.root(project);
-    if (operation === 'cancelEnvironment') {
-      if (!isRequestId(request?.requestId)) throw new Error('Invalid original environment cancellation.');
-      const key = root + '\0' + request.requestId;
-      this.pruneRequests();
-      const original = this.requests.get(key) || { retainUntil: Date.now() + this.timeoutMs };
-      this.requests.set(key, original);
-      this.revoke(root, request.requestId, original, fault('LIBRARY_OPERATION_CANCELLED', 'The original library request was stopped.'));
-      if (original.done) await this.waitForCancellation(original.done);
-      return this.libraries.observeEnvironment(root, request);
-    }
+    if (operation === 'cancelEnvironment') return this.cancelEnvironment(root, request);
     if (operation === 'recover') {
       if (request?.action === 'resolve' && this.sessions.has(root)) return {
         ok: false, code: 'LIBRARY_DEPENDENCY_RECOVERY_BUSY', message: 'A dependency transaction still owns this project; no decision was applied.' };
@@ -128,6 +121,47 @@ class LibraryDependencySessions {
     }
     if (!token && identifiedWrite(operation)) return this.runMutation(operation, root, request);
     return this.libraries[operation](root, request, session?.control);
+  }
+
+  async cancelEnvironment(root, request) {
+    const requestId = request?.requestId;
+    if (!isRequestId(requestId)) throw fault('LIBRARY_OPERATION_INVALID', 'Invalid original environment cancellation.');
+    const key = root + '\0' + requestId;
+    this.pruneRequests();
+    const original = this.requests.get(key) || { retainUntil: Date.now() + this.timeoutMs };
+    const { originalRequest } = request;
+    let submission, retained;
+    if (Object.keys(request).length !== 1) {
+      const executor = storageExecutor();
+      if (!originalRequest || Array.isArray(originalRequest) || typeof originalRequest !== 'object'
+        || originalRequest.requestId !== requestId || Object.hasOwn(originalRequest, 'expiresAt')
+        || !['install', 'remove'].includes(originalRequest.action)
+        || !Number.isSafeInteger(executor.hostPid) || request.originalExecutorPid !== executor.hostPid
+        || !isDeepStrictEqual(request.attachment, rootAttachment(root))) {
+        throw fault('LIBRARY_OPERATION_INVALID', 'The original environment cancellation binding changed.');
+      }
+      submission = librarySubmission('mutate', originalRequest);
+      if (request.requestDigest !== submission.requestDigest)
+        throw fault('LIBRARY_OPERATION_INVALID', 'The original environment cancellation arguments changed.');
+      retained = this.libraries.environment.find(root, requestId);
+      if (original.submission && original.submission.requestDigest !== submission.requestDigest
+        || retained && (retained.record.submission
+          ? retained.record.submission.requestDigest !== submission.requestDigest
+          : !sameRequest(retained.record.request, originalRequest))) {
+        throw fault('LIBRARY_OPERATION_INVALID', 'The original environment cancellation does not match the existing request.');
+      }
+      original.submission ??= submission;
+    }
+    const cancelled = fault('LIBRARY_OPERATION_CANCELLED', 'The original library request was stopped.');
+    this.requests.set(key, original);
+    this.revoke(root, requestId, original, cancelled);
+    if (original.done) await this.waitForCancellation(original.done);
+    else if (submission && !retained) {
+      // The existing checkpoint publication arbitrates a late writer, even
+      // across Main instances. Only this original ID can be refused here.
+      await this.libraries.rejectCancelledEnvironment(root, originalRequest, submission, cancelled);
+    }
+    return this.libraries.observeEnvironment(root, request);
   }
 
   async runIdentifiedWrite(operation, root, request) {

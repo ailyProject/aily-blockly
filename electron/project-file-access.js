@@ -93,9 +93,9 @@ function assertNoPendingAbsGeneration(access) {
 }
 
 /** Native recovery arbitration plus the legacy marker exclusion point. */
-async function acquireProjectFileLock(access, guard, timeoutMs = 5000) {
+async function acquireProjectFileLock(access, guard, timeoutMs = 5000, copiedRecovery) {
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw projectFileFault('PROJECT_FILE_INVALID', 'Invalid lock timeout.');
-  return acquirePublicationLock(access, guard, timeoutMs);
+  return acquirePublicationLock(access, guard, timeoutMs, copiedRecovery);
 }
 
 module.exports = { MAX_PROJECT_FILE_BYTES, projectFileHash, projectFileFault, projectFileGuard,

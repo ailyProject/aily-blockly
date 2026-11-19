@@ -1011,6 +1011,8 @@
             "PROCESS_START_FAILED": "No se pudo iniciar el proceso de compilación",
             "INCOMPLETE": "La compilación no se completó",
             "FAILED_WITH_TIME": "Error de compilación (tiempo: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "La herramienta de compilación no pudo cargar la biblioteca de ejecución de Python. Consulta el registro de compilación.",
+            "TOOL_LOAD_XTENSA_CONFIG": "El compilador no pudo cargar la configuración del chip Xtensa. Consulta el registro de compilación.",
             "ABNORMAL_END_TITLE": "La compilación terminó de forma anormal",
             "ABNORMAL_END_WITH_TIME": "El proceso de compilación terminó de forma anormal (tiempo: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "Compilación completada",

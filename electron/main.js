@@ -930,7 +930,7 @@ function rendererCommandAvailability() {
   return isCurrentRendererGenerationReady() ? 'ready' : '';
 }
 
-function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal) {
+function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal, onDispatchedTimeout) {
   const deadline = Date.now() + timeoutMs;
   const startupDeadline = Date.now() + Math.min(Math.max(timeoutMs, 0), RENDERER_STARTUP_WAIT_MS);
 
@@ -956,7 +956,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
     if (lifecycleRejection) { resolve(lifecycleRejection); return; }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
+      resolve({ ok: false, commandDispatched: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
       return;
     }
 
@@ -965,7 +965,9 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       ipcMain.removeListener(responseChannel, listener);
-      resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
+      const result = { ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' };
+      if (!onDispatchedTimeout || rendererGeneration !== requestGeneration) { resolve(result); return; }
+      Promise.resolve().then(() => onDispatchedTimeout(requestGeneration)).finally(() => resolve(result)).catch(() => {});
     }, remaining);
 
     const listener = (event, message) => {
@@ -1244,6 +1246,15 @@ async function handleCliBridgeCommand(action, payload) {
               || operation === 'child_app_window_arrange'
                 ? 120000
                 : 12000;
+      const requestId = payload?.params?.requestId;
+      // Without its prepare reply the caller cannot enter the dependency writer.
+      // Retire that exact renderer fence before returning the missed observation.
+      const releasePreparation = operation === 'library_mutation_prepare' && typeof requestId === 'string'
+        ? generation => requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response', {
+          path: dir || '', operation: 'library_mutation_abort', params: { requestId },
+          lifecycle: { version: 1, rendererGeneration: generation, sourceProject: dir || null },
+        }, 5000)
+        : undefined;
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
@@ -1254,6 +1265,8 @@ async function handleCliBridgeCommand(action, payload) {
           ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
         },
         liveOperationTimeoutMs,
+        undefined,
+        releasePreparation,
       );
       if ((operation === 'project_build_status' || operation === 'project_build' && payload?.params?.buildRequest)
         && !result?.buildReceipt && ['RENDERER_RESPONSE_TIMEOUT', 'RENDERER_REQUEST_CANCELLED',

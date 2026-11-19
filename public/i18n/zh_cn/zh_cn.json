@@ -1170,6 +1170,8 @@
             "PROCESS_START_FAILED": "编译进程启动失败",
             "INCOMPLETE": "编译未完成",
             "FAILED_WITH_TIME": "编译失败 (耗时: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "构建工具无法加载 Python 运行时 DLL。请查看本次编译日志。",
+            "TOOL_LOAD_XTENSA_CONFIG": "编译器无法加载 Xtensa 芯片配置。请查看本次编译日志。",
             "ABNORMAL_END_TITLE": "编译异常结束",
             "ABNORMAL_END_WITH_TIME": "编译进程异常结束 (耗时: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "编译完成",

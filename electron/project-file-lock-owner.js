@@ -86,7 +86,7 @@ function observeStorageExecutor(original, observer = storageExecutor()) {
  * remains the common exclusion point for old and new writers. No timeout/PID
  * alone authorizes deleting the marker; an exact dead owner is checked while
  * the native anchor and physical project identity are held. */
-async function acquirePublicationLock(access, guard, timeoutMs) {
+async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) {
   const { root, files, checkRoot, checkDirectory } = access;
   const directory = path.join(root, '.aily'), marker = path.join(directory, 'project-files.write.lock');
   guard(); checkRoot();
@@ -128,14 +128,27 @@ async function acquirePublicationLock(access, guard, timeoutMs) {
           throw fault('PROJECT_FILE_LOCK_CHANGED', 'Unsafe project lock marker was retained.');
         const bytes = files.readFileSync(marker);
         let previous; try { previous = JSON.parse(bytes.toString('utf8')); } catch { /* Retain unverified bytes. */ }
-        if (previous?.attachment && (!attachment || !same(previous.attachment, attachment)))
-          throw fault('PROJECT_FILE_LOCK_CHANGED', 'The retained lock belongs to a different physical attachment.');
+        const foreign = previous?.attachment && (!attachment || !same(previous.attachment, attachment));
+        let archive;
+        if (foreign) {
+          const original = copiedRecovery?.original;
+          const identity = original?.executor;
+          if (!attachment || !original || previous.version !== 2 || !same(previous.attachment, original.attachment)
+            || previous.pid !== identity?.storagePid || previous.instanceId !== identity.instanceId
+            || previous.processIdentity !== identity.processIdentity || previous.bootId !== identity.bootId
+            || observeStorageExecutor(identity, executor).state !== 'exited')
+            throw fault('PROJECT_FILE_LOCK_CHANGED', 'The retained lock belongs to an unverified original attachment or writer.');
+          archive = copiedRecovery.archive();
+        }
         if (ownerIsDead(previous, executor)) {
           guard(); checkRoot(); checkDirectory(directory); native.assertHeld();
           const current = files.lstatSync(marker);
           if (current.dev !== stat.dev || current.ino !== stat.ino || !files.readFileSync(marker).equals(bytes))
             throw fault('PROJECT_FILE_LOCK_CHANGED', 'The observed lock changed before recovery.');
-          files.unlinkSync(marker);
+          // Preserve the exact foreign record. Only this target's elected
+          // guard can retire its copied marker; the original path is untouched.
+          if (archive) files.renameSync(marker, archive);
+          else files.unlinkSync(marker);
         } else await wait();
       }
     }

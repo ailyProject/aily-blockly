@@ -30,6 +30,7 @@ import {
   parseAilyBuilderProgressLine,
   parseLegacyAilyBuilderProgressLine
 } from '../../../utils/aily-builder-progress.utils';
+import { parseToolLoadFailure } from '../../../utils/aily-builder-tool-load';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 import { writeBuildRequest, captureBuildRequestGuard, buildManifestForGuard, buildSourceStale } from '../../../utils/build-request.utils';
 import { BlocklyCodePreparationInvalidatedError, type PreparedBlocklyCode } from './prepared-project-code';
@@ -1689,6 +1690,7 @@ export class _BuilderService {
             let lastBuildText = '';
             const outputLineBuffer = new AilyBuilderOutputLineBuffer();
             let lastStdErr = '';
+            let toolLoadFailure: ReturnType<typeof parseToolLoadFailure>;
             let fullStdErr = '';
             let fullOutput = '';
             let hasStreamedStdout = false;
@@ -1759,6 +1761,12 @@ export class _BuilderService {
                     lines.forEach(({ line, type: outputType }) => {
                           let trimmedLine = line.trim();
                           if (!trimmedLine) return;
+
+                          const diagnostic = outputType === 'stderr' ? parseToolLoadFailure(trimmedLine) : undefined;
+                          if (diagnostic) {
+                            toolLoadFailure = diagnostic;
+                            return;
+                          }
 
                           // aily-builder >= 1.2.11 emits a dedicated JSON progress event.
                           // Consume it here so protocol data never enters the log component.
@@ -1937,9 +1945,10 @@ export class _BuilderService {
                       this.logService.update({ detail: fullStdErr.trim(), state: 'error' });
                       this.appendCompileLog(fullStdErr.trim(), 'ERROR');
                     }
-                    this.handleCompileError(error.message || String(error), true, detail, undefined, true);
-                    this.workflowService.finishBuild(false, error.message || 'Build error'); // 确保完成工作流状态
-                    reject({ state: 'error', text: error.message, fullStdErr: detail });
+                    const failureText = toolLoadFailure ? this.t(toolLoadFailure) : error.message || String(error);
+                    this.handleCompileError(failureText, true, detail, undefined, true);
+                    this.workflowService.finishBuild(false, failureText);
+                    reject({ state: 'error', text: failureText, fullStdErr: detail });
                   },
                   complete: async () => {
                     this.clearProgressTimer(); // 清理定时器
@@ -2016,7 +2025,8 @@ export class _BuilderService {
 
                       lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
                       const diagnosticDetail = fullOutput.trim() || fullStdErr || lastStdErr || this.t('INCOMPLETE');
-                      this.handleCompileError(lastStdErr || this.t('INCOMPLETE'), false, diagnosticDetail);
+                      const loadingError = toolLoadFailure && this.t(toolLoadFailure);
+                      this.handleCompileError(loadingError || lastStdErr || this.t('INCOMPLETE'), false, diagnosticDetail);
                       this.logService.update({ detail: fullStdErr, state: 'error' });
                       this.appendCompileLog(fullStdErr || lastStdErr || this.t('INCOMPLETE'), 'ERROR');
                       this.passed = false;
@@ -2027,7 +2037,7 @@ export class _BuilderService {
                       });
 
                       this.workflowService.finishBuild(false, 'Compilation failed');
-                      reject({ state: 'error', text: this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: diagnosticDetail });
+                      reject({ state: 'error', text: loadingError || this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: diagnosticDetail });
                     } else if (this.cancelled) {
                       console.warn("编译中断")
                       console.log(`编译已取消，耗时: ${buildDuration} 秒`);

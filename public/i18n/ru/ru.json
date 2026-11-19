@@ -1011,6 +1011,8 @@
             "PROCESS_START_FAILED": "Не удалось запустить процесс сборки",
             "INCOMPLETE": "Сборка не завершена",
             "FAILED_WITH_TIME": "Ошибка сборки (время: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "Инструмент сборки не смог загрузить библиотеку среды Python. См. журнал сборки.",
+            "TOOL_LOAD_XTENSA_CONFIG": "Компилятор не смог загрузить конфигурацию чипа Xtensa. См. журнал сборки.",
             "ABNORMAL_END_TITLE": "Сборка завершилась аварийно",
             "ABNORMAL_END_WITH_TIME": "Процесс сборки завершился аварийно (время: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "Сборка завершена",
