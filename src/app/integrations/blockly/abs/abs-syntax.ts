@@ -1,4 +1,4 @@
-import { readAbsJsonToken, readAbsSingleQuotedToken } from '@shared/public-api';
+import { readAbsJsonToken, readAbsSingleQuotedToken } from '@shared/abs/abs-json-tokens';
 import { readAbsFieldToken } from './abs-field-values';
 import { ABS_SCHEMA_HEADER, AbsSyntaxNode, AbsSyncError } from './abs-state';
 import { bindAbsSyntax, type AbsRawNode, type AbsRawValue, type AbsSyntaxOptions } from './abs-syntax-binding';
@@ -98,7 +98,7 @@ class AbsSyntaxReader {
       type: '', parameters: [], sections: [],
       disabled: false, start: this.offset, end: this.offset,
     };
-    node.type = this.name();
+    node.type = this.name(true);
     this.space();
     if (this.source[this.offset] !== '(') {
       node.omittedParentheses = true; node.end = this.offset; this.depth--; return node;
@@ -149,6 +149,38 @@ class AbsSyntaxReader {
       if (annotation === 'disabled') {
         if (node.disabled) this.fail('Duplicate @disabled.');
         node.disabled = true;
+      } else if (annotation === 'protect') {
+        if (node.protection) this.fail('Duplicate @protect.');
+        this.expect(':'); this.space();
+        const start = this.offset;
+        this.literalEnd();
+        let protection: unknown;
+        try { protection = JSON.parse(this.source.slice(start, this.offset)); }
+        catch { this.fail('Invalid @protect JSON.'); }
+        if (!protection || typeof protection !== 'object' || Array.isArray(protection)
+          || !Object.keys(protection).length
+          || Object.entries(protection).some(([key, value]) => !['deletable', 'movable', 'editable'].includes(key) || value !== false)) {
+          this.fail('@protect accepts only deletable, movable and editable with the value false. Unlocking requires an explicit host operation.');
+        }
+        node.protection = protection;
+      } else if (annotation === 'comment' || annotation === 'shadow_fields') {
+        const key = annotation === 'comment' ? 'comment' : 'shadowFields';
+        if (Object.hasOwn(node, key)) this.fail(`Duplicate @${annotation}.`);
+        this.expect(':'); this.space();
+        const start = this.offset; this.literalEnd();
+        let value: any;
+        try { value = JSON.parse(this.source.slice(start, this.offset)); }
+        catch { this.fail(`Invalid @${annotation} JSON.`); }
+        if (annotation === 'comment') {
+          if (value !== null && typeof value !== 'string') this.fail('@comment accepts text or null.');
+          node.comment = value;
+        } else {
+          if (!value || typeof value !== 'object' || Array.isArray(value)
+            || Object.values(value).some(fields => !fields || typeof fields !== 'object' || Array.isArray(fields))) {
+            this.fail('@shadow_fields accepts input names mapped to field values.');
+          }
+          node.shadowFields = value;
+        }
       } else if (annotation === 'extra') {
         if (Object.hasOwn(node, 'extraState')) this.fail('Duplicate @extra.');
         this.expect(':');
@@ -211,8 +243,11 @@ class AbsSyntaxReader {
       });
   }
 
-  private name(): string {
-    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(this.source.slice(this.offset));
+  private name(blockType = false): string {
+    // Library block types (e.g. 74hc595_create) may start with a digit.
+    // Argument and annotation names retain the existing identifier grammar.
+    const pattern = blockType ? /^[A-Za-z0-9_]+/ : /^[A-Za-z_][A-Za-z0-9_]*/;
+    const match = pattern.exec(this.source.slice(this.offset));
     if (!match) this.fail('Expected an identifier.');
     this.offset += match[0].length;
     return match[0];

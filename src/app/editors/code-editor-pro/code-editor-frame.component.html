@@ -3,7 +3,7 @@
     <div #browserProjectView class="browser-project-view" aria-label="Aily Coder"></div>
     } @else {
     @for (projectPath of coderEmbedSrc ? [coderFrameProjectPath] : []; track projectPath) {
-    <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="Aily Coder"
+    <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="aily Coder"
         [src]="coderEmbedSrc" (load)="onCoderEmbedFrameLoad()"></iframe>
     }
     }

@@ -1,5 +1,8 @@
 import { Injectable } from '@angular/core';
 import { ElectronService } from '@core/platform/public-api';
+import { BehaviorSubject } from 'rxjs';
+
+export interface HostSerialPort { path: string; revision: number }
 
 @Injectable({
   providedIn: 'root'
@@ -7,10 +10,38 @@ import { ElectronService } from '@core/platform/public-api';
 export class SerialService {
 
   // 编译上传时，通过这里获取串口
-  currentPort;
+  private selectedPort: unknown;
+  private selectedInfo: PortItem | null = null;
+  private selectionQueued = false;
+  private selectionRevision = 0;
+  readonly selectedPort$ = new BehaviorSubject<HostSerialPort | null>(null);
+  get currentPort(): any { return this.selectedPort; }
+  set currentPort(value: any) { this.selectedPort = value; this.scheduleSelection(); }
 
   // 存储当前选中的设备完整信息（包含烧录方式 type: 'serial' | 'debugger'）
-  currentPortInfo: PortItem | null = null;
+  get currentPortInfo(): PortItem | null { return this.selectedInfo; }
+  set currentPortInfo(value: PortItem | null) { this.selectedInfo = value; this.scheduleSelection(); }
+
+  private scheduleSelection(): void {
+    // Coder sessions use Object.create(service); their selections must stay local.
+    if (!Object.prototype.hasOwnProperty.call(this, 'selectedPort$')) {
+      Object.defineProperty(this, 'selectedPort$', { value: new BehaviorSubject<HostSerialPort | null>(null) });
+      this.selectionQueued = false;
+      this.selectionRevision = 0;
+    }
+    if (this.selectionQueued) return;
+    this.selectionQueued = true;
+    // Existing callers assign the path and metadata together synchronously.
+    queueMicrotask(() => {
+      this.selectionQueued = false;
+      const path = String(this.selectedPort || '').trim();
+      const serial = (!this.selectedInfo?.type || this.selectedInfo.type === 'serial')
+        && /^(?:COM\d+|\/dev\/[^\s]+)$/i.test(path);
+      const previous = this.selectedPort$.value;
+      if ((serial ? path : '') === (previous?.path || '')) return;
+      this.selectedPort$.next(serial ? { path, revision: ++this.selectionRevision } : null);
+    });
+  }
 
   constructor(
     private electronService: ElectronService

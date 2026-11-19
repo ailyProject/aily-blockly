@@ -1,3 +1,8 @@
+import { isBuildCancelled } from './build-cancellation';
+import type { ProjectBuildLogReference } from './project-build-log';
+import type { BuildInput } from './build-input';
+import type { BuildSnapshot } from './build-snapshot';
+
 export interface BuildCheckpoint {
   startedAt?: number;
   inputCapturedAt?: number;
@@ -14,14 +19,21 @@ export interface BuildResultSnapshot {
   previousCheckpoint?: BuildCheckpoint;
   message: string;
   fullStdErr: string;
+  buildRequestId?: string;
+  buildLog?: ProjectBuildLogReference;
+  buildInput?: BuildInput;
+  buildSource?: Record<string, unknown>;
+  buildSnapshot?: BuildSnapshot;
+  code?: 'BUILD_CANCELLED';
+  buildOutcome?: 'cancelled';
 }
 
 /** Retain the actual completed build result independently of the rolling log. */
 export function persistBuildResult(
   projectPath: string,
   success: boolean,
-  result?: { state?: string; text?: string; fullStdErr?: string },
-  error?: { state?: string; text?: string; message?: string; fullStdErr?: string },
+  result?: { state?: string; text?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput; buildSource?: Record<string, unknown>; buildSnapshot?: BuildSnapshot },
+  error?: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput; buildSource?: Record<string, unknown>; buildSnapshot?: BuildSnapshot },
   checkpoint?: BuildCheckpoint,
   source: BuildResultSnapshot['source'] = 'system',
 ): void {
@@ -35,6 +47,15 @@ export function persistBuildResult(
     ...(checkpoint?.startedAt ? { checkpoint } : {}),
     message: result?.text || error?.text || error?.message || '',
     fullStdErr: result?.fullStdErr || error?.fullStdErr || '',
+    ...(result?.buildInput || error?.buildInput ? { buildInput: result?.buildInput || error?.buildInput } : {}),
+    ...(result?.buildSource || error?.buildSource ? { buildSource: result?.buildSource || error?.buildSource } : {}),
+    ...(result?.buildSnapshot || error?.buildSnapshot ? { buildSnapshot: result?.buildSnapshot || error?.buildSnapshot } : {}),
+    ...(result?.buildLog || error?.buildLog ? {
+      buildLog: result?.buildLog || error?.buildLog,
+      buildRequestId: (result?.buildLog || error?.buildLog)!.requestId,
+    } : {}),
+    ...(isBuildCancelled(result) || isBuildCancelled(error)
+      ? { code: 'BUILD_CANCELLED' as const, buildOutcome: 'cancelled' as const } : {}),
   };
 
   try {

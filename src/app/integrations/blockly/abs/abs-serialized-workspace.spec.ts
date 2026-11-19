@@ -12,4 +12,13 @@ describe('Blockly serialized workspace JSON boundary', () => {
       expect(() => normalizeAbsSerializedWorkspace({ fields: { value } })).toThrowError(/non-JSON/);
     }
   });
+  it('normalizes deeply connected blocks without the platform native stringify stack limit', () => {
+    let block: any = { type: 'tail', id: 'tail', optional: undefined };
+    for (let i = 0; i < 6000; i++) block = { type: 'statement', id: String(i), next: { block } };
+    const result = normalizeAbsSerializedWorkspace({ blocks: { blocks: [block] } });
+    let count = 0, current = result.blocks.blocks[0];
+    while (current) { count++; if (!current.next) expect(Object.hasOwn(current, 'optional')).toBeFalse(); current = current.next?.block; }
+    expect(count).toBe(6001);
+  });
+
 });

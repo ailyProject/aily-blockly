@@ -1,6 +1,7 @@
 /** Native fields, renderers and structural extensions shared by UI and isolated candidate bundles.
  * Keep application UI components, Angular services and preload out of this entry.
  */
+import { installBlocklyInteractionRecovery } from '../../utils/blockly-interaction-recovery';
 import './renderer/aily-thrasos/thrasos';
 import './renderer/aily-zelos/zelos';
 import './renderer/aily-icon';
@@ -22,3 +23,5 @@ import './custom-field/field-slider';
 import './custom-field/field-angle180';
 import './custom-field/field-angle';
 import '@blockly/field-colour-hsv-sliders';
+
+installBlocklyInteractionRecovery();

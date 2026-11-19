@@ -56,7 +56,7 @@ if (
   throw new Error('Installed aily-connector does not provide the required protocol capabilities');
 }
 
-console.log('Local aily-connector is ready for Aily Blockly development:');
+console.log('Local aily-connector is ready for aily Blockly development:');
 console.log(`- source: ${connectorRoot}`);
 console.log(`- prefix: ${prefix}`);
 console.log(`- entry: ${entryPath}`);

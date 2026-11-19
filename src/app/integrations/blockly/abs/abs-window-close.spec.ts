@@ -7,6 +7,7 @@ describe('main-window close confirmation', () => {
     window['iWindow'] = { close: jasmine.createSpy('close'), confirmClose: jasmine.createSpy('reply') };
     view = Object.create(HeaderComponent.prototype);
     view.checkUnsavedChanges = jasmine.createSpy('check').and.resolveTo(true);
+    view.uiService = { closePartitionManagerBeforeQuit: jasmine.createSpy('closePartitions').and.resolveTo(true) };
     view.message = { error: jasmine.createSpy('error') };
   });
   afterEach(() => { window['iWindow'] = original; });
@@ -20,9 +21,10 @@ describe('main-window close confirmation', () => {
     let finish!: (allowed: boolean) => void;
     view.checkUnsavedChanges.and.returnValue(new Promise(resolve => { finish = resolve; }));
     const pending = view.confirmWindowClose({ requestId: 'quit-one' });
+    await Promise.resolve();
     expect(window['iWindow'].confirmClose).not.toHaveBeenCalled();
     finish(allowed); await pending;
-    expect(view.checkUnsavedChanges).toHaveBeenCalledOnceWith('close');
+    expect(view.checkUnsavedChanges).toHaveBeenCalledOnceWith('close', { quitting: true });
     expect(window['iWindow'].confirmClose).toHaveBeenCalledOnceWith('quit-one', allowed);
     expect(window['iWindow'].close).not.toHaveBeenCalled();
   });
@@ -31,6 +33,19 @@ describe('main-window close confirmation', () => {
     await view.confirmWindowClose({ requestId: 'quit-error' });
     expect(window['iWindow'].confirmClose).toHaveBeenCalledOnceWith('quit-error', false);
     expect(view.message.error).toHaveBeenCalled();
+  });
+  it('waits for partition consent before checking the project and acknowledges cancellation without cleanup', async () => {
+    let finish!: (allowed: boolean) => void;
+    view.uiService.closePartitionManagerBeforeQuit.and.returnValue(new Promise(resolve => { finish = resolve; }));
+    const pending = view.confirmWindowClose({ requestId: 'partition-quit' });
+    expect(view.checkUnsavedChanges).not.toHaveBeenCalled();
+    expect(window['iWindow'].confirmClose).not.toHaveBeenCalled();
+    finish(false); await pending;
+    expect(view.checkUnsavedChanges).not.toHaveBeenCalled();
+    expect(window['iWindow'].confirmClose).toHaveBeenCalledOnceWith('partition-quit', false);
+    view.uiService.closePartitionManagerBeforeQuit.and.resolveTo(true);
+    await view.confirmWindowClose({ requestId: 'retry' });
+    expect(window['iWindow'].confirmClose).toHaveBeenCalledWith('retry', true);
   });
   it('ignores legacy or malformed uncorrelated requests', async () => {
     for (const request of [undefined, {}, { requestId: 12 }, { requestId: '' }]) await view.confirmWindowClose(request);

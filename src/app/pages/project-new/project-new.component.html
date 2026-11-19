@@ -231,10 +231,7 @@
             </button>
             } @else if (currentStep == 2) {
             <button nz-button nzType="default" nzLoading>
-              {{
-                (creatingMode === 'aily' ? 'PROJECT_NEW.BUTTONS.CREATING_AILY_CODE' : 'PROJECT_NEW.BUTTONS.CREATING')
-                  | translate
-              }}
+              {{ 'PROJECT_NEW.BUTTONS.CREATING' | translate }}
             </button>
             }
           </div>

@@ -2,7 +2,9 @@ import { ChangeDetectorRef, Component, NgZone, OnInit, OnDestroy } from '@angula
 import { ActivatedRoute } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { Subscription } from 'rxjs';
+import { Subscription, firstValueFrom } from 'rxjs';
+import { NzModalService } from 'ng-zorro-antd/modal';
+import { UnsaveDialogComponent } from '../../main-window/components/unsave-dialog/unsave-dialog.component';
 import { ProjectService } from '@domain/project/public-api';
 import { CodeEditorFrameComponent } from './code-editor-frame.component';
 import { CodeEditorProProjectService } from './services/code-editor-pro-project.service';
@@ -29,6 +31,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy {
     private readonly translate: TranslateService,
     private readonly changeDetector: ChangeDetectorRef,
     private readonly zone: NgZone,
+    private readonly modal: NzModalService,
   ) {}
 
   get coderProjects() { return this.projectService.coderProjects; }
@@ -74,7 +77,17 @@ export class CodeEditorProComponent implements OnInit, OnDestroy {
     if (this.coderTabClosing(path)) return;
     this.closing.add(path);
     try {
-      await this.persistence.saveAll(path);
+      if (!await this.persistence.hasSavedProject(path)) {
+        const dialog = this.modal.create({
+          nzTitle: null, nzFooter: null, nzClosable: false,
+          nzBodyStyle: { padding: '0' }, nzWidth: '350px',
+          nzContent: UnsaveDialogComponent, nzData: { action: 'close' },
+        });
+        const decision = await firstValueFrom(dialog.afterClose);
+        if (decision?.result === 'save') await this.persistence.saveAll(path);
+        else if (decision?.result === 'continue') await this.projectService.discardLibraryChanges(path);
+        else return;
+      }
       if (this.isCoderTabActive(path)) {
         const index = this.coderProjects.findIndex(project => project.path === path);
         const next = this.coderProjects[index + 1] || this.coderProjects[index - 1];

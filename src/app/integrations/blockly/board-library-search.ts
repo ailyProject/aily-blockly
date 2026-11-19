@@ -892,13 +892,13 @@ function searchInNewBoards(
 
         // 筛选通过时加基础分
         let totalScore = textScore;
-        if (filters) {
+        if (filters && Object.keys(filters).some(key => key !== 'keywords' && filters[key as keyof StructuredFilters])) {
             totalScore += 50;
             matchedFields.unshift('structured_filters');
         }
 
         // 3. 门槛：至少有关键词匹配或结构化筛选通过
-        if (matchedQueries.length === 0 && !filters) continue;
+        if (queryList.length > 0 && matchedQueries.length === 0) continue;
 
         // 4. 多关键词加分（含 filters 基础分一起加成）
         totalScore = applyMultiKeywordBonus(totalScore, queryList.length, matchedQueries.length);
@@ -939,17 +939,28 @@ function searchInNewLibraries(
         if (filters && !passNewLibraryFilters(lib, filters)) continue;
 
         // 2. 文本评分
+        // The structured index often omits descriptions/localized names. Score
+        // the catalog text as well, instead of using it only after matching.
+        const catalog = oldLibrariesData?.find(item =>
+            item.name.replace(/^@aily-project\//, '') === lib.name.replace(/^@aily-project\//, ''));
+        const searchable = {
+            ...lib,
+            description: [lib.description, catalog?.description].filter(Boolean).join(' '),
+            keywords: [...(lib.keywords || []), ...(catalog?.keywords || []),
+                ...Object.entries(catalog || {}).filter(([key]) => key.startsWith('nickname') || key.startsWith('description_'))
+                    .map(([, value]) => String(value || ''))],
+        };
         const { totalScore: textScore, matchedFields, matchedQueries } =
-            scoreItemByFields(lib, queryList, NEW_LIBRARY_FIELDS);
+            scoreItemByFields(searchable, queryList, NEW_LIBRARY_FIELDS);
 
         let totalScore = textScore;
-        if (filters) {
+        if (filters && Object.keys(filters).some(key => key !== 'keywords' && filters[key as keyof StructuredFilters])) {
             totalScore += 50;
             matchedFields.unshift('structured_filters');
         }
 
         // 3. 门槛
-        if (matchedQueries.length === 0 && !filters) continue;
+        if (queryList.length > 0 && matchedQueries.length === 0) continue;
 
         // 4. 多关键词加分
         totalScore = applyMultiKeywordBonus(totalScore, queryList.length, matchedQueries.length);

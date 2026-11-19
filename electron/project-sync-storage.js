@@ -1,31 +1,65 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { storageExecutor, observeStorageExecutor } = require('./project-file-lock-owner');
+const { assertNoPreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
 
 const PROJECT_SYNC_STORAGE_VERSION = 2;
+const SCOPE_CHECK_INTERVAL_MS = 200;
 const mirrors = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
+const readOnlyInputs = new Set(['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock']);
+const readableFiles = new Set([...mirrors, ...readOnlyInputs]);
 const baseline = /^baselines\/[A-Za-z0-9_-]{1,96}\.json$/;
-const restoration = /^restorations\/restore_[a-f0-9]{64}\.json$/;
+const recovery = /^recoveries\/[A-Za-z0-9_-]{1,96}\.json$/;
+const metadata = new Set(['operation.json', 'lineage.json']);
+const workspaceMetadata = new Set(['workspace-mode.json']);
+const historyObject = /^history-objects\/([a-f0-9]{64})$/;
+const historyHash = key => {
+  const match = typeof key === 'string' ? historyObject.exec(key) : null;
+  return match && match[0] === key ? match[1] : null;
+};
 
 /** A project-bound, revocable host capability, not an IPC lock token or a second transaction engine. */
 async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) {
   const files = options.files || fs;
-  const guard = projectFileGuard(assertCurrent);
+  const ownerGuard = projectFileGuard(assertCurrent);
+  let modeGuard = () => {};
+  const guard = () => { ownerGuard(); modeGuard(); };
   if (typeof projectPath !== 'string' || !path.isAbsolute(projectPath)) throw fault('PROJECT_FILE_INVALID', 'Expected an absolute project path.');
   guard();
   const root = await files.promises.realpath(projectPath);
   guard();
   const access = createProjectFileAccess(root, projectPath, files);
+  const executor = storageExecutor();
   const directories = [path.join(root, '.aily'), path.join(root, '.aily', 'abs-sync')];
+  const modeBytes = () => {
+    try { access.checkDirectory(directories[0]); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    return access.readRegular(path.join(directories[0], 'workspace-mode.json'));
+  };
+  const selectedMode = modeBytes();
+  modeGuard = () => {
+    access.checkRoot();
+    if (hash(modeBytes()) !== hash(selectedMode)) throw fault('ABS_WORKSPACE_MODE_CHANGED', 'The project execution mode changed; the original storage capability was revoked.');
+  };
   const locate = (key, create = false) => {
-    if (typeof key !== 'string' || !(mirrors.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || restoration.test(key))) {
+    const objectHash = historyHash(key);
+    if (typeof key !== 'string' || !(objectHash || key === 'history-workspace.json' || readableFiles.has(key) || metadata.has(key) || workspaceMetadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
       throw fault('ABS_STORAGE_KEY_INVALID', 'Unsupported ABS sync storage key.');
     }
+    if (objectHash && create) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
     access.checkRoot();
-    if (mirrors.has(key)) return path.join(root, key);
-    const parents = baseline.test(key) || restoration.test(key)
+    if (readableFiles.has(key)) return path.join(root, key);
+    if (key === 'history-workspace.json') {
+      const directory = path.join(root, '.workspace-history');
+      try { access.checkDirectory(directory); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      return path.join(directory, 'workspace.json');
+    }
+    const parents = workspaceMetadata.has(key) ? [directories[0]] : objectHash ? [path.join(root, '.workspace-history'), path.join(root, '.workspace-history', 'objects'),
+      path.join(root, '.workspace-history', 'objects', objectHash.slice(0, 2))] : baseline.test(key) || recovery.test(key)
       ? [...directories, path.join(directories[1], key.split('/')[0])] : directories;
     for (const directory of parents) {
       if (create) {
@@ -34,11 +68,18 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       try { access.checkDirectory(directory); }
       catch (error) { if (!create && error.code === 'ENOENT') return null; throw error; }
     }
-    return path.join(directories[1], ...key.split('/'));
+    return workspaceMetadata.has(key) ? path.join(directories[0], key)
+      : objectHash ? path.join(parents[2], objectHash + '.blob') : path.join(directories[1], ...key.split('/'));
   };
   const readBytes = key => {
     const file = locate(key);
-    return file === null ? null : access.readRegular(file);
+    if (file === null) return null;
+    const bytes = access.readRegular(file);
+    if (historyHash(key)) {
+      guard();
+      if (locate(key) !== file) throw fault('PROJECT_FILE_UNSAFE_PATH', 'History object ancestry changed during its read.');
+    }
+    return bytes;
   };
   const readText = key => {
     const bytes = readBytes(key);
@@ -47,12 +88,56 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     if (!Buffer.from(text, 'utf8').equals(bytes)) throw fault('ABS_STORAGE_ENCODING_INVALID', 'Sync files must contain exact UTF-8; invalid bytes were retained.');
     return text;
   };
+  const retireCopiedLock = async ({ original, expected } = {}) => {
+    const required = ['prepared.json', 'committed.json', 'operation.json', ...mirrors];
+    const sha256 = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+    if (!original?.attachment || !original.executor || !expected || Array.isArray(expected)
+      || required.some(key => !sha256(expected[key]))
+      || !Object.keys(expected).some(key => baseline.test(key))
+      || !Object.keys(expected).some(key => /^recoveries\/operation-[a-f0-9-]{36}\.json$/.test(key)))
+      throw fault('PROJECT_FILE_LOCK_CHANGED', 'Missing exact source and journal evidence for the copied lock.');
+    const verify = () => {
+      guard(); assertNoPreparedWorkspaceMigration(access);
+      for (const [key, expectedHash] of Object.entries(expected)) {
+        if (hash(readBytes(key)) !== expectedHash)
+          throw fault('ABS_TRANSACTION_CONFLICT', 'The copied journal changed before lock recovery.');
+      }
+      const pointer = JSON.parse(readText('operation.json'));
+      const prepared = JSON.parse(readText('prepared.json'));
+      const snapshotKey = `recoveries/operation-${pointer.id}.json`;
+      const snapshot = JSON.parse(readText(snapshotKey));
+      if (expected[snapshotKey] !== pointer.hash || snapshot.id !== pointer.id
+        || !sha256(prepared.hash) || expected[`baselines/${prepared.generation}.json`] !== prepared.hash
+        || snapshot.project !== original.attachment.root
+        || JSON.stringify(snapshot.attachment) !== JSON.stringify(original.attachment)
+        || JSON.stringify(snapshot.executor) !== JSON.stringify(original.executor))
+        throw fault('PROJECT_FILE_LOCK_CHANGED', 'The copied journal does not bind the retained native lock owner.');
+    };
+    verify();
+    const lock = await acquireProjectFileLock(access, guard, options.timeoutMs, {
+      original, archive: () => {
+        verify();
+        return locate(`recoveries/copied-lock-${randomUUID()}.json`, true);
+      },
+    });
+    const warnings = lock.release();
+    if (warnings.length) throw fault('ABS_COMMIT_UNCERTAIN', warnings.join('; '));
+  };
   return {
+    attachment: access.attachment,
+    executor,
+    observeExecutor: async original => {
+      guard(); access.checkRoot();
+      const result = observeStorageExecutor(original, executor);
+      guard(); return result;
+    },
     read: async key => { guard(); return readText(key); },
-    withLock: async operation => {
+    retireCopiedLock,
+    withLock: async (operation, observeScope = false) => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
       const lock = await acquireProjectFileLock(access, guard, options.timeoutMs);
       let active = true;
+      let scopeTimer;
       const pending = new Set();
       const check = () => {
         if (!active) throw fault('ABS_STORAGE_SCOPE_CLOSED', 'Storage write capability has expired.');
@@ -60,13 +145,15 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       };
       const replace = async (key, expectedHash, content) => {
         check();
+        assertNoPreparedWorkspaceMigration(access);
+        if (historyHash(key)) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
         // Validate keys even for no-op/delete requests. Baselines are append-only;
         // only the prepared journal may be deleted by the sync protocol.
         locate(key);
-        if (!(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
+        if (key === 'history-workspace.json' || readOnlyInputs.has(key) || workspaceMetadata.has(key) || !(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
           || !(content === null || typeof content === 'string')
-          || (content === null && key !== 'prepared.json')
-          || ((baseline.test(key) || restoration.test(key)) && expectedHash !== null)) {
+          || (content === null && key !== 'prepared.json' && key !== 'operation.json')
+          || ((baseline.test(key) || recovery.test(key)) && expectedHash !== null)) {
           throw fault('ABS_STORAGE_WRITE_INVALID', 'Invalid conditional sync write or immutable baseline mutation.');
         }
         const bytes = content === null ? null : Buffer.from(content, 'utf8');
@@ -87,7 +174,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
             finally { await handle.close(); }
           }
           // No await from the final renderer guard/physical identity/CAS to rename.
-          check(); locate(key);
+          check(); locate(key); assertNoPreparedWorkspaceMigration(access);
           if (hash(readBytes(key)) !== expectedHash) return false;
           attempted = true;
           if (bytes === null) files.unlinkSync(target);
@@ -112,6 +199,8 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
         }
       };
       const scoped = {
+        attachment: access.attachment,
+        executor,
         read: async key => { check(); return readText(key); },
         replace: (...args) => {
           const result = replace(...args);
@@ -122,11 +211,21 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       };
       try {
         check();
-        const result = await operation(scoped);
+        const callback = operation(scoped);
+        // A renderer may no longer be able to deliver its settlement after
+        // revocation. Observe the same trusted guard while its callback waits.
+        // A slow but current owner retains the native lock.
+        const invalidated = observeScope && new Promise((_, reject) => {
+          scopeTimer = setInterval(() => {
+            try { check(); } catch (error) { reject(error); }
+          }, SCOPE_CHECK_INTERVAL_MS);
+        });
+        const result = await (invalidated ? Promise.race([callback, invalidated]) : callback);
         check();
         return result;
       } finally {
         active = false;
+        clearInterval(scopeTimer);
         // An unawaited callback write must finish (or fail its revoked guard)
         // before another process may acquire this lock.
         await Promise.allSettled([...pending]);
@@ -142,9 +241,16 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
  */
 async function openProjectSyncStorageBridge(projectPath, assertCurrent, options) {
   const storage = await openProjectSyncStorage(projectPath, assertCurrent, options);
-  return {
-    read: key => storage.read(key),
-    withLock: operation => storage.withLock(locked => new Promise((resolve, reject) => {
+  // Error custom properties are stripped by contextBridge. Recovery codes cross
+  // as plain data, including scoped reads/writes and failures acquiring a lock.
+  const resultOf = async operation => {
+    try { return { ok: true, value: await operation() }; }
+    catch (error) { return { ok: false, error: {
+      ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+      message: error instanceof Error ? error.message : String(error),
+    } }; }
+  };
+  const withBridgeLock = (operation, typed) => storage.withLock(locked => new Promise((resolve, reject) => {
       const settle = result => {
         if (result?.ok === true) resolve(result.value);
         else if (result?.ok === false && typeof result.error?.message === 'string') {
@@ -153,13 +259,25 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
       };
       try {
         if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a renderer callback.');
-        const returned = operation(locked, settle);
+        const scoped = typed ? { ...locked, readResult: key => resultOf(() => locked.read(key)),
+          replaceResult: (...args) => resultOf(() => locked.replace(...args)) } : locked;
+        const returned = operation(scoped, settle);
         if (returned !== undefined) {
           if (returned && typeof returned.catch === 'function') returned.catch(() => undefined);
           reject(fault('ABS_STORAGE_OPERATION_INVALID', 'Bridge callbacks must return void and settle explicitly.'));
         }
       } catch (error) { reject(error); }
-    })),
+    }), true);
+  return {
+    attachment: storage.attachment,
+    executor: storage.executor,
+    observeExecutor: original => storage.observeExecutor(original),
+    observeExecutorResult: original => resultOf(() => storage.observeExecutor(original)),
+    read: key => storage.read(key),
+    withLock: operation => withBridgeLock(operation, false),
+    readResult: key => resultOf(() => storage.read(key)),
+    retireCopiedLockResult: proof => resultOf(() => storage.retireCopiedLock(proof)),
+    withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),
   };
 }
 

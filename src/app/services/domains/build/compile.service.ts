@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { Subscription } from 'rxjs';
+
 import { isCmdTerminalOutput,
   CmdOutput,
   CmdService,
@@ -11,19 +12,30 @@ import { isCmdTerminalOutput,
   LogService,
   PlatformService,
 } from '@core/platform/public-api';
-import { ProjectService, coderSourceDirectory } from '@domain/project/public-api';
+
+import { ProjectService, coderSourceDirectory, CODER_BOARD_REQUIRED_MESSAGE } from '@domain/project/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
+import { persistBuildResult } from './build-result-snapshot';
+import { capturedBuildInput, type BuildInput } from './build-input';
+import { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogReference } from './project-build-log';
+import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
 import { createSimulatorSceneGpioBuildMetadata } from '../../../integrations/simulator/simulator-scene-gpio-build-metadata';
+import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
+import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
+
 import {
   BUILD_APPLICATION_PORT,
   type BuildActionState,
   type BuildApplicationPort,
 } from './ports/build-application.port';
+
 import {
   AilyBuilderOutputLine,
   AilyBuilderOutputLineBuffer,
@@ -32,6 +44,7 @@ import {
   parseAilyBuilderProgressLine,
   parseLegacyAilyBuilderProgressLine,
 } from '../../../utils/aily-builder-progress.utils';
+
 import {
   appendProjectLog,
   ProjectLogLevel,
@@ -49,6 +62,11 @@ export interface DiskCompileOptions {
   sceneDocument?: SceneEditorDocumentV2;
 }
 
+interface DiskCompileResult {
+  success: boolean;
+  result: BuildActionState & { fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildOutcome?: string; buildInput?: BuildInput };
+}
+
 interface DiskCompileProgressState {
   percent: number;
   text: string;
@@ -63,15 +81,36 @@ interface OneShotCommandResult {
   signal: string | null;
 }
 
+/** 保存本次 Coder 构建的后端及固定配置身份；用户修改设置后拒绝发布旧结果。 */
+interface DiskCompileContext {
+  cloud: boolean;
+
+  retryLocally?: () => void;
+
+  settingsKey?: string;
+  settings?: ReturnType<ConfigService['getCloudBuildSettings']>;
+  backendOperation?: ReturnType<ProjectService['beginBuildBackendOperation']>;
+}
+
 @Injectable({ providedIn: 'root' })
+
 export class CompileService {
+  private activeBuildLog?: ProjectBuildLog;
+  private activeExecutionConfig?: any;
+  private buildAttempt = 0;
   private cancelled = false;
   private activeSub: Subscription | null = null;
   private activeStreamId: string | null = null;
+
   private activeCommandCancel: (() => void) | null = null;
+
+  // 云请求独立于本地子进程；取消时等待主进程撤销远程任务后再释放构建锁。
+  private activeCloudRequestId: string | null = null;
   private stopPending: Promise<unknown> = Promise.resolve();
   private activeRequestId: string | null = null;
   private scopedStopStarted = false;
+  private localSwitchAction?: () => void;
+  private localSwitchPending: Promise<unknown> = Promise.resolve();
 
   constructor(
     private projectService: ProjectService,
@@ -88,74 +127,116 @@ export class CompileService {
     private translate: TranslateService,
     private coderBuildInfo: CoderBuildInfoService,
     private npmService: NpmService,
+    private metrics: MetricsService,
   ) { }
 
   cancel(requestId?: string): void {
     if (requestId !== undefined && requestId !== this.activeRequestId) return;
+
+    if (this.activeStreamId || this.activeCloudRequestId) {
+      this.activeBuildLog?.markIncomplete('Build was cancelled while output was streaming; the process tail may not have been captured.');
+    }
+
     this.cancelled = true;
+
+    if (this.activeExecutionConfig?.execution) {
+      try { window['builder'].cancelBuildExecution(this.activeExecutionConfig); }
+      catch (error) { console.warn('Could not persist build cancellation; stopping the registered process tree:', error); }
+    }
+
     const streamId = this.activeStreamId;
+
     if (this.activeRequestId) {
       // A provider cancellation is not a UI-only unsubscribe. Keep the original
       // operation and build slot until Main confirms the physical process tree.
       if (streamId && !this.scopedStopStarted) {
         this.scopedStopStarted = true;
+
         this.stopPending = this.cmdService.kill(streamId).then(stopped => {
           if (stopped !== true) return new Promise<never>(() => {});
+
           this.activeCommandCancel?.();
         }, error => {
           console.warn('Scoped compiler termination remains unconfirmed:', error);
+
           return new Promise<never>(() => {});
         });
       }
+
       return;
     }
+
     if (streamId) {
       this.stopPending = this.cmdService.kill(streamId).catch((error) => {
         console.warn('Failed to stop the active build process:', error);
       });
+
       this.activeStreamId = null;
     }
+
     // Resolve the current command immediately as cancelled. Merely
     // unsubscribing leaves runCompileFromDisk awaiting a Promise forever.
     this.activeCommandCancel?.();
+
+    const cloudRequestId = this.activeCloudRequestId;
+
+    if (cloudRequestId) {
+      this.stopPending = Promise.all([this.stopPending, Promise.resolve().then(() => window['cloudBuild'].cancel({ requestId: cloudRequestId }))]).catch(() => {
+        // 主进程负责重试远程取消并使该请求失效，界面无需重复提交取消请求。
+      });
+    }
   }
 
-  async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+  async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<DiskCompileResult> {
     options.signal?.throwIfAborted();
+
     if (options.requestId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.requestId)) {
       throw new Error('Invalid scoped Coder build request.');
     }
+
+    return this.compileAttemptWithBackend(options);
+  }
+
+  private async compileAttemptWithBackend(options: DiskCompileOptions, retryLocally = false): Promise<DiskCompileResult> {
+    options = { ...options, requestId: options.requestId ?? crypto.randomUUID() };
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
+
+    const context: DiskCompileContext = {
+      cloud: this.configService.getCompileBackend() === 'cloud' && this.projectService.isCloudBuild(root),
+      settingsKey: this.configService.getCompileSettingsKey(),
+    };
+
+    if (context.cloud) context.settings = { ...this.configService.getCloudBuildSettings() };
 
     if (!root) {
       this.message.warning('No project is currently open.');
+
       return {
         success: false,
-        result: { state: 'warn', text: 'No project is currently open; build cannot start.' },
+        result: { state: 'warn', text: 'No project is currently open; build cannot start.', buildOutcome: 'not-started' },
       };
     }
 
-    const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
-    if (dependencyBlock) {
-      this.message.warning(dependencyBlock);
-      return { success: false, result: { state: 'warn', text: dependencyBlock } };
+    if (this.configService.isCoderProduct() && this.projectService.isAilyCodeProject(root)
+      && !await this.projectService.ensureCoderBoardSelected(root)) {
+      return { success: false, result: { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' } };
     }
 
-    if (this.configService.isCoderProduct()) {
-      try {
-        await this.npmService.assertCoderDependenciesReady(root);
-      } catch (error) {
-        const text = error instanceof Error ? error.message : String(error);
-        this.message.warning(text);
-        return { success: false, result: { state: 'warn', text } };
-      }
+    // Ordinary local builds retain the existing readiness-before-admission flow.
+    if (!context.cloud && !retryLocally) {
+      const blocked = await this.checkCompileDependencies(root, false);
+
+      if (blocked) return blocked;
     }
 
     options.signal?.throwIfAborted();
+
+    const { projectPath, projectSessionId } = this.projectService.getProjectDependencySession(root);
 
     if (!this.application.startBuild()) {
       const state = this.application.currentProcessState;
       let msg = 'System is busy';
+
       if (state === 'BUILDING') {
         msg = 'Build is already running';
       } else if (state === 'UPLOADING') {
@@ -163,82 +244,253 @@ export class CompileService {
       } else if (state === 'INSTALLING') {
         msg = 'Dependency installation is already running';
       }
+
       this.message.warning(`${msg}; please try again later.`);
-      return { success: false, result: { state: 'warn', text: msg } };
+
+      return { success: false, result: { state: 'warn', text: msg, buildOutcome: 'not-started' } };
     }
+
+    const attempt = this.buildAttempt = (this.buildAttempt || 0) + 1;
+    const attemptStartedAt = Date.now();
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    let settled!: () => void;
+    const cleanup = new Promise<void>(resolve => { settled = resolve; });
+
+    context.retryLocally = createCloudBuildLocalRetry({
+      settled: cleanup,
+      isCurrent: () => this.buildAttempt === attempt && projectCurrent()
+        && this.configService.getCompileSettingsKey() === context.settingsKey,
+      canStart: () => ['IDLE', 'ERROR'].includes(this.application.currentProcessState),
+      retry: async () => {
+        const outcome = await this.compileAttemptWithBackend({ ...options, projectPath: root, requestId: undefined }, true);
+
+        if (!options.preprocessOnly) persistBuildResult(root, outcome.success, outcome.result, undefined, undefined, 'manual');
+
+        return outcome;
+      },
+    });
+
+    if (!options.preprocessOnly) this.metrics.record('compile_attempted');
 
     this.cancelled = false;
+    this.activeExecutionConfig = undefined;
     this.stopPending = Promise.resolve();
-    this.activeRequestId = options.requestId ?? null;
+    this.activeRequestId = options.signal ? options.requestId! : null;
     this.scopedStopStarted = false;
+
     const cancelOriginal = () => this.cancel(options.requestId);
+
     options.signal?.addEventListener('abort', cancelOriginal, { once: true });
+
+    if (options.signal?.aborted) cancelOriginal();
+
+    this.localSwitchAction = undefined;
+    this.localSwitchPending = Promise.resolve();
+
     this.application.updateNotice({ title: this.t('PREPARING_TITLE'), text: this.t('DEPENDENCY_ANALYSIS_RUNNING'),
       state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel() });
+
+    const capture = await createProjectBuildLog(root, options.requestId);
+
+    this.activeBuildLog = capture;
+
     try {
+    const execution = await capture.run(async () => {
+    try {
+      if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
+      if (!projectCurrent()) throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed.'), { buildOutcome: 'not-started' });
+
+      context.backendOperation = this.projectService.beginBuildBackendOperation(root);
+
+      if (retryLocally) {
+        context.backendOperation.useLocal();
+
+        context.cloud = false;
+
+        await this.npmService.prepareLocalCompileBackend(root, () => this.cancelled, () => this.cancel());
+      }
+
+      if (this.configService.getCompileBackend() === 'cloud') {
+        await this.npmService.prepareCompileBackend(root, () => this.cancelled);
+
+        if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
+
+        if (context.settingsKey !== this.configService.getCompileSettingsKey() || root !== this.projectService.currentProjectPath) {
+          throw new Error('BUILD_SOURCE_STALE: Build settings or the active project changed.');
+        }
+
+        context.cloud = this.projectService.isCloudBuild(root);
+
+        if (context.cloud) context.settings = { ...this.configService.getCloudBuildSettings() };
+      }
+
+      if (context.cloud && ((options.recordProjectDelivery !== undefined && options.recordProjectDelivery !== false)
+        || (options.graphSemanticRevision !== undefined && options.graphSemanticRevision !== ''))) {
+        return { success: false, result: { state: 'error', text: 'PROTOCOL_UNSUPPORTED: Cloud compilation does not support simulator or delivery builds.' } };
+      }
+
+      if (context.cloud || retryLocally) {
+        const blocked = await this.checkCompileDependencies(root, context.cloud);
+
+        if (blocked) return blocked;
+      }
+
       // Keep the root captured at submission, even if the UI switches projects.
-      const outcome = await this.runCompile(root, options);
-      if (this.cancelled) return { success: false, result: { state: 'warn', text: this.t('CANCELLED_TITLE'), errorCode: 'build-cancelled' } };
-      return outcome;
+      return await this.runCompile(root, options, context, { projectPath, projectSessionId });
     } catch (error: any) {
       const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
+
+      if (this.cancelled && !options.preprocessOnly) {
+        await Promise.all([this.stopPending, this.localSwitchPending]);
+        await this.coderBuildInfo.saveBuildInfo(root, '', 'cancelled', (Date.now() - attemptStartedAt) / 1000);
+      }
+
       this.application.finishBuild(false, text);
+
       if (this.cancelled) this.updateCancelledNotice(text);
-      else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
-      return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text,
-        ...(this.cancelled ? { errorCode: 'build-cancelled' as const } : {}) } };
+      else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
+
+      return { success: false, result: this.cancelled ? buildCancelledResult(text) : { state: 'error', text,
+        ...(error?.buildOutcome ? { buildOutcome: error.buildOutcome } : {}) } };
     } finally {
       options.signal?.removeEventListener('abort', cancelOriginal);
+
       this.activeRequestId = null;
+
+      if (this.application.currentProcessState === 'BUILDING') this.application.finishBuild(false, 'Build preparation failed');
+
+      context.backendOperation?.release();
+      settled();
     }
+    });
+
+    const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, execution.buildLog.requestId);
+
+    return { ...execution, ...(buildInput ? { buildInput } : {}),
+      result: { ...execution.result, buildLog: execution.buildLog, ...(buildInput ? { buildInput } : {}) } };
+    } finally { if (this.activeBuildLog === capture) this.activeBuildLog = undefined; }
   }
 
-  private async runCompile(root: string, options: DiskCompileOptions): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+  private async checkCompileDependencies(root: string, cloud = false) {
+    const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
+
+    if (dependencyBlock) {
+      this.message.warning(dependencyBlock);
+
+      return { success: false, result: { state: 'warn', text: dependencyBlock, buildOutcome: 'not-started' } };
+    }
+
+    try {
+      if (!cloud) await this.npmService.ensureLocalCompilerDependencies(root);
+
+      if (this.configService.isCoderProduct()) {
+        await this.npmService.assertCoderDependenciesReady(root);
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+
+      this.message.warning(text);
+
+      return { success: false, result: { state: 'warn', text, buildOutcome: 'not-started' } };
+    }
+
+    return undefined;
+  }
+  private async runCompile(root: string, options: DiskCompileOptions, context: DiskCompileContext,
+    projectScope: Pick<ReturnType<ProjectService['getProjectDependencySession']>, 'projectPath' | 'projectSessionId'>,
+  ): Promise<DiskCompileResult> {
     const packagePath = this.electronService.pathJoin(root, 'package.json');
     const isAilyCodeProject = this.projectService.isAilyCodeProject(root);
     const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
+
     if (source.success === false) {
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), source.error, source.error);
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), source.error, source.error, context.cloud ? context.retryLocally : undefined);
       this.application.finishBuild(false, source.error);
+
       return { success: false, result: { state: 'error', text: source.error } };
     }
+
     const started = Date.now();
     let compiledHash: string | undefined;
     let buildStatus: 'success' | 'failed' = 'failed';
     let finishReason: string | undefined;
+    const cloudOrigin = context.cloud;
 
     try {
+      const assertCloudContext = () => {
+        if (!cloudOrigin) return;
+
+        if (this.configService.getCompileSettingsKey() !== context.settingsKey
+          || this.projectService.currentProjectPath !== root) {
+          throw new Error('BUILD_SOURCE_STALE: Cloud build settings or the active project changed; build again.');
+        }
+      };
+
+      assertCloudContext();
+
+      if (!context.cloud) await window['cloudBuild']?.invalidate?.({ projectPath: root });
+
       // Ignore only publisher-owned result metadata, which updateCodeHash writes.
       const assertManifest = captureBuildRequestGuard(() => {
         const { codeHash: _hash, buildInfo: _info, ...manifest } = JSON.parse(window['fs'].readFileSync(packagePath, 'utf8'));
+
         return manifest;
       });
-      if (isAilyCodeProject) {
-        compiledHash = await this.coderBuildInfo.updateCodeHash(root);
-      }
+
       const boardModule = await this.resolveBoardModule(root);
+
       assertManifest();
+      assertCloudContext();
+
       if (!boardModule) {
         finishReason = 'Missing board module';
+
         const text = isAilyCodeProject ? '请先在顶部选择开发板，再编译或上传 Arduino 工程。' : 'Cannot resolve board module from the active project.';
-        this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
+
+        this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
+
         return { success: false, result: { state: 'error', text } };
       }
 
       const boardName = boardModule.replace('@aily-project/board-', '').replace('@aily-project/coder-', '');
-      const ailyBuilderPath = window['path'].getAilyBuilderPath();
-      const appDataPath = window['path'].getAppDataPath();
-      const ailyChildPath = window['path'].getAilyChildPath();
+      let cloudProfile: Awaited<ReturnType<ProjectService['getCloudBoardProfile']>> | undefined;
 
-      if (!ailyBuilderPath || !ailyChildPath) {
+      // 云模式按目标能力准备源码和元数据，不检查或安装本机编译器路径。
+      if (context.cloud) {
+        await this.npmService.ensureCloudLibrarySources(root);
+        assertManifest(); assertCloudContext();
+
+        cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true });
+
+        assertManifest(); assertCloudContext();
+
+        if (cloudProfile.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
+
+        const action = options.preprocessOnly ? 'analysis' : 'compile';
+
+        if (cloudProfile['capabilities']?.[action] !== true) {
+          throw new Error(options.preprocessOnly
+            ? '当前云编译节点不支持预处理/代码分析，请选择支持 analysis 的节点。'
+            : '当前云编译节点不支持 compile。');
+        }
+      }
+
+      let ailyBuilderPath = context.cloud ? undefined : window['path'].getAilyBuilderPath();
+      let ailyChildPath = context.cloud ? undefined : window['path'].getAilyChildPath();
+
+      if (!context.cloud && (!ailyBuilderPath || !ailyChildPath)) {
         finishReason = 'Missing builder paths';
+
         const text = 'aily-builder path is unavailable.';
-        this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
+
+        this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
+
         return { success: false, result: { state: 'error', text } };
       }
 
       const buildTitle = this.buildNoticeTitle(boardName);
       const preparingText = this.t('DEPENDENCY_ANALYSIS_RUNNING');
+
       this.application.updateNotice({
         title: this.t('PREPARING_TITLE'),
         text: preparingText,
@@ -247,148 +499,323 @@ export class CompileService {
         setTimeout: 0,
         stop: () => this.cancel(),
       });
+
       this.publishBuildLog(root, preparingText, 'stdout', 'doing', buildTitle);
 
-      const buildConfig = {
-        currentProjectPath: root,
-        boardModule,
-        code: source.code,
-        appDataPath,
-        za7Path: this.platformService.za7,
-        ailyBuilderPath,
-        devmode: this.configService.data.devmode || false,
-        ...(options.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}),
-        ...(options.graphSemanticRevision ? {
-          graphSemanticRevision: options.graphSemanticRevision,
-          sourceDocumentSchemaVersion: 2,
-          ...await this.writeSceneGpioMetadata(root, source.code, options),
-        } : {}),
-        partitionFilePath: isAilyCodeProject
-          ? this.electronService.pathJoin(root, 'sketch', 'src', 'partitions.csv')
-          : this.electronService.pathJoin(root, 'partitions.csv'),
-      };
-      const sourceCapture = captureBuildSource(buildConfig);
-      const configFilePath = await writeBuildRequest(root, { ...buildConfig, sourceCapture }, {
-        join: (...parts) => this.electronService.pathJoin(...parts),
-        exists: filename => window['path'].isExists(filename),
-        mkdir: directory => this.crossPlatformCmdService.createDirectory(directory, true),
-        write: (filename, text) => window['fs'].writeFileSync(filename, text),
+      await this.projectService.ensureCustomPartitionFile(root, () => {
+        assertManifest(); assertCloudContext();
+
+        if (this.cancelled) throw new Error('Build cancelled before partition preparation.');
       });
+
+      if (isAilyCodeProject) compiledHash = await this.coderBuildInfo.updateCodeHash(root);
+
+      assertManifest(); assertCloudContext();
+
+      const buildConfig = this.createBuildConfig(root, boardModule, source.code, isAilyCodeProject, context, options);
+
+      if (options.graphSemanticRevision) Object.assign(buildConfig, {
+        graphSemanticRevision: options.graphSemanticRevision,
+        sourceDocumentSchemaVersion: 2,
+        ...await this.writeSceneGpioMetadata(root, source.code, options),
+      });
+
+      const sourceCapture = captureBuildSource(buildConfig);
+
       assertManifest();
+      assertCloudContext();
+
       if (this.cancelled) throw new Error('Build cancelled before launch.');
 
-      // Normal compile.js owns its preprocessing transaction; do not perform
-      // the same mutable preparation twice with an unlocked gap in between.
-      if (options.preprocessOnly) {
-        const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
-        const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath }, (line) => {
-          this.publishBuildLog(root, line.line, line.type);
-        }, root);
-        if (this.cancelled) {
-          finishReason = 'Cancelled';
-          const sec = ((Date.now() - started) / 1000).toFixed(2);
-          const text = this.t('CANCELLED_WITH_TIME', { seconds: sec });
-          this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
-          this.updateCancelledNotice(text);
-          return { success: false, result: { state: 'warn', text } };
-        }
-        if (pre.exitCode !== 0) {
-          const detail = pre.combined || pre.stderr + pre.stdout;
-          finishReason = 'Preprocess failed';
-          this.handleFailNotice(
-            root,
-            this.t('PRECOMPILE_FAILED_TITLE'),
-            this.t('PRECOMPILE_FAILED_DETAIL'),
-            detail,
-          );
-          return {
-            success: false,
-            result: {
-              state: 'error',
-              text: this.t('MESSAGE_WITH_DURATION', {
-                message: this.t('PRECOMPILE_FAILED_TITLE'),
-                seconds: ((Date.now() - started) / 1000).toFixed(2),
-              }),
-              fullStdErr: detail,
-            },
-          };
-        }
+      let allowCloudSwitch = cloudOrigin;
 
-        buildStatus = 'success';
-        return { success: true, result: { state: 'done', text: '预处理完成' } };
-      }
+      const localSwitch = {
+        boardName,
+        isCurrent: () => {
+          try { assertCloudContext(); assertManifest(); return !this.cancelled && this.configService.getCompileBackend() === 'cloud'; }
 
-      const compileScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'compile.js');
-      const progressState: DiskCompileProgressState = {
-        percent: 0,
-        text: this.t('FAST_BUILD_HINT'),
-        hasStructuredProgress: false,
+          catch { return false; }
+        },
       };
-      this.application.updateNotice({
-        title: buildTitle,
-        text: progressState.text,
-        state: 'doing',
-        progress: 0,
-        setTimeout: 0,
-        stop: () => this.cancel(),
-      });
-      const cmp = await this.runOneShotCommand({ scriptPath: compileScriptPath, configFilePath,
-        ...(options.recordProjectDelivery === true ? { buildDeliveryRequest: configFilePath } : {}) }, (line) => {
-        if (this.consumeBuildProgressLine(line.line, boardName, progressState)) {
-          return;
+
+      // Every attempt retains the original caller, source capture and workflow lock.
+      while (true) {
+        try {
+          // 云端分析/编译和本地执行共用源码捕获，后续由主进程校验并保存可烧录产物。
+          if (context.cloud) {
+            let result: any;
+
+            try {
+              result = await this.runCloudCompile(root, { ...buildConfig, sourceCapture }, context.settings!,
+                cloudProfile!.profileDigest, options.preprocessOnly ? 'analysis' : 'compile', boardName, context.settingsKey);
+            } catch (error) {
+              if (error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
+
+              assertCloudContext(); assertManifest();
+
+              if (this.cancelled) throw new Error('Build cancelled.');
+
+              context.backendOperation!.useLocal();
+
+              context.cloud = false;
+
+              this.application.updateNotice({ title: this.t('PREPARING_TITLE'),
+                text: this.translate.instant('CLOUD_BUILD.PREPARING_LOCAL'), state: 'doing', progress: 0,
+                setTimeout: 0, stop: () => this.cancel() });
+              await this.npmService.prepareLocalCompileBackend(root, () => this.cancelled, () => this.cancel());
+              assertCloudContext(); assertManifest();
+
+              ailyBuilderPath = window['path'].getAilyBuilderPath();
+              ailyChildPath = window['path'].getAilyChildPath();
+
+              if (!ailyBuilderPath || !ailyChildPath) throw new Error('aily-builder path is unavailable.');
+
+              buildConfig.ailyBuilderPath = ailyBuilderPath;
+            }
+
+            if (result) {
+              assertCloudContext(); assertManifest();
+
+              if (this.cancelled) throw new Error('Cloud build cancelled.');
+              if (result?.success !== true) throw new Error(result?.text || 'Cloud compilation failed.');
+
+              buildStatus = 'success';
+
+              if (!options.preprocessOnly) {
+                this.metrics.record('build_succeeded');
+                this.compileValidationService.triggerAfterSuccessfulCompile();
+              }
+
+              const seconds = ((Date.now() - started) / 1000).toFixed(2);
+
+              const completeText = options.preprocessOnly ? '云端预处理完成'
+                : result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
+                : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds });
+
+              this.application.updateNotice({ title: this.t('COMPLETE_TITLE'), text: completeText, state: 'done', setTimeout: 600000 });
+              this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
+
+              return { success: true, result: { state: 'done', text: completeText } };
+            }
+          }
+
+          const isolated = !isAilyCodeProject && window['builder']?.isolatedBuildExecutionVersion === 1;
+
+          const executionConfig = isolated ? await window['builder'].prepareBuildExecution({ ...buildConfig, buildRequestId: options.requestId,
+            executionRetryOf: this.activeExecutionConfig?.execution?.id },
+            undefined, options.preprocessOnly ? 'preprocess' : 'compile') : { ...buildConfig, sourceCapture };
+
+          this.activeExecutionConfig = executionConfig;
+
+          if (this.cancelled && executionConfig.execution) window['builder'].cancelBuildExecution(executionConfig);
+
+          const executionRoot = executionConfig.currentProjectPath;
+
+          const configFilePath = await writeBuildRequest(executionRoot, executionConfig, {
+            join: (...parts) => this.electronService.pathJoin(...parts),
+            exists: filename => window['path'].isExists(filename),
+            mkdir: directory => this.crossPlatformCmdService.createDirectory(directory, true),
+            write: (filename, text) => window['fs'].writeFileSync(filename, text),
+          });
+
+          assertManifest();
+          assertCloudContext();
+
+          if (this.cancelled) throw new Error('Build cancelled before launch.');
+
+          // Normal compile.js owns its preprocessing transaction; do not perform
+          // the same mutable preparation twice with an unlocked gap in between.
+          if (options.preprocessOnly) {
+            const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
+
+            const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath, ...projectScope }, (line) => {
+              this.publishBuildLog(root, line.line, line.type);
+            }, executionRoot, allowCloudSwitch ? localSwitch : undefined);
+
+            if (this.cancelled) {
+              finishReason = 'Cancelled';
+
+              const sec = ((Date.now() - started) / 1000).toFixed(2);
+              const text = this.t('CANCELLED_WITH_TIME', { seconds: sec });
+
+              this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
+              this.updateCancelledNotice(text);
+
+              return { success: false, result: { state: 'warn', text } };
+            }
+
+            if (pre.exitCode !== 0) {
+              const detail = pre.combined || pre.stderr + pre.stdout;
+
+              finishReason = 'Preprocess failed';
+
+              this.handleFailNotice(
+                root,
+                this.t('PRECOMPILE_FAILED_TITLE'),
+                this.t('PRECOMPILE_FAILED_DETAIL'),
+                detail,
+                undefined, true,
+              );
+
+              return {
+                success: false,
+                result: {
+                  state: 'error',
+                  text: this.t('MESSAGE_WITH_DURATION', {
+                    message: this.t('PRECOMPILE_FAILED_TITLE'),
+                    seconds: ((Date.now() - started) / 1000).toFixed(2),
+                  }),
+                  fullStdErr: detail,
+                },
+              };
+            }
+
+            buildStatus = 'success';
+
+            const completeText = this.t('PRECOMPILE_COMPLETE_TITLE');
+
+            this.application.updateNotice({ title: completeText, text: completeText,
+              state: 'done', progress: 100, setTimeout: 3000 });
+
+            return { success: true, result: { state: 'done', text: completeText } };
+          }
+
+          const compileScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'compile.js');
+
+          const progressState: DiskCompileProgressState = {
+            percent: 0,
+            text: this.t('FAST_BUILD_HINT'),
+            hasStructuredProgress: false,
+          };
+
+          this.application.updateNotice({
+            title: buildTitle,
+            text: progressState.text,
+            state: 'doing',
+            progress: 0,
+            setTimeout: 0,
+            stop: () => this.cancel(),
+          });
+
+          const cmp = await this.runOneShotCommand({ scriptPath: compileScriptPath, configFilePath, ...projectScope,
+            ...(options.recordProjectDelivery === true ? { buildDeliveryRequest: configFilePath } : {}) }, (line) => {
+            if (this.consumeBuildProgressLine(line.line, boardName, progressState)) {
+              return;
+            }
+
+            this.publishBuildLog(root, line.line, line.type);
+          }, executionRoot, allowCloudSwitch ? localSwitch : undefined);
+
+          const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
+
+          if (this.cancelled) {
+            finishReason = 'Cancelled';
+
+            const text = this.t('CANCELLED_WITH_TIME', { seconds: buildDuration });
+
+            this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
+            this.updateCancelledNotice(text);
+
+            return { success: false, result: { state: 'warn', text } };
+          }
+
+          if (cmp.exitCode !== 0) {
+            const detail = cmp.combined || cmp.stderr + cmp.stdout;
+            finishReason = 'Compile failed';
+
+            const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
+
+            this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail, undefined, true);
+
+            return {
+              success: false,
+              result: { state: 'error', text, fullStdErr: detail },
+            };
+          }
+
+          buildStatus = 'success';
+
+          this.metrics.record('build_succeeded');
+          this.compileValidationService.triggerAfterSuccessfulCompile();
+
+          const completeText = this.t('COMPLETE_WITH_TIME', { seconds: buildDuration });
+
+          this.application.updateNotice({
+            title: this.t('COMPLETE_TITLE'),
+            text: completeText,
+            state: 'done',
+            setTimeout: 600000,
+          });
+
+          this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
+
+          return { success: true, result: { state: 'done', text: completeText } };
+        } catch (error) {
+          if (error?.code !== CLOUD_BUILD_CLOUD_REQUESTED) throw error;
+
+          await this.localSwitchPending;
+          assertCloudContext(); assertManifest();
+
+          if (this.cancelled) throw new Error('Build cancelled.');
+
+          context.backendOperation!.useCloud();
+
+          context.cloud = true;
+          context.cloud = await this.npmService.prepareCloudCompileBackend(root, () => this.cancelled);
+
+          assertCloudContext(); assertManifest();
+
+          if (context.cloud) {
+            cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true });
+
+            assertCloudContext(); assertManifest();
+
+            if (cloudProfile.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
+
+            if (cloudProfile.capabilities?.[options.preprocessOnly ? 'analysis' : 'compile'] !== true) {
+              throw new Error('This cloud target does not support the requested build action.');
+            }
+          } else {
+            context.backendOperation!.useLocal();
+
+            allowCloudSwitch = false;
+          }
         }
-        this.publishBuildLog(root, line.line, line.type);
-      }, root);
-      const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
-
-      if (this.cancelled) {
-        finishReason = 'Cancelled';
-        const text = this.t('CANCELLED_WITH_TIME', { seconds: buildDuration });
-        this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
-        this.updateCancelledNotice(text);
-        return { success: false, result: { state: 'warn', text } };
       }
-
-      if (cmp.exitCode !== 0) {
-        const detail = cmp.combined || cmp.stderr + cmp.stdout;
-        finishReason = 'Compile failed';
-        const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
-        this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail);
-        return {
-          success: false,
-          result: { state: 'error', text, fullStdErr: detail },
-        };
-      }
-
-      buildStatus = 'success';
-      this.compileValidationService.triggerAfterSuccessfulCompile();
-      const completeText = this.t('COMPLETE_WITH_TIME', { seconds: buildDuration });
-      this.application.updateNotice({
-        title: this.t('COMPLETE_TITLE'),
-        text: completeText,
-        state: 'done',
-        setTimeout: 600000,
-      });
-      this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
-
-      return { success: true, result: { state: 'done', text: completeText } };
     } catch (e: any) {
       const msg = e?.message || String(e);
+
       buildStatus = 'failed';
-      finishReason = msg;
+      finishReason = this.cancelled ? 'Cancelled' : msg;
+
+      if (this.cancelled) {
+        const text = this.t('CANCELLED_WITH_TIME', { seconds: ((Date.now() - started) / 1000).toFixed(2) });
+
+        this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
+        this.updateCancelledNotice(text);
+
+        return { success: false, result: buildCancelledResult(text) };
+      }
+
       this.message.error(msg);
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, msg);
-      return { success: false, result: { state: 'error', text: msg, fullStdErr: msg } };
+
+      const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : msg;
+
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
+
+      return { success: false, result: { state: 'error', text: msg, fullStdErr: detail } };
     } finally {
       // Cancellation resolves the UI command promptly, but metadata is another
       // workspace writer: wait for supervised process-tree cleanup first.
-      await this.stopPending;
+      await Promise.all([this.stopPending, this.localSwitchPending]);
+
       let metadataError: string | undefined;
-      if (compiledHash) {
+
+      if (compiledHash || this.cancelled) {
         try {
           await this.coderBuildInfo.saveBuildInfo(
             root,
-            compiledHash,
+            compiledHash || '',
             this.cancelled ? 'cancelled' : buildStatus,
             Number(((Date.now() - started) / 1000).toFixed(2)),
           );
@@ -398,11 +825,14 @@ export class CompileService {
           finishReason = metadataError;
         }
       }
+
       // Keep the build lock until metadata is persisted; a second build must
       // not reset cancellation state or overwrite this build's result midway.
       this.application.finishBuild(buildStatus === 'success', finishReason);
+
       if (metadataError) {
         this.handleFailNotice(root, this.t('FAILED_TITLE'), metadataError, metadataError);
+
         return { success: false, result: { state: 'error', text: metadataError } };
       }
     }
@@ -412,16 +842,151 @@ export class CompileService {
     const revision = options.graphSemanticRevision!;
     const metadata = createSimulatorSceneGpioBuildMetadata(options.sceneDocument, code, revision);
     const directory = this.electronService.pathJoin(root, '.temp');
+
     await this.crossPlatformCmdService.createDirectory(directory, true);
     options.signal?.throwIfAborted();
+
     const token = crypto.randomUUID();
     const sceneGpioDirectionsPath = this.electronService.pathJoin(directory, `aily-coder-scene-${token}-directions.json`);
     const sceneGpioPullsPath = this.electronService.pathJoin(directory, `aily-coder-scene-${token}-pulls.json`);
+
     window['fs'].writeFileSync(sceneGpioDirectionsPath, JSON.stringify({ schemaVersion: 1,
       kind: 'aily-scene-gpio-directions', graphSemanticRevision: revision, directions: metadata.directions }));
+
     window['fs'].writeFileSync(sceneGpioPullsPath, JSON.stringify({ schemaVersion: 1,
       kind: 'aily-scene-gpio-pulls', graphSemanticRevision: revision, pulls: metadata.pulls }));
+
     return { sceneGpioDirectionsPath, sceneGpioPullsPath };
+  }
+
+  /** 首次编译和烧录前的复用检查共用输入组装，避免遗漏分区等影响固件的参数。 */
+  private createBuildConfig(root: string, boardModule: string, code: string, isCoder: boolean,
+    context: DiskCompileContext, options: DiskCompileOptions = {}) {
+    return {
+      currentProjectPath: root, boardModule, code,
+      appDataPath: window['path'].getAppDataPath(), za7Path: this.platformService.za7,
+      ailyBuilderPath: context.cloud ? undefined : window['path'].getAilyBuilderPath(),
+      devmode: this.configService.data.devmode || false,
+      ...(options.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}),
+      partitionFilePath: isCoder ? this.electronService.pathJoin(root, 'sketch', 'src', 'partitions.csv')
+        : this.electronService.pathJoin(root, 'partitions.csv'),
+    };
+  }
+
+  async canReuseLocalCoderBuildForUpload(root: string, isCancelled: () => boolean): Promise<boolean> {
+    const verify = window['builder']?.canReuseCoderUpload;
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const settingsKey = this.configService.getCompileSettingsKey();
+
+    const isCurrent = () => !isCancelled() && projectCurrent() && this.projectService.currentProjectPath === root
+      && this.configService.getCompileSettingsKey() === settingsKey && !this.projectService.isCloudBuild(root);
+
+    try {
+      if (!verify || !isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
+
+      const boardModule = await this.resolveBoardModule(root);
+
+      if (!boardModule || !isCurrent()) return false;
+
+      const reusable = await verify({ currentProjectPath: root, boardModule, appDataPath: window['path'].getAppDataPath() });
+
+      return reusable === true && isCurrent();
+    } catch { return false; }
+  }
+
+  /** 调用方先保存编辑器，主进程再核对整个项目和库内容；一致时直接复用已校验的云产物。 */
+  async canReuseCloudBuildForUpload(root: string, isCancelled: () => boolean = () => false): Promise<boolean> {
+    if (!this.projectService.isCloudBuild(root) || !window['cloudBuild']?.reusable) return false;
+
+    const settingsKey = this.configService.getCompileSettingsKey();
+
+    const isCurrent = () => !isCancelled() && this.projectService.currentProjectPath === root
+      && this.configService.getCompileSettingsKey() === settingsKey && this.projectService.isCloudBuild(root);
+
+    try {
+      if (!isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
+
+      await this.npmService.assertCoderDependenciesReady(root);
+
+      if (!isCurrent()) return false;
+
+      await this.npmService.ensureCloudLibrarySources(root);
+
+      if (!isCurrent()) return false;
+
+      const manifestPath = this.electronService.pathJoin(root, 'package.json');
+
+      const assertManifest = captureBuildRequestGuard(() => {
+        const { codeHash: _hash, buildInfo: _info, ...manifest } = JSON.parse(window['fs'].readFileSync(manifestPath, 'utf8'));
+
+        return manifest;
+      });
+
+      const boardModule = await this.resolveBoardModule(root);
+
+      if (!boardModule || !isCurrent()) return false;
+
+      const source = this.readCompileSource(root, manifestPath, true);
+
+      if (source.success === false) return false;
+
+      const config = this.createBuildConfig(root, boardModule, source.code, true, { cloud: true });
+      const sourceCapture = captureBuildSource(config);
+      // 复用已经签名且输入完全一致的产物无需重新调度目标；节点忙闲和离线不影响本地烧录。
+      // 主进程仍校验原任务的完整输入、签名及逐文件哈希，新编译才刷新并锁定精确目标。
+      const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+
+      assertManifest();
+
+      return reusable === true && isCurrent();
+    } catch { return false; }
+  }
+
+  /** Coder 与 Blockly 共用进度合并工具，状态立即刷新、日志批量显示，完成仍以主进程结果为准。 */
+  private async runCloudCompile(
+    root: string, config: unknown, settings: NonNullable<DiskCompileContext['settings']>,
+    profileDigest: string, action: 'compile' | 'analysis', boardName: string, settingsKey?: string,
+  ): Promise<any> {
+    const requestLog = this.activeBuildLog;
+    const gateway = window['cloudBuild'];
+    const requestId = `coder_${crypto.randomUUID()}`;
+    this.activeCloudRequestId = requestId;
+
+    let switchToLocal: (() => boolean) | undefined;
+
+    const requestLocal = () => {
+      if (!switchToLocal?.()) return;
+
+      this.application.updateNotice({ title: this.buildNoticeTitle(boardName), text: this.translate.instant('CLOUD_BUILD.SWITCHING_TO_LOCAL'),
+        state: 'doing', setTimeout: 0, stop: () => this.cancel() });
+    };
+
+    try {
+      const dependencySession = this.projectService.getProjectDependencySession(root);
+
+      return await runCloudBuildWithProgress({ requestId, config, settings, profileDigest, action }, gateway, {
+        prepareTool: tool => this.npmService.installCloudUploadTool(tool, dependencySession),
+        localSwitch: request => {
+          switchToLocal = request;
+
+          this.application.updateNotice({ title: this.buildNoticeTitle(boardName), text: this.t('PREPARING_TITLE'),
+            state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(), onSwitchToLocal: requestLocal });
+        },
+        isCurrent: () => this.activeCloudRequestId === requestId && !this.cancelled
+          && this.projectService.currentProjectPath === root && this.configService.getCompileSettingsKey() === settingsKey,
+        rawLog: text => requestLog?.append(text + '\n'),
+        logIncomplete: reason => requestLog?.markIncomplete(reason),
+        log: (text, stream) => this.publishBuildLog(root, text, stream),
+        progress: event => {
+          const presentation = cloudBuildProgressPresentation(event, key => this.translate.instant(key));
+
+          this.application.updateNotice({ title: this.buildNoticeTitle(boardName), ...presentation,
+            state: 'doing', setTimeout: 0, stop: () => this.cancel(), onSwitchToLocal: requestLocal });
+        },
+      });
+    } finally {
+      if (this.activeCloudRequestId === requestId) this.activeCloudRequestId = null;
+    }
   }
 
   private readCompileSource(
@@ -437,10 +1002,13 @@ export class CompileService {
     try {
       if (isAilyCodeProject) {
         const manifest = JSON.parse(window['fs'].readFileSync(packagePath, 'utf8'));
+
         const entryRel = typeof manifest.entry === 'string' && manifest.entry.trim()
           ? manifest.entry.replace(/\\/g, '/')
           : 'src/main.cpp';
+
         const segments = entryRel.split('/').filter(Boolean);
+
         if (
           entryRel.startsWith('/')
           || /^[A-Za-z]:\//.test(entryRel)
@@ -448,20 +1016,25 @@ export class CompileService {
         ) {
           return { success: false, error: `Invalid Coder entry outside sketch workspace: ${entryRel}` };
         }
+
         const sourcePath = this.electronService.pathJoin(projectPath, coderSourceDirectory(manifest), ...segments);
+
         if (!window['path'].isExists(sourcePath)) {
           return { success: false, error: `Entry file does not exist: ${entryRel}` };
         }
+
         return { success: true, code: window['fs'].readFileSync(sourcePath, 'utf8') };
       }
 
       const sketchPath = this.electronService.pathJoin(projectPath, '.temp', 'sketch', 'sketch.ino');
+
       if (!window['path'].isExists(sketchPath)) {
         return {
           success: false,
           error: 'Missing Blockly generated file .temp/sketch/sketch.ino; sync or generate Blockly code before building.',
         };
       }
+
       return { success: true, code: window['fs'].readFileSync(sketchPath, 'utf8') };
     } catch (error: any) {
       return { success: false, error: error?.message || 'Failed to read project compile source.' };
@@ -475,15 +1048,19 @@ export class CompileService {
 
     try {
       const packageJsonPath = this.electronService.pathJoin(projectPath, 'package.json');
+
       if (window['path'].isExists(packageJsonPath)) {
         const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+
         const dependencyNames = [
           ...Object.keys(packageJson.dependencies || {}),
           ...Object.keys(packageJson.devDependencies || {}),
           ...Object.keys(packageJson.boardDependencies || {}),
         ];
+
         const boardModule = dependencyNames.find(dep => dep.startsWith('@aily-project/board-'))
           ?? dependencyNames.find(dep => dep.startsWith('@aily-project/coder-'));
+
         if (boardModule) {
           return boardModule;
         }
@@ -508,6 +1085,7 @@ export class CompileService {
   private buildProgressText(progress: AilyBuilderProgressEvent): string {
     const translationKey = `BLOCKLY_EDITOR.BUILD.PROGRESS_${progress.stage.toUpperCase()}`;
     const translated = this.translate.instant(translationKey);
+
     return translated === translationKey ? progress.message : translated;
   }
 
@@ -521,19 +1099,24 @@ export class CompileService {
     state: DiskCompileProgressState,
   ): boolean {
     const trimmedLine = line.trim();
+
     if (!trimmedLine) {
       return true;
     }
 
     if (isAilyBuilderProgressLine(trimmedLine)) {
       const progress = parseAilyBuilderProgressLine(trimmedLine);
+
       if (!progress) {
         return false;
       }
+
       state.hasStructuredProgress = true;
       state.percent = Math.max(state.percent, progress.percent);
       state.text = this.buildProgressText(progress);
+
       this.updateBuildProgress(boardName, state);
+
       return true;
     }
 
@@ -546,8 +1129,10 @@ export class CompileService {
     // progress.
     if (!state.hasStructuredProgress) {
       const legacyPercent = parseLegacyAilyBuilderProgressLine(trimmedLine);
+
       if (legacyPercent !== null && legacyPercent > state.percent) {
         state.percent = legacyPercent;
+
         this.updateBuildProgress(boardName, state);
       }
     }
@@ -562,6 +1147,7 @@ export class CompileService {
     if (this.cancelled) {
       return;
     }
+
     this.application.updateNotice({
       title: this.buildNoticeTitle(boardName),
       text: state.text,
@@ -569,6 +1155,7 @@ export class CompileService {
       progress: state.percent,
       setTimeout: 0,
       stop: () => this.cancel(),
+      onSwitchToCloud: this.localSwitchAction,
     });
   }
 
@@ -580,17 +1167,22 @@ export class CompileService {
     title?: string,
   ): void {
     const detail = String(line || '').trim();
+
     if (!detail) {
       return;
     }
+
     const isError = outputType === 'stderr' && /(?:\[ERROR\]|\berror:|\bfatal:)/i.test(detail);
     const logState = isError ? 'error' : state;
+
     this.logService.update({ title, detail, state: logState });
+
     const level: ProjectLogLevel = isError
       ? 'ERROR'
       : logState === 'done' || logState === 'warn'
         ? 'INFO'
         : 'DEBUG';
+
     appendProjectLog(projectPath, 'compile', level, detail);
   }
 
@@ -609,24 +1201,37 @@ export class CompileService {
     title: string,
     text: string,
     detail: string,
+    onRetryLocally?: () => void,
+    logSummaryOnly = false,
   ): void {
-    const clean = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim().slice(0, 8000);
+    const fullDetail = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim();
+    const clean = logSummaryOnly ? fullDetail : fullDetail.slice(0, 8000);
+
     appendProjectLog(projectPath, 'compile', 'ERROR', text || clean || '(no logs)');
+
+    if (logSummaryOnly) {
+      this.logService.update({ title, detail: text || '(no logs)', state: 'error' });
+    }
+
     this.application.updateNotice({
       title,
       text,
       state: 'error',
       detail: clean || '(no logs)',
+      onRetryLocally,
       setTimeout: 600000,
-      sendToLog: true,
+      sendToLog: !logSummaryOnly,
     });
   }
 
   private runOneShotCommand(
-    request: { scriptPath: string; configFilePath: string; buildDeliveryRequest?: string },
+    request: { scriptPath: string; configFilePath: string; projectPath: string; projectSessionId: string; buildDeliveryRequest?: string },
     onLine?: (line: AilyBuilderOutputLine) => void,
     buildWorkspace?: string,
+    localSwitch?: { boardName: string; isCurrent: () => boolean },
   ): Promise<OneShotCommandResult> {
+    const buildLog = this.activeBuildLog;
+
     return new Promise((resolve, reject) => {
       let stdout = '';
       let stderr = '';
@@ -645,17 +1250,22 @@ export class CompileService {
         if (this.activeSub === sub) {
           this.activeSub = null;
         }
+
         if (this.activeCommandCancel === cancelCommand) {
           this.activeCommandCancel = null;
         }
+
         this.activeStreamId = null;
+        this.localSwitchAction = undefined;
       };
 
       const settle = (cancelCommand: () => void) => {
         if (settled) {
           return;
         }
+
         settled = true;
+
         emitLines(lineBuffer.flush());
         sub?.unsubscribe();
         cleanup(cancelCommand);
@@ -665,41 +1275,76 @@ export class CompileService {
       const cancelCommand = () => {
         exitCode = 1;
         signal = 'cancelled';
+
         settle(cancelCommand);
       };
 
       this.activeCommandCancel = cancelCommand;
+
       const streamId = `disk_build_${crypto.randomUUID()}`;
+
       this.activeStreamId = streamId;
-      sub = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
+
+      const command = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
         cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId,
+        projectPath: request.projectPath, projectSessionId: request.projectSessionId,
         ...(request.buildDeliveryRequest ? { buildDeliveryRequest: request.buildDeliveryRequest } : {}),
-      }).subscribe({
+      }, true); // onLine owns the build log; CmdService must not replay its close-tail.
+
+      const output = localSwitch ? withLocalBuildSwitch(command, {
+        isCurrent: localSwitch.isCurrent,
+        stop: () => this.cmdService.kill(streamId),
+        ready: action => {
+          this.localSwitchAction = () => { action(); };
+
+          this.application.updateNotice({ title: this.buildNoticeTitle(localSwitch.boardName), text: this.t('FAST_BUILD_HINT'),
+            state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(), onSwitchToCloud: this.localSwitchAction });
+        },
+        switching: pending => {
+          this.localSwitchPending = pending.catch(() => undefined);
+          this.localSwitchAction = undefined;
+
+          this.application.updateNotice({ title: this.buildNoticeTitle(localSwitch.boardName),
+            text: this.translate.instant('CLOUD_BUILD.SWITCHING_TO_CLOUD'), state: 'doing', setTimeout: 0, stop: () => this.cancel() });
+        },
+      }) : command;
+
+      sub = output.subscribe({
         next: (o: CmdOutput) => {
+          if (o.data && (o.type === 'stdout' || o.type === 'stderr')) buildLog?.append(o.data);
+          if (o.type === 'error' && o.error) buildLog?.append(String(o.error) + '\n');
+
           if (!this.activeStreamId && o.streamId) {
             this.activeStreamId = o.streamId;
           }
+
           if (isCmdTerminalOutput(o)) {
             exitCode = o.code ?? (o.signal ? 1 : 0);
             signal = o.signal || null;
           }
+
           if (o.type === 'error') {
             const errorText = String(o.error || '');
+
             exitCode = 1;
             stderr += errorText;
             combined += errorText;
+
             if (errorText) {
               emitLines(lineBuffer.append('stderr', `${errorText}\n`));
             }
           }
+
           if (o.data) {
             if (o.type === 'stderr') {
               stderr += o.data;
               combined += o.data;
+
               emitLines(lineBuffer.append('stderr', o.data));
             } else {
               stdout += o.data;
               combined += o.data;
+
               emitLines(lineBuffer.append('stdout', o.data));
             }
           }
@@ -708,8 +1353,24 @@ export class CompileService {
           if (settled) {
             return;
           }
+
           settled = true;
-          emitLines(lineBuffer.flush());
+
+          if (err?.code !== CLOUD_BUILD_CLOUD_REQUESTED) {
+            emitLines(lineBuffer.flush());
+
+            const message = err?.message || String(err);
+            const reported = typeof err?.fullStdErr === 'string' ? err.fullStdErr : '';
+            const output = reported || combined;
+            const detail = output ? (output.includes(message) ? output : output + '\n' + message) : message;
+            const alreadyLogged = !!combined && (!reported || combined.includes(reported));
+
+            cleanup(cancelCommand);
+            reject(Object.assign(new Error(message), err, { fullStdErr: detail, buildOutputAlreadyLogged: alreadyLogged }));
+
+            return;
+          }
+
           cleanup(cancelCommand);
           reject(err);
         },
@@ -717,6 +1378,7 @@ export class CompileService {
           settle(cancelCommand);
         },
       });
+
       this.activeSub = sub;
     });
   }

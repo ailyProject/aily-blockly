@@ -11,7 +11,8 @@ export function indexAbsAbi(workspace: AbsAbiWorkspace): Map<string, AbsAbiBlock
   const pending = workspace.blocks.blocks.map(block => ({ block, depth: 0 })).reverse();
   while (pending.length) {
     const { block, depth } = pending.pop()!;
-    if (!block || typeof block !== 'object' || typeof block.id !== 'string' || !block.id || !/^[A-Za-z_]\w*$/.test(block.type)) {
+    if (!block || typeof block !== 'object' || typeof block.id !== 'string' || !block.id
+      || typeof block.type !== 'string' || !/^[A-Za-z0-9_]+$/.test(block.type)) {
       throw new AbsSyncError('ABS_ABI_INVALID', 'Each serialized block requires a type and stable ID.');
     }
     if (depth > 128 || blocks.size >= 100000) {

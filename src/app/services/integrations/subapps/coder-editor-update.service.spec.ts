@@ -24,7 +24,7 @@ function catalogItem(overrides: Partial<SubappCatalogItem> = {}): SubappCatalogI
     updatePolicy: { download: 'background', install: 'next-launch' },
     titleKey: 'AILY_CODER_EDITOR.TITLE',
     namespace: 'AILY_CODER_EDITOR',
-    name: 'Aily Coder Editor',
+    name: 'aily Coder Editor',
     description: '',
     icon: 'fa-light fa-code',
     enabled: true,

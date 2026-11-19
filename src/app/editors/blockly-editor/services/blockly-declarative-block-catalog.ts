@@ -22,6 +22,10 @@ export interface DeclarativeBlockSnapshot {
   assertCurrent(): void;
   /** Pure synchronous reads may share complete declaration checks at their boundaries. */
   withSynchronousRead?<T>(read: () => T): T;
+  /** Native loading holds an edit lease. Validate a complete synchronous
+   * fragment before it starts and before it can yield or publish its result.
+   * Individual declaration reads still check the type they are about to use. */
+  withSynchronousLoad?<T>(load: () => T): T;
 }
 
 /** Registration provenance, not inferred metadata or a workspace of probe blocks.
@@ -84,18 +88,20 @@ export class BlocklyDeclarativeBlockCatalog {
       if (entry && !intact(block.type, entry)) return undefined;
       return readNativeBlockStructure(block, registry[block.type] ?? null);
     };
+    const synchronousBoundary = <T>(operation: () => T): T => {
+      assertCurrent(); reading++;
+      try {
+        const result = operation();
+        if (result && typeof (result as any).then === 'function') throw new Error('Declaration operation must be synchronous.');
+        return result;
+      } finally { reading--; assertCurrent(); }
+    };
     return {
       types: Object.keys(registry).sort(),
       registered: type => typeof Object.getOwnPropertyDescriptor(registry[type] ?? {}, 'init')?.value === 'function',
       assertCurrent,
-      withSynchronousRead: read => {
-        assertCurrent(); reading++;
-        try {
-          const result = read();
-          if (result && typeof (result as any).then === 'function') throw new Error('Declaration read must be synchronous.');
-          return result;
-        } finally { reading--; assertCurrent(); }
-      },
+      withSynchronousRead: synchronousBoundary,
+      withSynchronousLoad: synchronousBoundary,
       supportsUiExtension: extensions.supports,
       structuralMutator: mutations.get,
       fieldShape: fieldShapes.get,

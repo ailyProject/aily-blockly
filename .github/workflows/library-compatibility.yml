@@ -1,0 +1,33 @@
+name: Library compatibility regression
+
+on:
+  pull_request:
+    paths:
+      - 'src/app/editors/blockly-editor/components/lib-manager/**'
+      - 'src/app/utils/fuzzy-search.utils.ts'
+      - 'tests/library-compatibility.test.cjs'
+      - 'tests/package.json'
+      - '.github/workflows/library-compatibility.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/app/editors/blockly-editor/components/lib-manager/**'
+      - 'src/app/utils/fuzzy-search.utils.ts'
+      - 'tests/library-compatibility.test.cjs'
+      - 'tests/package.json'
+      - '.github/workflows/library-compatibility.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  library-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix tests run test:library-compatibility

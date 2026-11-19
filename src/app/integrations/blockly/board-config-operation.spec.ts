@@ -1,4 +1,4 @@
-import { getBoardConfig } from './board-config-operation';
+import { getBoardConfig, setBoardConfig } from './board-config-operation';
 
 describe('board config build facts', () => {
   let previousPath: any;
@@ -101,5 +101,56 @@ describe('board config build facts', () => {
     expect((await getBoardConfig(service as any, 'pins'))['ok']).toBeTrue();
     service.getPackageJson = async () => ({}) as any;
     expect((await getBoardConfig(service as any, 'pins'))['ok']).toBeTrue();
+  });
+
+  function failedPinSynchronization(error: Error) {
+    const service: any = project();
+    const manifest = { dependencies: { '@aily-project/board-test': '1' }, projectConfig: { pnum: 'old' } };
+    service.getPackageJson = async () => manifest;
+    service.setPackageJson = jasmine.createSpy('persist selected config').and.resolveTo();
+    service.getBoardConfigMenu.and.resolveTo([{ key: 'pnum', children: [
+      { key: 'pnum', data: 'next', extra: { syncPinConfig: true } },
+    ] }]);
+    service.syncBoardPinConfig = jasmine.createSpy('sync pins').and.rejectWith(error);
+    const builder: any = { triggerPreprocess: jasmine.createSpy('preprocess') };
+    return { service, builder };
+  }
+
+  it('returns the original unknown save receipt and safe failure facts without replaying pin synchronization', async () => {
+    const receipt = { version: 1, requestId: 'ui-save-original', project: '/project',
+      operation: 'project_save', state: 'unknown' };
+    const error = Object.assign(new Error('Observe the original save request'), {
+      code: 'PROJECT_SAVE_RECEIPT_UNKNOWN', partial: true,
+      saveReceipt: { ...receipt, capability: 'private-retry-token' },
+      capability: 'do-not-forward', requestId: 'must-not-replace-original',
+    });
+    const { service, builder } = failedPinSynchronization(error);
+    const result = await setBoardConfig(service, builder, {} as any, { config_key: 'pnum', config_value: 'next' });
+    expect(result['ok']).toBeFalse();
+    expect(result['persisted']).toBeTrue();
+    expect(result['reason']).toBe('board_config_sync_failed');
+    expect(result['code']).toBe('PROJECT_SAVE_RECEIPT_UNKNOWN');
+    expect(result['saveReceipt']).toEqual(receipt);
+    expect(result['partial']).toBeTrue();
+    expect(result['capability']).toBeUndefined();
+    expect(result['requestId']).toBeUndefined();
+    expect(service.setPackageJson).toHaveBeenCalledTimes(1);
+    expect(service.syncBoardPinConfig).toHaveBeenCalledTimes(1);
+    expect(builder.triggerPreprocess).not.toHaveBeenCalled();
+  });
+
+  it('does not forward a foreign save receipt or malformed failure facts', async () => {
+    const error = Object.assign(new Error('Invalid foreign save failure'), {
+      code: 123, partial: 'true', saveReceipt: { version: 1, requestId: 'other-request', project: '/other',
+        operation: 'project_save', state: 'unknown', capability: 'private-token' },
+    });
+    const { service, builder } = failedPinSynchronization(error);
+    const result = await setBoardConfig(service, builder, {} as any, { config_key: 'pnum', config_value: 'next' });
+    expect(result['ok']).toBeFalse();
+    expect(result['code']).toBeUndefined();
+    expect(result['saveReceipt']).toBeUndefined();
+    expect(result['partial']).toBeUndefined();
+    expect(service.syncBoardPinConfig).toHaveBeenCalledTimes(1);
+    expect(builder.triggerPreprocess).not.toHaveBeenCalled();
   });
 });

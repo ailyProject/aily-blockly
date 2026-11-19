@@ -219,6 +219,8 @@
                                         }
                                     </button>
                                     <button class="subapp-more-action danger" type="button" role="menuitem"
+                                        [disabled]="isSubappUninstallBlocked(app)"
+                                        [title]="isSubappUninstallBlocked(app) ? ('APP_STORE.CODER_EDITOR_UNINSTALL_BLOCKED' | translate) : ''"
                                         [class.confirm]="isUninstallConfirming(app)" (click)="uninstallSubapp(app)"
                                         (mouseleave)="resetUninstallConfirmation()">
                                         <i class="fa-light"

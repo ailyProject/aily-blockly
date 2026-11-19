@@ -1,7 +1,8 @@
 import { Inject, Injectable, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { getChildToolConfig, getChildToolConfigs, type ChildToolConfig } from '../../../configs/tool.config';
-import { ChildAppHostRegistryService, type ChildAppHostAction } from '@integration/subapps/public-api';
+import { ChildAppHostRegistryService, SubappManagerService, type ChildAppHostAction } from '@integration/subapps/public-api';
+import { recoverChildAppCapabilities } from './subapp-capability-recovery';
 import { UiAutomationRegistryService } from './ui-automation-registry.service';
 import { SUBAPP_BROWSER_PRESENTATION, SubappBrowserPresentationService } from '../subapps/subapp-browser-presentation.service';
 import {
@@ -76,6 +77,7 @@ export class MainUiAutomationService {
     private readonly translate: TranslateService,
     @Optional() @Inject(SubappBrowserPresentationService)
     private readonly browserPresentations: SubappBrowserPresentationService | null = null,
+    private readonly subappManager: SubappManagerService,
   ) {
     this.childHostRegistry.ensureInitialized();
   }
@@ -145,6 +147,10 @@ export class MainUiAutomationService {
     }
 
     return { ok: true, app: await this.describeChildApp(config, await this.readChildToolSessions()) };
+  }
+
+  recoverChildApp(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    return recoverChildAppCapabilities(this.subappManager, params);
   }
 
   async isChildAppWindowOpen(toolId: string): Promise<boolean> {

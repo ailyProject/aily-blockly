@@ -10,7 +10,7 @@ metadata:
   tags: abs,syntax,reference,blockly
 ---
 
-# ABS (Aily Block Syntax) 快速参考
+# ABS (aily Block Syntax) 快速参考
 
 本 skill 只负责 ABS 语法规则与示例。项目规划、库安装、证据读取、工作区同步和验证流程由当前 host profile、可用工具说明及 `blockly-best-practices` skill 负责；不要从本语法参考重建那些流程。
 

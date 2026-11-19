@@ -24,10 +24,17 @@ export const GUIDE_ONBOARDING_CONFIG: OnboardingConfig = {
       position: 'right'
     },
     {
-      target: '.menu-box .btn:nth-child(4)',
-      titleKey: 'GUIDE.ONBOARDING.STEP4_TITLE',
-      descKey: 'GUIDE.ONBOARDING.STEP4_DESC',
-      position: 'right'
+      target: '[data-onboarding="ai-tools"]',
+      optional: true,
+      titleKey: 'COMMON.ONBOARDING.AI_TOOLS_TITLE',
+      descKey: 'GUIDE.ONBOARDING.AI_TOOLS_DESC',
+      position: 'bottom'
+    },
+    {
+      target: '[data-onboarding="app-store"]',
+      titleKey: 'COMMON.ONBOARDING.APP_STORE_TITLE',
+      descKey: 'COMMON.ONBOARDING.APP_STORE_DESC',
+      position: 'bottom'
     },
     {
       target: '.right-box .item:first-child',
@@ -68,7 +75,7 @@ export const BLOCKLY_ONBOARDING_CONFIG: OnboardingConfig = {
       position: 'top'
     },
     {
-      target: '.blocklyWorkspace',
+      target: '[data-onboarding="blockly-workspace"]',
       titleKey: 'BLOCKLY.ONBOARDING.WORKSPACE_TITLE',
       descKey: 'BLOCKLY.ONBOARDING.WORKSPACE_DESC',
       position: 'left'
@@ -83,6 +90,19 @@ export const BLOCKLY_ONBOARDING_CONFIG: OnboardingConfig = {
       target: '[data-action="upload"]',
       titleKey: 'BLOCKLY.ONBOARDING.UPLOAD_TITLE',
       descKey: 'BLOCKLY.ONBOARDING.UPLOAD_DESC',
+      position: 'bottom'
+    },
+    {
+      target: '[data-onboarding="ai-tools"]',
+      optional: true,
+      titleKey: 'COMMON.ONBOARDING.AI_TOOLS_TITLE',
+      descKey: 'BLOCKLY.ONBOARDING.AI_TOOLS_DESC',
+      position: 'bottom'
+    },
+    {
+      target: '[data-onboarding="app-store"]',
+      titleKey: 'COMMON.ONBOARDING.APP_STORE_TITLE',
+      descKey: 'COMMON.ONBOARDING.APP_STORE_DESC',
       position: 'bottom'
     },
   ]

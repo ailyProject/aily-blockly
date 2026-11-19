@@ -290,6 +290,13 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     return app.extension === true && app.id === AILY_CODER_EDITOR_SUBAPP_ID;
   }
 
+  isSubappUninstallBlocked(app: AppItem): boolean {
+    return (app.id === AILY_CODER_EDITOR_SUBAPP_ID
+      || app.subapp?.catalogId === AILY_CODER_EDITOR_SUBAPP_ID)
+      && this.configService.isCoderProduct()
+      && !!this.projectService.currentProjectPath;
+  }
+
   requiresClientRestart(app: AppItem): boolean {
     return app.extension === true && !this.isCoderEditorExtension(app);
   }
@@ -352,6 +359,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   uninstallSubapp(app: AppItem): void {
     const catalogId = app.subapp?.catalogId;
     if (!catalogId || this.pendingCatalogId) return;
+    if (this.isSubappUninstallBlocked(app)) {
+      this.clearUninstallConfirmation();
+      return;
+    }
     if (this.confirmUninstallCatalogId !== catalogId) {
       this.clearUninstallConfirmation();
       this.confirmUninstallCatalogId = catalogId;
@@ -480,6 +491,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   private async runSubappAction(action: 'install' | 'uninstall', app: AppItem): Promise<void> {
     const subapp = app.subapp;
     if (!subapp || this.pendingCatalogId) return;
+    if (action === 'uninstall' && this.isSubappUninstallBlocked(app)) return;
     this.pendingCatalogId = subapp.catalogId;
     this.pendingProgress = 1;
     this.cdr.markForCheck();
@@ -495,7 +507,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.message.success(this.translate.instant(`APP_STORE.${action.toUpperCase()}_SUCCESS`, { name: app.name }));
     } catch (error) {
       if (!this.isBusyCancelledError(error)) {
-        const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+        const message = this.readableActionError(error);
         this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       }
     } finally {
@@ -521,7 +533,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       await this.subappManager.downloadUpdate(catalogId);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
     }
   }
@@ -634,7 +646,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.message.success(this.translate.instant('APP_STORE.UPDATE_SUCCESS', { name: app.name }));
     } catch (error) {
       if (!this.isBusyCancelledError(error)) {
-        const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+        const message = this.readableActionError(error);
         this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       }
       if (wasActive && processStopped && !updateInstalled) {
@@ -696,7 +708,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         { name: app.name },
       ));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
     } finally {
       this.pendingCatalogId = '';
@@ -713,6 +725,12 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const catalogId = app.subapp?.catalogId;
     if (!catalogId) return;
 
+    const assertCanUninstall = () => {
+      if (action === 'uninstall' && this.isSubappUninstallBlocked(app)) {
+        throw new Error(this.translate.instant('APP_STORE.CODER_EDITOR_UNINSTALL_BLOCKED'));
+      }
+    };
+    assertCanUninstall();
     try {
       await this.subappManager[action](catalogId, { forceClose: options.forceClose === true });
     } catch (error) {
@@ -725,6 +743,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         (cancelled as Error & { code?: string }).code = 'EBUSY_CANCELLED';
         throw cancelled;
       }
+      assertCanUninstall();
       if (action === 'update' || action === 'installUpdate') {
         if (!app.extension) {
           this.uiService.openTool(app.id);
@@ -765,6 +784,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!err) return false;
     if (err.requiresForceClose === true || err.code === 'EBUSY') return true;
     return /EBUSY|resource busy|被占用/i.test(String(err.message || ''));
+  }
+
+  private readableActionError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+    return message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
   }
 
   private isBusyCancelledError(error: unknown): boolean {
@@ -809,7 +833,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       await this.refreshSubappActiveVersion(app);
       this.message.success(this.translate.instant('APP_STORE.RESTART_SUCCESS', { name: app.name }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       throw error;
     } finally {
@@ -860,7 +884,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         name: refreshedApp.name,
       }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.CHECK_UPDATE_FAILED', { message }));
     } finally {
       this.checkingCatalogId = '';

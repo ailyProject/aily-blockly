@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/services/core/platform/cmd.service.spec.ts",
+    "../src/app/services/domains/dependencies/npm.service.spec.ts",
+    "../src/app/services/domains/dependencies/coder-dependency-readiness.spec.ts",
+    "../src/app/main-window/components/header/header-unsaved-title.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

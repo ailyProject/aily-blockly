@@ -22,11 +22,16 @@ export function resolveBoardJsonBindings(source: unknown, board: any): any {
         if (Array.isArray(value)) return value.map((item, index) => visit(item, `${location}[${index}]`));
         if (value && typeof value === 'object') {
             const result = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item, `${location}.${key}`)]));
+            if (result['type'] === 'field_dropdown' && Array.isArray(result['options'])) {
+                // Older libraries encode dividers as selectable [label, value] pairs.
+                result['options'] = result['options'].map(option =>
+                    Array.isArray(option) && option.length === 2 && option[0] === '---' && option[1] === '---' ? 'separator' : option);
+            }
             if (result['type'] === 'field_dropdown' && typeof value.options === 'string' && value.options.startsWith('${board.')) {
                 const options = result['options'];
                 if (!Array.isArray(options) || !options.length || !options.every(option =>
-                    Array.isArray(option) && option.length === 2 && typeof option[0] === 'string' && typeof option[1] === 'string')) {
-                    throw new BoardBindingError(`${location}.options`, value.options, 'Expected a non-empty dropdown list of [label, string value] pairs.');
+                    option === 'separator' || Array.isArray(option) && option.length === 2 && typeof option[0] === 'string' && typeof option[1] === 'string')) {
+                    throw new BoardBindingError(`${location}.options`, value.options, 'Expected a non-empty dropdown list of [label, string value] pairs or separators.');
                 }
             }
             return result;

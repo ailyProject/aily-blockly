@@ -1,4 +1,6 @@
 import { createFile, DataStream } from 'mp4box';
+import { fitMediaRect } from '@domain/project/project-data/media/public-api';
+import type { MediaFit, MediaRect, MediaSize } from '@domain/project/project-data/media/public-api';
 
 type AnimationFormat = 'rgb565' | 'rgb332';
 type AnimationEncoding = 'rgb565-be' | 'rgb332';
@@ -14,6 +16,7 @@ interface DecodeRequest {
     fps: number;
     maxFrames: number;
     format?: AnimationFormat;
+    fit?: MediaFit;
 }
 
 interface DecodeOptions {
@@ -30,6 +33,7 @@ interface DecodeResult extends DecodeOptions {
     frames: Uint8Array[];
     sourceName: string;
     sourceType: string;
+    firstFrame?: { source: MediaSize; content: MediaRect };
 }
 
 type WorkerMessageParams = Record<string, string | number>;
@@ -154,11 +158,13 @@ function normalizeDecodeOptions(request: DecodeRequest): DecodeOptions {
 class PackedRgbFrameRenderer {
     private readonly canvas: OffscreenCanvas;
     private readonly context: OffscreenCanvasRenderingContext2D;
+    firstFrame?: DecodeResult['firstFrame'];
 
     constructor(
         private readonly width: number,
         private readonly height: number,
         private readonly format: AnimationFormat,
+        private readonly fit: MediaFit = 'stretch',
     ) {
         this.canvas = new OffscreenCanvas(width, height);
         const context = this.canvas.getContext('2d', { willReadFrequently: true });
@@ -172,7 +178,10 @@ class PackedRgbFrameRenderer {
         this.context.globalCompositeOperation = 'source-over';
         this.context.fillStyle = '#000000';
         this.context.fillRect(0, 0, this.width, this.height);
-        this.context.drawImage(frame, 0, 0, this.width, this.height);
+        const source = { width: frame.displayWidth, height: frame.displayHeight };
+        const content = fitMediaRect(source, { width: this.width, height: this.height }, this.fit);
+        this.firstFrame ??= { source, content };
+        this.context.drawImage(frame, content.x, content.y, content.width, content.height);
 
         const rgba = this.context.getImageData(0, 0, this.width, this.height).data;
         const packed = new Uint8Array(getFrameByteLength(this.width, this.height, this.format));
@@ -338,7 +347,7 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
         }
     }
 
-    const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format);
+    const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format, request.fit);
     const frames: Uint8Array[] = [];
     const intervalUs = MICROSECONDS_PER_SECOND / options.fps;
     const sampleDurations = new Map<number, number>();
@@ -438,7 +447,7 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
         throw createWorkerError('WORKER_ERROR_MP4_NO_VALID_FRAMES');
     }
 
-    return createDecodeResult(options, frames, request.fileName || '', sourceType);
+    return { ...createDecodeResult(options, frames, request.fileName || '', sourceType), firstFrame: renderer.firstFrame };
 }
 
 async function decodeImage(
@@ -452,7 +461,7 @@ async function decodeImage(
     }
 
     const options = normalizeDecodeOptions(request);
-    const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format);
+    const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format, request.fit);
     const decoder = new ImageDecoderCtor({
         data: new Uint8Array(request.buffer),
         type: sourceType,
@@ -512,7 +521,7 @@ async function decodeImage(
         throw createWorkerError('WORKER_ERROR_IMAGE_NO_VALID_FRAMES', { format: formatLabel });
     }
 
-    return createDecodeResult(options, frames, request.fileName || '', sourceType);
+    return { ...createDecodeResult(options, frames, request.fileName || '', sourceType), firstFrame: renderer.firstFrame };
 }
 
 function resolveImageSource(fileName: string, mimeType: string) {

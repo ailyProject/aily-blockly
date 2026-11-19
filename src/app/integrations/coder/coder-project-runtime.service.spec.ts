@@ -7,6 +7,7 @@ import { TranslateService } from '@ngx-translate/core';
 import { NoticeService } from '@core/app-shell/public-api';
 import { CmdService, CrossPlatformCmdService, ElectronService, LogService, PlatformService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import { ProjectService, CODER_EXECUTION_PORT } from '@domain/project/public-api';
 import {
   BUILD_ACTION_PORT,
@@ -20,13 +21,14 @@ describe('Coder concurrent process integration', () => {
   let runtime: CoderProjectRuntimeService;
   let project: any;
   let serial: any;
-  let commands: { command: string; output: Subject<any>; id: string }[];
+  let commands: { command: string; output: Subject<any>; id: string; projectSessionId?: string }[];
   let killed: string[];
   let originals: any;
   const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
   beforeEach(() => {
     spyOn(NpmService.prototype, 'assertCoderDependenciesReady').and.resolveTo();
+    spyOn(NpmService.prototype, 'ensureLocalCompilerDependencies').and.resolveTo();
     originals = { path: window['path'], fs: window['fs'], cmd: window['cmd'], builder: window['builder'] };
     window['builder'] = { captureBuildSource: () => ({ digest: 'fixture-source' }) };
     window['path'] = { join: (...parts: string[]) => parts.join('/'), isExists: () => true,
@@ -41,24 +43,31 @@ describe('Coder concurrent process integration', () => {
     });
     spyOn(CmdService.prototype, 'spawn').and.callFake((file, args, options) => {
       const output = new Subject<any>(); const id = options!.streamId!;
-      commands.push({command: [file, ...args].join(' '), output, id}); return output;
+      commands.push({ command: [file, ...args].join(' '), output, id, projectSessionId: options?.projectSessionId }); return output;
     });
     spyOn(CmdService.prototype, 'kill').and.callFake(async (id: string) => { killed.push(id); return true; });
     const contexts = new Map<string, any>();
     project = {
       currentProjectPath: '/a', currentProjectPath$: new BehaviorSubject('/a'),
+      captureCurrentProjectGuard: () => { const path = project.currentProjectPath; return () => project.currentProjectPath === path; },
       coderProjects$: new BehaviorSubject([{ path: '/a' }, { path: '/b' }]),
       coderProjects: [{ path: '/a' }, { path: '/b' }],
       coderOperationsSubject: new BehaviorSubject(new Map()),
       getProjectMode: () => 'coder',
+      isProjectTransitionInProgress: jasmine.createSpy('transition').and.returnValue(false),
       getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
       beginCoderOperation: () => () => {},
+      ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true),
       getCoderProjectContext(path: string) {
         if (!contexts.has(path)) contexts.set(path, {
           currentProjectPath: path, isCoderProjectContext: true,
+          getProjectDependencySession: () => ({ projectPath: path, projectSessionId: `opening:${path}` }),
+          captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }),
           coderProjects: project.coderProjects, currentBoardConfig: {}, boardChangeSubject: new Subject(),
           isAilyCodeProject: () => true, beginCoderOperation: () => () => {},
+          ensureCoderBoardSelected: (path: string) => project.ensureCoderBoardSelected(path),
           syncCurrentBoardConfig: async () => true,
+          ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
           getProjectDependencyBlockMessage: (path: string) => project.getProjectDependencyBlockMessage(path),
         });
         return contexts.get(path);
@@ -74,7 +83,8 @@ describe('Coder concurrent process integration', () => {
       { provide: CrossPlatformCmdService, useValue: {} },
       { provide: ElectronService, useValue: { pathJoin: (...parts: string[]) => parts.join('/'), isWindowFocused: () => true } },
       { provide: PlatformService, useValue: { za7: '/7z' } },
-      { provide: ConfigService, useValue: { data: {}, isCoderProduct: () => true } },
+      { provide: ConfigService, useValue: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {}, isCoderProduct: () => true } },
+      { provide: MetricsService, useValue: { record: () => {} } },
       { provide: HttpClient, useValue: {} },
       { provide: NzMessageService, useValue: { warning: () => {}, error: () => {} } },
       { provide: TranslateService, useValue: { instant: (key: string) => key } },
@@ -90,6 +100,38 @@ describe('Coder concurrent process integration', () => {
 
   function started(command: typeof commands[number]): void { command.output.next({ type: 'stdout', data: 'running\n', streamId: command.id }); }
   function finish(command: typeof commands[number]): void { command.output.next({ type: 'close', code: 0, streamId: command.id }); command.output.complete(); }
+
+  for (const state of ['done', 'error']) it(`owns the project while a notification retries locally and reports ${state}`, async () => {
+    const session = runtime.getSession('/a');
+    let complete!: () => void;
+    const retry = jasmine.createSpy('retry').and.callFake(async () => {
+      session.notice.update({ state: 'doing', text: 'local' });
+      await new Promise<void>(resolve => { complete = resolve; });
+      session.notice.update({ state, text: 'completed' });
+    });
+    project.getProjectDependencyBlockMessage.and.returnValue('dependency failure');
+    session.notice.update({ state: 'error', text: 'cloud', onRetryLocally: retry });
+    const click = session.state.notice!.onRetryLocally!;
+    const pending = click(); click();
+    expect(session.busy).toBe('build'); expect(runtime.getState('/a').build).toBe('doing');
+    expect(retry).toHaveBeenCalledTimes(1);
+    complete(); await pending;
+    expect(session.busy).toBeNull(); expect(runtime.getState('/a').build).toBe(state);
+  });
+
+  it('ignores a local retry notification after switching to another project', async () => {
+    const session = runtime.getSession('/a'), retry = jasmine.createSpy('retry');
+    session.notice.update({ state: 'error', text: 'cloud', onRetryLocally: retry });
+    const click = session.state.notice!.onRetryLocally!;
+    project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
+    await click(); expect(retry).not.toHaveBeenCalled();
+  });
+
+  it('does not start a build while board source/configuration is being synchronized', async () => {
+    project.isProjectTransitionInProgress.and.returnValue(true);
+    await expectAsync(runtime.build('/a')).toBeRejectedWithError(/配置正在更新/);
+    expect(commands.length).toBe(0);
+  });
 
   it('rejects build and upload requests before creating processes while dependencies are unavailable', async () => {
     project.getProjectDependencyBlockMessage.and.returnValue('retry dependencies');
@@ -142,14 +184,14 @@ describe('Coder concurrent process integration', () => {
     // Finish A after switching to B: the failure must remain attached to A.
     project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
     callback({ type: 'close', code: 1, streamId: id });
-    a.notice.update({ title: 'Library preparation failed', detail: 'Unknown Aily Coder Agent method: coder.library.materialize', state: 'error' });
+    a.notice.update({ title: 'Library preparation failed', detail: 'Unknown aily Coder Agent method: coder.library.materialize', state: 'error' });
     expect((await visible.readPage()).entries).toEqual([]);
     expect(b.log.list).toEqual([]);
     project.currentProjectPath = '/a'; project.currentProjectPath$.next('/a');
     const entries = (await visible.readPage()).entries;
     expect(entries.map(entry => entry.detail)).toEqual([
       'npm install', 'npm install\ndependency install failed',
-      'Unknown Aily Coder Agent method: coder.library.materialize',
+      'Unknown aily Coder Agent method: coder.library.materialize',
     ]);
     project.currentProjectPath = ''; project.currentProjectPath$.next('');
     expect((await visible.readPage()).entries).toEqual([]);
@@ -162,6 +204,7 @@ describe('Coder concurrent process integration', () => {
     expect(commands.length).toBe(2);
     expect(commands[0].command).toContain('/a/.temp/compile-request-');
     expect(commands[1].command).toContain('/b/.temp/compile-request-');
+    expect(commands.map(command => command.projectSessionId)).toEqual(['opening:/a', 'opening:/b']);
     commands.forEach(started);
     project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
     runtime.cancel('/a', 'build');
@@ -173,6 +216,16 @@ describe('Coder concurrent process integration', () => {
     expect(commands.length).toBe(2);
     expect(runtime.getState('/a').build).toBe('warn');
     expect(runtime.getState('/b').build).toBe('done');
+  });
+
+  it('asks for a board before resolving a port or starting an upload session', async () => {
+    project.ensureCoderBoardSelected.and.resolveTo(false);
+    const resolve = spyOn(runtime, 'resolvePort');
+    expect(await runtime.upload('/a')).toEqual({ state: 'warn',
+      text: '请先选择开发板，再编译或上传 Arduino 工程。', buildOutcome: 'not-started' });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(commands).toEqual([]);
+    expect(runtime.getState('/a').upload).toBe('default');
   });
 
   it('lets separate devices upload concurrently, rejects a shared port, and releases the lease after failure', async () => {

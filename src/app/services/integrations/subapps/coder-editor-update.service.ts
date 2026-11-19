@@ -146,7 +146,7 @@ export class CoderEditorUpdateService {
     if (this.startupTask) return this.startupTask;
     const task = this.performStartupUpdate()
       .catch((error) => {
-        console.warn('[Subapp] Aily Coder Editor startup update failed; continuing with the installed version:', error);
+        console.warn('[Subapp] aily Coder Editor startup update failed; continuing with the installed version:', error);
         return false;
       })
       .finally(() => {
@@ -229,22 +229,22 @@ export class CoderEditorUpdateService {
           }
         }
         if (failed?.status === 'rejected' && !updateCompleted) {
-          console.warn('[Subapp] An Aily Coder Editor surface failed to reload after update:', failed.reason);
+          console.warn('[Subapp] An aily Coder Editor surface failed to reload after update:', failed.reason);
         }
         if (updateCompleted && failed?.status === 'rejected') {
-          reloadError = failed.reason || new Error('Aily Coder Editor 更新后重载失败');
+          reloadError = failed.reason || new Error('aily Coder Editor 更新后重载失败');
         }
         if (updateCompleted && !reloadError) {
           const expectedVersion = version(this.findItem()?.installedVersion);
           const runtime = this.childToolProcess.getRuntimeSnapshot(AILY_CODER_EDITOR_SUBAPP_ID);
           if (!runtime.running || (expectedVersion && version(runtime.version) !== expectedVersion)) {
             reloadError = new Error(
-              `Aily Coder Editor 运行版本校验失败：应为 ${expectedVersion || '已安装版本'}，实际为 ${version(runtime.version) || '未运行'}`,
+              `aily Coder Editor 运行版本校验失败：应为 ${expectedVersion || '已安装版本'}，实际为 ${version(runtime.version) || '未运行'}`,
             );
           }
         }
         if (!updateCompleted && reloadError) {
-          console.warn('[Subapp] Aily Coder Editor failed to recover its previous Runtime:', reloadError);
+          console.warn('[Subapp] aily Coder Editor failed to recover its previous Runtime:', reloadError);
         }
       }
       this.operationBusySubject.next(false);

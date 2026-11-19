@@ -1,0 +1,135 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { createHash, randomUUID } = require('node:crypto');
+const { createBuildDeliveryAuthority } = require('../../../electron/build-delivery-authority');
+const { captureBuildSource } = require('../../../child/scripts/build-source-capture');
+const { captureProjectSources, publishBuildDelivery } = require('../../../child/scripts/compile-delivery');
+const { createLibraryProjectionRecorder } = require('../../../child/scripts/library-source-evidence');
+const hash = value => createHash('sha256').update(value).digest('hex');
+
+function fixture(t, coder = false, isolated = false) {
+    const logicalRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-build-authority-')));
+    let root = logicalRoot;
+
+    t.after(() => {
+        assert.equal(path.dirname(logicalRoot), fs.realpathSync(os.tmpdir())); assert.match(path.basename(logicalRoot), /^aily-build-authority-/);
+        fs.rmSync(logicalRoot, { recursive: true, force: true });
+    });
+
+    const put = (file, content) => {
+        const filename = path.join(root, file); fs.mkdirSync(path.dirname(filename), { recursive: true });
+
+        fs.writeFileSync(filename, typeof content === 'string' ? content : JSON.stringify(content)); return filename;
+    };
+
+    put('package.json', { type: coder ? 'coder' : 'blockly', entry: 'src/main.cpp' });
+    put('node_modules/@aily-project/board-test/board.json', {}); put('node_modules/@aily-project/board-test/package.json', {});
+    put('project.abi', '{}');
+
+    const config = { currentProjectPath: root, boardModule: '@aily-project/board-test', code: 'void setup(){} void loop(){}', recordProjectDelivery: true };
+
+    if (coder) put('sketch/src/main.cpp', config.code);
+
+    config.sourceCapture = captureBuildSource(config, coder ? undefined : { documentText: '{}', revision: 1, runtimeRevision: 2, pageId: 'main' });
+
+    if (isolated) {
+        Object.assign(config, require('../../../child/scripts/build-execution-workspace').prepareBuildExecution(config,
+            { documentText: '{}', revision: 1, runtimeRevision: 2, pageId: 'main' }));
+
+        root = config.currentProjectPath;
+    }
+
+    const request = put(`.temp/compile-request-${randomUUID()}.json`, config);
+    const sender = { isDestroyed: () => false };
+
+    const state = { owner: { sender, generation: 1 }, source: { projectPath: logicalRoot, mode: coder ? 'coder' : 'blockly', activationId: randomUUID(),
+        boardModule: config.boardModule, ...(coder ? { saved: true } : { workspace: config.sourceCapture.workspace }) }, query: undefined };
+
+    const dependencies = { childRoot: path.resolve(__dirname, '../../../child'), getOwner: () => state.owner,
+        querySource: async () => state.query ? state.query() : { ok: true, source: state.source } };
+
+    const api = createBuildDeliveryAuthority(dependencies), libraries = createLibraryProjectionRecorder();
+
+    const options = { command: process.execPath, args: [path.join(dependencies.childRoot, 'scripts/compile.js'), request],
+        buildWorkspace: root, buildDeliveryRequest: request, shellProfile: false };
+
+    const query = () => api.query(sender, { projectPath: logicalRoot });
+    const libraryFile = 'node_modules/@aily-project/lib-fixture/src/helper.h';
+
+    function addLibrary() {
+        const source = path.dirname(put(libraryFile, 'original'));
+        const target = path.dirname(put('.temp/library/helper.h', 'original'));
+
+        libraries.add('@aily-project/lib-fixture', libraries.capture(source), target);
+    }
+
+    function publish(handle, overrides = {}, recordedInputs) {
+        const executionLease = isolated ? require('../../../child/scripts/build-workspace-lease').acquireBuildWorkspace(root, 'compile') : null;
+
+        if (executionLease) require('../../../child/scripts/build-execution-workspace').startBuildExecution(config, executionLease);
+
+        const source = coder ? path.join(root, 'sketch/src/main.cpp') : put('.temp/sketch/sketch.ino', config.code);
+        const before = captureProjectSources(config);
+        let librarySnapshot = libraries.snapshot(config);
+
+        if (process.versions.electron) {
+            // Production records in child Node and consumes in Electron workers.
+            // A same-runtime fixture previously hid Windows stat.dev differences.
+            const producer = `const fs=require('node:fs'), {createLibraryProjectionRecorder}=require(${JSON.stringify(path.join(dependencies.childRoot, 'scripts/library-source-evidence'))});
+                const {config,entries}=JSON.parse(fs.readFileSync(0,'utf8')), recorder=createLibraryProjectionRecorder();
+                for(const entry of entries) recorder.add(entry.owner,recorder.capture(entry.source.requestedPath),entry.target.requestedPath,entry.inputs.map(input=>recorder.capture(input.requestedPath)));
+                console.log(JSON.stringify(recorder.snapshot(config)));`;
+
+            librarySnapshot = JSON.parse(require('node:child_process').execFileSync(
+                require('../../../electron/tools/managed-npm-cli').getChildNodeExecutable(dependencies.childRoot), ['-e', producer],
+                { input: JSON.stringify({ config, entries: librarySnapshot.entries }), encoding: 'utf8', windowsHide: true, timeout: 15000 }));
+        }
+
+        put('.build/aily-library-projections.json', librarySnapshot);
+
+        const sketchInputs = config.sourceCapture.sketchInputs;
+        const graph = sketchInputs ? `aily_sketch_inputs_digest = ${sketchInputs.digest}\n` : '';
+
+        if (sketchInputs) put('.build/build.ninja', graph);
+
+        const body = { schemaVersion: 1, kind: 'aily-build-input-record', scope: 'build-graph-facts', configurationSha256: 'c'.repeat(64),
+            steps: ['sketch', 'libraries', 'core', 'linking'].map(name =>
+                ({ kind: 'ninja-plan', name, sha256: name === 'linking' && sketchInputs ? hash(graph) : 'd'.repeat(64) })) };
+
+        const record = { ...body, digest: hash(JSON.stringify(body)) }, inputBytes = JSON.stringify(record);
+        const inputs = { schemaVersion: 1, kind: 'aily-build-input-reference', scope: 'build-graph-facts', path: 'aily-build-inputs.json', digest: record.digest };
+
+        put('.build/aily-build-inputs.json', inputBytes);
+        put('.build/firmware.bin', 'synthetic firmware');
+        put('.build/aily-artifact-manifest.json', { schemaVersion: 1, kind: 'aily-build-artifact', artifactId: 'a'.repeat(64),
+            target: { fqbn: 'test:core:board' }, build: { source: { sha256: hash(config.code), sizeBytes: Buffer.byteLength(config.code) }, inputs },
+            files: [{ path: 'firmware.bin', role: 'application', sizeBytes: Buffer.byteLength('synthetic firmware'), sha256: hash('synthetic firmware') },
+                { path: 'aily-build-inputs.json', role: 'build-inputs', sizeBytes: Buffer.byteLength(inputBytes), sha256: hash(inputBytes) }] });
+
+        const receipt = publishBuildDelivery(config, before, source, 'test:core:board', librarySnapshot);
+
+        if (isolated) {
+            put('.temp/preprocess.json', { success: true, envVars: { BUILD_PATH: path.join(root, '.build') }, upload: { command: `flash "${path.join(root, '.build/firmware.bin')}"` } });
+
+            const uploads = require('../../../child/scripts/blockly-upload-state');
+
+            uploads.publishBlocklyUploadState(config, uploads.captureBlocklyUploadInputs(config));
+            executionLease.release();
+            require('../../../child/scripts/build-execution-workspace').finishBuildExecution(config, true);
+        }
+
+        const message = { type: 'aily.build.delivery', requestDigest: hash(JSON.stringify(config)), buildId: receipt.buildId,
+            receiptSha256: hash(fs.readFileSync(path.join(root, '.build/aily-build-delivery.json'))),
+            inputRecordSha256: hash(fs.readFileSync(path.join(root, '.build/aily-build-inputs.json'))), ...overrides };
+
+        handle.onMessage(message); return receipt;
+    }
+
+    return { root, logicalRoot, put, config, request, sender, state, dependencies, api, options, query, publish, addLibrary, libraryFile };
+}
+
+module.exports = { fixture };

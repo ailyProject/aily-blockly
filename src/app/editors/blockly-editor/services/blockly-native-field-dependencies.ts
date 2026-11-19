@@ -3,6 +3,8 @@ import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
+import { nativeSemanticChange } from './blockly-native-semantic-diagnostic';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 
 const active = new WeakMap<Blockly.Workspace, NativeFieldDependencies>();
 const initializers = new Set<{ workspace: () => Blockly.Workspace | null; initialize: (workspace: Blockly.Workspace) => void }>();
@@ -27,8 +29,17 @@ export class NativeFieldDependencies {
   private sequence = 0;
   private loadingNotified = false;
   private settling = false;
+  private preparation: 'pending' | 'preparing' | 'prepared' = 'pending';
+  private readonly tasks: NativeUiTasks;
+  private readonly initializationQueue: boolean;
   constructor(private readonly native: typeof Blockly, private readonly workspace: Blockly.Workspace,
-    private readonly tasks = new NativeUiTasks()) {}
+    tasks?: NativeUiTasks, private readonly initializationPhase: 'before-ui' | 'settled' = 'settled',
+    private readonly completeTopology = true) {
+    // Only disposable candidates hand in their complete construction queue.
+    // An ordinary live host keeps unrelated timers on its normal event loop.
+    this.initializationQueue = tasks !== undefined;
+    this.tasks = tasks ?? new NativeUiTasks();
+  }
 
   get blocks(): ReadonlySet<Blockly.Block> { return new Set(this.pending.keys()); }
   defer(block: Blockly.Block, name: string, apply: () => void): void {
@@ -52,46 +63,80 @@ export class NativeFieldDependencies {
   }
 
   private retry(): unknown {
+    if (!this.pending.size) return;
+
+    // Freeze the allowed field set for the entire retry phase. Removing a
+    // successful field early would make the final snapshot use another mask.
+    const allowed = new Map([...this.pending].map(([block, fields]) => [block, new Map(fields)]));
+    const before = this.snapshot(allowed);
+    const completed: Array<[Blockly.Block, string]> = [];
     let failure: unknown;
-    for (const [block, fields] of this.pending) {
-      for (const [name, apply] of fields) {
-        const before = this.snapshot();
-        try {
-          apply();
-          if (this.snapshot() !== before) throw new Error('Native deferred field changed other persisted state or structure.');
-          fields.delete(name);
-        } catch (error) {
-          if (this.snapshot() !== before) throw new Error('Native rejected field changed persisted state or structure.');
-          if (!(error instanceof AbsSyncError) || error.code !== 'ABS_FIELD_OPTION_INVALID') throw error;
-          failure = error;
-        }
+
+    for (const [block, fields] of allowed) for (const [name, apply] of fields) {
+      try {
+        apply();
+        completed.push([block, name]);
+      } catch (error) {
+        if (!(error instanceof AbsSyncError) || error.code !== 'ABS_FIELD_OPTION_INVALID') throw error;
+        failure = error;
       }
+    }
+
+    const after = this.snapshot(allowed);
+    if (after !== before) throw nativeSemanticChange(before, after, 'initialization',
+      'Native deferred fields changed other persisted state or structure');
+
+    for (const [block, name] of completed) {
+      const fields = this.pending.get(block)!;
+      fields.delete(name);
       if (!fields.size) this.pending.delete(block);
     }
+
     return failure;
   }
-  private snapshot(): string {
+  private snapshot(allowed = this.pending): string {
     const value = JSON.parse(nativeUiSemanticSnapshot(this.native, this.workspace));
+    const states = new Map(collectProjectBlocks(value.state).map(({ state }) => [state['id'], state]));
     // Option discovery is allowed only during construction. All other shape,
     // model, topology and already-bound field state remains immutable.
     for (const shape of value.shapes) for (const input of shape.inputs) for (const field of input.fields) {
-      if (field.type === 'field_dropdown') delete field.options;
+      if (field.type !== 'field_dropdown') continue;
+      const pending = allowed.get(this.workspace.getBlockById(shape.id)!);
+      const fields = states.get(shape.id)?.['fields'] as Record<string, unknown> | undefined;
+      const selected = fields?.[field.name];
+      // Discovery may expand/reorder candidates, never invalidate an already
+      // bound selection. Retaining options in that case exposes the change to
+      // the same complete-phase semantic comparison instead of hiding it.
+      if (field.preservedValue || pending?.has(field.name) || field.options?.includes(selected)) delete field.options;
     }
     for (const { state } of collectProjectBlocks(value.state)) {
-      const pending = this.pending.get(this.workspace.getBlockById(state['id'] as string)!);
+      const pending = allowed.get(this.workspace.getBlockById(state['id'] as string)!);
       for (const name of pending?.keys() ?? []) if (state['fields']) delete state['fields'][name];
     }
     return absJson(value);
   }
-  settle(required = true): void {
-    if (!this.pending.size) return;
+  private beginSettlement(required: boolean): boolean {
+    // The first settlement, including model binding's early settle(false),
+    // follows restored fields rather than the still-default name checkpoint.
+    // Commit once before comparing complete-phase semantics; later settlement and
+    // ordinary editor snapshots must not advance an uncommitted rename.
+    if (this.preparation === 'preparing') throw new Error('Native construction metadata preparation must not reenter initialization.');
+    if (this.preparation === 'pending') {
+      this.preparation = 'preparing';
+      try {
+        captureCustomFunctionRegistration(this.native.Blocks)?.prepareSerialization(this.workspace, true);
+        this.preparation = 'prepared';
+      } catch (error) { this.preparation = 'pending'; throw error; }
+    }
+    if (!this.pending.size && (!this.initializationQueue || !required)) return false;
+    if (!this.pending.size && this.loadingNotified && !this.tasks.hasPending && !this.timers.size) return false;
     this.settling = true;
     try {
       for (const timer of this.timers.values()) {
         timer.cancel();
         if (timer.virtual === undefined) timer.virtual = this.tasks.set(timer.callback, timer.delay);
       }
-      if (!this.loadingNotified) {
+      if (!this.loadingNotified && this.completeTopology) {
         this.loadingNotified = true;
         // Events are disabled during candidate loading. Deliver the normal
         // completed-topology notification directly, without undo/UI event queues.
@@ -101,10 +146,35 @@ export class NativeFieldDependencies {
           else this.workspace.fireChangeListener(new this.native.Events.FinishedLoading(this.workspace));
         });
       }
-      this.tasks.drain(() => this.snapshot());
-      const failure = this.retry();
-      if (required && this.pending.size) throw failure;
-    } finally { this.settling = false; }
+      // A complete bound document can generate before initialization in the
+      // first fresh realm. Keep the queued notification as deferred evidence:
+      // the independent settled realm must reproduce its code/artifacts/macros.
+      // Missing requested options still require the original recovery worklist.
+      return this.pending.size > 0 || this.initializationPhase !== 'before-ui';
+    } catch (error) { this.settling = false; throw error; }
+  }
+  private finishSettlement(required: boolean): void {
+    const failure = this.retry();
+    if (required && this.pending.size) throw failure;
+  }
+  settle(required = true): void {
+    const previous = this.settling;
+    try {
+      if (!this.beginSettlement(required)) return;
+      this.tasks.drain(() => this.snapshot(), 'initialization');
+      this.finishSettlement(required);
+    } finally { this.settling = previous; }
+  }
+  /** Only the outer completed-topology boundary may yield. The completed ABS
+   * graph's synchronous model dependency worklist still settles inline. */
+  async settleCooperatively(yieldToHost: () => Promise<void>, assertCurrent: () => void): Promise<void> {
+    const previous = this.settling;
+    try {
+      if (!this.beginSettlement(true)) return;
+      await this.tasks.drainCooperatively(() => this.snapshot(), yieldToHost, assertCurrent, 'initialization');
+      assertCurrent();
+      this.finishSettlement(true);
+    } finally { this.settling = previous; }
   }
   dispose(): void {
     for (const timer of this.timers.values()) if (timer.virtual !== undefined) {
@@ -115,16 +185,20 @@ export class NativeFieldDependencies {
 }
 
 export function withNativeFieldDependencies<T>(native: typeof Blockly, workspace: Blockly.Workspace,
-  action: () => T, tasks?: NativeUiTasks): T {
-  const scope = beginNativeFieldDependencies(native, workspace, tasks);
+  action: () => T, tasks?: NativeUiTasks, phase: 'before-ui' | 'settled' = 'settled', completeTopology = true): T {
+  const scope = beginNativeFieldDependencies(native, workspace, tasks, phase, completeTopology);
   try { const result = action(); scope.finish(); return result; }
   finally { scope.dispose(); }
 }
 
 /** A chunked load owns one scope across every fragment, not one per block. */
-export function beginNativeFieldDependencies(native: typeof Blockly, workspace: Blockly.Workspace, tasks?: NativeUiTasks) {
-  if (active.has(workspace)) return { finish() {}, dispose() {} };
-  const scope = new NativeFieldDependencies(native, workspace, tasks);
+export function beginNativeFieldDependencies(native: typeof Blockly, workspace: Blockly.Workspace, tasks?: NativeUiTasks,
+  phase: 'before-ui' | 'settled' = 'settled', completeTopology = true) {
+  if (active.has(workspace)) return { prepare() {}, finish() {}, dispose() {},
+    async finishCooperatively(_yieldToHost: () => Promise<void>, _assertCurrent: () => void) {} };
+  const scope = new NativeFieldDependencies(native, workspace, tasks, phase, completeTopology);
   active.set(workspace, scope);
-  return { finish: () => scope.settle(), dispose: () => { active.delete(workspace); scope.dispose(); } };
+  return { prepare: () => scope.settle(false), finish: () => scope.settle(),
+    finishCooperatively: (yieldToHost: () => Promise<void>, assertCurrent: () => void) => scope.settleCooperatively(yieldToHost, assertCurrent),
+    dispose: () => { active.delete(workspace); scope.dispose(); } };
 }

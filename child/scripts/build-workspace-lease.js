@@ -17,7 +17,7 @@ const canonical = value => process.platform === 'win32' ? value.toLowerCase() : 
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const OPERATIONS = new Set(['compile', 'preprocess', 'publish', 'clean', 'verify']);
 const NON_DELEGATING_OPERATIONS = new Set(['publish', 'clean']);
-const ISOLATED_RECOVERY_GUIDANCE = "Original build outputs remain protected. Use project_recover(action='fork') to save an independent recovery project; continue validation and compilation only after that copy is activated. The original workspace has not been unlocked.";
+const ISOLATED_RECOVERY_GUIDANCE = 'Original build outputs remain protected. The host must prepare a new isolated build execution; keep this ownership evidence unchanged. Project document recovery or switching projects is not required.';
 
 /** Cooperative host build lease, not a file-editor lock or a security boundary.
  * A dead parent does NOT prove that its compiler descendants stopped.
@@ -119,7 +119,7 @@ function assertLegacyClaimsStopped(previous) {
         if (item.kind === 'claim') claims.set(item.token, item.pid);
         if (item.kind === 'retire') claims.delete(item.token);
     }
-    if ([...claims.values()].some(processAlive)) throw fault('BUILD_WORKSPACE_BUSY', 'An older host is still recovering this project. Restart that host before retrying.');
+    if ([...claims.values()].some(processAlive)) throw fault('BUILD_WORKSPACE_BUSY', 'An older recovery owner is still alive. Keep its evidence protected; the host must wait or prepare an isolated build execution.');
 }
 
 function assertPreviousRecoverable(workspace) {

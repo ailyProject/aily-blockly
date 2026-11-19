@@ -19,6 +19,7 @@ import {
   resetConsecutivePasteStagger, applyConsecutivePasteStagger,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
+import {fireBlocklySelectionChange} from '../../../../utils/blockly-selection-focus';
 
 /**
  * Modification for keyboard shortcut 'Delete' to be available
@@ -78,9 +79,9 @@ const registerShortcutDelete = function() {
         }
       };
 
-      const selected = Blockly.common.getSelected();
-      Blockly.Events.setGroup(true);
       const dragSelection = dragSelectionWeakMap.get(workspace);
+      const selected = dragSelection.size ? multiDraggableWeakMap.get(workspace) : Blockly.common.getSelected();
+      Blockly.Events.setGroup(true);
 
       // Handle the case where MultiselectDraggable is in use
       if (selected && selected instanceof MultiselectDraggable) {
@@ -89,6 +90,8 @@ const registerShortcutDelete = function() {
           apply(element[0]);
         }
         dragSelection.clear();
+        Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+        fireBlocklySelectionChange(workspace, null);
       } else if (!dragSelection.size) {
         apply(selected);
       }
@@ -159,8 +162,8 @@ const registerCopy = function(useCopyPasteCrossTab) {
           }
         }
       };
-      const selected = Blockly.common.getSelected();
       const dragSelection = dragSelectionWeakMap.get(workspace);
+      const selected = dragSelection.size ? multiDraggableWeakMap.get(workspace) : Blockly.common.getSelected();
       Blockly.Events.setGroup(true);
 
       // Handle the case where MultiselectDraggable is in use
@@ -275,8 +278,8 @@ const registerCut = function(useCopyPasteCrossTab) {
         }
       };
 
-      const selected = Blockly.common.getSelected();
       const dragSelection = dragSelectionWeakMap.get(workspace);
+      const selected = dragSelection.size ? multiDraggableWeakMap.get(workspace) : Blockly.common.getSelected();
       Blockly.Events.setGroup(true);
 
       // Handle the case where MultiselectDraggable is in use
@@ -307,6 +310,10 @@ const registerCut = function(useCopyPasteCrossTab) {
         const element = getByID(workspace, id);
         applyDelete(element);
       });
+      if (selected instanceof MultiselectDraggable) {
+        Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+        fireBlocklySelectionChange(workspace, null);
+      }
 
       if (useCopyPasteCrossTab) {
         dataCopyToStorage();

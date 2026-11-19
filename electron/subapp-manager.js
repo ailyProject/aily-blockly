@@ -1,13 +1,13 @@
 // 远端子应用目录与用户级 npm 安装管理。
 const fs = require('fs');
-const http = require('http');
-const https = require('https');
 const os = require('os');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
-const { execFile, spawn } = require('child_process');
-const { URL } = require('url');
+const { isDeepStrictEqual } = require('node:util');
+const { execFile } = require('child_process');
+const { spawn } = require('./owned-process');
 const semver = require('semver');
+
 const {
   SubappReleaseTrustError,
   normalizeSubappReleaseTrustPolicies,
@@ -15,29 +15,35 @@ const {
   validateSubappDistribution,
   verifyDownloadedSubappDistribution,
 } = require('./subapp-release-trust');
+
 const { killRegisteredProcessTree } = require('./process-tree');
 const versions = require('./subapp-version-store');
 const { acquireInstallLock: acquireUpdateLock } = require('./subapp-install-lock');
 const { extractNpmTarballInBackground } = require('./subapp-package-worker-client');
 const { resolveAilyNpmPrefix } = require('./appdata-path');
 const subappBinRouter = require('./subapp-bin-router');
+
 const { validateDistribution, validatePlatformDistributions, selectSubappPlatformEntry,
   selectSubappPlatformIndex, assertPackagePlatform } = require('./subapp-platform-distribution');
 
+const { downloadFileWithProgress, fault, duration } = require('./subapp-download');
 const INDEX_CACHE_FILE = 'subapp-index.json';
 const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
 const UPDATE_STATE_FILE = 'state.json';
 const UPDATE_PACKAGE_FILE = 'package.tgz';
 const UPDATE_SCHEMA_VERSION = 1;
 const MAX_INDEX_BYTES = 2 * 1024 * 1024;
+
 const TOOL_ID_ALIASES = Object.freeze({
   'ffs-manager': 'ffs-manager-child',
   'aily-simulator': 'simulator',
 });
+
 const STARTUP_TIMEOUTS = Object.freeze({
   'aily-chat': 30000,
   'ffs-manager-child': 10000,
 });
+
 const BUNDLED_CODER_ID = 'aily-coder-editor';
 const BUNDLED_CODER_PACKAGE = '@aily-project/subapp-aily-coder-editor';
 const mutationQueues = new Map();
@@ -45,9 +51,23 @@ const SUBAPP_HEALTH_OUTPUT_LIMIT = 64 * 1024;
 const SUBAPP_HEALTH_STARTUP_TIMEOUT_MS = 30000;
 const SUBAPP_HEALTH_SHUTDOWN_TIMEOUT_MS = 15000;
 const MAX_SUBAPP_STARTUP_TIMEOUT_MS = 5 * 60 * 1000;
+const preparationControllers = new Map();
+const pendingUninstalls = new Map();
+const operationKey = (rootDir, id) => `${path.resolve(rootDir)}\0${id}`;
+
+async function bounded(operation, milliseconds, code, message) {
+  let timer;
+
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(fault(code, message)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 
 function buildSubappIndexUrl(resourceUrl) {
   const normalizedResourceUrl = String(resourceUrl || '').trim().replace(/\/+$/, '');
+
   return normalizedResourceUrl ? `${normalizedResourceUrl}/subapp-index.json` : '';
 }
 
@@ -55,9 +75,11 @@ function readDefaultIndexUrl() {
   try {
     const config = require('./config/config.json');
     const defaultRegion = config?.region || 'cn';
+
     return buildSubappIndexUrl(config?.regions?.[defaultRegion]?.resource);
   } catch (error) {
     console.warn('[subapp-manager] failed to read the default resource config:', error.message || error);
+
     return '';
   }
 }
@@ -66,21 +88,27 @@ const DEFAULT_INDEX_URL = readDefaultIndexUrl();
 
 function resolveAppDataPath(env = process.env, platform = process.platform, home = os.homedir()) {
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
+
   if (env.AILY_APPDATA_PATH) return platformPath.resolve(env.AILY_APPDATA_PATH);
   if (platform === 'win32') return platformPath.join(home, 'AppData', 'Local', 'aily-project');
   if (platform === 'darwin') return platformPath.join(home, 'Library', 'aily-project');
+
   return platformPath.join(home, '.config', 'aily-project');
 }
 
 function resolveSubappRoot(options = {}) {
   const platform = options.platform || process.platform;
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
+
   if (options.rootDir) return path.resolve(options.rootDir);
+
   const env = options.env || process.env;
+
   // Main and its child runtimes must discover the same trusted installation.
   // An explicit process configuration also lets isolated candidates reuse the
   // installed SDK prefix without replacing another active Subapp generation.
   if (env.AILY_SUBAPP_INSTALL_ROOT) return platformPath.resolve(env.AILY_SUBAPP_INSTALL_ROOT);
+
   return platformPath.join(resolveAilyNpmPrefix({
     env,
     platform,
@@ -91,7 +119,9 @@ function resolveSubappRoot(options = {}) {
 function resolveSubappUpdateRoot(options = {}) {
   const platform = options.platform || process.platform;
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
+
   if (options.updateRootDir) return path.resolve(options.updateRootDir);
+
   return platformPath.join(
     resolveAppDataPath(options.env, options.platform, options.home),
     'temp',
@@ -119,6 +149,7 @@ function requireText(value, label) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`${label} must be a non-empty string`);
   }
+
   return value.trim();
 }
 
@@ -128,6 +159,7 @@ function normalizeLocale(value) {
 
 function normalizeOnly(value, id) {
   if (value === undefined) return 'all';
+
   return requireText(value, `${id} only`).toLowerCase();
 }
 
@@ -135,39 +167,48 @@ function resolveEnabledFlag(...candidates) {
   for (const value of candidates) {
     if (typeof value === 'boolean') return value;
   }
+
   return true;
 }
 
 function validateId(value) {
   const id = requireText(value, 'subapp id');
+
   if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(id)) {
     throw new Error(`Invalid subapp id: ${id}`);
   }
+
   return id;
 }
 
 function validatePackageName(value) {
   const packageName = requireText(value, 'subapp package');
+
   if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName)) {
     throw new Error(`Invalid subapp package: ${packageName}`);
   }
+
   return packageName;
 }
 
 function validateVersion(value) {
   const version = requireText(value, 'subapp version');
+
   if (semver.valid(version) !== version) {
     throw new Error(`Invalid subapp version: ${version}`);
   }
+
   return version;
 }
 
 function validateUpdatePolicy(value, id) {
   if (value === undefined) return { download: 'background', install: 'next-launch' };
   if (!isObject(value)) throw new Error(`${id} update policy must be an object`);
+
   if (value.download !== 'background' || value.install !== 'next-launch') {
     throw new Error(`${id} update policy must use background download and next-launch install`);
   }
+
   return {
     download: 'background',
     install: 'next-launch',
@@ -178,24 +219,31 @@ function validateIndex(rawIndex) {
   if (!isObject(rawIndex)) {
     throw new Error('Subapp index must be a JSON object');
   }
+
   if (rawIndex.dev !== undefined && typeof rawIndex.dev !== 'boolean') {
     throw new Error('Subapp index dev flag must be a boolean');
   }
 
   const index = rawIndex.dev === true ? { dev: true } : {};
+
   for (const [indexId, rawEntry] of Object.entries(rawIndex)) {
     if (indexId === 'dev') continue;
     if (!isObject(rawEntry)) throw new Error(`Invalid subapp entry: ${indexId}`);
+
     const id = validateId(rawEntry.id || indexId);
+
     if (id !== indexId) throw new Error(`Subapp index key does not match id: ${indexId}`);
+
     const namespace = requireText(rawEntry.namespace, `${id} namespace`);
     const titleKey = requireText(rawEntry.titleKey, `${id} titleKey`);
     const app = isObject(rawEntry.app) ? rawEntry.app : {};
+
     for (const flag of ['autoInstall', 'defaultToolbar']) {
       if (app[flag] !== undefined && typeof app[flag] !== 'boolean') {
         throw new Error(`${id} app.${flag} must be a boolean`);
       }
     }
+
     const i18n = isObject(rawEntry.i18n) ? rawEntry.i18n : {};
     const locales = isObject(i18n.locales) ? i18n.locales : {};
     const defaultLocale = normalizeLocale(i18n.defaultLocale || 'en');
@@ -244,6 +292,7 @@ function validateIndex(rawIndex) {
         : {}),
     };
   }
+
   return index;
 }
 
@@ -251,9 +300,11 @@ function packagePathFor(rootDir, packageName) {
   const modulesRoot = path.join(rootDir, 'node_modules');
   const packagePath = path.resolve(modulesRoot, ...packageName.split('/'));
   const relative = path.relative(modulesRoot, packagePath);
+
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Unsafe subapp package path: ${packageName}`);
   }
+
   return packagePath;
 }
 
@@ -263,7 +314,9 @@ function readJson(filePath) {
 
 function writeJsonAtomic(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+
   try {
     fs.writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
     fs.renameSync(temporaryPath, filePath);
@@ -274,49 +327,61 @@ function writeJsonAtomic(filePath, value) {
 
 function parseIntegrity(value) {
   const match = String(value || '').trim().match(/^(sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})$/);
+
   if (!match) throw new Error('Package integrity must be a sha256, sha384, or sha512 SRI digest');
+
   return { algorithm: match[1], digest: match[2] };
 }
 
 function verifyFileIntegrity(filePath, integrity) {
   const expected = parseIntegrity(integrity);
   const actual = createHash(expected.algorithm).update(fs.readFileSync(filePath)).digest('base64');
+
   if (actual !== expected.digest) {
     throw new Error(`Subapp package integrity mismatch: expected ${integrity}`);
   }
+
   return true;
 }
 
 function isDistRelativePath(value) {
   const normalized = String(value || '').replace(/\\/g, '/').replace(/^\.?\//, '');
+
   return normalized === 'dist' || normalized.startsWith('dist/');
 }
 
 function resolveUiIndex(packagePath, packageJson) {
   const headless = packageJson?.ailySubapp?.runtime?.headless;
   const observer = packageJson?.ailySubapp?.runtime?.observer;
+
   if (observer !== undefined && (typeof observer !== 'boolean' || (observer && headless !== true))) {
     throw new Error('runtime.observer must be boolean and requires an explicit headless runtime');
   }
+
   if (headless !== undefined && typeof headless !== 'boolean') {
     throw new Error('ailySubapp.runtime.headless must be a boolean');
   }
+
   if (headless) {
     if (packageJson?.ailySubapp?.ui || packageJson?.aily?.uiIndex || packageJson?.ailyBlockly?.uiIndex) {
       throw new Error('Headless subapps cannot declare UI surfaces or uiIndex');
     }
+
     return null;
   }
+
   const configured = typeof packageJson?.aily?.uiIndex === 'string'
     ? packageJson.aily.uiIndex.trim()
     : typeof packageJson?.ailyBlockly?.uiIndex === 'string'
       ? packageJson.ailyBlockly.uiIndex.trim()
       : '';
+
   // Host may only serve package-root UI. Never fall back to dist/<id>/ui.
   const candidates = [
     configured && !isDistRelativePath(configured) ? configured : '',
     path.join('ui', 'index.html'),
   ].filter(Boolean);
+
   return candidates.find((candidate) => fs.existsSync(path.join(packagePath, candidate)))
     || candidates[0]
     || path.join('ui', 'index.html');
@@ -328,6 +393,7 @@ function hasRunnableEntries({ packagePath, mainEntry, uiIndex }) {
   const exists = entry => !isDistRelativePath(entry)
     && fs.statSync(resolvePackageRelativePath(packagePath, entry, 'Subapp entry').resolved,
       { throwIfNoEntry: false })?.isFile() === true;
+
   return exists(mainEntry) && (uiIndex === null || exists(uiIndex));
 }
 
@@ -339,13 +405,17 @@ function hasRunnableEntries({ packagePath, mainEntry, uiIndex }) {
 function resolveRunnablePackage(packagePath, catalogId, packageJson) {
   const nestedPortablePath = path.join(packagePath, 'dist', catalogId);
   const nestedPackageJsonPath = path.join(nestedPortablePath, 'package.json');
+
   if (fs.existsSync(nestedPackageJsonPath)) {
     try {
       const nestedPackageJson = readJson(nestedPackageJsonPath);
+
       const nestedMain = typeof nestedPackageJson.main === 'string' && nestedPackageJson.main.trim()
         ? nestedPackageJson.main.trim()
         : 'index.js';
+
       const nestedUiIndex = resolveUiIndex(nestedPortablePath, nestedPackageJson);
+
       if (hasRunnableEntries({ packagePath: nestedPortablePath, mainEntry: nestedMain, uiIndex: nestedUiIndex })) {
         return {
           packagePath: nestedPortablePath,
@@ -362,7 +432,9 @@ function resolveRunnablePackage(packagePath, catalogId, packageJson) {
   const mainEntry = typeof packageJson.main === 'string' && packageJson.main.trim()
     ? packageJson.main.trim()
     : 'index.js';
+
   const uiIndex = resolveUiIndex(packagePath, packageJson);
+
   return {
     packagePath,
     packageJson,
@@ -373,62 +445,81 @@ function resolveRunnablePackage(packagePath, catalogId, packageJson) {
 
 function resolvePackageRelativePath(packagePath, relativePath, label) {
   const value = requireText(relativePath, label);
+
   if (path.isAbsolute(value)) {
     throw new Error(`${label} must be package-relative`);
   }
+
   const resolved = path.resolve(packagePath, value);
   const relative = path.relative(packagePath, resolved);
+
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Unsafe ${label}: ${value}`);
   }
+
   return { relative: value.replace(/\\/g, '/'), resolved };
 }
 
 function positiveInteger(value, fallback, max) {
   const number = Number(value);
+
   if (!Number.isFinite(number) || number <= 0) return fallback;
+
   return Math.min(max, Math.floor(number));
 }
 
 function optionalBoundedInteger(value, label, min, max) {
   if (value === undefined) return undefined;
+
   const number = Number(value);
+
   if (!Number.isInteger(number) || number < min || number > max) {
     throw new Error(`${label} must be an integer between ${min} and ${max}`);
   }
+
   return number;
 }
 
 function readRuntimeResourceLifecycleConfig(declaredRuntime) {
   const declared = declaredRuntime?.resourceLifecycle;
+
   if (declared === undefined) return null;
+
   if (!isObject(declared)) {
     throw new Error('ailySubapp.runtime.resourceLifecycle must be an object');
   }
+
   if (!Array.isArray(declared.resources) || declared.resources.length === 0) {
     throw new Error('ailySubapp.runtime.resourceLifecycle.resources must be a non-empty array');
   }
+
   const resources = [...new Set(declared.resources.map((value, index) => {
     const resource = requireText(value, `ailySubapp.runtime.resourceLifecycle.resources[${index}]`);
+
     if (!/^[a-z][a-z0-9._-]{0,63}$/.test(resource)) {
       throw new Error(`Invalid Subapp Runtime resource kind: ${resource}`);
     }
+
     return resource;
   }))];
+
   const suspendMethod = requireText(
     declared.suspendMethod,
     'ailySubapp.runtime.resourceLifecycle.suspendMethod',
   );
+
   const resumeMethod = requireText(
     declared.resumeMethod,
     'ailySubapp.runtime.resourceLifecycle.resumeMethod',
   );
+
   const timeoutMs = optionalBoundedInteger(
     declared.timeoutMs,
     'ailySubapp.runtime.resourceLifecycle.timeoutMs',
     100,
     10 * 60 * 1000,
   );
+
   return {
     resources,
     suspendMethod,
@@ -439,19 +530,24 @@ function readRuntimeResourceLifecycleConfig(declaredRuntime) {
 
 function readRuntimeProcessMessagePortConfig(declaredRuntime) {
   const declared = declaredRuntime?.processMessagePort;
+
   if (declared === undefined) return null;
+
   if (!isObject(declared)) {
     throw new Error('ailySubapp.runtime.processMessagePort must be an object');
   }
+
   if (declared.transport !== 'node-ipc-v1') {
     throw new Error('ailySubapp.runtime.processMessagePort.transport must be node-ipc-v1');
   }
+
   const maxMessageBytes = optionalBoundedInteger(
     declared.maxMessageBytes,
     'ailySubapp.runtime.processMessagePort.maxMessageBytes',
     1024,
     8 * 1024 * 1024,
   );
+
   return {
     transport: 'node-ipc-v1',
     ...(maxMessageBytes !== undefined ? { maxMessageBytes } : {}),
@@ -460,18 +556,23 @@ function readRuntimeProcessMessagePortConfig(declaredRuntime) {
 
 function validateUiSurfaceName(value, label) {
   const name = requireText(value, label);
+
   if (!/^[a-z][a-z0-9_-]{0,63}$/.test(name)) {
     throw new Error(`Invalid ${label}: ${name}`);
   }
+
   return name;
 }
 
 function readSubappUiConfig(packagePath, packageJson, uiIndex) {
   const declared = packageJson?.ailySubapp?.ui;
+
   if (declared === undefined) return null;
+
   if (!isObject(declared)) {
     throw new Error('ailySubapp.ui must be an object');
   }
+
   if (!isObject(declared.surfaces) || !Object.keys(declared.surfaces).length) {
     throw new Error('ailySubapp.ui.surfaces must be a non-empty object');
   }
@@ -481,11 +582,14 @@ function readSubappUiConfig(packagePath, packageJson, uiIndex) {
       entry: String(uiIndex || path.join('ui', 'index.html')).replace(/\\/g, '/'),
     },
   };
+
   for (const [rawName, rawSurface] of Object.entries(declared.surfaces)) {
     const name = validateUiSurfaceName(rawName, 'UI surface name');
+
     if (!isObject(rawSurface)) {
       throw new Error(`UI surface ${name} must be an object`);
     }
+
     const entry = resolvePackageRelativePath(
       packagePath,
       typeof rawSurface.entry === 'string' && rawSurface.entry.trim()
@@ -493,6 +597,7 @@ function readSubappUiConfig(packagePath, packageJson, uiIndex) {
         : uiIndex,
       `ailySubapp.ui.surfaces.${name}.entry`,
     );
+
     if (!fs.existsSync(entry.resolved)) {
       throw new Error(`Subapp UI surface entry not found: ${entry.relative}`);
     }
@@ -503,21 +608,25 @@ function readSubappUiConfig(packagePath, packageJson, uiIndex) {
       160,
       4096,
     );
+
     const minHeight = optionalBoundedInteger(
       rawSurface.minHeight,
       `ailySubapp.ui.surfaces.${name}.minHeight`,
       120,
       4096,
     );
+
     const preferredHeight = optionalBoundedInteger(
       rawSurface.preferredHeight,
       `ailySubapp.ui.surfaces.${name}.preferredHeight`,
       120,
       8192,
     );
+
     if (minHeight !== undefined && preferredHeight !== undefined && preferredHeight < minHeight) {
       throw new Error(`UI surface ${name} preferredHeight must be greater than or equal to minHeight`);
     }
+
     if (rawSurface.interactive !== undefined && typeof rawSurface.interactive !== 'boolean') {
       throw new Error(`ailySubapp.ui.surfaces.${name}.interactive must be a boolean`);
     }
@@ -530,20 +639,25 @@ function readSubappUiConfig(packagePath, packageJson, uiIndex) {
       ...(rawSurface.interactive !== undefined ? { interactive: rawSurface.interactive } : {}),
     };
   }
+
   return { surfaces };
 }
 
 function validateAgentToolPresentation(rawPresentation, toolName) {
   if (rawPresentation === undefined) return null;
+
   if (!isObject(rawPresentation)) {
     throw new Error(`Agent tool ${toolName} presentation must be an object`);
   }
+
   const mode = rawPresentation.mode;
+
   if (mode !== 'embedded' && mode !== 'window' && mode !== 'dock') {
     throw new Error(`Agent tool ${toolName} presentation.mode must be embedded, window, or dock`);
   }
 
   let surface;
+
   if (rawPresentation.surface !== undefined) {
     surface = validateUiSurfaceName(
       rawPresentation.surface,
@@ -553,11 +667,13 @@ function validateAgentToolPresentation(rawPresentation, toolName) {
 
   const supportedAutoOpen = new Set(['never', 'first-active', 'always', 'on-error']);
   let autoOpen;
+
   if (rawPresentation.autoOpen !== undefined) {
     autoOpen = requireText(
       rawPresentation.autoOpen,
       `agent tool ${toolName} presentation.autoOpen`,
     );
+
     if (!supportedAutoOpen.has(autoOpen)) {
       throw new Error(
         `Agent tool ${toolName} presentation.autoOpen must be never, first-active, always, or on-error`,
@@ -566,15 +682,19 @@ function validateAgentToolPresentation(rawPresentation, toolName) {
   }
 
   let when;
+
   if (rawPresentation.when !== undefined) {
     if (!isObject(rawPresentation.when)) {
       throw new Error(`Agent tool ${toolName} presentation.when must be an object`);
     }
+
     const param = requireText(
       rawPresentation.when.param,
       `agent tool ${toolName} presentation.when.param`,
     );
+
     const values = rawPresentation.when.values;
+
     if (!Array.isArray(values) || !values.length || values.some(value =>
       typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean'
     )) {
@@ -582,6 +702,7 @@ function validateAgentToolPresentation(rawPresentation, toolName) {
         `Agent tool ${toolName} presentation.when.values must contain JSON scalar values`,
       );
     }
+
     when = { param, values: [...values] };
   }
 
@@ -595,23 +716,34 @@ function validateAgentToolPresentation(rawPresentation, toolName) {
 
 function validateAgentLifecycle(rawLifecycle) {
   if (rawLifecycle === undefined) return null;
+
   if (!isObject(rawLifecycle)) {
     throw new Error('Subapp Agent lifecycle must be an object');
   }
+
   const lifecycle = {};
+
   for (const name of ['ownerLease', 'ownerRelease', 'sessionRelease']) {
     const request = rawLifecycle[name];
+
     if (request === undefined) continue;
+
     const label = `Subapp Agent lifecycle.${name}`;
+
     if (!isObject(request)) throw new Error(`${label} must be an object`);
+
     const method = requireText(request.method, `${label}.method`);
+
     if (name === 'ownerLease' && (request.protocol !== 'process-file-v1' || !rawLifecycle.ownerRelease)) {
       throw new Error(`${label} requires process-file-v1 and ownerRelease`);
     }
+
     const params = request.params;
+
     if (params !== undefined && !isObject(params)) {
       throw new Error(`${label}.params must be an object`);
     }
+
     lifecycle[name] = {
       method,
       ...(name === 'ownerLease' ? { protocol: 'process-file-v1' } : {}),
@@ -619,32 +751,42 @@ function validateAgentLifecycle(rawLifecycle) {
       timeoutMs: positiveInteger(request.timeoutMs, 5000, 30000),
     };
   }
+
   return lifecycle;
 }
 
 function validateAgentTool(rawTool, index) {
   if (!isObject(rawTool)) throw new Error(`Agent tool ${index + 1} must be an object`);
+
   const name = requireText(rawTool.name, `agent tool ${index + 1} name`);
+
   if (!/^[a-z][a-z0-9_]{0,99}$/.test(name)) {
     throw new Error(`Invalid agent tool name: ${name}`);
   }
+
   const rpc = isObject(rawTool.rpc) ? rawTool.rpc : {};
   const method = typeof rpc.method === 'string' && rpc.method.trim() ? rpc.method.trim() : '';
+
   const actionParam = typeof rpc.actionParam === 'string' && rpc.actionParam.trim()
     ? rpc.actionParam.trim()
     : '';
+
   const methods = isObject(rpc.methods)
     ? Object.fromEntries(Object.entries(rpc.methods)
       .filter(([action, mappedMethod]) => action && typeof mappedMethod === 'string' && mappedMethod.trim())
       .map(([action, mappedMethod]) => [action, mappedMethod.trim()]))
     : {};
+
   if (!method && (!actionParam || !Object.keys(methods).length)) {
     throw new Error(`Agent tool ${name} must declare rpc.method or rpc.actionParam + rpc.methods`);
   }
+
   if (!isObject(rawTool.inputSchema)) {
     throw new Error(`Agent tool ${name} inputSchema must be an object`);
   }
+
   const presentation = validateAgentToolPresentation(rawTool.presentation, name);
+
   return {
     name,
     description: typeof rawTool.description === 'string' ? rawTool.description.trim() : name,
@@ -666,49 +808,65 @@ function validateAgentTool(rawTool, index) {
 
 function readSubappAgentConfig(packagePath, packageJson) {
   const declared = packageJson?.ailySubapp?.agent;
+
   if (!isObject(declared)) return null;
+
   const toolsDeclaration = isObject(declared.tools) ? declared.tools : {};
+
   const manifest = resolvePackageRelativePath(
     packagePath,
     toolsDeclaration.manifest,
     'ailySubapp.agent.tools.manifest',
   );
+
   if (!fs.existsSync(manifest.resolved)) {
     throw new Error(`Subapp Agent manifest not found: ${manifest.relative}`);
   }
+
   const rawManifest = readJson(manifest.resolved);
+
   if (!isObject(rawManifest) || !Array.isArray(rawManifest.tools)) {
     throw new Error('Subapp Agent manifest must contain a tools array');
   }
+
   const tools = rawManifest.tools.map(validateAgentTool);
   const lifecycle = validateAgentLifecycle(rawManifest.lifecycle);
   const names = new Set();
+
   for (const tool of tools) {
     if (names.has(tool.name)) throw new Error(`Duplicate subapp Agent tool: ${tool.name}`);
+
     names.add(tool.name);
   }
+
   const skills = Array.isArray(declared.skills)
     ? declared.skills.map((skill, index) => resolvePackageRelativePath(
       packagePath,
       skill,
       `ailySubapp.agent.skills[${index}]`,
     ).relative)
+
     : [];
+
   const protocolVersion = positiveInteger(
     rawManifest.protocolVersion ?? declared.protocolVersion,
     1,
     100,
   );
+
   const transport = requireText(
     rawManifest.transport || toolsDeclaration.transport || declared.transport,
     'ailySubapp.agent transport',
   );
+
   if (protocolVersion !== 1) {
     throw new Error(`Unsupported ailySubapp.agent protocolVersion: ${protocolVersion}`);
   }
+
   if (transport !== 'aily-child-rpc') {
     throw new Error(`Unsupported ailySubapp.agent transport: ${transport}`);
   }
+
   return {
     protocolVersion,
     transport,
@@ -721,6 +879,7 @@ function readSubappAgentConfig(packagePath, packageJson) {
 
 function resolveInstalledPackagePath(rootDir, entry) {
   const legacyPath = packagePathFor(rootDir, entry.package);
+
   // An interrupted uninstall suppresses every package source until cleanup is retried.
   try {
     if (versions.isUninstalling(rootDir, entry)) {
@@ -734,17 +893,21 @@ function resolveInstalledPackagePath(rootDir, entry) {
       selectionError: error.message,
     };
   }
+
   // Legacy development links remain readable during migration. New dev runs use
   // a pinned <version>-dev generation in the version store below.
   if (fs.lstatSync(legacyPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
     return { packagePath: legacyPath, development: true, source: 'development' };
   }
+
   let selectionError;
   let selection = null;
+
   try {
     selection = versions.readSelection(rootDir, entry, prepared => {
       const manifest = readJson(path.join(prepared.packagePath, 'package.json'));
       const runnable = resolveRunnablePackage(prepared.packagePath, entry.id, manifest);
+
       if (!hasRunnableEntries(runnable)) {
         throw new Error(`Selected subapp runtime is incomplete: ${entry.id}`);
       }
@@ -752,6 +915,7 @@ function resolveInstalledPackagePath(rootDir, entry) {
   } catch (error) {
     selectionError = error.message;
   }
+
   if (selection?.selectionMode === 'pinned') return selection;
 
   // Old npm installs remain valid. In auto mode, a newer B wins so an old host cannot
@@ -760,6 +924,7 @@ function resolveInstalledPackagePath(rootDir, entry) {
     try {
       const legacy = readJson(path.join(legacyPath, 'package.json'));
       const legacyVersion = legacy.name === entry.package && semver.valid(legacy.version) ? legacy.version : null;
+
       if (!selection || (legacyVersion && semver.gt(legacyVersion, selection.version))) {
         return { packagePath: legacyPath, source: 'legacy-npm', selectionError };
       }
@@ -767,7 +932,9 @@ function resolveInstalledPackagePath(rootDir, entry) {
       selectionError ||= error.message;
     }
   }
+
   if (selection) return selection;
+
   return { packagePath: legacyPath, source: 'legacy-npm', selectionError };
 }
 
@@ -775,6 +942,7 @@ function readInstalledState(rootDir, entry) {
   const selected = resolveInstalledPackagePath(rootDir, entry);
   const packagePath = selected.packagePath;
   const packageJsonPath = path.join(packagePath, 'package.json');
+
   if (selected.disabled || !fs.existsSync(packageJsonPath)) {
     return {
       installed: false,
@@ -789,46 +957,58 @@ function readInstalledState(rootDir, entry) {
     const development = selected.development === true;
     const localNext = selected.localNext === true;
     const packageJson = readJson(packageJsonPath);
+
     if (!development && packageJson.name !== entry.package) {
       throw new Error('Installed subapp package name does not match the catalog');
     }
+
     const installedVersion = typeof packageJson.version === 'string' ? packageJson.version : null;
     const runnable = resolveRunnablePackage(packagePath, entry.id, packageJson);
     const runnablePackagePath = runnable.packagePath;
     const runnablePackageJson = runnable.packageJson;
+
     const packageApp = isObject(runnablePackageJson?.ailySubapp?.app)
       ? runnablePackageJson.ailySubapp.app
       : {};
+
     const mainEntry = runnable.mainEntry;
     const uiIndex = runnable.uiIndex;
     const rejectsDistLayout = isDistRelativePath(mainEntry) || isDistRelativePath(uiIndex);
     const complete = hasRunnableEntries(runnable);
     const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
     const ui = complete && uiIndex !== null ? readSubappUiConfig(runnablePackagePath, runnablePackageJson, uiIndex) : null;
+
     const declaredRuntime = isObject(runnablePackageJson?.ailySubapp?.runtime)
       ? runnablePackageJson.ailySubapp.runtime
       : {};
+
     const apiServer = declaredRuntime.apiServer === 'required'
       ? 'required'
       : declaredRuntime.apiServer === 'optional'
         ? 'optional'
         : null;
+
     const startupTimeoutMs = positiveInteger(
       declaredRuntime.startupTimeoutMs,
       STARTUP_TIMEOUTS[toolId] || 0,
       MAX_SUBAPP_STARTUP_TIMEOUT_MS,
     );
+
     const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
     const processMessagePort = readRuntimeProcessMessagePortConfig(declaredRuntime);
+
     const browserExecution = declaredRuntime.browserExecution
       ? { protocol: require('./subapp-browser-execution-source').readBrowserExecutionSource({
         packagePath: runnablePackagePath, packageName: entry.package, version: installedVersion,
       }).protocol }
+
       : null;
+
     const nodeControl = declaredRuntime.nodeControl === undefined ? null
       : { protocol: require('./subapp-node-control-source').readNodeControlSource({
         packagePath: runnablePackagePath, packageName: entry.package, version: installedVersion,
       }).protocol };
+
     const runtime = {
       ...(declaredRuntime.headless === true ? { headless: true } : {}),
       ...(declaredRuntime.observer === true ? { observer: true } : {}),
@@ -838,8 +1018,10 @@ function readInstalledState(rootDir, entry) {
       ...(nodeControl ? { nodeControl } : {}),
       ...(resourceLifecycle ? { resourceLifecycle } : {}),
     };
+
     let agent = null;
     let agentError = '';
+
     try {
       agent = complete ? readSubappAgentConfig(runnablePackagePath, runnablePackageJson) : null;
     } catch (error) {
@@ -910,24 +1092,29 @@ function resolveLocalizedCopy(entry, locale) {
   const normalized = normalizeLocale(locale);
   const language = normalized.split('_')[0];
   const locales = entry.i18n.locales;
+
   const translation = locales[normalized]
     || locales[language]
     || locales[entry.i18n.defaultLocale]
     || locales.en
     || {};
+
   return {
-    name: typeof translation.TITLE === 'string' ? translation.TITLE : entry.app.name,
-    description: typeof translation.DESCRIPTION === 'string'
+    name: (typeof translation.TITLE === 'string' ? translation.TITLE : entry.app.name)
+      .replace(/\baily\b/gi, 'aily'),
+    description: (typeof translation.DESCRIPTION === 'string'
       ? translation.DESCRIPTION
-      : entry.app.description,
+      : entry.app.description).replace(/\baily\b/gi, 'aily'),
   };
 }
 
 function hasUpdate(installedVersion, availableVersion) {
   if (!installedVersion) return false;
+
   if (semver.valid(installedVersion) && semver.valid(availableVersion)) {
     return semver.gt(availableVersion, installedVersion);
   }
+
   return installedVersion !== availableVersion;
 }
 
@@ -944,10 +1131,12 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
       .filter((entry) => entry.app.enabled !== false)
       .map((entry) => {
         const installedState = readInstalledState(rootDir, entry);
+
         const updateAvailable = installedState.installed
           && !installedState.development
           && !installedState.localNext
           && hasUpdate(installedState.installedVersion, entry.version);
+
         const updateStatus = readSubappUpdateStatus(
           meta.updateRootDir || resolveSubappUpdateRoot(),
           entry,
@@ -956,8 +1145,10 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           rootDir,
           meta,
         );
+
         const copy = resolveLocalizedCopy(entry, locale);
         const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
+
         const localizedConfig = installedState.config
           ? {
               ...installedState.config,
@@ -967,7 +1158,9 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
                 description: copy.description,
               },
             }
+
           : null;
+
         return {
           app: {
             ...entry.app,
@@ -982,6 +1175,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           installedVersion: installedState.installedVersion,
           installed: installedState.installed,
           uninstalling: installedState.uninstalling === true,
+          manuallyUninstalled: !installedState.installed && versions.isManuallyUninstalled(rootDir, entry),
           updateAvailable,
           updateStatus,
           ...(entry.update ? { updatePolicy: entry.update } : {}),
@@ -1003,13 +1197,15 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
 
 function ensureInstallProject(rootDir) {
   fs.mkdirSync(rootDir, { recursive: true });
+
   const packageJsonPath = path.join(rootDir, 'package.json');
+
   if (!fs.existsSync(packageJsonPath)) {
     fs.writeFileSync(packageJsonPath, `${JSON.stringify({
       name: 'aily-installed-subapps',
       private: true,
       version: '1.0.0',
-      description: 'Aily Blockly user-installed child applications',
+      description: 'aily Blockly user-installed child applications',
       dependencies: {},
     }, null, 2)}\n`);
   }
@@ -1017,26 +1213,38 @@ function ensureInstallProject(rootDir) {
 
 function readBundledCoderFallback(options = {}) {
   const env = options.env || process.env;
+
   if ((options.buildProduct || env.AILY_BUILD_PRODUCT) !== 'coder') return null;
+
   const childPath = options.childPath || env.AILY_CHILD_PATH;
+
   if (!childPath) return null;
+
   const manifestPath = path.join(childPath, `${BUNDLED_CODER_ID}.json`);
   const tarballPath = path.join(childPath, `${BUNDLED_CODER_ID}.tgz`);
+
   if (!fs.existsSync(manifestPath) || !fs.existsSync(tarballPath)) return null;
+
   const manifest = readJson(manifestPath);
+
   if (manifest.schemaVersion !== 1 || manifest.entry?.package !== BUNDLED_CODER_PACKAGE) {
-    throw new Error('Invalid bundled Aily Coder Editor manifest');
+    throw new Error('Invalid bundled aily Coder Editor manifest');
   }
+
   const entry = validateIndex({ [BUNDLED_CODER_ID]: manifest.entry })[BUNDLED_CODER_ID];
+
   parseIntegrity(manifest.integrity);
+
   return { entry, tarballPath, integrity: manifest.integrity };
 }
 
 function npmExecutable(env = process.env, platform = process.platform) {
   const childPath = env.AILY_CHILD_PATH || '';
+
   const bundled = platform === 'win32'
     ? path.join(childPath, 'node', 'npm.cmd')
     : path.join(childPath, 'node', 'bin', 'npm');
+
   return childPath && fs.existsSync(bundled) ? bundled : (platform === 'win32' ? 'npm.cmd' : 'npm');
 }
 
@@ -1049,18 +1257,25 @@ function quoteWindowsShellPath(filePath) {
 function prepareNpmSpawn(args, options = {}) {
   const platform = options.platform || process.platform;
   const command = npmExecutable(options.env, platform);
+
   if (platform !== 'win32') {
     return { command, args, shell: false };
   }
+
   const searchPath = Object.entries(options.env || {}).find(([key]) => key.toLowerCase() === 'path')?.[1]
     ?? Object.entries(process.env).find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
+
   const commands = command !== 'npm.cmd' ? [command] : String(searchPath).split(';')
     .filter(Boolean).map(directory => path.join(directory.replace(/^"|"$/g, ''), 'npm.cmd'));
+
   for (const npmCommand of commands) {
     const directory = path.dirname(npmCommand);
     const cli = path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+
     if (!fs.existsSync(cli)) continue;
+
     const node = path.join(directory, 'node.exe');
+
     return {
       command: fs.existsSync(node) ? node : process.execPath,
       args: [cli, ...args],
@@ -1068,10 +1283,12 @@ function prepareNpmSpawn(args, options = {}) {
       env: { ELECTRON_RUN_AS_NODE: '1' },
     };
   }
+
   // Compatibility for unusual legacy npm.cmd layouts. Never send expansion characters to cmd.
   if ([command, ...args].some(value => /["%\r\n]/.test(String(value)))) {
     throw new Error('Cannot safely run this npm path through cmd.exe; install the bundled npm CLI');
   }
+
   return {
     command: quoteWindowsShellPath(command),
     args: args.map(quoteWindowsShellPath),
@@ -1081,40 +1298,92 @@ function prepareNpmSpawn(args, options = {}) {
 
 function runNpm(args, options = {}) {
   return new Promise((resolve, reject) => {
+    options.signal?.throwIfAborted();
+
     const { command, args: spawnArgs, shell, env: spawnEnv } = prepareNpmSpawn(args, options);
     const env = { ...process.env };
+
     for (const [key, value] of Object.entries({ ...(options.env || {}), ...spawnEnv })) {
       if ((options.platform || process.platform) === 'win32') {
         for (const existing of Object.keys(env)) {
           if (existing.toLowerCase() === key.toLowerCase()) delete env[existing];
         }
       }
+
       env[key] = value;
     }
+
     const child = spawn(command, spawnArgs, {
       env,
       cwd: options.cwd,
       shell,
       windowsHide: true,
     });
+
+    const processClosed = new Promise(resolve => child.once('close', resolve));
+    let settled = false, stopping = false;
+
+    const finish = (error, value) => {
+      if (settled) return;
+
+      settled = true;
+
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
+
+      if (error) reject(error); else resolve(value);
+    };
+
+    const stop = async error => {
+      if (settled || stopping) return;
+
+      stopping = true;
+
+      try {
+        const stopped = child.pid && await bounded(
+          (options.killProcessTree || killRegisteredProcessTree)(child.pid, 'subapp-npm', { ownedProcess: child }),
+          15000, 'SUBAPP_STOP_TIMEOUT', 'Timed out stopping subapp npm');
+
+        if (!stopped) error.processClosed = processClosed;
+      } catch { error.processClosed = processClosed; }
+
+      finish(error);
+    };
+
+    const abort = () => { void stop(options.signal.reason || fault('SUBAPP_CANCELLED', 'Subapp npm cancelled')); };
+
+    const timer = setTimeout(() => { void stop(fault('SUBAPP_NPM_TIMEOUT', 'Subapp npm exceeded its time limit')); },
+      duration(options.npmTimeoutMs, 5 * 60 * 1000));
+
+    options.signal?.addEventListener('abort', abort, { once: true });
+
+    if (options.signal?.aborted) abort();
+
     let stdout = '';
     let stderr = '';
+
     const handleChunk = (chunk, stream) => {
       const text = String(chunk);
+
       if (stream === 'stdout') stdout += text;
       else stderr += text;
+
       if (typeof options.onOutput === 'function') {
-        options.onOutput(text, stream);
+        try { options.onOutput(text, stream); } catch (error) { void stop(error); }
       }
     };
+
     child.stdout?.on('data', (chunk) => handleChunk(chunk, 'stdout'));
     child.stderr?.on('data', (chunk) => handleChunk(chunk, 'stderr'));
-    child.once('error', reject);
+    child.once('error', error => { if (!stopping) finish(error); });
+
     child.once('close', (code) => {
+      if (stopping) return; // wait for descendant termination before deleting staging
+
       if (code === 0) {
-        resolve({ code, stdout, stderr });
+        finish(null, { code, stdout, stderr });
       } else {
-        reject(new Error(stderr.trim() || stdout.trim() || `npm exited with ${code}`));
+        finish(new Error(stderr.trim() || stdout.trim() || `npm exited with ${code}`));
       }
     });
   });
@@ -1122,19 +1391,26 @@ function runNpm(args, options = {}) {
 
 function clampProgress(value) {
   if (!Number.isFinite(value)) return 0;
+
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function parseDependencyProgressLog(text) {
   const line = String(text || '').trim();
+
   if (!line) return null;
+
   if (/^(下载完成|Download complete)[:：]?/i.test(line)) {
     return { phase: 'download', percent: 100 };
   }
+
   const match = line.match(/^(下载进度|Download progress|解压进度|Extract progress)[:：]?\s*(\d+(?:\.\d+)?)/i);
+
   if (!match) return null;
+
   const percent = Math.max(0, Math.min(100, Number(match[2])));
   const isDownload = /^(下载进度|Download progress)/i.test(match[1]);
+
   return {
     phase: isDownload ? 'download' : 'extract',
     percent,
@@ -1149,8 +1425,11 @@ function createMutationProgressTracker({ id, action, onProgress } = {}) {
   function emit(phase) {
     const singleDependencyProgress = downloadProgress * 0.5 + extractProgress * 0.5;
     const overall = clampProgress(singleDependencyProgress);
+
     lastProgress = Math.max(lastProgress, overall, phase === 'start' ? 1 : 0);
+
     if (phase === 'complete') lastProgress = 100;
+
     if (typeof onProgress === 'function') {
       onProgress({
         id,
@@ -1161,6 +1440,7 @@ function createMutationProgressTracker({ id, action, onProgress } = {}) {
         extractProgress,
       });
     }
+
     return lastProgress;
   }
 
@@ -1169,22 +1449,28 @@ function createMutationProgressTracker({ id, action, onProgress } = {}) {
       downloadProgress = 0;
       extractProgress = 0;
       lastProgress = 0;
+
       return emit('start');
     },
     setDownload(percent) {
       downloadProgress = Math.max(downloadProgress, clampProgress(percent));
+
       return emit('download');
     },
     setExtract(percent) {
       if (clampProgress(percent) > 0) {
         downloadProgress = Math.max(downloadProgress, 100);
       }
+
       extractProgress = Math.max(extractProgress, clampProgress(percent));
+
       return emit('extract');
     },
     handleLog(line) {
       const parsed = parseDependencyProgressLog(line);
+
       if (!parsed) return lastProgress;
+
       return parsed.phase === 'download'
         ? this.setDownload(parsed.percent)
         : this.setExtract(parsed.percent);
@@ -1192,6 +1478,7 @@ function createMutationProgressTracker({ id, action, onProgress } = {}) {
     complete() {
       downloadProgress = 100;
       extractProgress = 100;
+
       return emit('complete');
     },
     get percent() {
@@ -1202,14 +1489,19 @@ function createMutationProgressTracker({ id, action, onProgress } = {}) {
 
 function createProgressOutputHandler(tracker, previousHandler) {
   let pending = '';
+
   return (chunk, stream) => {
     if (typeof previousHandler === 'function') {
       previousHandler(chunk, stream);
     }
+
     if (!tracker) return;
+
     pending += String(chunk || '');
     const parts = pending.split(/\r\n|\n|\r/g);
+
     pending = parts.pop() || '';
+
     for (const line of parts) {
       tracker.handleLog(line);
     }
@@ -1220,9 +1512,11 @@ function resolvePackageTarballUrl(entry, npmRunner, options = {}) {
   if (typeof options.resolveTarballUrl === 'function') {
     return Promise.resolve(options.resolveTarballUrl(entry)).then((url) => {
       const value = String(url || '').trim();
+
       if (!/^https?:\/\//i.test(value)) {
         throw new Error(`Unable to resolve tarball URL for ${entry.package}@${entry.version}`);
       }
+
       return value;
     });
   }
@@ -1232,15 +1526,18 @@ function resolvePackageTarballUrl(entry, npmRunner, options = {}) {
     options,
   )).then((result) => {
     const value = String(result?.stdout || '').trim().replace(/^"|"$/g, '');
+
     if (!/^https?:\/\//i.test(value)) {
       throw new Error(`Unable to resolve tarball URL for ${entry.package}@${entry.version}`);
     }
+
     return value;
   });
 }
 
 async function resolvePackageDistribution(entry, npmRunner, options = {}) {
   if (entry.dist) return entry.dist;
+
   if (typeof options.resolveDistribution === 'function') {
     return validateDistribution(await options.resolveDistribution(entry), entry.id);
   }
@@ -1249,113 +1546,38 @@ async function resolvePackageDistribution(entry, npmRunner, options = {}) {
     ['view', `${entry.package}@${entry.version}`, 'dist', '--json'],
     options,
   );
+
   let dist;
+
   try {
     dist = JSON.parse(String(result?.stdout || '').trim());
   } catch (error) {
     throw new Error(`Unable to read package distribution for ${entry.package}@${entry.version}`);
   }
+
   return validateDistribution(dist, entry.id);
-}
-
-function downloadFileWithProgress(fileUrl, destination, onProgress, options = {}) {
-  const fetchImpl = options.downloadFetch || ((url, requestOptions) => {
-    const parsed = new URL(url);
-    const transport = parsed.protocol === 'http:' ? http : https;
-    return transport.get(url, requestOptions);
-  });
-  const maxRedirects = Number.isInteger(options.maxRedirects) ? options.maxRedirects : 5;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    };
-    const succeed = () => {
-      if (settled) return;
-      settled = true;
-      resolve(destination);
-    };
-
-    const request = (currentUrl, redirectsLeft) => {
-      let requestRef;
-      try {
-        requestRef = fetchImpl(currentUrl, {
-          headers: { Accept: '*/*' },
-        });
-      } catch (error) {
-        fail(error);
-        return;
-      }
-
-      requestRef.on('error', fail);
-      requestRef.on('response', (response) => {
-        const status = response.statusCode || 0;
-        if ([301, 302, 303, 307, 308].includes(status) && response.headers.location) {
-          response.resume();
-          if (redirectsLeft <= 0) {
-            fail(new Error(`Too many redirects while downloading ${fileUrl}`));
-            return;
-          }
-          const nextUrl = new URL(response.headers.location, currentUrl).toString();
-          request(nextUrl, redirectsLeft - 1);
-          return;
-        }
-        if (status < 200 || status >= 300) {
-          response.resume();
-          fail(new Error(`Download failed: HTTP ${status}`));
-          return;
-        }
-
-        const total = Number(response.headers['content-length']) || 0;
-        let downloaded = 0;
-        let lastPercent = -1;
-        const file = fs.createWriteStream(destination);
-        file.on('error', fail);
-        response.on('error', fail);
-        response.on('data', (chunk) => {
-          downloaded += chunk.length;
-          if (!total || typeof onProgress !== 'function') return;
-          const percent = clampProgress((downloaded / total) * 100);
-          if (percent !== lastPercent) {
-            lastPercent = percent;
-            onProgress(percent);
-          }
-        });
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close((error) => {
-            if (error) {
-              fail(error);
-              return;
-            }
-            if (typeof onProgress === 'function') onProgress(100);
-            succeed();
-          });
-        });
-      });
-    };
-
-    request(fileUrl, maxRedirects);
-  });
 }
 
 async function fetchRemoteIndex(indexUrl, fetchImpl = globalThis.fetch) {
   if (typeof fetchImpl !== 'function') throw new Error('Fetch API is not available');
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
+
   try {
     const response = await fetchImpl(indexUrl, {
       headers: { Accept: 'application/json' },
       signal: controller.signal,
     });
+
     if (!response.ok) throw new Error(`Subapp index request failed: HTTP ${response.status}`);
+
     const text = await response.text();
+
     if (Buffer.byteLength(text, 'utf8') > MAX_INDEX_BYTES) {
       throw new Error('Subapp index is too large');
     }
+
     return validateIndex(JSON.parse(text));
   } finally {
     clearTimeout(timer);
@@ -1364,13 +1586,16 @@ async function fetchRemoteIndex(indexUrl, fetchImpl = globalThis.fetch) {
 
 function writeIndexCache(rootDir, index, indexUrl) {
   ensureInstallProject(rootDir);
+
   const cachePath = path.join(rootDir, INDEX_CACHE_FILE);
   const tempPath = `${cachePath}.${process.pid}.tmp`;
+
   fs.writeFileSync(tempPath, `${JSON.stringify(index, null, 2)}\n`);
   fs.renameSync(tempPath, cachePath);
 
   const metaPath = path.join(rootDir, INDEX_CACHE_META_FILE);
   const metaTempPath = `${metaPath}.${process.pid}.tmp`;
+
   fs.writeFileSync(metaTempPath, `${JSON.stringify({ indexUrl }, null, 2)}\n`);
   fs.renameSync(metaTempPath, metaPath);
 }
@@ -1378,30 +1603,39 @@ function writeIndexCache(rootDir, index, indexUrl) {
 function readIndexCache(rootDir, indexUrl) {
   const cachePath = path.join(rootDir, INDEX_CACHE_FILE);
   const metaPath = path.join(rootDir, INDEX_CACHE_META_FILE);
+
   if (fs.existsSync(metaPath)) {
     const meta = readJson(metaPath);
+
     if (meta?.indexUrl && meta.indexUrl !== indexUrl) {
       return null;
     }
   }
+
   return fs.existsSync(cachePath) ? validateIndex(readJson(cachePath)) : null;
 }
 
 function readDevelopmentIndexCache(rootDir) {
   const cachePath = path.join(rootDir, INDEX_CACHE_FILE);
+
   if (!fs.existsSync(cachePath)) return null;
+
   const rawIndex = readJson(cachePath);
+
   return rawIndex?.dev === true ? validateIndex(rawIndex) : null;
 }
 
 function mergeDevelopmentLinkedEntries(rootDir, remoteIndex, developmentIndex) {
   const merged = { ...remoteIndex };
+
   delete merged.dev;
 
   for (const [id, entry] of Object.entries(developmentIndex || {})) {
     if (id === 'dev') continue;
+
     try {
       const selected = resolveInstalledPackagePath(rootDir, entry);
+
       if (selected.development === true || selected.localNext === true) {
         merged[id] = entry;
       }
@@ -1446,6 +1680,7 @@ function restoreCatalogAfterUninstall(rootDir, entry) {
 
 function stagedManifestPaths(updateRootDir, id, version) {
   const directory = updateVersionDirectory(updateRootDir, id, version);
+
   return {
     directory,
     package: path.join(directory, UPDATE_PACKAGE_FILE),
@@ -1455,9 +1690,12 @@ function stagedManifestPaths(updateRootDir, id, version) {
 
 function readUpdateRecord(updateRootDir, entry) {
   const statePath = updateStatePath(updateRootDir, entry.id, entry.version);
+
   if (!fs.existsSync(statePath)) return null;
+
   try {
     const record = readJson(statePath);
+
     if (
       record?.schemaVersion !== UPDATE_SCHEMA_VERSION
       || record?.id !== entry.id
@@ -1467,6 +1705,7 @@ function readUpdateRecord(updateRootDir, entry) {
     ) {
       throw new Error('Staged update metadata does not match the catalog entry');
     }
+
     return record;
   } catch (error) {
     return {
@@ -1481,27 +1720,48 @@ function readUpdateRecord(updateRootDir, entry) {
   }
 }
 
-function verifyStagedAssets(updateRootDir, record) {
+function verifyStagedAssets(updateRootDir, record, rootDir = null) {
   const paths = stagedManifestPaths(updateRootDir, record.id, record.version);
+
   if (!record.distribution) {
     throw new Error('Staged update metadata is incomplete');
   }
+
   const distribution = validateDistribution(record.distribution, record.id);
+
+  // Version-store preparations keep the verified archive beside source, not in
+  // the legacy update cache. Rebuild damaged entries locally before activation.
+  if (rootDir && record.versionStore === true && !fs.existsSync(paths.package)) {
+    const preparedRoot = versions.versionRoot(rootDir, {
+      id: record.id, package: record.packageName, version: record.version,
+    }, { optional: true });
+
+    if (preparedRoot) paths.package = path.join(preparedRoot, UPDATE_PACKAGE_FILE);
+  }
+
   if (!fs.existsSync(paths.package)) throw new Error('Staged update package is missing');
+
+  const stat = fs.lstatSync(paths.package);
+
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Staged update package is not a regular file');
+
   return paths;
 }
 
 function readSubappUpdateStatus(updateRootDir, entry, installedState, operation = null, rootDir = null, options = {}) {
   const targetVersion = entry.version;
+
   if (installedState.development
     || installedState.localNext
     || !installedState.installed
     || !hasUpdate(installedState.installedVersion, targetVersion)) {
     return { state: 'current', targetVersion };
   }
+
   if (!entry.update) {
     return { state: 'available', targetVersion };
   }
+
   if (operation && operation.version === targetVersion) {
     return {
       state: operation.state,
@@ -1515,13 +1775,17 @@ function readSubappUpdateStatus(updateRootDir, entry, installedState, operation 
   if (rootDir) {
     try {
       const prepared = readPreparedVersion(rootDir, entry, options);
+
       if (prepared) return { state: 'ready', targetVersion, ready: true, downloadedAt: prepared.installedAt };
     } catch (error) {
       return { state: 'failed', targetVersion, ready: false, error: error.message };
     }
   }
+
   const record = readUpdateRecord(updateRootDir, entry);
+
   if (!record) return { state: 'available', targetVersion };
+
   if (record.state === 'failed' && record.phase !== 'install') {
     return {
       state: 'failed',
@@ -1530,8 +1794,10 @@ function readSubappUpdateStatus(updateRootDir, entry, installedState, operation 
       error: record.error || 'Subapp update download failed',
     };
   }
+
   try {
-    verifyStagedAssets(updateRootDir, record);
+    verifyStagedAssets(updateRootDir, record, rootDir);
+
     if (record.state === 'failed') {
       return {
         state: 'failed',
@@ -1540,6 +1806,7 @@ function readSubappUpdateStatus(updateRootDir, entry, installedState, operation 
         error: record.error || 'Subapp update failed',
       };
     }
+
     return {
       state: 'ready',
       targetVersion,
@@ -1565,28 +1832,35 @@ function validatePreparedPackage(packagePath, entry, options = {}) {
   if (manifest.name !== entry.package || manifest.version !== entry.version) {
     throw new Error(`Prepared subapp package identity does not match: ${entry.id}@${entry.version}`);
   }
+
   const runnable = resolveRunnablePackage(packagePath, entry.id, manifest);
+
   if (!hasRunnableEntries(runnable)) {
     throw new Error(`Prepared subapp runtime is incomplete: ${entry.id}@${entry.version}`);
   }
+
   return { manifest, runnable };
 }
 
 function portablePackageStatus(packagePath, manifest, options = {}) {
   const declaration = isObject(manifest.ailyPortable) ? manifest.ailyPortable : null;
   const scripts = isObject(manifest.scripts) ? manifest.scripts : {};
+
   if (['preinstall', 'install', 'postinstall'].some(name => typeof scripts[name] === 'string' && scripts[name].trim())) {
     return { portable: false, reason: 'package has install lifecycle scripts' };
   }
+
   const dependencies = {
     ...(isObject(manifest.dependencies) ? manifest.dependencies : {}),
     ...(isObject(manifest.optionalDependencies) ? manifest.optionalDependencies : {}),
     ...(isObject(manifest.peerDependencies) ? manifest.peerDependencies : {}),
   };
+
   const bundled = new Set([
     ...(Array.isArray(manifest.bundledDependencies) ? manifest.bundledDependencies : []),
     ...(Array.isArray(manifest.bundleDependencies) ? manifest.bundleDependencies : []),
   ]);
+
   // Aily Coder Editor 0.1.6/0.1.7 were already published as complete runtime
   // bundles before the portable marker became mandatory. Keep this narrowly
   // scoped compatibility path so those immutable packages are not sent through
@@ -1599,30 +1873,38 @@ function portablePackageStatus(packagePath, manifest, options = {}) {
       && ['arm64', 'x64'].includes(options.arch || process.arch)
       && Object.keys(dependencies).length === 0
       && fs.existsSync(path.join(packagePath, 'runtime', 'index.js'));
+
     return isSelfContainedCoder
       ? { portable: true, compatibility: 'aily-coder-editor-pre-portable-marker' }
       : { portable: false, reason: 'missing ailyPortable v1' };
   }
+
   const platform = options.platform || process.platform;
   const architecture = options.arch || process.arch;
+
   if (Array.isArray(declaration.platforms) && !declaration.platforms.includes(platform)) {
     throw new Error(`Subapp package does not support ${platform}`);
   }
+
   if (Array.isArray(declaration.architectures) && !declaration.architectures.includes(architecture)) {
     throw new Error(`Subapp package does not support ${architecture}`);
   }
+
   for (const dependency of Object.keys(dependencies)) {
     if (!bundled.has(dependency)
       || !fs.existsSync(path.join(packagePath, 'node_modules', ...dependency.split('/'), 'package.json'))) {
       return { portable: false, reason: `dependency is not bundled: ${dependency}` };
     }
   }
+
   return { portable: true };
 }
 
 function readPreparedVersion(rootDir, entry, options = {}) {
   const prepared = versions.readPrepared(rootDir, entry);
+
   if (!prepared) return null;
+
   validatePreparedPackage(prepared.packagePath, entry, options);
 
   const expected = entry.distribution
@@ -1632,38 +1914,73 @@ function readPreparedVersion(rootDir, entry, options = {}) {
     || prepared.distribution?.tarball !== expected.tarball)) {
     throw new Error(`Prepared subapp distribution does not match: ${entry.id}@${entry.version}`);
   }
+
   return prepared;
 }
 
 async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
   entry = selectSubappPlatformEntry(entry, options);
+
   if (!entry) throw new Error(`Subapp has no distribution for ${options.platform || process.platform}-${options.arch || process.arch}`);
 
   const trusted = trustedPackageDistribution(entry, options);
+  const key = operationKey(rootDir, entry.id);
+
+  if (pendingUninstalls.has(key)) throw fault('SUBAPP_UNINSTALLING', `Subapp uninstall is in progress: ${entry.id}`);
+
+  const controller = new AbortController();
+  const parentSignal = options.signal;
+  const abort = () => controller.abort(parentSignal.reason);
+
+  parentSignal?.addEventListener('abort', abort, { once: true });
+
+  if (parentSignal?.aborted) abort();
+
+  const controllers = preparationControllers.get(key) || new Set();
+
+  controllers.add(controller);
+  preparationControllers.set(key, controllers);
+
+  options = { ...options, signal: controller.signal };
+
   const lockRoot = path.join(rootDir, 'store', '.locks', versions.storeKeyForPackage(entry.package));
-  const release = await waitForUpdateLock(lockRoot);
+  let release;
   let candidate;
   let published = false;
+  let processClosed;
+  let failure;
+
   try {
+    release = await waitForUpdateLock(lockRoot, options);
+
+    options.signal.throwIfAborted();
+
     if (versions.isUninstalling(rootDir, entry)) {
       throw new Error(`Subapp uninstall is still being completed: ${entry.id}`);
     }
+
     if (!options.reinstall) {
       try {
         const existing = readPreparedVersion(rootDir, entry, options);
+
         if (existing) return existing;
       } catch {
         // Repair into a new generation; never overwrite files a running process may hold.
       }
     }
+
     candidate = versions.createCandidate(rootDir, entry);
+
     const tracker = options.progressTracker;
     const tarball = candidate.tarball;
     const bundle = options.bundledCoderFallback;
+
     const distribution = trusted
       ? { tarball: trusted.tarballUrl, integrity: trusted.tarballIntegrity }
       : bundle ? null : (entry.dist || options.distribution || await resolvePackageDistribution(entry, npmRunner, options));
+
     const source = bundle?.tarballPath || options.tarballPath;
+
     if (source) {
       await fs.promises.copyFile(source, tarball);
     } else {
@@ -1671,107 +1988,194 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
         distribution.tarball, tarball, percent => tracker?.setDownload(percent), options,
       );
     }
+
     tracker?.setDownload(100);
+
     if (trusted) await verifyDownloadedSubappDistribution({
       entry, indexUrl: options.indexUrl, policies: options.releaseTrustPolicies, tarballPath: tarball,
       platform: options.platform, arch: options.arch,
     });
+
     await extractNpmTarballInBackground(tarball, candidate.source, {
       integrity: bundle?.integrity || distribution.integrity,
       onProgress: percent => tracker?.setExtract(percent),
+      signal: options.signal,
+      timeoutMs: options.extractTimeoutMs,
     });
+
     let { manifest } = validatePreparedPackage(candidate.source, entry, options);
     let portability = portablePackageStatus(candidate.source, manifest, options);
+
     if (bundle && !portability.portable) {
       // The application-owned offline fallback is validated as a self-contained artifact below.
       portability = { portable: true, bundledFallback: true };
     }
+
     if (!portability.portable) {
       // Compatibility path for older npm packages: install dependencies and run lifecycle scripts
       // inside A/source. The shared legacy app project and B are never reified.
       const npmSource = fs.realpathSync(candidate.source);
+
       await npmRunner([
         'install', '--prefix', npmSource, '--omit=dev', '--no-audit', '--no-fund',
         '--foreground-scripts', '--cache', path.join(rootDir, 'store', versions.storeKeyForPackage(entry.package), 'download-cache', 'npm-cache'),
         '--prefer-offline',
       ], withProgressOutput({ ...options, cwd: npmSource }, tracker));
+
       ({ manifest } = validatePreparedPackage(candidate.source, entry, options));
     }
+
     if (bundle) {
       if (manifest.ailySubapp?.id !== entry.id
         || !fs.existsSync(path.join(candidate.source, 'runtime', 'index.js'))
         || Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies }).length) {
-        throw new Error('Bundled Aily Coder Editor is not a complete self-contained package');
+        throw new Error('Bundled aily Coder Editor is not a complete self-contained package');
       }
     }
+
+    options.signal.throwIfAborted();
+
     if (versions.isUninstalling(rootDir, entry)) {
       throw new Error(`Subapp was uninstalled while preparing: ${entry.id}`);
     }
-    const prepared = versions.publishCandidate(rootDir, entry, candidate, {
+
+    await options.beforePublish?.(candidate.source);
+
+    const prepared = await versions.publishCandidate(rootDir, entry, candidate, {
       distribution,
       integrity: bundle?.integrity || distribution?.integrity,
       installMode: portability.portable ? 'portable' : 'legacy-npm',
       replace: options.reinstall === true,
+      retainPrevious: options.retainPrevious === true,
+      replacementTransaction: options.replacementTransaction,
+      renameAttempts: options.renameAttempts,
+      sleep: options.sleep,
+      validatePrepared: prepared => validatePreparedPackage(prepared.packagePath, entry, options),
     });
+
     published = true;
+
     tracker?.setExtract(100);
+
     return prepared;
+  } catch (error) {
+    processClosed = error.processClosed;
+    failure = error;
   } finally {
     // Published generations are immutable, including when progress delivery throws.
+    // A cleanup failure must not replace the publish error the caller reports.
+    let cleanupError;
+
     try {
-      if (candidate && !published) fs.rmSync(candidate.project, { recursive: true, force: true });
+      if (candidate && !published && !processClosed) {
+        await fs.promises.rm(candidate.project, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      }
+    } catch (error) {
+      cleanupError = error;
     } finally {
-      release();
+      parentSignal?.removeEventListener('abort', abort);
+      controllers.delete(controller);
+
+      if (!controllers.size) preparationControllers.delete(key);
+
+      if (processClosed && release) {
+        // Failed termination must not authorize uninstall/replacement while npm
+        // still writes staging. Return the timeout to UI but retain the package
+        // guard until stdio/process closure; other packages and old launches work.
+        const held = release;
+
+        void processClosed.then(async () => {
+          try {
+            if (candidate && !published) await fs.promises.rm(candidate.project,
+              { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+          } finally { held(); }
+        }).catch(error => console.warn('[subapp-manager] deferred npm cleanup failed:', error.message));
+      } else release?.();
+    }
+
+    if (failure && cleanupError) {
+      failure.message += `\n暂存目录清理失败: ${cleanupError.message}`;
     }
   }
+
+  if (failure) throw failure;
 }
 
 async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
   const installedState = readInstalledState(rootDir, entry);
+
   if (installedState.development || installedState.localNext) {
     throw new Error(`Local subapp cannot be updated: ${entry.id}`);
   }
+
   if (!installedState.installed || !hasUpdate(installedState.installedVersion, entry.version)) {
     throw new Error(`Subapp update is not available: ${entry.id}`);
   }
+
   const tracker = options.progressTracker;
+
   tracker?.start();
+
   try {
     const existing = readUpdateRecord(updateRootDir, entry);
     let stagedOptions = options;
+
     // Accept tarballs downloaded by old hosts, without depending on the old shared npm cache.
     if (existing) {
       try {
-        const paths = verifyStagedAssets(updateRootDir, existing);
+        const paths = verifyStagedAssets(updateRootDir, existing, rootDir);
+
         stagedOptions = { ...options, tarballPath: paths.package, distribution: existing.distribution };
       } catch { /* Re-download an incomplete legacy cache. */ }
     }
+
     const prepared = await prepareVersionPackage(rootDir, entry, npmRunner, stagedOptions);
+
     const record = {
       schemaVersion: UPDATE_SCHEMA_VERSION, id: entry.id, packageName: entry.package,
       version: entry.version, state: 'ready', phase: 'download', stagedAt: prepared.installedAt,
       entry, distribution: prepared.distribution, versionStore: true,
     };
+
     writeJsonAtomic(updateStatePath(updateRootDir, entry.id, entry.version), record);
     tracker?.complete();
+
     return record;
   } catch (error) {
+    if (error.code === 'SUBAPP_CANCELLED') throw error;
+
+    const reported = explainKeptVersion(
+      'download-update',
+      installedState.installed ? installedState.installedVersion : null,
+      false,
+      error,
+    );
+
     writeJsonAtomic(updateStatePath(updateRootDir, entry.id, entry.version), {
       schemaVersion: UPDATE_SCHEMA_VERSION, id: entry.id, packageName: entry.package,
       version: entry.version, state: 'failed', phase: 'download', entry,
-      failedAt: new Date().toISOString(), error: error.message || String(error),
+      failedAt: new Date().toISOString(), error: reported.message || String(reported),
     });
-    throw error;
+
+    throw reported;
   }
 }
 
-async function waitForUpdateLock(directory) {
-  const deadline = Date.now() + 120000;
+async function waitForUpdateLock(directory, options = {}) {
+  const deadline = Date.now() + duration(options.lockTimeoutMs, 120000);
   let release;
-  while (!(release = acquireUpdateLock(directory))) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for subapp installation');
-    await sleep(100);
+
+  while (true) {
+    options.signal?.throwIfAborted();
+
+    release = acquireUpdateLock(directory);
+
+    if (release) break;
+    if (Date.now() >= deadline) throw fault('SUBAPP_LOCK_TIMEOUT', `Timed out waiting for subapp installation lock: ${directory}`);
+
+    await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
   }
+
   return release;
 }
 
@@ -1796,45 +2200,74 @@ function sleep(ms, sleepImpl = globalThis.setTimeout) {
 function isBusyRenameError(error) {
   if (!error) return false;
   if (error.code === 'EBUSY' || error.errno === -4082) return true;
+
   const text = error.message || String(error);
+
   if (/\bEBUSY\b/i.test(text)) return true;
+
   // Windows 锁定文件时常表现为 EPERM + rename/rmdir/unlink
   if ((error.code === 'EPERM' || /\bEPERM\b/i.test(text))
     && /\b(rename|rmdir|unlink|rm)\b/i.test(text)) {
     return true;
   }
+
   return false;
 }
 
 function formatBusyRenameError(packagePath, cause) {
   const detail = packagePath ? `\n被占用目录: ${packagePath}` : '';
+
   const error = new Error(
     `子应用目录正在被占用，无法卸载/更新。请确认已关闭该子应用后重试。${detail}`,
   );
+
   error.code = 'EBUSY';
   error.cause = cause;
+
   return error;
 }
 
 function formatBusyCancelledError(packagePath) {
   const detail = packagePath ? `\n被占用目录: ${packagePath}` : '';
+
   const error = new Error(
     `子应用目录正在被占用，已取消强制关闭。${detail}`,
   );
+
   error.code = 'EBUSY_CANCELLED';
+
   return error;
+}
+
+function explainKeptVersion(action, previousVersion, switched, error) {
+  if (!error || switched || !previousVersion) return error;
+  if (!['install', 'update', 'install-update', 'download-update'].includes(action)) return error;
+  if (error.code === 'SUBAPP_CANCELLED' || error.code === 'EBUSY_CANCELLED' || error.code === 'EBUSY') return error;
+  if (error.requiresForceClose === true) return error;
+  if (String(error.message || '').includes('仍可继续使用')) return error;
+
+  const wrapped = new Error(`更新失败，当前版本 ${previousVersion} 仍可继续使用。\n${error.message}`);
+
+  wrapped.code = error.code || 'SUBAPP_UPDATE_FAILED';
+  wrapped.cause = error;
+  wrapped.keepsPreviousVersion = true;
+
+  return wrapped;
 }
 
 function formatBusyNeedsForceError(packagePath, holders = [], cause) {
   const detail = packagePath ? `\n被占用目录: ${packagePath}` : '';
+
   const error = new Error(
     `子应用目录正在被占用，需要强制关闭相关进程后重试。${detail}`,
   );
+
   error.code = 'EBUSY';
   error.requiresForceClose = true;
   error.packagePath = packagePath || '';
   error.holders = Array.isArray(holders) ? holders : [];
   error.cause = cause;
+
   return error;
 }
 
@@ -1850,6 +2283,7 @@ function getDefaultBusyDialogStrings() {
 
 function getSubappBusyDialogStrings(options = {}) {
   const defaults = getDefaultBusyDialogStrings();
+
   if (typeof options.getBusyDialogStrings === 'function') {
     try {
       return { ...defaults, ...options.getBusyDialogStrings() };
@@ -1857,6 +2291,7 @@ function getSubappBusyDialogStrings(options = {}) {
       console.warn('[subapp-manager] getBusyDialogStrings failed:', error.message || error);
     }
   }
+
   return defaults;
 }
 
@@ -1865,20 +2300,26 @@ function hasProcessesUsingPackagePath(packagePath, platform = process.platform) 
   const needle = path.resolve(packagePath);
   const windows = platform === 'win32';
   const command = windows ? 'powershell.exe' : 'ps';
+
   const args = windows
     ? ['-NoProfile', '-NonInteractive', '-Command',
       'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress']
     : ['-ww', '-axo', 'pid=,command='];
+
   return new Promise(resolve => {
     execFile(command, args, { windowsHide: true, timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
       if (error) return resolve(true);
+
       try {
         const rows = windows
           ? [JSON.parse(stdout || '[]')].flat().map(row => ({ pid: row.ProcessId, command: row.CommandLine || '' }))
+
           : stdout.trim().split('\n').map(line => {
             const match = line.trim().match(/^(\d+)\s+(.*)$/);
+
             return { pid: Number(match?.[1]), command: match?.[2] || '' };
           });
+
         resolve(rows.some(row => Number(row.pid) !== process.pid
           && (windows ? row.command.toLowerCase().includes(needle.toLowerCase()) : row.command.includes(needle))));
       } catch {
@@ -1890,11 +2331,13 @@ function hasProcessesUsingPackagePath(packagePath, platform = process.platform) 
 
 function listProcessesUsingPath(packagePath, options = {}) {
   const platform = options.platform || process.platform;
+
   if (!packagePath) return Promise.resolve([]);
 
   if (platform !== 'win32') {
     const execFileImpl = options.execFileImpl || execFile;
     const needle = path.posix.isAbsolute(packagePath) ? path.posix.resolve(packagePath) : path.resolve(packagePath);
+
     return new Promise((resolve) => {
       execFileImpl(
         'ps',
@@ -1904,17 +2347,23 @@ function listProcessesUsingPath(packagePath, options = {}) {
           if (error) {
             console.warn('[subapp-manager] listProcessesUsingPath failed:', error.message || error);
             resolve([]);
+
             return;
           }
+
           const selfPid = process.pid;
+
           resolve(String(stdout || '').trim().split('\n').flatMap((line) => {
             const match = line.trim().match(/^(\d+)\s+(.*)$/);
             const pid = Number(match?.[1]);
             const commandLine = match?.[2] || '';
+
             if (!Number.isInteger(pid) || pid <= 0 || pid === selfPid || !commandLine.includes(needle)) {
               return [];
             }
+
             const executable = commandLine.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/)?.slice(1).find(Boolean) || '';
+
             return [{
               pid,
               name: path.posix.basename(executable) || 'unknown',
@@ -1942,17 +2391,23 @@ function listProcessesUsingPath(packagePath, options = {}) {
         if (error) {
           console.warn('[subapp-manager] listProcessesUsingPath failed:', error.message || error);
           resolve([]);
+
           return;
         }
+
         const text = String(stdout || '').trim();
+
         if (!text) {
           resolve([]);
+
           return;
         }
+
         try {
           const parsed = JSON.parse(text);
           const rows = Array.isArray(parsed) ? parsed : [parsed];
           const selfPid = process.pid;
+
           resolve(rows
             .map((row) => ({
               pid: Number.parseInt(row?.ProcessId, 10),
@@ -1974,12 +2429,16 @@ function listProcessesUsingPath(packagePath, options = {}) {
 async function collectBusyHolders(packagePath, entry, options = {}) {
   const holders = [];
   const seen = new Set();
+
   const pushHolder = (holder) => {
     if (!holder) return;
+
     const key = Number.isInteger(holder.pid) && holder.pid > 0
       ? `pid:${holder.pid}`
       : `name:${holder.name || ''}:${holder.toolId || ''}`;
+
     if (seen.has(key)) return;
+
     seen.add(key);
     holders.push(holder);
   };
@@ -1987,6 +2446,7 @@ async function collectBusyHolders(packagePath, entry, options = {}) {
   if (typeof options.listChildToolHolders === 'function' && entry?.id) {
     try {
       const sessionHolders = await options.listChildToolHolders(entry.id);
+
       for (const holder of Array.isArray(sessionHolders) ? sessionHolders : []) {
         pushHolder(holder);
       }
@@ -1998,9 +2458,11 @@ async function collectBusyHolders(packagePath, entry, options = {}) {
   const processHolders = typeof options.listBusyHolders === 'function'
     ? await options.listBusyHolders(packagePath)
     : await listProcessesUsingPath(packagePath, options);
+
   for (const holder of Array.isArray(processHolders) ? processHolders : []) {
     pushHolder(holder);
   }
+
   return holders;
 }
 
@@ -2012,7 +2474,9 @@ async function createDefaultPromptBusyForceClose(context = {}) {
     strings = getDefaultBusyDialogStrings(),
     dialogImpl,
   } = context;
+
   let dialog = dialogImpl;
+
   if (!dialog) {
     try {
       ({ dialog } = require('electron'));
@@ -2020,13 +2484,17 @@ async function createDefaultPromptBusyForceClose(context = {}) {
       return false;
     }
   }
+
   const holderLines = holders.length
     ? holders.map((holder) => {
       const pidText = Number.isInteger(holder.pid) ? `PID ${holder.pid}` : 'PID ?';
+
       return `${pidText}: ${holder.name || holder.toolId || 'unknown'}`;
     }).join('\n')
     : strings.BUSY_UNKNOWN_HOLDERS;
+
   const parentWindow = typeof getMainWindow === 'function' ? getMainWindow() : null;
+
   const { response } = await dialog.showMessageBox(parentWindow || undefined, {
     type: 'warning',
     title: strings.BUSY_TITLE,
@@ -2037,6 +2505,7 @@ async function createDefaultPromptBusyForceClose(context = {}) {
     cancelId: 0,
     noLink: true,
   });
+
   return response === 1;
 }
 
@@ -2050,11 +2519,13 @@ async function forceCloseBusyHolders(packagePath, entry, holders, options = {}) 
   }
 
   const killProcessTree = options.killProcessTree || killRegisteredProcessTree;
+
   const pids = Array.from(new Set(
     (Array.isArray(holders) ? holders : [])
       .map((holder) => holder?.pid)
       .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid),
   ));
+
   for (const pid of pids) {
     try {
       await killProcessTree(pid, `subapp-busy:${entry?.id || path.basename(packagePath || '')}`);
@@ -2071,22 +2542,29 @@ async function ensureVersionReplacementIsIdle(rootDir, entry, options = {}) {
     versions.storeKeyForPackage(entry.package),
     entry.version,
   );
+
   if (!fs.existsSync(target)) return;
 
   const holders = await collectBusyHolders(target, entry, options);
+
   if (holders.length) {
     if (options.forceClose !== true) throw formatBusyNeedsForceError(target, holders);
+
     await forceCloseBusyHolders(target, entry, holders, options);
+
     const sleepImpl = options.sleep || sleep;
+
     await sleepImpl(Number.isFinite(options.forceCloseSettleMs) ? options.forceCloseSettleMs : 500);
   }
 
   const isBusy = options.hasProcessesUsingPath || hasProcessesUsingPackagePath;
   const sleepImpl = options.sleep || sleep;
+
   for (let attempt = 0; attempt < 4; attempt += 1) {
     if (!await isBusy(target, options.platform || process.platform)) return;
     if (attempt < 3) await sleepImpl(100 * (attempt + 1));
   }
+
   throw formatBusyNeedsForceError(target, holders);
 }
 
@@ -2097,18 +2575,20 @@ async function resolveBusyConflictAndRetry(operation, context = {}) {
     options = {},
     platform = options.platform || process.platform,
   } = context;
+
   if (platform !== 'win32') {
     throw context.error || formatBusyRenameError(packagePath);
   }
+
   if (options.busyForceAttempted) {
     throw context.error || formatBusyRenameError(packagePath);
   }
 
   const holders = await collectBusyHolders(packagePath, entry, options);
-
   // forceClose=true：由渲染层弹窗确认后传入，主进程直接强杀并重试（不再弹 Electron 原生框）。
   // 未带 forceClose 时抛给渲染层，用软件内 UI 提示。
   const shouldForceClose = options.forceClose === true;
+
   if (!shouldForceClose) {
     if (typeof options.promptBusyForceClose === 'function') {
       const proceed = await options.promptBusyForceClose({
@@ -2117,6 +2597,7 @@ async function resolveBusyConflictAndRetry(operation, context = {}) {
         action: context.action,
         entry,
       });
+
       if (!proceed) {
         throw formatBusyCancelledError(packagePath);
       }
@@ -2126,8 +2607,11 @@ async function resolveBusyConflictAndRetry(operation, context = {}) {
   }
 
   await forceCloseBusyHolders(packagePath, entry, holders, options);
+
   const sleepImpl = options.sleep || sleep;
+
   await sleepImpl(Number.isFinite(options.forceCloseSettleMs) ? options.forceCloseSettleMs : 500);
+
   return operation({ ...options, busyForceAttempted: true, forceClose: true });
 }
 
@@ -2136,56 +2620,73 @@ async function renameWithBusyRetry(src, dest, options = {}) {
   const baseDelayMs = Number.isFinite(options.baseDelayMs) ? options.baseDelayMs : 500;
   const sleepImpl = options.sleep || sleep;
   let lastError;
+
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
       fs.renameSync(src, dest);
+
       return;
     } catch (error) {
       lastError = error;
+
       if (attempt <= retries && isBusyRenameError(error)) {
         await sleepImpl(baseDelayMs * attempt);
+
         continue;
       }
+
       throw isBusyRenameError(error) ? formatBusyRenameError(src, error) : error;
     }
   }
+
   throw formatBusyRenameError(src, lastError);
 }
 
 async function rmWithBusyRetry(targetPath, options = {}) {
   if (!targetPath || !fs.lstatSync(targetPath, { throwIfNoEntry: false })) return;
+
   const retries = Number.isInteger(options.retries) ? options.retries : 4;
   const baseDelayMs = Number.isFinite(options.baseDelayMs) ? options.baseDelayMs : 500;
   const sleepImpl = options.sleep || sleep;
   let lastError;
+
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
-      fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      await fs.promises.rm(targetPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+
       return;
     } catch (error) {
       lastError = error;
+
       if (attempt <= retries && isBusyRenameError(error)) {
         await sleepImpl(baseDelayMs * attempt);
+
         continue;
       }
+
       throw isBusyRenameError(error) ? formatBusyRenameError(targetPath, error) : error;
     }
   }
+
   throw formatBusyRenameError(targetPath, lastError);
 }
 
 function removePackageFromRootManifests(rootDir, packageName) {
   for (const name of ['package.json', 'package-lock.json']) {
     const file = path.join(rootDir, name);
+
     if (!fs.existsSync(file)) continue;
+
     const manifest = readJson(file);
     let changed = false;
+
     for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
       if (isObject(manifest[field]) && Object.prototype.hasOwnProperty.call(manifest[field], packageName)) {
         delete manifest[field][packageName];
         changed = true;
       }
     }
+
     if (name === 'package-lock.json') {
       if (isObject(manifest.packages?.[''])) {
         for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
@@ -2196,12 +2697,15 @@ function removePackageFromRootManifests(rootDir, packageName) {
           }
         }
       }
+
       const packageKey = `node_modules/${packageName}`;
+
       if (isObject(manifest.packages) && Object.prototype.hasOwnProperty.call(manifest.packages, packageKey)) {
         delete manifest.packages[packageKey];
         changed = true;
       }
     }
+
     if (changed) writeJsonAtomic(file, manifest);
   }
 }
@@ -2210,36 +2714,49 @@ function assertSubappUninstallComplete(rootDir, entry, paths) {
   const residuals = paths
     .filter(target => fs.lstatSync(target, { throwIfNoEntry: false }))
     .map(target => path.resolve(target));
+
   const packageKey = `node_modules/${entry.package}`;
+
   for (const name of ['package.json', 'package-lock.json']) {
     const file = path.join(rootDir, name);
+
     if (!fs.existsSync(file)) continue;
+
     const manifest = readJson(file);
+
     const declared = ['dependencies', 'devDependencies', 'optionalDependencies']
       .some(field => isObject(manifest[field])
         && Object.prototype.hasOwnProperty.call(manifest[field], entry.package));
+
     const rootDeclared = ['dependencies', 'devDependencies', 'optionalDependencies']
       .some(field => isObject(manifest.packages?.['']?.[field])
         && Object.prototype.hasOwnProperty.call(manifest.packages[''][field], entry.package));
+
     const packageLocked = isObject(manifest.packages)
       && Object.prototype.hasOwnProperty.call(manifest.packages, packageKey);
+
     if (declared || rootDeclared || packageLocked) residuals.push(path.resolve(file));
   }
+
   if (!residuals.length) return;
 
   const error = new Error(
     `Subapp uninstall is incomplete; all installed versions and legacy compatibility files must be removed: ${entry.id}\n`
       + residuals.join('\n'),
   );
+
   error.code = 'SUBAPP_UNINSTALL_INCOMPLETE';
   error.residualPaths = residuals;
+
   throw error;
 }
 
 function declaredBinNames(packagePath, packageName) {
   try {
     const manifest = readJson(path.join(packagePath, 'package.json'));
+
     if (typeof manifest.bin === 'string') return [packageName.split('/').pop()];
+
     return isObject(manifest.bin) ? Object.keys(manifest.bin) : [];
   } catch {
     return [];
@@ -2248,82 +2765,150 @@ function declaredBinNames(packagePath, packageName) {
 
 function removeOwnedBinLinks(rootDir, packagePath, packageName, binNames) {
   const binRoot = path.join(rootDir, 'node_modules', '.bin');
+
   const packageNeedles = [
     path.resolve(packagePath).toLowerCase(),
     `node_modules/${packageName}`.toLowerCase(),
     `node_modules\\${packageName.replaceAll('/', '\\')}`.toLowerCase(),
   ];
+
   for (const binName of binNames) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(binName)) continue;
+
     for (const suffix of ['', '.cmd', '.ps1']) {
       const link = path.join(binRoot, `${binName}${suffix}`);
       const stat = fs.lstatSync(link, { throwIfNoEntry: false });
+
       if (!stat) continue;
+
       let owned = false;
+
       try {
         const evidence = stat.isSymbolicLink()
           ? path.resolve(path.dirname(link), fs.readlinkSync(link)).toLowerCase()
           : stat.isFile() && stat.size <= 128 * 1024
             ? fs.readFileSync(link, 'utf8').toLowerCase()
             : '';
+
         owned = packageNeedles.some(needle => evidence.includes(needle));
       } catch { /* Preserve ambiguous shims owned by another package. */ }
+
       if (owned) fs.rmSync(link, { force: true });
     }
   }
 }
 
+function assertSubappCanBeUninstalled(id, options) {
+  if (id === BUNDLED_CODER_ID && options.isCoderProjectOpen?.()) {
+    const error = new Error('Close the current project before uninstalling aily Coder Editor.');
+
+    error.code = 'SUBAPP_REQUIRED_BY_PROJECT';
+
+    throw error;
+  }
+}
+
 async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = {}) {
+  options = { ...options, lockTimeoutMs: duration(options.lockTimeoutMs, 15000) };
   const legacyPath = packagePathFor(rootDir, entry.package);
   const storeKey = versions.storeKeyForPackage(entry.package);
   const storeRoot = path.join(rootDir, 'store');
   const versionStoreRoot = path.join(storeRoot, storeKey);
-  const binNames = declaredBinNames(legacyPath, entry.package);
-
-  const preparationLocks = [];
   const lockDirectory = path.join(storeRoot, '.locks');
-  try {
-    preparationLocks.push(await waitForUpdateLock(path.join(lockDirectory, storeKey)));
-    if (typeof options.forceStopChildToolByCatalogId === 'function') {
-      const stopped = await options.forceStopChildToolByCatalogId(entry.id);
-      if (stopped?.success === false && stopped.reason !== 'not-found') {
-        throw new Error(`Unable to stop the running subapp before uninstalling: ${entry.id}`);
-      }
+  const releasePreparation = await waitForUpdateLock(path.join(lockDirectory, storeKey), options);
+  let marked = false, alreadyMarked = false, cleanupStarted = false;
+
+  const select = async operation => {
+    const release = await waitForUpdateLock(lockDirectory, options);
+
+    try { return operation(); } finally { release(); }
+  };
+
+  const stop = async () => {
+    if (typeof options.forceStopChildToolByCatalogId !== 'function') return;
+
+    const stopped = await bounded(options.forceStopChildToolByCatalogId(entry.id),
+      duration(options.stopTimeoutMs, 15000), 'SUBAPP_STOP_TIMEOUT', `Timed out stopping subapp: ${entry.id}`);
+
+    if (stopped?.success === false && stopped.reason !== 'not-found') {
+      throw new Error(`Unable to stop the running subapp before uninstalling: ${entry.id}`);
     }
+  };
+
+  try {
+    assertSubappCanBeUninstalled(entry.id, options);
+
+    const binNames = declaredBinNames(legacyPath, entry.package);
+
+    await stop();
 
     const targets = [legacyPath, versionStoreRoot];
+
+    // No global selection lock while stopping, inspecting or deleting files.
     for (const target of targets) {
-      const holders = await collectBusyHolders(target, entry, options);
+      const holders = await bounded(collectBusyHolders(target, entry, options), 20000,
+        'SUBAPP_INSPECT_TIMEOUT', `Timed out inspecting subapp processes: ${entry.id}`);
+
       if (holders.length) {
+        assertSubappCanBeUninstalled(entry.id, options);
+
         if (options.forceClose !== true) throw formatBusyNeedsForceError(target, holders);
-        await forceCloseBusyHolders(target, entry, holders, options);
+
+        await bounded(forceCloseBusyHolders(target, entry, holders, options), 30000,
+          'SUBAPP_STOP_TIMEOUT', `Timed out stopping subapp holders: ${entry.id}`);
       }
+
       if ((options.platform || process.platform) !== 'win32'
         && await (options.hasProcessesUsingPath || hasProcessesUsingPackagePath)(target, options.platform || process.platform)) {
         throw formatBusyNeedsForceError(target, holders);
       }
     }
 
-    // The marker is written only when destructive cleanup is about to start. A busy
-    // preflight must leave the existing installation visible and retryable.
-    versions.beginUninstall(rootDir, entry);
+    await select(() => {
+      assertSubappCanBeUninstalled(entry.id, options);
+
+      alreadyMarked = versions.isUninstalling(rootDir, entry);
+
+      versions.beginUninstall(rootDir, entry);
+
+      marked = true;
+    });
+
+    // A launch may have completed during preflight. The persisted marker now
+    // prevents new launches, so stop that last registration before cleanup.
+    await stop();
+    assertSubappCanBeUninstalled(entry.id, options);
+
+    cleanupStarted = true;
+
     removeOwnedBinLinks(rootDir, legacyPath, entry.package, binNames);
+
     for (const target of targets) await rmWithBusyRetry(target, options);
 
     const updateCachePath = path.join(updateRootDir, validateId(entry.id));
+
     await rmWithBusyRetry(updateCachePath, options);
-    removePackageFromRootManifests(rootDir, entry.package);
-    assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
-    restoreCatalogAfterUninstall(rootDir, entry);
-    versions.finishUninstall(rootDir, entry);
-  } finally {
-    for (const release of preparationLocks.reverse()) release();
-  }
+
+    await select(() => {
+      removePackageFromRootManifests(rootDir, entry.package);
+      assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
+      restoreCatalogAfterUninstall(rootDir, entry);
+      versions.markManuallyUninstalled(rootDir, entry);
+      versions.finishUninstall(rootDir, entry);
+    });
+  } catch (error) {
+    if (marked && !alreadyMarked && !cleanupStarted) {
+      await select(() => versions.finishUninstall(rootDir, entry));
+    }
+
+    throw error;
+  } finally { releasePreparation(); }
 }
 
 async function renamePackagePathWithForceClose(src, dest, entry, options = {}) {
   let nextOptions = options;
   const platform = options.platform || process.platform;
+
   // 用户已在 UI 确认强制关闭时，先释放占用再 rename，减少首轮 EBUSY。
   if (
     platform === 'win32'
@@ -2331,9 +2916,13 @@ async function renamePackagePathWithForceClose(src, dest, entry, options = {}) {
     && options.busyForceAttempted !== true
   ) {
     const holders = await collectBusyHolders(src, entry, options);
+
     await forceCloseBusyHolders(src, entry, holders, options);
+
     const sleepImpl = options.sleep || sleep;
+
     await sleepImpl(Number.isFinite(options.forceCloseSettleMs) ? options.forceCloseSettleMs : 500);
+
     nextOptions = { ...options, busyForceAttempted: true };
   }
 
@@ -2345,6 +2934,7 @@ async function renamePackagePathWithForceClose(src, dest, entry, options = {}) {
     });
   } catch (error) {
     if (!isBusyRenameError(error)) throw error;
+
     await resolveBusyConflictAndRetry(
       async (retryOptions) => renameWithBusyRetry(src, dest, {
         retries: retryOptions.renameRetries,
@@ -2364,26 +2954,36 @@ async function renamePackagePathWithForceClose(src, dest, entry, options = {}) {
 
 async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
   let prepared = readPreparedVersion(rootDir, entry, options);
+
   if (!prepared) {
     const record = readUpdateRecord(updateRootDir, entry);
+
     if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
-    const paths = verifyStagedAssets(updateRootDir, record);
+
+    const paths = verifyStagedAssets(updateRootDir, record, rootDir);
+
     prepared = await prepareVersionPackage(rootDir, entry, npmRunner, {
       ...options, tarballPath: paths.package, distribution: record.distribution,
     });
   }
-  const release = options.lockHeld ? () => {} : await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+
+  const release = options.lockHeld ? () => {} : await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+
   try {
     const installed = readInstalledState(rootDir, entry);
+
     if (installed.development || installed.localNext) {
       throw new Error(`Local subapp cannot be updated: ${entry.id}`);
     }
+
     if (installed.installed && semver.valid(installed.installedVersion)
       && semver.gt(installed.installedVersion, entry.version)) {
       return { id: entry.id, version: installed.installedVersion, status: 'current' };
     }
+
     await activatePreparedSubapp(rootDir, entry, prepared, options);
     options.progressTracker?.complete();
+
     return { id: entry.id, version: entry.version, status: 'installed' };
   } finally {
     release();
@@ -2396,31 +2996,40 @@ function trustedPackageDistribution(entry, options) {
   }
 
   const required = requiresTrustedSubappDistribution(entry, options.indexUrl, options.releaseTrustPolicies, options);
+
   if (required && !entry.distribution) throw new SubappReleaseTrustError(`A signed distribution is required for ${entry.package}@${entry.version}.`);
   if (!required && entry.distribution) throw new SubappReleaseTrustError(`No trusted release policy matches ${entry.package}@${entry.version}.`);
+
   return required ? entry.distribution : null;
 }
 
 async function activatePreparedSubapp(rootDir, entry, prepared, options) {
   validatePreparedPackage(prepared.packagePath, entry, options);
+
   if (trustedPackageDistribution(entry, options)) await verifyDownloadedSubappDistribution({
     entry, indexUrl: options.indexUrl, policies: options.releaseTrustPolicies,
     tarballPath: path.join(prepared.project, 'package.tgz'),
     platform: options.platform, arch: options.arch,
   });
+
   // Version-store activation is an atomic pointer update. Check the candidate
   // first; failure leaves the previous active version and its runtime untouched.
   if (typeof options.verifyInstalledPackage === 'function') await options.verifyInstalledPackage({
     phase: 'candidate', rootDir, entry, packagePath: prepared.packagePath,
   });
+
   return versions.activate(rootDir, entry, prepared);
 }
 
 function resolveSubappHealthNodeExecutable(childPath = process.env.AILY_CHILD_PATH) {
   const candidate = require('./tools/managed-npm-cli').getChildNodeExecutable(childPath);
+
   if (!path.isAbsolute(candidate)) throw new Error('Bundled Node is required for Subapp startup health checks.');
+
   const executable = fs.realpathSync(candidate);
+
   if (!fs.statSync(executable).isFile()) throw new Error('Bundled Node health executable is not a regular file.');
+
   return executable;
 }
 
@@ -2434,15 +3043,19 @@ async function verifyInstalledSubappStartup({
   shutdownTimeoutMs = SUBAPP_HEALTH_SHUTDOWN_TIMEOUT_MS,
 }) {
   const packageManifest = readJson(path.join(packagePath, 'package.json'));
+
   const mainEntry = resolvePackageRelativePath(
     packagePath,
     packageManifest.main || 'index.js',
     'subapp main entry',
   ).resolved;
+
   if (!fs.existsSync(mainEntry)) {
     throw new Error(`Subapp ${phase} health check main entry is missing.`);
   }
+
   const stderr = [];
+
   const child = spawn(execPath, [
     mainEntry,
     'serve',
@@ -2455,19 +3068,24 @@ async function verifyInstalledSubappStartup({
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
   });
+
   child.stderr.on('data', (chunk) => appendBoundedOutput(stderr, chunk));
+
   try {
     const startup = await waitForSubappHealthStartup(
       child,
       stderr,
       startupTimeoutMs,
     );
+
     if (startup.event !== 'ready') {
       throw new Error(
         `Subapp ${phase} startup health check failed: ${publicStartupMessage(startup.data)}`,
       );
     }
+
     await stopSubappHealthProbe(child, startup.data, shutdownTimeoutMs);
+
     return {
       status: 'ready',
       phase,
@@ -2477,6 +3095,7 @@ async function verifyInstalledSubappStartup({
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGTERM');
+
       await waitForSubappHealthExit(child, shutdownTimeoutMs).catch(() => {
         child.kill('SIGKILL');
       });
@@ -2488,43 +3107,60 @@ function waitForSubappHealthStartup(child, stderr, timeoutMs) {
   return new Promise((resolve, reject) => {
     let buffer = '';
     let settled = false;
+
     const timeout = setTimeout(() => finish(new Error(
       `Subapp startup health check timed out: ${stderr.join('').trim()}`,
     )), timeoutMs);
+
     const finish = (error, value) => {
       if (settled) return;
+
       settled = true;
+
       clearTimeout(timeout);
       child.stdout.off('data', onData);
       child.off('exit', onExit);
+
       if (error) reject(error);
       else resolve(value);
     };
+
     const onData = (chunk) => {
       buffer += chunk.toString('utf8');
+
       if (Buffer.byteLength(buffer, 'utf8') > SUBAPP_HEALTH_OUTPUT_LIMIT) {
         finish(new Error('Subapp startup health output exceeded the allowed limit.'));
+
         return;
       }
+
       const lines = buffer.split(/\r?\n/);
+
       buffer = lines.pop() || '';
+
       for (const line of lines) {
         if (!line.trim()) continue;
+
         let message;
+
         try {
           message = JSON.parse(line);
         } catch {
           continue;
         }
+
         if (message?.event === 'ready' || message?.event === 'fatal') {
           finish(null, { event: message.event, data: message.data });
+
           return;
         }
       }
     };
+
     const onExit = (code, signal) => finish(new Error(
       `Subapp exited before startup health was reported (code=${code}, signal=${signal}): ${stderr.join('').trim()}`,
     ));
+
     child.stdout.on('data', onData);
     child.once('exit', onExit);
   });
@@ -2532,19 +3168,23 @@ function waitForSubappHealthStartup(child, stderr, timeoutMs) {
 
 async function stopSubappHealthProbe(child, readyData, timeoutMs) {
   const shutdownUrl = safeSubappShutdownUrl(readyData);
+
   if (shutdownUrl) {
     const response = await fetch(shutdownUrl.toString(), {
       method: 'POST',
       headers: { Origin: shutdownUrl.origin },
       signal: AbortSignal.timeout(Math.min(timeoutMs, 10000)),
     });
+
     if (!response.ok) {
       throw new Error(`Subapp startup health shutdown returned HTTP ${response.status}.`);
     }
   } else {
     child.kill('SIGTERM');
   }
+
   const exit = await waitForSubappHealthExit(child, timeoutMs);
+
   if (exit.code !== 0 && exit.signal === null) {
     throw new Error(`Subapp startup health process exited with code ${exit.code}.`);
   }
@@ -2554,15 +3194,18 @@ function waitForSubappHealthExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
   }
+
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       child.off('exit', onExit);
       reject(new Error('Subapp startup health process did not stop in time.'));
     }, timeoutMs);
+
     const onExit = (code, signal) => {
       clearTimeout(timeout);
       resolve({ code, signal });
     };
+
     child.once('exit', onExit);
   });
 }
@@ -2573,13 +3216,17 @@ function safeSubappShutdownUrl(readyData) {
     : typeof readyData?.baseUrl === 'string'
       ? readyData.baseUrl
       : '';
+
   const shutdownValue = typeof readyData?.shutdownUrl === 'string'
     ? readyData.shutdownUrl
     : '';
+
   if (!baseValue || !shutdownValue) return null;
+
   try {
     const baseUrl = new URL(baseValue);
     const shutdownUrl = new URL(shutdownValue, baseUrl);
+
     if (
       baseUrl.protocol !== 'http:'
       || shutdownUrl.protocol !== 'http:'
@@ -2588,6 +3235,7 @@ function safeSubappShutdownUrl(readyData) {
     ) {
       return null;
     }
+
     return shutdownUrl;
   } catch {
     return null;
@@ -2596,6 +3244,7 @@ function safeSubappShutdownUrl(readyData) {
 
 function appendBoundedOutput(chunks, chunk) {
   chunks.push(chunk.toString('utf8'));
+
   while (Buffer.byteLength(chunks.join(''), 'utf8') > SUBAPP_HEALTH_OUTPUT_LIMIT) {
     chunks.shift();
   }
@@ -2603,15 +3252,19 @@ function appendBoundedOutput(chunks, chunk) {
 
 function publicStartupMessage(data) {
   const message = typeof data?.message === 'string' ? data.message.trim() : '';
+
   return message || 'runtime reported fatal';
 }
 
 function createSubappManager(options = {}) {
   const rootDir = resolveSubappRoot(options);
+
   const releaseTrustPolicies = normalizeSubappReleaseTrustPolicies(
     options.releaseTrustPolicies,
   );
+
   const updateRootDir = resolveSubappUpdateRoot(options);
+
   try {
     subappBinRouter.ensureStableRouter(rootDir);
   } catch (error) {
@@ -2619,10 +3272,10 @@ function createSubappManager(options = {}) {
     // host usable if the stable external launcher cannot be refreshed.
     console.warn('[subapp-manager] failed to install stable bin router:', error.message || error);
   }
+
   const updateOperations = new Map();
   const backgroundAttempts = new Set();
   const backgroundDownloads = new Map();
-  const pendingUninstallCounts = new Map();
   let currentIndex = null;
   let currentMeta = null;
   let currentIndexUrl = null;
@@ -2632,6 +3285,7 @@ function createSubappManager(options = {}) {
     const configuredIndexUrl = typeof options.getIndexUrl === 'function'
       ? options.getIndexUrl()
       : options.indexUrl || process.env.AILY_SUBAPP_INDEX_URL || DEFAULT_INDEX_URL;
+
     return requireText(configuredIndexUrl, 'subapp index URL');
   }
 
@@ -2643,13 +3297,17 @@ function createSubappManager(options = {}) {
 
   async function loadCatalogIndex(strategy = 'network-first') {
     const bundle = readBundledCoderFallback(options);
+
     if (!bundle) return loadConfiguredIndex(strategy);
+
     let loaded;
+
     try {
       // 首次启动不必等待网络，正常刷新仍会获取远端目录及更新信息。
       loaded = await loadConfiguredIndex(strategy === 'cache-first' ? 'cache-only' : strategy);
     } catch (error) {
       if (!['cache-first', 'cache-only', 'network-first'].includes(strategy)) throw error;
+
       loaded = {
         index: {},
         meta: {
@@ -2658,6 +3316,7 @@ function createSubappManager(options = {}) {
         },
       };
     }
+
     return {
       ...loaded,
       index: { [BUNDLED_CODER_ID]: bundle.entry, ...loaded.index },
@@ -2670,12 +3329,14 @@ function createSubappManager(options = {}) {
     }
 
     const indexUrl = resolveIndexUrl();
+
     if (currentIndexUrl !== indexUrl) {
       currentIndex = null;
       currentMeta = null;
       currentIndexUrl = indexUrl;
       indexUrlGeneration += 1;
     }
+
     const loadGeneration = indexUrlGeneration;
 
     if (currentIndex && strategy !== 'network-first') {
@@ -2684,6 +3345,7 @@ function createSubappManager(options = {}) {
 
     let cacheError = null;
     let localIndex = null;
+
     try {
       localIndex = readDevelopmentIndexCache(rootDir);
     } catch (error) {
@@ -2692,31 +3354,37 @@ function createSubappManager(options = {}) {
 
     if (localIndex?.dev === true && strategy !== 'network-first') {
       currentIndex = localIndex;
+
       currentMeta = {
         indexUrl,
         source: 'cache',
         fetchedAt: new Date().toISOString(),
         warning: null,
       };
+
       return { index: localIndex, meta: currentMeta };
     }
 
     if (strategy !== 'network-first') {
       try {
         const cached = readIndexCache(rootDir, indexUrl);
+
         if (cached) {
           currentIndex = cached;
+
           currentMeta = {
             indexUrl,
             source: 'cache',
             fetchedAt: new Date().toISOString(),
             warning: null,
           };
+
           return { index: cached, meta: currentMeta };
         }
       } catch (error) {
         cacheError = error;
       }
+
       if (strategy === 'cache-only') {
         throw cacheError || new Error('Subapp index cache is unavailable');
       }
@@ -2724,6 +3392,7 @@ function createSubappManager(options = {}) {
 
     try {
       const remoteIndex = await fetchRemoteIndex(indexUrl, options.fetchImpl);
+
       if (
         loadGeneration !== indexUrlGeneration
         || currentIndexUrl !== indexUrl
@@ -2735,11 +3404,14 @@ function createSubappManager(options = {}) {
       const index = localIndex?.dev === true
         ? mergeDevelopmentLinkedEntries(rootDir, remoteIndex, localIndex)
         : remoteIndex;
+
       if (localIndex?.dev !== true) {
         writeIndexCache(rootDir, index, indexUrl);
       }
+
       currentIndex = index;
       currentMeta = { indexUrl, source: 'network', fetchedAt: new Date().toISOString(), warning: null };
+
       return { index, meta: currentMeta };
     } catch (error) {
       if (
@@ -2752,29 +3424,36 @@ function createSubappManager(options = {}) {
 
       if (localIndex?.dev === true) {
         currentIndex = localIndex;
+
         currentMeta = {
           indexUrl,
           source: 'cache',
           fetchedAt: new Date().toISOString(),
           warning: error.message,
         };
+
         return { index: localIndex, meta: currentMeta };
       }
 
       let cached = null;
+
       try {
         cached = readIndexCache(rootDir, indexUrl);
       } catch (readError) {
         cacheError = readError;
       }
+
       if (!cached) throw error;
+
       currentIndex = cached;
+
       currentMeta = {
         indexUrl,
         source: 'cache',
         fetchedAt: new Date().toISOString(),
         warning: error.message,
       };
+
       return { index: cached, meta: currentMeta };
     }
   }
@@ -2785,8 +3464,11 @@ function createSubappManager(options = {}) {
       : payload.refresh === true
         ? 'network-first'
         : 'cache-first';
+
     const { index, meta } = await loadIndex(strategy);
+
     scheduleBackgroundUpdates(index, meta);
+
     const state = createCatalogState(rootDir, index, payload.locale || 'en', {
       ...meta,
       updateRootDir,
@@ -2794,11 +3476,35 @@ function createSubappManager(options = {}) {
       platform: options.platform,
       arch: options.arch,
     });
+
     for (const item of state.apps) {
       const runningConfig = options.getRunningSubappConfig?.(item.id);
+
       if (runningConfig) item.config = runningConfig;
     }
+
     return state;
+  }
+
+  function diagnostics() {
+    // Read local installation selection only: feedback must never fetch, install or activate updates.
+    const entry = { id: 'aily-chat', package: '@aily-project/subapp-aily-chat', version: '0.0.0',
+      namespace: 'AILY_CHAT', titleKey: 'AILY_CHAT.NAME', app: {} };
+
+    const selected = readInstalledState(rootDir, entry);
+    const running = options.getRunningSubappConfig?.(entry.id);
+
+    return {
+      ailyChat: {
+        installed: selected.installed,
+        installedVersion: selected.installed ? selected.installedVersion : null,
+        selectedVersion: selected.config?.version || null,
+        selectedSource: selected.config?.env?.AILY_SUBAPP_SOURCE || null,
+        running: Boolean(running),
+        runningVersion: running?.version || null,
+        runningSource: running?.env?.AILY_SUBAPP_SOURCE || null,
+      },
+    };
   }
 
   function updateKey(entry) {
@@ -2806,12 +3512,15 @@ function createSubappManager(options = {}) {
   }
 
   function assertNotUninstalling(id, entry = null) {
-    if ((pendingUninstallCounts.get(id) || 0) <= 0
+    if ((pendingUninstalls.get(operationKey(rootDir, id)) || 0) <= 0
       && (!entry || !versions.isUninstalling(rootDir, entry))) {
       return;
     }
+
     const error = new Error(`Subapp uninstall is in progress: ${id}`);
+
     error.code = 'SUBAPP_UNINSTALLING';
+
     throw error;
   }
 
@@ -2822,6 +3531,7 @@ function createSubappManager(options = {}) {
           ? progress.extractProgress
           : progress.downloadProgress)
         : clampProgress(progress.percent);
+
       updateOperations.set(updateKey(entry), {
         version: entry.version,
         state,
@@ -2829,6 +3539,7 @@ function createSubappManager(options = {}) {
         phase: progress.phase,
         ...(progress.error ? { error: progress.error } : {}),
       });
+
       if (typeof externalHandler === 'function') {
         externalHandler({ ...progress, percent });
       }
@@ -2840,18 +3551,23 @@ function createSubappManager(options = {}) {
   }
 
   async function downloadUpdateEntry(entry, payload = {}) {
+    assertNotUninstalling(entry.id, entry);
+
     const key = updateKey(entry);
     const existingDownload = backgroundDownloads.get(key);
+
     if (existingDownload) return existingDownload;
 
     const onProgress = typeof payload.onProgress === 'function'
       ? payload.onProgress
       : options.onProgress;
+
     const tracker = createMutationProgressTracker({
       id: entry.id,
       action: 'download-update',
       onProgress: progressHandler(entry, 'downloading', onProgress),
     });
+
     const operation = stageSubappUpdate(
       rootDir,
       updateRootDir,
@@ -2861,6 +3577,7 @@ function createSubappManager(options = {}) {
     ).then((record) => {
       updateOperations.delete(key);
       notifyChanged('download-update', entry.id);
+
       return record;
     }).catch((error) => {
       updateOperations.set(key, {
@@ -2869,6 +3586,7 @@ function createSubappManager(options = {}) {
         progress: tracker.percent,
         error: error.message || String(error),
       });
+
       if (typeof onProgress === 'function') {
         onProgress({
           id: entry.id,
@@ -2878,66 +3596,89 @@ function createSubappManager(options = {}) {
           error: error.message || String(error),
         });
       }
+
       notifyChanged('download-update', entry.id);
+
       throw error;
     }).finally(() => {
       backgroundDownloads.delete(key);
     });
+
     backgroundDownloads.set(key, operation);
+
     return operation;
   }
 
   function scheduleBackgroundUpdates(index, meta) {
     if (meta.source !== 'network' || index.dev === true) return;
+
     for (const [id, entry] of Object.entries(index)) {
       if (id === 'dev' || !entry.update || entry.app.enabled === false) continue;
+
       const installedState = readInstalledState(rootDir, entry);
+
       if (
-        !installedState.installed
+        pendingUninstalls.has(operationKey(rootDir, entry.id))
+        || !installedState.installed
         || installedState.development
         || installedState.localNext
         || !hasUpdate(installedState.installedVersion, entry.version)
       ) {
         continue;
       }
+
       const key = updateKey(entry);
       const status = readSubappUpdateStatus(updateRootDir, entry, installedState, null, rootDir, options);
+
       const canDownload = status.state === 'available'
         || (status.state === 'failed' && status.ready !== true);
+
       if (!canDownload || backgroundAttempts.has(key)) continue;
+
       backgroundAttempts.add(key);
+
       void downloadUpdateEntry(entry).catch((error) => {
         console.warn('[subapp-manager] background update download failed:', error.message || error);
       });
     }
   }
 
-  function enqueueMutation(operation) {
-    const previous = mutationQueues.get(rootDir) || Promise.resolve();
+  function enqueueMutation(id, operation) {
+    const key = operationKey(rootDir, id);
+    const previous = mutationQueues.get(key) || Promise.resolve();
     const next = previous.catch(() => undefined).then(operation);
+
     const queued = next.then(() => undefined, () => undefined).finally(() => {
-      if (mutationQueues.get(rootDir) === queued) mutationQueues.delete(rootDir);
+      if (mutationQueues.get(key) === queued) mutationQueues.delete(key);
     });
-    mutationQueues.set(rootDir, queued);
+
+    mutationQueues.set(key, queued);
+
     return next;
   }
 
   async function prepareLaunch(payload = {}) {
     const { index } = await loadIndex('cache-first');
     const entry = index[validateId(payload.id)];
+
     if (!entry) throw new Error('Subapp is not present in the catalog');
+
     // Only serialize the tiny selection/start handshake, never npm extraction.
-    const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+    const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+
     try {
       let installed = readInstalledState(rootDir, entry);
       const runningConfig = options.getRunningSubappConfig?.(entry.id) || null;
+
       if (!runningConfig && payload.deferPreparedUpdate !== true
         && index.dev !== true && !installed.development && !installed.localNext && installed.installed
         && hasUpdate(installed.installedVersion, entry.version)) {
         try {
           const prepared = readPreparedVersion(rootDir, entry, options);
+
           if (prepared) {
             await activatePreparedSubapp(rootDir, entry, prepared, { ...options, indexUrl: resolveIndexUrl(), releaseTrustPolicies });
+
             installed = readInstalledState(rootDir, entry);
           }
         } catch (error) {
@@ -2945,12 +3686,15 @@ function createSubappManager(options = {}) {
           console.warn('[subapp-manager] prepared version deferred:', error.message);
         }
       }
+
       if (!installed.installed) throw new Error(`Subapp is not installed: ${entry.id}`);
 
       assertPackagePlatform(readJson(path.join(installed.packagePath, 'package.json')), options);
+
       return { config: installed.config, release };
     } catch (error) {
       release();
+
       throw error;
     }
   }
@@ -2963,22 +3707,34 @@ function createSubappManager(options = {}) {
     if (!isObject(payload) || Object.keys(payload).sort().join(',') !== 'deferPreparedUpdate,ids'
       || payload.deferPreparedUpdate !== true || !Array.isArray(payload.ids)
       || payload.ids.length < 1 || payload.ids.length > 8) throw new Error('Invalid Main package selection set');
+
     const ids = payload.ids.map(id => validateId(id));
+
     if (new Set(ids).size !== ids.length) throw new Error('Duplicate Main package selection');
+
     const { index } = await loadIndex('cache-first');
+
     const entries = ids.map(id => {
       const entry = index[id];
+
       if (!entry) throw new Error('Subapp is not present in the catalog');
+
       return entry;
     });
+
     const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+
     try {
       const launches = entries.map(entry => {
         const installed = readInstalledState(rootDir, entry);
+
         if (!installed.installed) throw new Error(`Subapp is not installed: ${entry.id}`);
+
         assertPackagePlatform(readJson(path.join(installed.packagePath, 'package.json')), options);
+
         return Object.freeze({ id: entry.id, config: installed.config });
       });
+
       return Object.freeze({ launches: Object.freeze(launches), release });
     } catch (error) {
       try { release(); }
@@ -2986,31 +3742,48 @@ function createSubappManager(options = {}) {
         throw Object.assign(new AggregateError([error, cleanupError], 'Main package selection cleanup remains owned'),
           { retainedPreparedLaunchSet: Object.freeze({ release }) });
       }
+
       throw error;
     }
   }
 
   async function mutate(action, payload = {}) {
     const requestedId = validateId(payload.id);
+
+    if (action === 'uninstall') assertSubappCanBeUninstalled(requestedId, options);
     if (action !== 'uninstall') assertNotUninstalling(requestedId);
+
     const tracksUninstall = action === 'uninstall';
+    const key = operationKey(rootDir, requestedId);
+
     if (tracksUninstall) {
-      pendingUninstallCounts.set(requestedId, (pendingUninstallCounts.get(requestedId) || 0) + 1);
+      pendingUninstalls.set(key, (pendingUninstalls.get(key) || 0) + 1);
+
+      for (const controller of preparationControllers.get(key) || []) {
+        controller.abort(fault('SUBAPP_CANCELLED', `Subapp preparation cancelled for uninstall: ${requestedId}`));
+      }
     }
+
     try {
-      return await enqueueMutation(async () => {
+      return await enqueueMutation(requestedId, async () => {
+      if (action !== 'uninstall') assertNotUninstalling(requestedId);
+
       const { index } = await loadIndex('cache-first');
       const id = requestedId;
       const entry = index[id];
+
       if (!entry) throw new Error(`Subapp is not present in the remote index: ${id}`);
+
       if (entry.app.enabled === false && action !== 'uninstall') {
         throw new Error(`Subapp is disabled in the remote index: ${id}`);
       }
+
       ensureInstallProject(rootDir);
 
       const onProgress = typeof payload.onProgress === 'function'
         ? payload.onProgress
         : options.onProgress;
+
       const progressTracker = createMutationProgressTracker({
         id,
         action,
@@ -3020,7 +3793,9 @@ function createSubappManager(options = {}) {
           onProgress,
         ),
       });
+
       const indexUrl = resolveIndexUrl();
+
       const mutationOptions = {
         ...options,
         indexUrl,
@@ -3030,41 +3805,67 @@ function createSubappManager(options = {}) {
       };
 
       let releaseLock = null;
+      let previousInstalledVersion = null;
+      let switched = false;
+
       try {
         if (action === 'uninstall') {
           const downloads = [...backgroundDownloads.entries()]
             .filter(([key]) => key.startsWith(`${entry.id}@`))
             .map(([, operation]) => operation.catch(() => null));
+
           await Promise.all(downloads);
         }
+
         const installed = readInstalledState(rootDir, entry);
+
+        previousInstalledVersion = installed.installed ? installed.installedVersion : null;
 
         if (action !== 'uninstall'
           && (installed.development || installed.localNext || index.dev === true)) {
           throw new Error('Local subapps cannot be changed');
         }
+
         if ((action === 'update' || action === 'install-update')
           && installed.installed && !hasUpdate(installed.installedVersion, entry.version)) {
           return list({ locale: payload.locale || 'en' });
         }
+
         progressTracker.start();
+
         if (action !== 'uninstall' && versions.isUninstalling(rootDir, entry)) {
           const error = new Error(`Subapp uninstall must be completed before installation: ${entry.id}`);
           error.code = 'SUBAPP_UNINSTALLING';
+
           throw error;
         }
+
         let targetEntry = entry;
         let prepared;
+
         if (action !== 'uninstall') {
           // Await a concurrent background download so a click never installs the same version twice.
           const downloading = backgroundDownloads.get(updateKey(entry));
+
           if (downloading) await downloading;
+
           if (action === 'install-update') {
-            prepared = readPreparedVersion(rootDir, entry, options);
+            try {
+              prepared = readPreparedVersion(rootDir, entry, options);
+            } catch (error) {
+              // A damaged downloaded generation is rebuilt. The selected version stays until publish succeeds.
+              console.warn('[subapp-manager] prepared version will be published again:', error.message);
+
+              prepared = null;
+            }
+
             if (!prepared) {
               const record = readUpdateRecord(updateRootDir, entry);
+
               if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
-              const staged = verifyStagedAssets(updateRootDir, record);
+
+              const staged = verifyStagedAssets(updateRootDir, record, rootDir);
+
               prepared = await prepareVersionPackage(rootDir, entry, options.runNpm || runNpm, {
                 ...mutationOptions, tarballPath: staged.package, distribution: record.distribution,
               });
@@ -3072,22 +3873,64 @@ function createSubappManager(options = {}) {
           } else {
             const bundle = action === 'install' && !installed.installed && id === BUNDLED_CODER_ID
               ? readBundledCoderFallback(options) : null;
+
             targetEntry = bundle?.entry || entry;
+
             if (action === 'reinstall' && typeof options.forceStopChildToolByCatalogId === 'function') {
               const stopResult = await options.forceStopChildToolByCatalogId(entry.id);
+
               if (stopResult?.success === false && stopResult.reason !== 'not-found') {
                 throw new Error(`Unable to stop the running subapp before reinstalling: ${entry.id}`);
               }
             }
+
             if (action === 'reinstall') {
               await ensureVersionReplacementIsIdle(rootDir, targetEntry, mutationOptions);
             }
+
             prepared = await prepareVersionPackage(rootDir, targetEntry, options.runNpm || runNpm, {
               ...mutationOptions, reinstall: action === 'reinstall', bundledCoderFallback: bundle,
+              ...(action === 'reinstall' ? { beforePublish: async source => {
+                await mutationOptions.beforePublish?.(source);
+
+                // Package lock -> selection lock, matching repair/uninstall. Keep
+                // launches out until the replacement (or rollback) is complete.
+                releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+
+                assertNotUninstalling(requestedId, entry);
+
+                const current = readInstalledState(rootDir, entry);
+
+                if (current.development || current.localNext) throw new Error('Local subapps cannot be changed');
+
+                // A launch may have completed during download. Do not stop holders
+                // while owning their launch lock; leave the selected files intact.
+                await ensureVersionReplacementIsIdle(rootDir, targetEntry, { ...mutationOptions, forceClose: false });
+              } } : {}),
             });
           }
         }
-        releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+
+        // Uninstall takes the package preparation lock BEFORE the global
+        // selection lock. Waiting for another host's download cannot block
+        // launches of installed versions or updates to unrelated packages.
+        if (action === 'uninstall') {
+          await uninstallSubappVersions(rootDir, updateRootDir, entry, mutationOptions);
+
+          currentIndex = null;
+          currentMeta = null;
+
+          progressTracker.complete();
+
+          return list({ locale: payload.locale || 'en' });
+        }
+
+        assertNotUninstalling(requestedId, entry);
+
+        if (!releaseLock) releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+
+        assertNotUninstalling(requestedId, entry);
+
         // A local dev/next selection may have been added for this app while
         // downloading; other local apps must not block this install.
         const current = readInstalledState(rootDir, entry);
@@ -3096,17 +3939,20 @@ function createSubappManager(options = {}) {
           && (current.development || current.localNext)) {
           throw new Error('Local subapps cannot be changed');
         }
-        if (action === 'uninstall') {
-          await uninstallSubappVersions(rootDir, updateRootDir, entry, mutationOptions);
 
-          currentIndex = null;
-          currentMeta = null;
-        } else if (!current.installed || !semver.valid(current.installedVersion)
+        if (!prepared) throw new Error(`Subapp package was not published: ${entry.id}`);
+
+        if (!current.installed || !semver.valid(current.installedVersion)
           || semver.gte(targetEntry.version, current.installedVersion)) {
           await activatePreparedSubapp(rootDir, targetEntry, prepared, mutationOptions);
+
+          switched = true;
         }
+
         progressTracker.complete();
       } catch (error) {
+        const reported = explainKeptVersion(action, previousInstalledVersion, switched, error);
+
         if (typeof onProgress === 'function') {
           onProgress({
             id,
@@ -3115,35 +3961,173 @@ function createSubappManager(options = {}) {
             percent: progressTracker.percent,
             downloadProgress: 0,
             extractProgress: 0,
-            error: error.message || String(error),
+            error: reported.message || String(reported),
           });
         }
-        throw error;
+
+        throw reported;
       } finally {
         releaseLock?.();
         updateOperations.delete(updateKey(entry));
       }
+
       return list({ locale: payload.locale || 'en' });
       });
     } finally {
       if (tracksUninstall) {
-        const remaining = (pendingUninstallCounts.get(requestedId) || 1) - 1;
-        if (remaining > 0) pendingUninstallCounts.set(requestedId, remaining);
-        else pendingUninstallCounts.delete(requestedId);
+        const remaining = (pendingUninstalls.get(key) || 1) - 1;
+
+        if (remaining > 0) pendingUninstalls.set(key, remaining);
+        else pendingUninstalls.delete(key);
       }
     }
   }
 
   async function downloadUpdate(payload = {}) {
     const { index } = await loadIndex('cache-first');
+
     if (index.dev === true) throw new Error('Local subapps cannot be updated');
+
     const id = validateId(payload.id);
     const entry = index[id];
+
     if (!entry) throw new Error(`Subapp is not present in the remote index: ${id}`);
+
     assertNotUninstalling(id, entry);
     ensureInstallProject(rootDir);
     await downloadUpdateEntry(entry, payload);
+
     return list({ locale: payload.locale || 'en' });
+  }
+
+  /** Agent recovery is not reinstall: keep version and holders, never stop/upgrade. */
+  async function repair(payload = {}) {
+    const id = validateId(payload.id);
+
+    return enqueueMutation(id, async () => {
+      const { index } = await loadIndex('cache-first');
+      const entry = index[id];
+
+      if (!entry) throw fault('SUBAPP_REPAIR_UNAVAILABLE', 'Subapp is not present in the managed catalog');
+
+      assertNotUninstalling(id, entry);
+
+      const original = readInstalledState(rootDir, entry);
+
+      if (index.dev === true || original.development || original.localNext)
+        throw fault('SUBAPP_REPAIR_DEVELOPMENT_LINK', 'Development/next links are read-only. Refresh the active locator; do not rewrite the link.');
+
+      if (!semver.valid(original.installedVersion))
+        throw fault('SUBAPP_REPAIR_IDENTITY_REQUIRED', 'A verifiable installed version is required; repair will not install a guessed or latest version.');
+
+      const originalManifest = readJson(path.join(original.packagePath, 'package.json'));
+      const activeFile = () => versions.activePath(rootDir, entry);
+
+      const activeBytes = () => {
+        const file = activeFile();
+
+        return file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+      };
+
+      const originalActive = activeBytes();
+      const selectionMode = versions.readActiveManifest(rootDir, entry)?.mode || 'auto';
+      const selection = versions.readSelection(rootDir, entry);
+
+      const selectedDistribution = selection?.version === original.installedVersion
+        && (original.packagePath === selection.packagePath || original.packagePath.startsWith(`${selection.packagePath}${path.sep}`))
+        ? selection.distribution : null;
+
+      const identity = () => {
+        const current = readInstalledState(rootDir, entry);
+
+        return JSON.stringify([current.packagePath, current.installedVersion, current.development, current.localNext,
+          fs.readFileSync(path.join(current.packagePath, 'package.json'), 'utf8'), activeBytes()]);
+      };
+
+      const expected = identity();
+
+      const assertIdle = async () => {
+        if (options.getRunningSubappConfig?.(id))
+          throw fault('SUBAPP_REPAIR_BUSY', 'Subapp is running; wait for it to become idle. Recovery never stops it.');
+
+        const holders = typeof options.listChildToolHolders === 'function'
+          ? await options.listChildToolHolders(id) : [];
+
+        const processes = typeof options.listBusyHolders === 'function'
+          ? await options.listBusyHolders(original.packagePath) : await listProcessesUsingPath(original.packagePath, options);
+
+        const busy = options.hasProcessesUsingPath || hasProcessesUsingPackagePath;
+
+        if (holders?.length || processes?.length || await busy(original.packagePath, options.platform || process.platform))
+          throw fault('SUBAPP_REPAIR_BUSY', 'Subapp has active process/session holders; wait before retrying repair. No processes were stopped.');
+      };
+
+      await assertIdle();
+
+      // Catalog distribution belongs to its catalog version, not necessarily this installed version.
+      const target = { ...entry, version: original.installedVersion,
+        dist: selectedDistribution || (entry.version === original.installedVersion ? entry.dist : undefined) };
+
+      let release;
+      let prepared;
+      let activationAttempted = false;
+      const transaction = {};
+
+      try {
+        prepared = await prepareVersionPackage(rootDir, target, options.runNpm || runNpm, {
+          ...options, forceClose: false, reinstall: true, retainPrevious: true,
+          replacementTransaction: transaction,
+          beforePublish: async source => {
+            const manifest = readJson(path.join(source, 'package.json'));
+            const runnable = resolveRunnablePackage(source, id, manifest);
+
+            if (!isDeepStrictEqual(originalManifest.ailySubapp?.agent ?? null, runnable.packageJson.ailySubapp?.agent ?? null))
+              throw fault('SUBAPP_REPAIR_CAPABILITY_CHANGED', 'Same-version repair must preserve the original Agent declaration and skill list.');
+
+            const agent = readSubappAgentConfig(runnable.packagePath, runnable.packageJson);
+
+            for (const relative of agent?.skills || []) {
+              const file = resolvePackageRelativePath(runnable.packagePath, relative, 'Subapp Agent skill');
+              const realRoot = fs.realpathSync(runnable.packagePath);
+
+              if (!fs.existsSync(file.resolved) || !fs.statSync(file.resolved).isFile())
+                throw fault('SUBAPP_SKILL_MISSING', `Subapp Agent skill not found: ${relative}`);
+
+              const realFile = fs.realpathSync(file.resolved);
+
+              if (!realFile.startsWith(`${realRoot}${path.sep}`))
+                throw fault('SUBAPP_SKILL_INVALID', 'Subapp Agent skill escapes its installed package');
+            }
+
+            release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+
+            assertNotUninstalling(id, entry);
+
+            if (identity() !== expected) throw fault('SUBAPP_REPAIR_SOURCE_CHANGED', 'Active installation changed while preparing repair. Refresh before retrying.');
+
+            await assertIdle();
+          },
+        });
+
+        activationAttempted = true;
+
+        versions.activate(rootDir, target, prepared, { mode: selectionMode });
+
+        return { ok: true, operation: 'child_app_recover', action: 'repair', id,
+          version: target.version, packagePath: prepared.packagePath, repaired: true,
+          previousPackagePreserved: true };
+      } catch (error) {
+        // The launch lock remains held while the exact old directory is restored.
+        await transaction.rollback?.();
+
+        if (activationAttempted && activeBytes() !== originalActive) {
+          if (originalActive === null) fs.rmSync(activeFile(), { force: true });
+          else writeJsonAtomic(activeFile(), JSON.parse(originalActive));
+        }
+
+        throw error;
+      } finally { release?.(); }
+    });
   }
 
   return {
@@ -3152,8 +4136,10 @@ function createSubappManager(options = {}) {
       return resolveIndexUrl();
     },
     list,
+    diagnostics,
     install: (payload) => mutate('install', payload),
     reinstall: (payload) => mutate('reinstall', payload),
+    repair,
     update: (payload) => mutate('update', payload),
     downloadUpdate,
     prepareLaunch,
@@ -3168,18 +4154,24 @@ let defaultManager = null;
 
 function readSubappBusyDialogStringsFromI18n(getLocale = () => 'en') {
   const defaults = getDefaultBusyDialogStrings();
+
   try {
     const { app } = require('electron');
+
     const loc = String(typeof getLocale === 'function' ? getLocale() : getLocale || app.getLocale() || '')
       .toLowerCase();
+
     const pack = loc.startsWith('zh') ? (loc.includes('hk') || loc.includes('tw') ? 'zh_hk' : 'zh_cn') : 'en';
     const file = path.join(pack, `${pack}.json`);
     const packagedPath = path.join(__dirname, '..', 'renderer', 'i18n', file);
     const devPath = path.join(__dirname, '..', 'public', 'i18n', file);
     const fp = fs.existsSync(packagedPath) ? packagedPath : devPath;
+
     if (!fs.existsSync(fp)) return defaults;
+
     const json = JSON.parse(fs.readFileSync(fp, 'utf8'));
     const section = json.SUBAPP || {};
+
     return {
       BUSY_TITLE: section.BUSY_TITLE || defaults.BUSY_TITLE,
       BUSY_MESSAGE: section.BUSY_MESSAGE || defaults.BUSY_MESSAGE,
@@ -3189,22 +4181,27 @@ function readSubappBusyDialogStringsFromI18n(getLocale = () => 'en') {
     };
   } catch (error) {
     console.warn('[subapp-manager] readSubappBusyDialogStringsFromI18n failed:', error.message || error);
+
     return defaults;
   }
 }
 
 function registerSubappManagerHandlers(getMainWindow = () => null, handlerOptions = {}) {
   if (handlersRegistered) return;
+
   const { ipcMain } = require('electron');
+
   const {
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
     getIndexUrl,
     getRunningSubappConfig,
+    isCoderProjectOpen,
   } = handlerOptions;
 
   const sendProgress = (progress) => {
     const mainWindow = getMainWindow();
+
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send('subapp-manager-progress', progress);
     }
@@ -3212,6 +4209,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
 
   const sendChanged = (payload) => {
     const mainWindow = getMainWindow();
+
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send('subapp-manager-changed', payload);
     }
@@ -3225,6 +4223,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getMainWindow,
     getIndexUrl,
     getRunningSubappConfig,
+    isCoderProjectOpen,
     getBusyDialogStrings: () => readSubappBusyDialogStringsFromI18n(),
     forceStopChildToolByCatalogId,
     listChildToolHolders: listChildToolHoldersForCatalogId,
@@ -3238,7 +4237,9 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
       ipcMain, ...handlerOptions.browserExecutionRegistry,
       prepareLaunch: payload => defaultManager.prepareLaunch(payload),
     });
+
     const registry = handlerOptions.browserExecutionRegistry;
+
     if (registry.localSerialRequireController && registry.installLocalSerialHost) {
       require('./subapp-local-serial-ipc').registerLocalSerialHandlers({
         ipcMain, getMainWindow,
@@ -3247,8 +4248,10 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
         prepareLaunch: payload => defaultManager.prepareLaunch(payload),
       });
     }
+
     if (registry.networkRequireController && registry.installNetworkHost) {
       const { app, dialog, MessageChannelMain } = require('electron');
+
       require('./subapp-network-main-ipc').registerConfiguredMainNetworkHostHandlers({
         ipcMain, app, dialog, MessageChannelMain, getMainWindow,
         prepareLaunch: payload => defaultManager.prepareLaunch(payload),
@@ -3257,8 +4260,10 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
         resolveOriginalOwnerNetworkControl: registry.resolveOriginalOwnerNetworkControl,
       });
     }
+
     if (registry.networkRequireController && registry.installGattHost) {
       const { dialog, MessageChannelMain } = require('electron');
+
       require('./subapp-gatt-main-ipc').registerMainGattHostHandlers({
         ipcMain, dialog, MessageChannelMain, getMainWindow,
         // No renderer-selected package list: this private GATT composition
@@ -3276,49 +4281,77 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
   const handleMutation = (action) => async (_event, payload = {}) => {
     const result = await defaultManager[action](payload);
     const mainWindow = getMainWindow();
+
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send('subapp-manager-changed', { action, id: payload.id });
     }
+
     return result;
   };
 
   const launches = new Map();
+
   ipcMain.handle('subapp-manager-prepare-launch', async (event, payload = {}) => {
     const prepared = await defaultManager.prepareLaunch(payload);
+
     if (event.sender.isDestroyed()) {
       prepared.release();
+
       throw new Error('Launch owner closed');
     }
+
     const token = randomUUID();
+
     const release = () => {
       if (!launches.has(token)) return;
+
       launches.delete(token);
       event.sender.removeListener('destroyed', release);
       event.sender.removeListener('render-process-gone', release);
       event.sender.removeListener('did-start-navigation', onNavigation);
       prepared.release();
     };
+
     const onNavigation = (_event, _url, inPlace, isMainFrame) => {
       if (isMainFrame && !inPlace) release();
     };
+
     launches.set(token, { owner: event.sender.id, release });
     event.sender.once('destroyed', release);
     event.sender.once('render-process-gone', release);
     event.sender.on('did-start-navigation', onNavigation);
+
     return { config: prepared.config, token };
   });
+
   ipcMain.handle('subapp-manager-finish-launch', (event, token) => {
     const launch = launches.get(token);
+
     if (launch?.owner === event.sender.id) launch.release();
   });
 
+  ipcMain.handle('subapp-manager-diagnostics', () => defaultManager.diagnostics());
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
   ipcMain.handle('subapp-manager-install', handleMutation('install'));
   ipcMain.handle('subapp-manager-reinstall', handleMutation('reinstall'));
+
+  ipcMain.handle('subapp-manager-repair', async (_event, payload = {}) => {
+    try {
+      const result = await defaultManager.repair(payload);
+
+      sendChanged({ action: 'repair', id: payload.id });
+
+      return result;
+    } catch (error) {
+      return { ok: false, code: error.code || 'SUBAPP_RECOVERY_FAILED', error: error.message || String(error) };
+    }
+  });
+
   ipcMain.handle('subapp-manager-update', handleMutation('update'));
   ipcMain.handle('subapp-manager-download-update', handleMutation('downloadUpdate'));
   ipcMain.handle('subapp-manager-install-update', handleMutation('installUpdate'));
   ipcMain.handle('subapp-manager-uninstall', handleMutation('uninstall'));
+
   handlersRegistered = true;
 }
 
@@ -3342,6 +4375,7 @@ module.exports = {
   packagePathFor,
   parseDependencyProgressLog,
   prepareNpmSpawn,
+  runNpm,
   quoteWindowsShellPath,
   registerSubappManagerHandlers,
   renamePackagePathWithForceClose,

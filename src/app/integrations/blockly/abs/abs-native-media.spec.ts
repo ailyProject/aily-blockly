@@ -47,6 +47,60 @@ describe('native read-only media snapshot and shared generator projection', () =
   };
   afterEach(() => expect(document.querySelector('[data-blockly-native-candidate]')).toBeNull());
 
+  it('gives the exact import target when a registered U8g2 or TFT field rejects a quoted value', async () => {
+    for (const entry of [cases[0], cases[2], cases[3]]) {
+      const input = await fixture(entry);
+      const argument = input.abs.split('native_media(')[1].slice(0, -1);
+      const quoted = { ...input, abs: '# ABS Schema: 2\nnative_media(' + JSON.stringify(argument) + ')' };
+      await expectAsync(run(quoted)).toBeRejectedWith(jasmine.objectContaining({
+        code: 'ABS_GENERATION_FAILED',
+        message: jasmine.stringMatching(/Native field did not retain requested value: PAYLOAD.*project_media_import.*"blockType":"native_media","fieldName":"PAYLOAD".*absExpression or absArgument unchanged/),
+      }));
+    }
+  });
+
+  it('keeps the ordinary rejection for fields unsupported by the importer', async () => {
+    const input = await fixture(cases[1]);
+    const argument = input.abs.split('native_media(')[1].slice(0, -1);
+    const quoted = { ...input, abs: '# ABS Schema: 2\nnative_media(' + JSON.stringify(argument) + ')' };
+    await expectAsync(run(quoted)).toBeRejectedWith(jasmine.objectContaining({
+      code: 'ABS_GENERATION_FAILED',
+      message: 'Native field did not retain requested value: PAYLOAD.',
+    }));
+  });
+
+  it('binds empty audio and roundtrips it without undefined optional paths', async () => {
+    const audio = { schemaVersion: 1, encoding: 'mp3-cbr-v1', sampleRate: 16000, channels: 1,
+      bitRate: 16, duration: 0, trimStart: 0, trimEnd: 0, outputDuration: 0 };
+    const input: NativeCandidateRequest = { steps: [
+      { kind: 'context', mode: 'arduino' },
+      { kind: 'definitions', definitions: [{ type: 'native_empty_audio', message0: '%1',
+        args0: [{ type: 'field_audio', name: 'AUDIO' }], previousStatement: null, nextStatement: null }] },
+      { kind: 'script', label: 'empty-audio-generator', source: `Arduino.forBlock.native_empty_audio = () => '';` },
+    ], blocks: [], abs: '# ABS Schema: 2\nnative_empty_audio(' + absJson(audio) + ')' };
+    const request = await verify(input), result = await run(request);
+    expect(result.state['blocks'].blocks[0].fields.AUDIO).toEqual(audio);
+    expect(result.state).toEqual(request.verify!.state);
+  });
+
+  it('binds and verifies saved audio without accessing project files or decoding previews', async () => {
+    const audio = { schemaVersion: 1, encoding: 'mp3-cbr-v1', sampleRate: 16000, channels: 1, bitRate: 16,
+      duration: 210.46154166666668, trimStart: 0, trimEnd: 31.25972898284314, outputDuration: 31.25975,
+      sourcePath: 'assets/audio/source.mp3', audioPath: 'audio/output.mp3' };
+    const input: NativeCandidateRequest = { steps: [
+      { kind: 'context', mode: 'arduino' },
+      { kind: 'definitions', definitions: [{ type: 'native_audio', message0: '%1',
+        args0: [{ type: 'field_audio', name: 'AUDIO' }], previousStatement: null, nextStatement: null }] },
+      { kind: 'script', label: 'audio-path-generator', source: `Arduino.forBlock.native_audio = block => {
+        if (block.getFieldValue('AUDIO').audioPath !== 'audio/output.mp3') throw Error('Audio path lost');
+        return '// existing audio\\n';
+      };` },
+    ], blocks: [], abs: '# ABS Schema: 2\nnative_audio(' + absJson(audio) + ')' };
+    const request = await verify(input), result = await run(request);
+    expect(result.state).toEqual(request.verify!.state);
+    expect(result.state['blocks'].blocks[0].fields.AUDIO).toEqual(audio);
+  });
+
   const imageFixture = async (bytes?: number[]) => {
     if (!bytes) {
       const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;

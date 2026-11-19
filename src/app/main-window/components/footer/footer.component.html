@@ -12,7 +12,7 @@
   <div class="footer-status-area">
     <!-- 这里显示状态，如保存中，项目加载中，正在安装xxx等 -->
     @if(actionData){
-    <div class="state ccenter">
+    <div class="state ccenter" role="status" [attr.data-state]="actionData.state" [attr.data-owner]="actionData.owner">
       @switch(actionData.state){
       @case('doing'){
       <div class="icon lloading ccenter">

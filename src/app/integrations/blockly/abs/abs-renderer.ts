@@ -1,4 +1,4 @@
-import { canonicalJsonStringify as json } from '@domain/project/public-api';
+import { canonicalJsonStringify as json } from '@domain/project/project-data/project-data-codec.registry';
 import { AbsAbiBlock, AbsAbiWorkspace, AbsProjectionContracts, AbsSyncError, ABS_SCHEMA_HEADER,
   absFieldPath, absInputPath, getAbsFieldDefinition, isAbsBlockDisabled, ABS_PROJECTION_VERSION } from './abs-state';
 import { AbsSymbols } from './abs-symbols';
@@ -9,12 +9,12 @@ const identifier = (name: string) => /^[A-Za-z_]\w*$/.test(name) ? name : json(n
 const variable = (name: string) => '$' + (/^[\p{L}_][\p{L}\p{N}_]*$/u.test(name) ? name : json(name));
 
 /** The sole canonical renderer; identity bookkeeping consumes its paths, not a second serializer. */
-export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionContracts, symbols: AbsSymbols, projectionVersion = ABS_PROJECTION_VERSION) {
+export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionContracts, symbols: Pick<AbsSymbols, 'project'>, projectionVersion = ABS_PROJECTION_VERSION, options: { namedArguments?: boolean } = {}) {
   // Only the immutable-baseline validator uses this historical formatting policy.
   // New exports always use current syntax; there is no caller-selectable write mode.
   const previousProjectionValidation = projectionVersion === 'abs-v2.preview.3';
   const syntax = previousProjectionValidation ? {} : absSyntaxOptions(workspace, contracts);
-  const branches = (block: AbsAbiBlock) => projectionVersion === ABS_PROJECTION_VERSION
+  const branches = (block: AbsAbiBlock) => ['abs-v2.preview.5', 'abs-v2.preview.6', 'abs-v2.preview.7', ABS_PROJECTION_VERSION].includes(projectionVersion)
     ? absBranchInputs(block.type, syntax.argumentOrder?.(block.type, block.extraState, block.fields)) : undefined;
   const blockAtPath = new Map<string, AbsAbiBlock>();
   const symbolAtPath = new Map<string, { kind: 'variable' | 'procedure'; modelId: string }>();
@@ -49,7 +49,7 @@ export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionCo
     renderedInputs.set(block, inCall);
     const order = syntax.argumentOrder?.(block.type, block.extraState, block.fields)?.filter(arg => arg.kind !== 'statementInput');
     const branch = branches(block);
-    const positional = !branch && order && order.every(arg => arg.kind === 'field'
+    const positional = !options.namedArguments && !branch && order && order.every(arg => arg.kind === 'field'
       ? Object.hasOwn(block.fields ?? {}, arg.name) : !childAt(block, arg.name) || inlineInput(block, arg.name))
       && Object.keys(block.fields ?? {}).every(name => order.some(arg => arg.kind === 'field' && arg.name === name));
     const inputArgument = (name: string) => {
@@ -61,9 +61,12 @@ export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionCo
     if (!positional) for (const name of Object.keys(block.inputs ?? {})) {
       if (!branch && inlineInput(block, name)) args.push(`${identifier(name)}=${inputArgument(name)}`);
     }
+    const protection = Object.fromEntries(['deletable', 'movable', 'editable']
+      .filter(key => block[key] === false).map(key => [key, false]));
     return `${block.type}(${args.join(', ')})`
       + (Object.hasOwn(block, 'extraState') ? ` @extra:${json(block.extraState)}` : '')
-      + (isAbsBlockDisabled(block) ? ' @disabled' : '');
+      + (isAbsBlockDisabled(block) ? ' @disabled' : '')
+      + (['abs-v2.preview.6', 'abs-v2.preview.7', ABS_PROJECTION_VERSION].includes(projectionVersion) && Object.keys(protection).length ? ` @protect:${json(protection)}` : '');
   };
   const lines = [ABS_SCHEMA_HEADER, '# Project Data Schema: 1 (external-only)', ''];
   type RenderTask = { block: AbsAbiBlock; path: string; depth: number; chain?: boolean } | { line: string };

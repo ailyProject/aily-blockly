@@ -851,6 +851,14 @@ export class AuthService {
     return this.authSnapshotSubject.value;
   }
 
+  /** 云编译只对当前已登录的 Pro 账号开放，不能依赖磁盘中保留的编译偏好。 */
+  get canUseCloudCompilation(): boolean {
+    if (!this.isAuthenticated || this.authSessionInvalidating) return false;
+    const snapshot = this.getAuthSnapshot();
+    const plan = snapshot?.quotaInfoSnapshot?.creditSnapshot?.subscription_plan ?? snapshot?.plan;
+    return /^pro(?:$|[_+ -])/i.test(plan?.trim() ?? '');
+  }
+
   async refreshAuthToken(): Promise<boolean> {
     if (isDetachedAilyChatRenderer()) {
       const response = await this.requestMainWindowAuthOperation('refresh-auth-token');

@@ -1,10 +1,12 @@
 import { BehaviorSubject, Subject } from 'rxjs';
+import { NgZone } from '@angular/core';
 import { ProjectService } from '@domain/project/public-api';
 import { HeaderComponent } from '../../../main-window/components/header/header.component';
 import { ProjectNewComponent } from '../../../pages/project-new/project-new.component';
 
 function projectFixture(overrides: Record<string, unknown>) {
-  const project: any = Object.assign(Object.create(ProjectService.prototype), overrides);
+  const project: any = Object.assign(Object.create(ProjectService.prototype), { configService: { getCompileSettingsKey: () => 'local' },
+    hasBlocklyRuntimeRecovery: () => false }, overrides);
   Object.defineProperty(project, 'currentProjectPath', { value: '/original', writable: true });
   project.getProjectDependencySession();
   return project;
@@ -22,9 +24,11 @@ describe('save-before-leaving confirmation', () => {
       const dialog = new Subject<any>();
       const project = projectFixture({ getProjectMode: () => 'blockly',
         hasUnsavedChanges: jasmine.createSpy('dirty').and.resolveTo(true),
+        discardLibraryChangesBeforeQuit: jasmine.createSpy('discard').and.resolveTo(),
         save: jasmine.createSpy('save').and.resolveTo({ success: true }) });
       const view: any = Object.create(entry === 'header' ? HeaderComponent.prototype : ProjectNewComponent.prototype);
       view.projectService = project;
+      view.ngZone = new NgZone({});
       view.isOnEditorRoute = () => true;
       view.message = { error: jasmine.createSpy('error') };
       view.modal = view.nzModal = { create: jasmine.createSpy('dialog').and.returnValue({ afterClose: dialog }) };
@@ -36,7 +40,7 @@ describe('save-before-leaving confirmation', () => {
         const { project, view, dialog, confirm } = fixture(); project.save.and.resolveTo(result);
         const pending = confirm(); await Promise.resolve(); dialog.next({ result: 'save' });
         expect(await pending).toBeFalse(); expect(view.message.error).toHaveBeenCalled();
-        expect(project.save).toHaveBeenCalledOnceWith('/original', 15_000);
+      expect(project.save).toHaveBeenCalledOnceWith('/original');
       });
     }
     for (const action of ['save', 'continue', 'cancel']) it(`${entry} retains the normal ${action} choice`, async () => {
@@ -88,20 +92,22 @@ describe('save-before-leaving confirmation', () => {
 describe('domain save completion and project ownership', () => {
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);
+    service.configService = { getCompileSettingsKey: () => 'local' };
     service.currentProjectPathSubject = new BehaviorSubject('/original');
     service.stateSubject = new BehaviorSubject('loaded');
     service.getProjectMode = () => 'coder';
     const dispatch = jasmine.createSpy('dispatch').and.resolveTo({ success: true });
     Object.defineProperty(service, 'application', { value: { dispatchProjectSave: dispatch } });
-    service.copyPackageJsonToTemp = jasmine.createSpy('metadata').and.resolveTo(true);
     service.getPackageJson = jasmine.createSpy('manifest').and.resolveTo({ name: 'original' });
     return { service, dispatch };
   }
-  for (const stage of ['dispatch', 'metadata', 'manifest']) it(`settles after ${stage} rejection instead of hanging`, async () => {
+  for (const stage of ['dispatch', 'manifest']) it(`settles after ${stage} rejection instead of hanging`, async () => {
     const { service, dispatch } = fixture();
-    const operation = stage === 'dispatch' ? dispatch : stage === 'metadata' ? service.copyPackageJsonToTemp : service.getPackageJson;
+    const operation = stage === 'dispatch' ? dispatch : service.getPackageJson;
     operation.and.rejectWith(new Error(`${stage} unavailable`));
-    expect(await service.save()).toEqual({ success: false, error: `${stage} unavailable`, path: '/original' });
+    const { saveReceipt, ...result } = await service.save();
+    expect(result).toEqual({ success: false, error: `${stage} unavailable`, path: '/original' });
+    expect(saveReceipt).toEqual(jasmine.objectContaining({ version: 1, project: '/original', operation: 'project_save', state: 'completed' }));
     expect(service.stateSubject.value).toBe('error');
   });
   it('requires an explicit successful acknowledgement', async () => {
@@ -109,7 +115,7 @@ describe('domain save completion and project ownership', () => {
     for (const reply of [undefined, { success: false, error: 'not committed' }, { success: 'true' }]) {
       dispatch.and.resolveTo(reply); expect((await service.save()).success).toBeFalse();
     }
-    expect(service.copyPackageJsonToTemp).not.toHaveBeenCalled();
+    expect(service.getPackageJson).not.toHaveBeenCalled();
   });
   for (const success of [true, false]) it(`does not publish stale save status after replacement (success=${success})`, async () => {
     const { service, dispatch } = fixture();
@@ -140,7 +146,7 @@ describe('shared save-as menu', () => {
     const view: any = Object.create(HeaderComponent.prototype);
     let select: (path: string) => void;
     view.selectSaveAsFolder = jasmine.createSpy('folder').and.callFake(() => new Promise<string>(resolve => { select = resolve; }));
-    view.projectService = projectFixture({ getProjectMode: () => mode,
+    view.projectService = projectFixture({ getSaveAsBlockMessage: () => undefined, getProjectMode: () => mode,
       saveAs: jasmine.createSpy('saveAs').and.rejectWith(new Error('copy failed')) });
     view.message = { error: jasmine.createSpy('error') };
     const first = view.process({ action: 'project-save-as' });
@@ -157,7 +163,7 @@ describe('shared save-as menu', () => {
     const view: any = Object.create(HeaderComponent.prototype);
     let select!: (path: string) => void;
     view.selectSaveAsFolder = () => new Promise<string>(resolve => { select = resolve; });
-    view.projectService = projectFixture({ saveAs: jasmine.createSpy('saveAs') });
+    view.projectService = projectFixture({ getSaveAsBlockMessage: () => undefined, saveAs: jasmine.createSpy('saveAs') });
     view.message = { error: jasmine.createSpy('error') };
     const pending = view.process({ action: 'project-save-as' });
     replaceSession(view.projectService); select('/copy'); await pending;

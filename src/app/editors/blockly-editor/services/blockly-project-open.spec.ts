@@ -3,6 +3,7 @@ import { BlocklyService } from './blockly.service';
 import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-catalog';
 import { BlocklyWorkspaceEditGate } from './blockly-workspace-edit-lease';
 import { BlocklyProjectDocument } from './blockly-project-model';
+import { getActiveProjectGenerator } from './blockly-generator-runtime.service';
 
 describe('cooperative project opening', () => {
   let host: HTMLDivElement, workspace: Blockly.WorkspaceSvg, service: BlocklyService;
@@ -30,10 +31,32 @@ describe('cooperative project opening', () => {
     // publication/UI services that are covered by the Electron open test.
     Object.assign(service, { _workspace: workspace, workspaceEditGate: gate, iconsMap: new Map(),
       declarativeBlocks: new BlocklyDeclarativeBlockCatalog(),
+      setAiWritingActive() {},
       applyProjectDocument: value => { stored = value; }, getStoredProjectDocument: () => stored,
+      getProjectDocument: () => ({ ...stored, pages: stored.pages.map(page => page.id === stored.activePageId
+        ? { ...page, content: Blockly.serialization.workspaces.save(workspace) } : page) }),
       getActivePage: () => stored.pages[0], finishActivePageLoad: published });
   });
   afterEach(() => { workspace.dispose(); host.remove(); delete Blockly.Blocks[type]; });
+
+  for (const size of [2, 1100]) for (const pinned of [false, true]) {
+    it(`settles ${pinned ? 'open' : 'closed'} explicit comment coordinates before publishing ${size} blocks`, async () => {
+      const project = documentWith(size);
+      project.pages[0].content.blocks.blocks[0]['icons'] = { comment: {
+        text: 'Retain note 中文', pinned, width: 230, height: 110, x: 410, y: 230,
+      } };
+      const hook = Blockly.icons.CommentIcon.prototype.loadState;
+      const lease = gate.acquire();
+      published.and.callFake(() => {
+        const state = Blockly.serialization.workspaces.save(workspace) as any;
+        expect(state.blocks.blocks[0].icons.comment).toEqual(project.pages[0].content.blocks.blocks[0]['icons']['comment']);
+        expect(Blockly.icons.CommentIcon.prototype.loadState).toBe(hook);
+      });
+      try { await service.loadProjectDocumentForOpen(project, lease, () => {}); }
+      finally { lease.release(); }
+      expect(published).toHaveBeenCalledTimes(1);
+    });
+  }
 
   for (const size of [2, 1100]) it(`keeps fields/connections complete and events balanced before publishing ${size} blocks`, async () => {
     const lease = gate.acquire(); const events = Blockly.Events.isEnabled();
@@ -54,6 +77,19 @@ describe('cooperative project opening', () => {
     expect(() => service.assertWorkspaceEditAvailable()).not.toThrow();
   });
 
+  it('uses settled pinned comments for a user-facing library retry reload too', async () => {
+    const project = documentWith(2);
+    const comment = { text: 'Library retry note', pinned: true, width: 230, height: 110, x: 410, y: 230 };
+    project.pages[0].content.blocks.blocks[0]['icons'] = { comment };
+    const lease = gate.acquire();
+    try { await service.loadProjectDocumentForOpen(project, lease, () => {}); }
+    finally { lease.release(); }
+    published.calls.reset();
+    await (service as any).reloadLibraryProjectDocument(service.getProjectDocument(), workspace, getActiveProjectGenerator());
+    expect((Blockly.serialization.workspaces.save(workspace) as any).blocks.blocks[0].icons.comment).toEqual(comment);
+    expect(published).toHaveBeenCalledTimes(1); expect(service.isWorkspaceEditInProgress()).toBeFalse();
+  });
+
   it('lets navigation cancel between fragments without publishing partial state and permits a later open', async () => {
     let current = true;
     const lease = gate.acquire(), events = Blockly.Events.isEnabled();
@@ -72,9 +108,18 @@ describe('cooperative project opening', () => {
     } finally { clearTimeout(timer); lease.release(); }
   });
 
-  it('restores saved zoom and pan before the loaded canvas can paint', async () => {
-    const project = documentWith(1100);
+  for (const size of [2, 1100]) it(`restores saved zoom and pan before native readback and painting ${size} blocks`, async () => {
+    const project = documentWith(size);
     project.pages[0].viewState = { scale: 0.6, scrollX: -40, scrollY: -250 };
+    const scroll = spyOn(workspace, 'scroll').and.callThrough();
+    const readback = service.getProjectDocument.bind(service);
+    spyOn(service, 'getProjectDocument').and.callFake(owner => {
+      expect(workspace.scale).toBe(0.6);
+      // A workspace without scrollbars may clamp pan. Its real native API must
+      // still receive the saved viewport before any snapshot is read.
+      expect(scroll.calls.mostRecent().args).toEqual([-40, -250, false]);
+      return readback(owner);
+    });
     const frames: string[] = [];
     let frame: number;
     const sample = () => {
@@ -101,6 +146,20 @@ describe('cooperative project opening', () => {
     await expectAsync(service.loadProjectDocumentForOpen(documentWith(1100), lease, () => {})).toBeRejected();
     expect(workspace.getAllBlocks(false)).toEqual([]);
     expect(published).not.toHaveBeenCalled();
+  });
+
+  it('does not publish when native readback invalidates the activation or runtime', async () => {
+    let current = true;
+    const readback = service.getProjectDocument.bind(service);
+    spyOn(service, 'getProjectDocument').and.callFake(owner => {
+      const result = readback(owner); current = false; return result;
+    });
+    const lease = gate.acquire();
+    try {
+      await expectAsync(service.loadProjectDocumentForOpen(documentWith(2), lease,
+        () => { if (!current) throw new Error('stale runtime'); })).toBeRejectedWithError('stale runtime');
+      expect(published).not.toHaveBeenCalled();
+    } finally { lease.release(); }
   });
 
   it('restores undo settings and the canvas after native block construction fails', async () => {

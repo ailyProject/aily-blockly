@@ -1,10 +1,15 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { lastValueFrom, ReplaySubject, Subject, timeout } from 'rxjs';
+import { combineLatest, distinctUntilChanged, lastValueFrom, map, ReplaySubject, Subject, timeout } from 'rxjs';
 import { ElectronService } from '@core/platform/public-api';
+import { AuthService } from '@core/auth/public-api';
 import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../../../configs/api.config';
 import { calculateSimilarity, extractKeywords } from '../../../utils/fuzzy-search.utils';
 import { normalizeLanguageCode } from '../../../utils/language-code';
+import {
+  COMPILE_SETTINGS_CHANGED_ACTION, DEFAULT_CLOUD_GATEWAY_URL, getCloudBuildSettings,
+  getCompileBackend, getCompileSettingsKey, isCloudCompilationSupported, type CloudBuildSettings, type CompileBackend,
+} from '../../../utils/cloud-build-settings.utils';
 import {
   appendScopedNpmRegistry,
   isPythonBoard,
@@ -76,9 +81,10 @@ export class ConfigService {
   private configSaveQueue: Promise<void> = Promise.resolve();
   private mergedConfigIpcAvailable: boolean | null = null;
   private runtimeBuildProduct: 'blockly' | 'coder' = 'blockly';
+  // 递增代号让切换后端前启动的异步准备及时失效，即使用户随后切回原模式也不复用旧结果。
+  private compileSettingsGeneration = 0;
+  private lastPublishedCompileSettingsKey?: string;
   
-  // 测试用：模拟慢速加载（毫秒），设为0禁用
-  private readonly SIMULATE_SLOW_LOADING = 0; // 改为2000可以看到loading效果
   
   /**
    * 检查boards和libraries数据是否已加载完成
@@ -101,8 +107,60 @@ export class ConfigService {
 
   constructor(
     private http: HttpClient,
-    private electronService: ElectronService
-  ) { }
+    private electronService: ElectronService,
+    private authService: AuthService,
+  ) {
+    combineLatest([this.authService.isLoggedIn$, this.authService.authSnapshot$]).pipe(
+      map(() => this.canUseCloudCompilation),
+      distinctUntilChanged(),
+    ).subscribe(() => {
+      // 仅云编译偏好受权益影响。本地工程刷新时恢复账号不能取消正在进行的加载；
+      // 云偏好仍递增代号，防止退出再登录后复用退出前的云任务。
+      if (getCompileBackend(this.data) === 'cloud') this.compileSettingsGeneration++;
+      this.configReloaded$.next();
+    });
+  }
+
+  get canUseCloudCompilation(): boolean {
+    return isCloudCompilationSupported(window['platform']?.type, this.data?.region)
+      && this.authService.canUseCloudCompilation;
+  }
+  getCompileBackend(): CompileBackend {
+    return this.canUseCloudCompilation ? getCompileBackend(this.data) : 'local';
+  }
+  getCloudBuildSettings(): CloudBuildSettings { return getCloudBuildSettings(this.data); }
+  getCompileSettingsKey(): string {
+    return JSON.stringify([getCompileSettingsKey(this.data), this.getCompileBackend(), this.compileSettingsGeneration]);
+  }
+
+  /** 云开关独立落盘并同步其他窗口，保留设置页中尚未应用的其他修改。 */
+  async saveCompileSettings(): Promise<void> {
+    // 关闭云模式时无需连接或校验网关，服务异常也不能妨碍用户切回本地编译。
+    // 保存用户偏好；实际执行始终通过 getCompileBackend() 检查当前账号权益。
+    const backend = getCompileBackend(this.data);
+    const cloud = backend === 'cloud' ? this.getCloudBuildSettings() : { ...(this.data.cloud || {}) };
+    this.data.compile = { ...(this.data.compile || {}), backend };
+    this.data.cloud = { ...(this.data.cloud || {}), ...cloud };
+    const savedCloud = this.cloneConfigData(this.data.cloud);
+    if (this.electronService.isElectron) {
+      // 先捕获本次开关值，再与保存队列中最新的已持久化配置合并，避免并发保存覆盖其他设置。
+      const operation = this.configSaveQueue.then(() => {
+        const base = this.persistedDataSnapshot || {};
+        return this.persistCurrentData({ ...base, compile: { ...(base.compile || {}), backend }, cloud: savedCloud });
+      });
+      this.configSaveQueue = operation.catch(() => undefined);
+      await operation;
+    }
+    const published = { compile: { backend }, cloud: savedCloud };
+    const previousKey = this.lastPublishedCompileSettingsKey;
+    this.lastPublishedCompileSettingsKey = getCompileSettingsKey(published);
+    if (previousKey !== this.lastPublishedCompileSettingsKey) this.compileSettingsGeneration++;
+    this.configReloaded$.next();
+    window['ipcRenderer']?.send?.('setting-changed', {
+      action: COMPILE_SETTINGS_CHANGED_ACTION,
+      data: published,
+    });
+  }
 
   private normalizeBuildFlavor(flavor?: string): string {
     return flavor === 'global' ? 'global' : ConfigService.DEFAULT_BUILD_FLAVOR;
@@ -282,6 +340,34 @@ export class ConfigService {
     }
 
     ipcRenderer.on('setting-changed', (_event: unknown, message: any) => {
+      if (message?.action === 'blockly-preference-changed') {
+        const { key, value } = message.data || {};
+        if (['renderer', 'autoSave', 'minimap', 'sounds'].includes(key)) {
+          this.data.blockly = { ...this.data.blockly, [key]: value };
+          if (this.persistedDataSnapshot) this.persistedDataSnapshot.blockly = { ...this.persistedDataSnapshot.blockly, [key]: value };
+          this.configReloaded$.next();
+        }
+        return;
+      }
+      if (message?.action === 'blockly-autosave-changed' && typeof message.data === 'boolean') {
+        this.data.blockly = { ...this.data.blockly, autoSave: message.data };
+        this.configReloaded$.next();
+        return;
+      }
+      // 主窗口与设置子窗口共享后端状态，同时使旧的项目准备和产物复用判断失效。
+      if (message?.action === COMPILE_SETTINGS_CHANGED_ACTION) {
+        try {
+          const backend = getCompileBackend(message.data);
+          const cloud = backend === 'cloud' ? getCloudBuildSettings(message.data) : { ...(message.data?.cloud || {}) };
+          if (getCompileSettingsKey(this.data) === getCompileSettingsKey(message.data)) return;
+          this.data.compile = { ...(this.data.compile || {}), backend };
+          this.data.cloud = { ...(this.data.cloud || {}), ...cloud, publicKey: cloud.publicKey || '' };
+          this.compileSettingsGeneration++;
+          this.lastPublishedCompileSettingsKey = getCompileSettingsKey(this.data);
+          this.configReloaded$.next();
+        } catch { /* 忽略其他窗口发送的无效配置，不覆盖当前可用设置。 */ }
+        return;
+      }
       if (message?.action !== DEVELOPMENT_MODE_SETTING_CHANGED_ACTION) {
         return;
       }
@@ -373,6 +459,14 @@ export class ConfigService {
         ...defaultCoder,
         ...userCoder,
       },
+      compile: {
+        ...(defaultData?.compile || {}), ...(userConfData?.compile || {}),
+        backend: getCompileBackend(userConfData),
+      },
+      cloud: {
+        gatewayUrl: DEFAULT_CLOUD_GATEWAY_URL,
+        ...(defaultData?.cloud || {}), ...(userConfData?.cloud || {}),
+      },
       regions: mergedRegions,
     };
     this.data.selectedLanguage = normalizeLanguageCode(this.data.selectedLanguage);
@@ -411,12 +505,18 @@ export class ConfigService {
       this.data.developmentModePreference = this.getDevelopmentModePreference();
     }
 
+    // 正式网关和签名公钥由应用部署配置提供，覆盖旧版可编辑字段；启动时不联网，保留离线编辑。
+    await this.loadCloudDeploymentSettings();
+
     await this.applyResourceSourceRuntimeSelection();
 
     // 添加当前系统类型到data中
     this.data["platform"] = window['platform'].type;
     this.data["lang"] = normalizeLanguageCode(window['platform'].lang);
     this.persistedDataSnapshot = this.cloneConfigData(this.data);
+    const loadedCompileKey = getCompileSettingsKey(this.data);
+    if (this.lastPublishedCompileSettingsKey && this.lastPublishedCompileSettingsKey !== loadedCompileKey) this.compileSettingsGeneration++;
+    this.lastPublishedCompileSettingsKey = loadedCompileKey;
     this.configReloaded$.next();
 
     // 并行加载缓存的boards.json、libraries.json和tags.json（旧格式，用于基础功能）
@@ -429,6 +529,18 @@ export class ConfigService {
     // 注意：boardIndex 和 libraryIndex（新格式索引）延迟到 AI 组件加载时再加载
     // 以减轻软件启动耗时，参见 loadHardwareIndexForAI()
 
+  }
+
+  private async loadCloudDeploymentSettings(): Promise<void> {
+    if (!this.electronService.isElectron) return;
+    try {
+      const deployment = await window['cloudBuild'].configuration();
+      const cloud = getCloudBuildSettings({ cloud: deployment });
+      this.data.cloud = { ...cloud, publicKey: cloud.publicKey || '' };
+    } catch {
+      // 主进程桥接异常时仍允许编辑，但不能回退到用户曾填写的过期网关。
+      this.data.cloud = { gatewayUrl: 'about:invalid', publicKey: '' };
+    }
   }
 
   private async loadAndCacheBoardList(configFilePath: string): Promise<void> {
@@ -520,6 +632,24 @@ export class ConfigService {
     return operation;
   }
 
+  /** Persist one Blockly preference without committing other settings drafts. */
+  async saveBlocklyPreference(key: 'renderer' | 'autoSave' | 'minimap' | 'sounds', value: string | boolean): Promise<void> {
+    if (key === 'renderer' ? !['thrasos', 'zelos'].includes(String(value)) : typeof value !== 'boolean') {
+      throw new Error('Invalid Blockly preference');
+    }
+    this.data.blockly = { ...this.data.blockly, [key]: value };
+    if (this.electronService.isElectron) {
+      const operation = this.configSaveQueue.then(() => {
+        const base = this.persistedDataSnapshot || {};
+        return this.persistCurrentData({ ...base, blockly: { ...base.blockly, [key]: value } });
+      });
+      this.configSaveQueue = operation.catch(() => undefined);
+      await operation;
+    }
+    window['ipcRenderer']?.send?.('setting-changed', { action: 'blockly-preference-changed', data: { key, value } });
+    this.configReloaded$.next();
+  }
+
   /** Read credential-free SSH connection settings stored in a project package.json. */
   getProjectSshConnectorSettings(packageJson: unknown): ProjectSshConnectorSettings | null {
     const packageRecord = asConfigRecord(packageJson);
@@ -559,8 +689,9 @@ export class ConfigService {
     return { ...normalized, username: '' };
   }
 
-  private async persistCurrentData(): Promise<void> {
-    const next = this.cloneConfigData(this.data);
+  // 允许开关仅提交其独立快照，其余保存流程仍使用完整配置和已有合并机制。
+  private async persistCurrentData(snapshot?: any): Promise<void> {
+    const next = this.cloneConfigData(snapshot ?? this.data);
     const base = this.persistedDataSnapshot || {};
     if (JSON.stringify(base) === JSON.stringify(next)) {
       return;
@@ -788,13 +919,32 @@ export class ConfigService {
     const seenUrls = new Set<string>();
     const urls: string[] = [];
 
-    for (const source of this.getResourceSourceCandidates()) {
+    const sources = this.isAutoResourceSourceSelection()
+      ? this.getResourceSourceList()
+      : this.getResourceSourceCandidates();
+    for (const source of sources) {
       if (!source.url || seenUrls.has(source.url)) {
         continue;
       }
 
       seenUrls.add(source.url);
       urls.push(source.url);
+    }
+
+    const region = this.data?.region;
+    if (this.isAutoResourceSourceSelection() && (region === 'cn' || region === 'eu')) {
+      const configuredOrder = this.data.download_region_order?.[region];
+      const regionOrder = Array.isArray(configuredOrder) && configuredOrder.length > 0
+        && configuredOrder.every((key) => typeof key === 'string' && key.trim())
+        ? configuredOrder.map((key) => key.trim())
+        : (region === 'cn' ? ['cn', 'eu'] : ['eu', 'cn']);
+      const preferredUrls = regionOrder.map((key) => this.normalizeResourceSourceUrl(this.data.regions?.[key]?.resource || ''));
+      urls.sort((first, second) => {
+        const firstIndex = preferredUrls.indexOf(first);
+        const secondIndex = preferredUrls.indexOf(second);
+        return (firstIndex < 0 ? preferredUrls.length : firstIndex)
+          - (secondIndex < 0 ? preferredUrls.length : secondIndex);
+      });
     }
 
     return urls;
@@ -808,8 +958,9 @@ export class ConfigService {
   }
 
   private async syncResourceRuntimeEnv(): Promise<void> {
-    const currentUrl = this.getCurrentResourceUrl();
-    const zipUrls = JSON.stringify(this.buildZipUrlCandidates());
+    const candidates = this.buildZipUrlCandidates();
+    const currentUrl = candidates[0] || '';
+    const zipUrls = JSON.stringify(candidates);
 
     if (window['process']?.env) {
       window['process'].env['AILY_ZIP_URL'] = currentUrl;
@@ -842,7 +993,6 @@ export class ConfigService {
 
         if (this.activeResourceSourceKey !== source.key) {
           this.activeResourceSourceKey = source.key;
-          void this.syncResourceRuntimeEnv();
           this.configReloaded$.next();
         }
 
@@ -1939,6 +2089,7 @@ interface ResourceSourceConfig {
 }
 
 interface AppConfig {
+  metricsEnabled?: boolean;
   /** App version for which the managed aily tools were last refreshed. */
   installed?: string;
 
@@ -1988,6 +2139,9 @@ interface AppConfig {
   /** 资源源列表 */
   resource_sources?: ResourceSourceConfig[];
 
+  /** 更新安装包与资源压缩包按当前区域选择的下载顺序 */
+  download_region_order?: { [region: string]: string[] };
+
   /** Python-mode npm source. Catalogs continue to use the current resource base URL. */
   linux?: LinuxDevelopmentSources;
 
@@ -2011,7 +2165,6 @@ interface AppConfig {
   /** 更新包下载镜像策略 */
   update_download_strategy?: {
     enabled?: boolean;
-    mirror_region_order?: string[];
     fallback_on_error?: boolean;
     first_byte_timeout_ms?: number;
     stall_timeout_ms?: number;
@@ -2021,11 +2174,16 @@ interface AppConfig {
 
   /** 编译选项 */
   compile: {
+    /** 云编译开关；未配置时继续使用本地编译。 */
+    backend?: CompileBackend;
     /** 是否显示详细日志 */
     verbose: boolean;
     /** 警告处理方式，如 "error" 表示将警告视为错误 */
     warnings: string;
   };
+
+  /** 主进程提供的网关与产物签名身份，不在设置页暴露地址输入框。 */
+  cloud?: CloudBuildSettings;
 
   /** 上传选项 */
   upload: {
@@ -2044,7 +2202,9 @@ interface AppConfig {
   devToolPosition?: { x: number; y: number };
 
   blockly: {
+    autoSave?: boolean; // 工程自动保存，缺省时关闭
     renderer: string; // Blockly渲染器
+    sounds?: boolean; // 操作音效，缺省时开启
     viewportRendering?: boolean;
   }
 

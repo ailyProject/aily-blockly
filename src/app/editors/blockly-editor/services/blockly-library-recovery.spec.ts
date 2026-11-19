@@ -7,6 +7,7 @@ import { BlocklyWorkspaceEditGate } from './blockly-workspace-edit-lease';
 import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-catalog';
 import { BlocklyProjectCodePreparation } from './prepared-project-code';
 import { AbsReferenceContractCache } from '../../../integrations/blockly/abs/abs-reference-contract-cache';
+import { BlocklyLibraryPackageService } from '@domain/dependencies/public-api';
 
 describe('Blockly library failure recovery', () => {
   let service: any;
@@ -28,6 +29,7 @@ describe('Blockly library failure recovery', () => {
     Object.assign(service, {
       workspaceEditGate: new BlocklyWorkspaceEditGate(),
       declarativeBlocks: new BlocklyDeclarativeBlockCatalog(),
+      buildCodePreparation: new BlocklyProjectCodePreparation(),
       projectCodePreparation: new BlocklyProjectCodePreparation(),
       pageReferenceContracts: new AbsReferenceContractCache(),
       generatorRuntime: runtime,
@@ -51,8 +53,10 @@ describe('Blockly library failure recovery', () => {
       libraryIntegrityFailureLogSignatures: new Map(), libraryIntegrityWarningLogSignatures: new Map(),
       loadLibraryFinishedLoadingSubject: new Subject(),
       toolbox: { kind: 'categoryToolbox', contents: [] },
-      getProjectDocument: () => ({ pages: [] }),
+      getProjectDocument: () => ({ schemaVersion: 3, activePageId: 'one', openedPageIds: ['one'],
+        pages: [{ id: 'one', title: 'One', content: { blocks: { blocks: [] } } }], sharedModel: { procedureBlocks: [] } }),
       loadProjectDocument: jasmine.createSpy('restoreDocument'),
+      loadProjectDocumentSettled: jasmine.createSpy('settledDocument').and.resolveTo(), setAiWritingActive() {},
       refreshToolboxFromContents: jasmine.createSpy('refreshToolbox'),
       requestCodeViewerRefresh: jasmine.createSpy('refreshCode'),
       ensureToolboxItemIds: () => {}, applyToolboxSortOrderToContents: () => {},
@@ -78,6 +82,55 @@ describe('Blockly library failure recovery', () => {
   }
 
   async function load(suffix: string) { await service.loadLibrary(name(suffix), projectPath); }
+
+  it('settles a real missing-generator integrity failure while retaining its block display and exact diagnostics', async () => {
+    library('missing_generator');
+    const lib = name('missing_generator'), root = path('missing_generator');
+    const snapshot = snapshots.get(lib);
+    snapshot.paths = { ...snapshot.paths, packageJson: `${root}/package.json`,
+      blockJson: `${root}/block.json`, toolboxJson: `${root}/toolbox.json` };
+    snapshot.readErrors = [];
+    snapshot.toolboxJson = snapshot.toolboxRoot;
+    const packages: any = Object.create(BlocklyLibraryPackageService.prototype);
+    packages.electronService = service.electronService;
+    const validate = spyOn(packages, 'validateLibraryPackage').and.callThrough();
+    Object.assign(service.blocklyLibraryPackageService, {
+      validateLibraryPackage: packages.validateLibraryPackage.bind(packages),
+      getPackagePaths: packages.getPackagePaths.bind(packages),
+      getIntegrityFileSignature: packages.getIntegrityFileSignature.bind(packages),
+    });
+    service.checkLibraryIntegrity = (BlocklyService.prototype as any).checkLibraryIntegrity;
+    expect(packages.validateLibraryPackage(snapshot, lib).valid).toBeTrue();
+
+    sources.delete(snapshot.paths.generatorJs);
+    const generator = runtime.getActiveGenerator() as ArduinoGenerator;
+    const execute = spyOn(service, 'loadLibGenerator').and.callThrough();
+    let settled = false;
+    const loading = load('missing_generator').then(() => { settled = true; });
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(settled).toBeTrue();
+    await loading;
+    await expectAsync(service.whenLibraryLoadsSettled()).toBeResolved();
+    expect(validate).toHaveBeenCalledWith(snapshot, lib);
+    expect(execute).not.toHaveBeenCalled();
+    expect(service.loadedLibraries.has(root)).toBeFalse();
+    expect(service.loadedLibraryInfos.has(root)).toBeFalse();
+    expect(service.libraryLoadTasks.size).toBe(0);
+    expect(runtime.getActiveGenerator()).toBe(generator);
+    expect(toolbox('missing_generator').ailyLibraryLoadFailed).toBeTrue();
+    const failure = service.failedLibraryLoads.get(root);
+    expect(failure.snapshot).toBe(snapshot);
+    expect(failure.errors.length).toBe(1);
+    expect(failure.errors[0]).toContain('generator.js');
+    expect(failure.errors[0]).toContain(snapshot.paths.generatorJs);
+    expect(failure.errors[0]).toContain('文件不存在');
+    const workspace = new Blockly.Workspace();
+    try {
+      const block = workspace.newBlock('recovery_missing_generator');
+      expect(block.type).toBe('recovery_missing_generator');
+      expect(() => generator.forBlock[block.type](block, generator)).toThrowError(/加载失败.*[\s\S]*generator\.js/);
+    } finally { workspace.dispose(); }
+  });
 
   it('isolates execution failure, rolls back partial writes and still loads later libraries', async () => {
     library('before', `const sharedHealthyValue = 'before'; Arduino.forBlock.recovery_before = () => sharedHealthyValue;`);
@@ -124,7 +177,8 @@ describe('Blockly library failure recovery', () => {
     expect(service.failedLibraryLoads.size).toBe(0);
     const generator = runtime.getActiveGenerator() as ArduinoGenerator;
     expect(generator.forBlock['recovery_bad']({ type: 'recovery_test' } as Blockly.Block, generator)).toBe('2');
-    expect(service.loadProjectDocument).toHaveBeenCalled();
+    expect(service.loadProjectDocumentSettled).toHaveBeenCalled();
+    expect(service.loadProjectDocument).not.toHaveBeenCalled();
   });
 
   it('retains multiple failed placeholders across repeated syntax and runtime failures', async () => {
@@ -140,6 +194,43 @@ describe('Blockly library failure recovery', () => {
     expect(await service.retryLibrary(name('bad'), projectPath)).toBeFalse();
     expect(service.loadedLibraries.size).toBe(2);
     expect(toolbox('second_bad').ailyLibraryLoadFailed).toBeTrue();
+  });
+
+  it('waits for settled native readback before acknowledging a repaired library', async () => {
+    library('bad', 'missingRecoverySymbol;'); await load('bad');
+    sources.set(`${path('bad')}/generator.js`, 'Arduino.forBlock.recovery_bad = () => "fixed";');
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    service.loadProjectDocumentSettled.and.callFake(async (_document, owner, check) => {
+      check(); expect(service.isWorkspaceEditInProgress()).toBeTrue();
+      await pending; owner.assertCurrent(); check();
+    });
+    const retry = service.retryLibrary(name('bad'), projectPath);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(service.noticeService.update.calls.allArgs().some(([notice]) => notice.state === 'done')).toBeFalse();
+    finish(); expect(await retry).toBeTrue(); expect(service.isWorkspaceEditInProgress()).toBeFalse();
+    expect(service.noticeService.update.calls.mostRecent().args[0].state).toBe('done');
+  });
+
+  it('does not replace a project after a retry changed its runtime', async () => {
+    library('bad');
+    spyOn(service, 'loadLibrary').and.callFake(async () => {
+      runtime.rebuild({ projectPath }); service.loadedLibraries.add(path('bad'));
+    });
+    await expectAsync(service.retryLibrary(name('bad'), projectPath)).toBeRejectedWithError(/changed during library recovery/);
+    expect(service.loadProjectDocumentSettled).not.toHaveBeenCalled();
+    expect(service.noticeService.update).not.toHaveBeenCalled();
+    expect(service.isWorkspaceEditInProgress()).toBeFalse();
+  });
+
+  it('retains quarantine and withholds readiness if automatic native recovery fails', async () => {
+    library('bad', 'missingRecoverySymbol;'); runtime.markReady(projectPath);
+    const ready = spyOn(runtime, 'markReady').and.callThrough();
+    service.loadProjectDocumentSettled.and.rejectWith(new Error('native comments failed'));
+    await expectAsync(load('bad')).toBeRejectedWithError('native comments failed');
+    expect(ready).not.toHaveBeenCalled(); expect(runtime.isReady()).toBeFalse();
+    expect(service.isWorkspaceEditInProgress()).toBeFalse(); expect(service.isWorkspaceRecoveryRequired()).toBeTrue();
+    expect(service.loadProjectDocument).not.toHaveBeenCalled();
   });
 
   it('serializes concurrent loads while recovering and deduplicates one library', async () => {

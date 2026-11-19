@@ -1,12 +1,14 @@
 // 管理系统命令进程，并提供 Shell、路径和终端环境检测能力。
-const { spawn, exec } = require('child_process');
+const { exec } = require('child_process');
+const { spawn, getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { isWin32, isDarwin, isLinux } = require('./platform');
-const { killRegisteredProcessTree } = require('./process-tree');
+const { captureRegisteredProcessIdentity, killRegisteredProcessTree } = require('./process-tree');
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
+const { acquireNpmMutation } = require('./npm-mutation-queue');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
 const { observeChildProcessTerminal } = require('./child-process-terminal');
 const { createSimulatorOwnerCleanupDiagnostics } = require('./simulator-owner-cleanup-diagnostics');
@@ -385,6 +387,57 @@ class CommandManager {
     this.pendingCommands = new Map();
     this.processMessageListeners = new Set();
     this.processExitListeners = new Set();
+    this.ownerStreams = new WeakMap();
+    this.ownerReceipts = new WeakMap();
+  }
+
+  registerOwnerStream(owner, streamId) {
+    let streams = this.ownerStreams.get(owner);
+
+    if (!streams) this.ownerStreams.set(owner, streams = new Set());
+    if (streams.has(streamId)) return false;
+
+    streams.add(streamId);
+
+    return true;
+  }
+
+  rememberReceipt(owner, receipt) {
+    if (!owner) return;
+
+    let receipts = this.ownerReceipts.get(owner);
+
+    if (!receipts) this.ownerReceipts.set(owner, receipts = new Map());
+
+    receipts.delete(receipt.streamId);
+    receipts.set(receipt.streamId, receipt);
+
+    if (receipts.size > 128) receipts.delete(receipts.keys().next().value);
+  }
+
+  receipt(streamId, entry, ownershipReleased) {
+    const code = entry.code ?? entry.process?.exitCode;
+    const signal = entry.signal ?? entry.process?.signalCode;
+    // Expose the close after the host has drained output and checked ownership.
+    const exited = entry.terminationConfirmed || (entry.closed && (!entry.nativeJob || entry.completedNormally !== undefined));
+
+    return { streamId, state: exited ? 'exited' : entry.process ? 'running' : 'starting',
+      terminationConfirmed: entry.terminationConfirmed === true, ownershipReleased,
+      ...(exited ? { code: code ?? null, signal: signal ?? null } : {}),
+    };
+  }
+
+  status(streamId, owner) {
+    const entry = this.processes.get(streamId) || this.pendingCommands.get(streamId);
+
+    if (entry && entry.ownerWebContents === owner) {
+      this.reconcileClosedStream(streamId, entry);
+
+      return this.receipt(streamId, entry, this.processes.get(streamId) !== entry && this.pendingCommands.get(streamId) !== entry);
+    }
+
+    return this.ownerReceipts.get(owner)?.get(streamId)
+      ?? { streamId, state: 'unknown', terminationConfirmed: false, ownershipReleased: false };
   }
 
   // 执行命令并返回流式数据
@@ -521,9 +574,12 @@ class CommandManager {
         });
 
     const startedAt = Date.now();
+    const nativeJob = !!getOwnedProcessInfo(child);
 
     const entry = {
       process: child,
+      nativeJob,
+      processIdentity: nativeJob ? undefined : captureRegisteredProcessIdentity(child),
       command,
       args,
       cwd: cwd || process.cwd(),
@@ -538,29 +594,36 @@ class CommandManager {
       ownerWebContents: options.ownerWebContents,
       projectPath: options.projectPath,
       projectSessionId: options.projectSessionId,
+      releaseNpmMutation: options.releaseNpmMutation,
       stopRequested: false,
       terminalListeners: new Set(),
     };
 
     this.processes.set(streamId, entry);
 
-    entry.terminalObservation = observeChildProcessTerminal(child, terminal => {
+    entry.terminalObservation = observeChildProcessTerminal(child, async terminal => {
       const { code, signal } = terminal;
+
+      entry.closed = true;
+      entry.code = code;
+      entry.signal = signal;
+
+      if (entry.nativeJob && !entry.terminationConfirmed && await stopOwnedProcess(child).catch(() => false)) {
+        this.confirmTreeTermination(entry);
+      }
+
       entry.terminal = terminal;
 
       // During cancellation, wait for the tree result before forgetting the
       // command. Interrupted build markers still require confirmed cleanup.
-      const safeExit = !child.pid || (Number.isInteger(code) && !signal);
+      const recoveredBeforeDelegation = entry.buildWorkspace?.releaseAfterOwnerExit?.() === true;
+      const safeExit = !child.pid || (Number.isInteger(code) && !signal) || recoveredBeforeDelegation;
 
       entry.completedNormally = safeExit;
 
-      if (entry.terminationConfirmed || (!entry.stopRequested && !entry.terminationUnconfirmed
-          && (!entry.projectSessionId || safeExit) && (!entry.buildWorkspace
-          || (safeExit && entry.buildWorkspace.canReleaseResources())))) {
-        entry.terminationConfirmed = true;
+      this.reconcileClosedStream(streamId, entry);
 
-        this.releaseCommandResources(streamId, entry);
-      } else {
+      if (this.processes.get(streamId) === entry) {
         console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
           streamId, pid: child.pid, reason: entry.stopRequested ? 'termination-pending' : 'termination-unconfirmed',
         });
@@ -639,11 +702,15 @@ class CommandManager {
   }
 
   // 终止进程
-  async killProcess(streamId) {
+  async killProcess(streamId, owner) {
     const pending = this.pendingCommands.get(streamId);
 
     if (pending) {
+      if (owner && pending.ownerWebContents !== owner) return false;
+
       pending.cancelled = true;
+
+      pending.abort?.abort();
 
       return true;
     }
@@ -652,13 +719,17 @@ class CommandManager {
 
     // A normal close may have already finished between the caller's snapshot
     // and this request. Cleanup is idempotent.
-    if (!entry) return true;
+    if (!entry) return !owner || this.ownerReceipts.get(owner)?.get(streamId)?.ownershipReleased === true;
+    if (owner && entry.ownerWebContents !== owner) return false;
     if (entry.stopPromise) return entry.stopPromise;
 
-    // Interrupted protected builds may stay registered after parent close.
-    // That PID may now belong to someone else; only explicit recovery can
-    // resolve unconfirmed ownership. Confirmed stops may retry file cleanup.
-    if (entry.terminal && !entry.terminationConfirmed) return false;
+    // After exit, only the exact Job can still be stopped. Fallback paths
+    // reconcile from evidence without signaling the old PID.
+    const exited = entry.closed || typeof entry.process?.exitCode === 'number' || typeof entry.process?.signalCode === 'string';
+
+    if (exited && (!entry.nativeJob || entry.terminationConfirmed)) {
+      return this.reconcileClosedStream(streamId, entry);
+    }
 
     if (entry.process) {
       console.info('[PROC_TRACE][CMD_KILL]', {
@@ -673,38 +744,44 @@ class CommandManager {
       entry.stopPromise = (async () => {
         try {
           if (!entry.terminationConfirmed) {
-            const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`);
+            const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`, {
+              registered: entry.process, identity: entry.processIdentity,
+              observe: evidence => { entry.observeTermination = evidence; },
+            });
 
-            // A failed taskkill can race a supervised build's normal finish.
+            // A failed stop can race a supervised build's normal finish.
             // Its own marker cleanup confirms completion; parent close alone
             // cannot establish that installer/compiler descendants stopped.
             const completedBuild = entry.terminal && entry.completedNormally
               && entry.buildWorkspace?.canReleaseResources();
 
             if (!stopped && !completedBuild) {
-              if (entry.projectSessionId) entry.terminationUnconfirmed = true;
+              if (entry.projectSessionId || entry.releaseNpmMutation) entry.terminationUnconfirmed = true;
 
               console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
                 streamId, pid: entry.process.pid, reason: 'termination-failed',
               });
 
-              return false;
+              entry.stopRequested = false;
+
+              return this.reconcileClosedStream(streamId, entry);
             }
 
-            entry.terminationConfirmed = true;
-            entry.workspaceCleanupPending = !!entry.buildWorkspace;
+            this.confirmTreeTermination(entry);
           }
 
           if (entry.buildDeliveryRequested) {
             // The original compiler tree is gone before revoking its outputs.
             // This is the captured transaction path, never current UI selection.
             const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
+
             require(path.join(childRoot, 'scripts/compile-delivery.js'))
               .invalidateBuildDelivery(entry.buildWorkspacePath);
           }
+
           this.releaseCommandResources(streamId, entry);
 
-          return true;
+          return this.processes.get(streamId) !== entry;
         } catch (error) {
           console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
             streamId, pid: entry.process.pid, reason: 'cleanup-failed', error: error.message,
@@ -715,7 +792,7 @@ class CommandManager {
           if (!entry.terminationConfirmed) {
             entry.stopRequested = false;
 
-            if (entry.terminal && !entry.buildWorkspace && !entry.projectSessionId) this.releaseCommandResources(streamId, entry);
+            this.reconcileClosedStream(streamId, entry);
           }
         }
       })().finally(() => { entry.stopPromise = undefined; });
@@ -724,6 +801,89 @@ class CommandManager {
     }
 
     return false;
+  }
+
+  reconcileClosedStream(streamId, entry) {
+    if (this.processes.get(streamId) !== entry) return false;
+
+    if (!entry.terminationConfirmed) {
+      if (!entry.closed || entry.stopRequested || (entry.nativeJob && entry.completedNormally === undefined)) return false;
+
+      if (entry.nativeJob) {
+        if (getOwnedProcessInfo(entry.process)?.released !== true) {
+          this.scheduleResourceCheck(streamId, entry);
+
+          return false;
+        }
+
+        this.confirmTreeTermination(entry);
+      } else if (!this.confirmClosedFallback(streamId, entry)) {
+        return false;
+      }
+    }
+
+    this.releaseCommandResources(streamId, entry);
+
+    return this.processes.get(streamId) !== entry;
+  }
+
+  confirmClosedFallback(streamId, entry) {
+    let release = entry.completedNormally && !entry.terminationUnconfirmed;
+
+    if (entry.buildWorkspace) {
+      // Re-read this exact supervisor's release evidence. A read failure
+      // during the original close need not keep its registration forever.
+      try {
+        release = entry.completedNormally && entry.buildWorkspace.canReleaseResources();
+      } catch { release = false; }
+    } else if (!entry.projectSessionId && !entry.releaseNpmMutation) {
+      release = true;
+    }
+
+    if (!release) {
+      this.observeClosedTree(streamId, entry);
+      this.scheduleResourceCheck(streamId, entry);
+
+      return false;
+    }
+
+    entry.terminationConfirmed = true;
+
+    return true;
+  }
+
+  confirmTreeTermination(entry) {
+    if (entry.terminationConfirmed) return;
+
+    entry.terminationConfirmed = true;
+    entry.workspaceCleanupPending = !!entry.buildWorkspace;
+  }
+
+  observeClosedTree(streamId, entry) {
+    if (!entry.observeTermination || entry.observation || Date.now() < (entry.nextObservationAt || 0)) return;
+
+    entry.observation = Promise.resolve().then(entry.observeTermination).then(verified => {
+      if (!verified || this.processes.get(streamId) !== entry) return;
+
+      this.confirmTreeTermination(entry);
+      this.releaseCommandResources(streamId, entry);
+    }).catch(() => undefined).finally(() => {
+      entry.nextObservationAt = Date.now() + 1000;
+      entry.observation = undefined;
+    });
+  }
+
+  scheduleResourceCheck(streamId, entry) {
+    if (entry.cleanupTimer || (entry.cleanupAttempts || 0) >= 4) return;
+
+    entry.cleanupTimer = setTimeout(() => {
+      entry.cleanupTimer = undefined;
+      entry.cleanupAttempts = (entry.cleanupAttempts || 0) + 1;
+
+      this.reconcileClosedStream(streamId, entry);
+    }, 250 * 2 ** (entry.cleanupAttempts || 0));
+
+    entry.cleanupTimer.unref?.();
   }
 
   releaseCommandResources(streamId, entry) {
@@ -738,19 +898,17 @@ class CommandManager {
     }
 
     if (!entry.workspaceCleanupPending) {
+      entry.releaseNpmMutation?.();
+
+      entry.releaseNpmMutation = undefined;
+
       clearTimeout(entry.cleanupTimer);
 
-      if (this.processes.get(streamId) === entry) this.processes.delete(streamId);
-    } else if (!entry.cleanupTimer && (entry.cleanupAttempts || 0) < 3) {
-      entry.cleanupTimer = setTimeout(() => {
-        entry.cleanupTimer = undefined;
-        entry.cleanupAttempts = (entry.cleanupAttempts || 0) + 1;
-
-        this.releaseCommandResources(streamId, entry);
-      }, 250);
-
-      entry.cleanupTimer.unref?.();
-    }
+      if (this.processes.get(streamId) === entry) {
+        this.processes.delete(streamId);
+        this.rememberReceipt(entry.ownerWebContents, this.receipt(streamId, entry, true));
+      }
+    } else this.scheduleResourceCheck(streamId, entry);
   }
 
   // 获取进程
@@ -874,9 +1032,16 @@ class CommandManager {
     const entries = [...this.processes, ...this.pendingCommands]
       .filter(([, entry]) => matchesProjectTask(entry, owner, projectPath, projectSessionId));
 
-    const stopped = await Promise.all(entries.map(([streamId]) => this.killProcess(streamId)));
+    const stopped = await Promise.all(entries.map(([streamId, entry]) =>
+      this.processes.get(streamId) === entry || this.pendingCommands.get(streamId) === entry
+        ? this.killProcess(streamId, owner) : true));
 
     return stopped.every(Boolean);
+  }
+
+  hasOwnerProjectProcesses(owner, projectPath, projectSessionId) {
+    return [...this.processes.values(), ...this.pendingCommands.values()]
+      .some(entry => matchesProjectTask(entry, owner, projectPath, projectSessionId));
   }
 
     /**
@@ -899,21 +1064,33 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
     const streamId = options.streamId || `cmd_${Date.now()}_${Math.random()}`;
     const senderWindow = event.sender; // 获取发送请求的窗口
     let delivery;
+    let releaseNpmMutation;
 
     const pending = { ownerWebContents: senderWindow, cwd: options.cwd || process.cwd(),
       buildWorkspacePath: options.buildWorkspace, projectPath: options.projectPath,
-      projectSessionId: options.projectSessionId, cancelled: false };
+      projectSessionId: options.projectSessionId, cancelled: false, abort: new AbortController() };
+
+    const onOwnerGone = () => { pending.cancelled = true; pending.abort.abort(); };
+
+    const onNavigation = (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) onOwnerGone();
+    };
 
     try {
       if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
+      if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
 
       assertProjectTaskActive(senderWindow, options);
 
-      if (commandManager.pendingCommands.has(streamId) || commandManager.processes.has(streamId)) {
+      if (commandManager.pendingCommands.has(streamId) || commandManager.processes.has(streamId)
+        || !commandManager.registerOwnerStream(senderWindow, streamId)) {
         throw new Error('Command stream is already registered.');
       }
 
       commandManager.pendingCommands.set(streamId, pending);
+      senderWindow.on?.('destroyed', onOwnerGone);
+      senderWindow.on?.('render-process-gone', onOwnerGone);
+      senderWindow.on?.('did-start-navigation', onNavigation);
 
       if (options.expectedArtifactId !== undefined) {
         if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame || !options.buildWorkspace) {
@@ -933,19 +1110,29 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         delivery = await buildDeliveryAuthority.begin(senderWindow, options);
       }
 
+      const permit = acquireNpmMutation(options, {
+        signal: pending.abort.signal,
+        onWait: () => sendRendererLog(senderWindow, '依赖正在安装，当前操作已排队等待…', 'doing', `${streamId}:install-wait`),
+      });
+
+      if (permit) releaseNpmMutation = await permit;
       if (pending.cancelled) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
 
       assertProjectTaskActive(senderWindow, options);
 
       const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
+        releaseNpmMutation,
         ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
       });
 
+      releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
       const process = result.process;
+
       const classifiedSimulatorStderr = options.env?.AILY_CHILD_TOOL_ID === 'simulator'
         && options.messagePort?.transport === 'node-ipc-v1'
         && /^child_tool_simulator_[A-Za-z0-9_]+$/.test(streamId);
+
       const ownerCleanupDiagnostics = createSimulatorOwnerCleanupDiagnostics({
         enabled: classifiedSimulatorStderr,
         write: value => console.warn(JSON.stringify(value)),
@@ -954,16 +1141,20 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           stderrPresentation: 'main-simulator-line-v1', classification: value.classification,
         }),
       });
+
       if (delivery) {
         process.on('message', message => {
           try {
             const reply = delivery.onMessage(normalizeProcessMessage(message, 4096).message);
+
             if (reply !== undefined) {
               const normalized = normalizeProcessMessage(reply, 4096).message;
+
               if (!process.connected || typeof process.send !== 'function') delivery.abandon();
               else process.send(normalized, error => { if (error) delivery.abandon(); });
             }
           }
+
           catch { delivery.abandon(); }
         });
 
@@ -1003,6 +1194,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           streamId,
           ...(classifiedSimulatorStderr ? { stderrPresentation: 'main-simulator-line-v1' } : {}),
         });
+
         ownerCleanupDiagnostics.push(data);
       });
 
@@ -1010,6 +1202,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       // A missing close event is never recreated for legacy consumers.
       result.onTerminal(terminal => {
         ownerCleanupDiagnostics.close();
+
         const { code, signal } = terminal;
 
         console.log(`[CMD][${streamId}] ${terminal.kind}, code: ${code}, signal: ${signal}`);
@@ -1030,6 +1223,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           streamId,
           expected: result.stopRequested,
           terminal,
+          ownershipReleased: commandManager.getProcess(streamId) === undefined,
         });
       });
 
@@ -1079,16 +1273,32 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         streamId
       };
     } finally {
-      if (commandManager.pendingCommands.get(streamId) === pending) commandManager.pendingCommands.delete(streamId);
+      releaseNpmMutation?.();
+      senderWindow.removeListener?.('destroyed', onOwnerGone);
+      senderWindow.removeListener?.('render-process-gone', onOwnerGone);
+      senderWindow.removeListener?.('did-start-navigation', onNavigation);
+
+      if (commandManager.pendingCommands.get(streamId) === pending) {
+        commandManager.pendingCommands.delete(streamId);
+
+        if (!commandManager.processes.has(streamId)) {
+          pending.closed = true;
+          pending.terminationConfirmed = true;
+
+          commandManager.rememberReceipt(senderWindow, commandManager.receipt(streamId, pending, true));
+        }
+      }
     }
   });
 
   // 终止命令
   ipcMain.handle('cmd-kill', async (event, { streamId }) => {
-    const success = await commandManager.killProcess(streamId);
+    const success = await commandManager.killProcess(streamId, event.sender);
 
-    return { success, streamId };
+    return { success, ...commandManager.status(streamId, event.sender) };
   });
+
+  ipcMain.handle('cmd-status', (event, { streamId }) => commandManager.status(streamId, event.sender));
 
   // 终止指定名称的进程
   ipcMain.handle('cmd-kill-by-name', async (event, { processName }) => {
@@ -1121,6 +1331,7 @@ module.exports = {
   killCmdProcess: (streamId) => commandManager.killProcess(streamId),
   killAllCmdProcesses: () => commandManager.killAllProcesses(),
   killOwnerProjectCmdProcesses: (owner, projectPath, projectSessionId) => commandManager.killOwnerProjectProcesses(owner, projectPath, projectSessionId),
+  hasOwnerProjectCmdProcesses: (owner, projectPath, projectSessionId) => commandManager.hasOwnerProjectProcesses(owner, projectPath, projectSessionId),
   beginCommandShutdown: () => { commandShutdown = true; },
   getActiveCmdProcesses: () => commandManager.getActiveProcessSummaries(),
   onCmdProcessMessage: (listener) => commandManager.onProcessMessage(listener),

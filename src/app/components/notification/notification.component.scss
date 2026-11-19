@@ -105,6 +105,15 @@
                 white-space: nowrap;
             }
 
+            button.btn {
+                background: none;
+                border: 0;
+                padding: 0;
+                font: inherit;
+                font-size: 12px;
+                cursor: pointer;
+            }
+
             .btn.link:not(.red) {
                 color: var(--aily-color-link);
 

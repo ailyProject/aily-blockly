@@ -7,11 +7,14 @@ const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const targetCompileContext = require('./target-compile-context');
 const { prepareCompileSource } = require('./compile-source');
-const { createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
+const { captureLibrarySource, createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
 const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDeliveryTicket } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource, confirmPreparedBuildSource } = require('./build-source-capture');
+const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs } = require('./build-execution-workspace');
+const { resolvePlatformResourceRoots, resolveBoardResourceDirectory, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
+const { readBuilderCapabilities } = require('./builder-capabilities');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json';
@@ -69,14 +72,27 @@ async function main() {
         process.exit(1);
     }
 
+    if (config.execution) recordFor(config);
     const workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
+    const standalone = config.execution?.operation === 'preprocess';
+    let completed = false;
     try {
+        if (standalone) startBuildExecution(config, workspace);
         confirmBuildSource(config);
         invalidateBuildDeliveryTicket(config.currentProjectPath);
+        // Library preparation can spawn an archive extractor before the Builder.
+        workspace.markDelegated();
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
         confirmPreparedBuildSource(config);
-    } finally { workspace.release(); }
+        completed = true;
+    } finally {
+        workspace.release();
+        if (standalone) {
+            finishBuildExecution(config, completed);
+            retireStandalonePreprocessInputs(config);
+        }
+    }
 }
 
 async function preprocessProject(config, workspace) {
@@ -111,9 +127,8 @@ async function preprocessProject(config, workspace) {
         ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
         : path.join(tempPath, 'preprocess.json');
     
-    const compilerPath = path.join(appDataPath, 'compiler');
-    const sdkPath = path.join(appDataPath, 'sdk');
-    const toolsPath = path.join(appDataPath, 'tools');
+    const resources = resolvePlatformResourceRoots(appDataPath);
+    const { compilerPath, sdkPath, toolsPath, readOnly: readOnlyResources } = resources;
 
     // 2. 读取项目信息
     const projectPackageJsonPath = path.join(currentProjectPath, 'package.json');
@@ -142,8 +157,33 @@ async function preprocessProject(config, workspace) {
     const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
     const testContextInputs = targetCompileContext.captureInputs([
         projectPackageJsonPath, boardJsonPath, boardPackageJsonPath,
-    ]);
+    ], { projectManifest: projectPackageJsonPath });
     const boardDependencies = boardPackageJson.boardDependencies || {};
+
+    let compiler = '';
+    let fullCompilerPath = '';
+    let fullSdkPath = '';
+    const toolVersions = [];
+    Object.entries(boardDependencies).forEach(([key, version]) => {
+        if (key.startsWith('@aily-project/compiler-')) {
+            const name = key.replace(/^@aily-project\/compiler-/, '');
+            compiler = name + '@' + version;
+            fullCompilerPath = resolveBoardResourceDirectory(compilerPath, 'compiler', name, version);
+            toolVersions.push(compiler);
+        } else if (key.startsWith('@aily-project/sdk-')) {
+            const name = key.replace(/^@aily-project\/sdk-/, '');
+            fullSdkPath = resolveBoardResourceDirectory(sdkPath, 'sdk', name, version);
+        } else if (key.startsWith('@aily-project/tool-')) {
+            let toolName = key.replace(/^@aily-project\/tool-/, '');
+            if (toolName.startsWith('idf_')) {
+                toolName = 'esp32-arduino-libs';
+            }
+            toolVersions.push(toolName + '@' + version);
+        }
+    });
+    if (!fullCompilerPath || !fullSdkPath) {
+        throw new Error('未找到编译器或SDK信息');
+    }
 
     // 缓存文件路径
     const cacheFilePath = path.join(tempPath, 'library-cache.json');
@@ -177,6 +217,7 @@ async function preprocessProject(config, workspace) {
     logger.log(`开始处理 ${libsPath.length} 个库文件`);
     let copiedLibraries = [];
     let librarySearchPaths;
+    let projectLibraryPaths = [];
     if (isAilyCode) {
         // Remove the obsolete projection created by older builds. New builds
         // never create .temp/lib* or copy/hard-link dependency sources.
@@ -187,14 +228,12 @@ async function preprocessProject(config, workspace) {
             currentProjectPath,
             za7Path,
             localLibrariesPath,
-            libraryEvidence
+            libraryEvidence,
+            compiler
         );
+        projectLibraryPaths = librarySearchPaths;
         if (projectPackageJson.arduinoSketch === true) {
-            const arduinoLibraries = [
-                path.join(require('node:os').homedir(), 'Documents', 'Arduino', 'libraries'),
-                path.join(path.dirname(currentProjectPath), 'libraries'),
-                path.join(currentProjectPath, 'libraries'),
-            ].filter(directory => fs.existsSync(directory) && fs.statSync(directory).isDirectory());
+            const arduinoLibraries = ailyCodeProject.collectArduinoLibraryDirectories(currentProjectPath);
             // Arduino sketchbooks may contain symlinked library folders. Record
             // each canonical library independently, rather than rejecting links
             // merely because they leave the sketchbook's parent directory.
@@ -257,34 +296,7 @@ async function preprocessProject(config, workspace) {
         }
     }
 
-    // 5. 获取编译器、SDK、Tool信息
-    let compiler = "";
-    let sdk = "";
-    const toolVersions = [];
-
-    Object.entries(boardDependencies || {}).forEach(([key, version]) => {
-        if (key.startsWith('@aily-project/compiler-')) {
-            compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
-            toolVersions.push(compiler);
-        } else if (key.startsWith('@aily-project/sdk-')) {
-            sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
-        } else if (key.startsWith('@aily-project/tool-')) {
-            let toolName = key.replace(/^@aily-project\/tool-/, '');
-            if (toolName.startsWith('idf_')) {
-                toolName = 'esp32-arduino-libs';
-            }
-            const tool = toolName + '@' + version;
-            toolVersions.push(tool);
-        }
-    });
-
-    if (!compiler || !sdk) {
-        throw new Error('未找到编译器或SDK信息');
-    }
-
     // 6. 配置路径和参数
-    const fullCompilerPath = path.join(compilerPath, compiler);
-    const fullSdkPath = path.join(sdkPath, sdk);
     if (!isAilyCode) {
         librarySearchPaths = prependSdkLibrarySearchPath(fullSdkPath, librarySearchPaths);
     }
@@ -326,6 +338,7 @@ async function preprocessProject(config, workspace) {
                     currentProjectPath,
                     sketchPath,
                     customPartitionFilePath,
+                    boardModulePath,
                     compileSourcePath,
                     isAilyCode
                 });
@@ -356,7 +369,8 @@ async function preprocessProject(config, workspace) {
     compilerParam += buildProperties;
 
     // 9. 同步编译器工具
-    await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath);
+    if (!readOnlyResources) await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath, compiler);
+    const builderToolsPath = prepareBuilderToolsPath(appDataPath, resources, fullCompilerPath, compiler);
 
     // 10. 执行预编译
     logger.log('开始预编译...');
@@ -367,13 +381,15 @@ async function preprocessProject(config, workspace) {
         `"${compileSourcePath}"`,
         '--board', `"${boardType}"`,
         '--sdk-path', `"${fullSdkPath}"`,
-        '--tools-path', `"${toolsPath}"`,
+        '--tools-path', `"${builderToolsPath}"`,
         '--build-path', `"${buildPath}"`,
         '--tool-versions', `"${toolVersions.join(',')}"`,
         '--save-result', `"${preprocessCachePath}"`
     ];
+    const explicitPaths = projectLibraryPaths.length && readBuilderCapabilities(builderCommand).projectLibraryPaths
+        ? new Set(projectLibraryPaths) : new Set();
     for (const librarySearchPath of librarySearchPaths) {
-        pre_args.push('--libraries-path', `"${librarySearchPath}"`);
+        pre_args.push(explicitPaths.has(librarySearchPath) ? '--project-library-path' : '--libraries-path', `"${librarySearchPath}"`);
     }
 
     // 添加项目配置参数（如 UploadSpeed, FlashMode, FlashSize, PartitionScheme, PSRAM 等）
@@ -463,6 +479,7 @@ function copyCustomPartitionFile({
     currentProjectPath,
     sketchPath,
     customPartitionFilePath,
+    boardModulePath,
     compileSourcePath,
     isAilyCode
 }) {
@@ -473,7 +490,10 @@ function copyCustomPartitionFile({
     const candidates = [
         { filePath: sourcePartitionFile, kind: 'source' },
         { filePath: legacyPartitionFile, kind: 'legacy' },
-        { filePath: customPartitionFilePath, kind: 'configured' }
+        { filePath: customPartitionFilePath, kind: 'configured' },
+        // A board may ship its required custom layout (for example AI-VOX).
+        // Use only the selected board's default, after every project-owned input.
+        { filePath: boardModulePath && path.join(boardModulePath, 'partitions.csv'), kind: 'board' }
     ].filter(candidate => candidate.filePath && fs.existsSync(candidate.filePath));
 
     const selected = candidates[0];
@@ -604,7 +624,7 @@ async function processLibrariesParallel(libsPath, librariesPath, currentProjectP
     return copiedLibraries;
 }
 
-async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7Path, localLibrariesPath, evidence) {
+async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7Path, localLibrariesPath, evidence, compiler) {
     const result = [];
     const seen = new Set();
     const localizedSourceRoots = collectLocalizedCoderSourceRoots(
@@ -617,10 +637,11 @@ async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7P
         const canonical = fs.realpathSync(sourcePath);
         if (seen.has(canonical)) return;
         // Reject escaping/cyclic links before handing a source tree to the builder.
-        createLibrarySourceFingerprint(canonical);
-        if (evidence) evidence.add(owner, evidence.capture(canonical), canonical, inputs);
+        const source = captureLibrarySource(canonical);
+        const builderPath = prepareBuilderLibraryPath(compiler, source);
+        if (evidence) evidence.add(owner, source, builderPath, inputs);
         seen.add(canonical);
-        result.push(canonical);
+        result.push(builderPath);
     };
 
     for (const lib of libsPath) {
@@ -806,14 +827,45 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
 }
 
 function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
-    const extractPath = path.join(path.dirname(sourcePath), `.src-extract-${process.pid}-${Date.now()}`);
+    // Windows can read a linked package while mkdir below its junction fails.
+    // Keep the logical inputs bound, but create and publish within the same
+    // canonical package directory instead of traversing the alias for writes.
+    const packagePath = path.dirname(sourcePath);
+    const physicalPackagePath = fs.realpathSync(packagePath);
+    const physicalArchivePath = fs.realpathSync(sourceZipPath);
+    const packageIdentity = fs.statSync(physicalPackagePath, { bigint: true });
+    const archiveIdentity = fs.statSync(physicalArchivePath, { bigint: true });
+    const sameFile = (before, after) => before.dev === after.dev && before.ino === after.ino;
+    const assertInputsUnchanged = () => {
+        const currentPackage = fs.statSync(physicalPackagePath, { bigint: true });
+        const currentArchive = fs.statSync(physicalArchivePath, { bigint: true });
+        if (fs.realpathSync(packagePath) !== physicalPackagePath
+            || fs.realpathSync(sourceZipPath) !== physicalArchivePath
+            || !sameFile(packageIdentity, currentPackage)
+            || !sameFile(archiveIdentity, currentArchive)
+            || archiveIdentity.size !== currentArchive.size
+            || archiveIdentity.mtimeNs !== currentArchive.mtimeNs
+            || archiveIdentity.ctimeNs !== currentArchive.ctimeNs) {
+            throw new Error('Library package inputs changed during source extraction.');
+        }
+    };
+    const physicalSourcePath = path.join(physicalPackagePath, path.basename(sourcePath));
+    const extractPath = fs.mkdtempSync(path.join(physicalPackagePath, '.src-extract-'));
+    const extractIdentity = fs.lstatSync(extractPath, { bigint: true });
 
     try {
-        mkdirp(extractPath);
-        execFileSync(za7Path, ['x', sourceZipPath, `-o${extractPath}`, '-y']);
-        normalizeExtractedSourceDirectory(extractPath, sourcePath);
+        assertInputsUnchanged();
+        execFileSync(za7Path, ['x', physicalArchivePath, `-o${extractPath}`, '-y']);
+        assertInputsUnchanged();
+        // A concurrent producer owns a newly appeared src; never remove it.
+        if (fs.existsSync(physicalSourcePath)) {
+            throw new Error('Library source destination appeared during archive extraction.');
+        }
+        normalizeExtractedSourceDirectory(extractPath, physicalSourcePath);
     } finally {
-        rm(extractPath);
+        // Cleanup only this extraction directory, not a rebound alias/entry.
+        if (fs.existsSync(extractPath)
+            && sameFile(extractIdentity, fs.lstatSync(extractPath, { bigint: true }))) rm(extractPath);
     }
 }
 
@@ -824,8 +876,12 @@ function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
         ? nestedSourcePath
         : extractPath;
 
+    if (!fs.readdirSync(extractedSourcePath).filter(item => !item.startsWith('.')).length) {
+        throw new Error('Library source archive is empty.');
+    }
+
     if (fs.existsSync(sourcePath)) {
-        rm(sourcePath);
+        throw new Error('Library source destination appeared during archive extraction.');
     }
 
     fs.renameSync(extractedSourcePath, sourcePath);
@@ -971,11 +1027,12 @@ function linkItem(src, dest, copyOnly = false) {
     }
 }
 
-async function syncCompilerToolsToToolsPath(compilerPath, toolsPath) {
+async function syncCompilerToolsToToolsPath(compilerPath, toolsPath, compilerDirName) {
     if (!fs.existsSync(compilerPath)) return;
+    const relative = path.relative(toolsPath, compilerPath);
+    if (!relative || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative))) return;
     mkdirp(toolsPath);
     
-    const compilerDirName = path.basename(compilerPath);
     const targetCompilerPath = path.join(toolsPath, compilerDirName);
     
     if (fs.existsSync(targetCompilerPath)) return;
@@ -994,11 +1051,13 @@ if (require.main === module) {
 }
 
 module.exports = {
+    copyCustomPartitionFile,
     collectComponentLibraries,
     collectDependencyLibraryPackages,
     collectWorkspaceLibraries,
     collectLibraryPackages,
     createLibrarySourceFingerprint,
+    extractLibrarySourceArchive,
     isCompilableLibraryPackage,
     normalizeExtractedSourceDirectory,
     processComponentLibraries,

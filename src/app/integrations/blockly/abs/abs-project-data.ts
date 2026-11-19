@@ -1,3 +1,4 @@
+import { stringifyProjectJson } from '@domain/project/project-document-json';
 import {
   assertNoOversizedInlineValues, externalizeGenericProjectDataValues,
   materializeGenericProjectDataValues, projectDataRuntime, canonicalJsonStringify,
@@ -26,7 +27,7 @@ export async function prepareAbsProjectData<T>(
   await checked(() => runtime.flushPending());
   assertNoOversizedInlineValues(result.document);
   // Preparation callbacks, callers and later native loaders must not share mutable proof.
-  const documentText = JSON.stringify(result.document);
+  const documentText = stringifyProjectJson(result.document);
   const externalized = JSON.parse(JSON.stringify(result.externalized)) as typeof result.externalized;
   await checked(() => runtime.prepareValue(JSON.parse(documentText)));
   return {

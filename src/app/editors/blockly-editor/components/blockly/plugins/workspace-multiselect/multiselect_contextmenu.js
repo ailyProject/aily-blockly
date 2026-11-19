@@ -9,6 +9,7 @@
  */
 
 import * as Blockly from 'blockly/core';
+import {fireBlocklySelectionChange} from '../../../../utils/blockly-selection-focus';
 import {isBlocklyFunctionViewBlockVisible} from '../../../../utils/blockly-function-view';
 import {
   dragSelectionWeakMap, hasSelectedParent, copyData,
@@ -675,6 +676,8 @@ const registerDelete = function() {
         }
         dragSelection.clear();
         selected.clearAll_();
+        Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+        fireBlocklySelectionChange(workspace, null);
       } else if (!dragSelection.size) {
         apply(selected);
       }

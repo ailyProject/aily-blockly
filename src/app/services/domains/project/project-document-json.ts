@@ -1,4 +1,5 @@
 import { ProjectDataError } from './project-data/project-data.types';
+import { isPlainProjectJsonObject } from './project-json-object';
 
 const MAX_DOCUMENT_DEPTH = 32_768;
 const MAX_DOCUMENT_NODES = 2_000_000;
@@ -7,9 +8,9 @@ const MAX_DOCUMENT_NODES = 2_000_000;
  * Blockly graph on every preview/snapshot. Strict copies retain canonical JSON
  * validation; legacy editor state retains JSON.stringify's normalization rules. */
 export function cloneProjectJson<T>(value: T): T { return copyDocument(value, true); }
-export function cloneBlocklyJson<T>(value: T): T { return copyDocument(value, false); }
+export function cloneBlocklyJson<T>(value: T, validate?: (member: unknown) => void): T { return copyDocument(value, false, validate); }
 
-function copyDocument<T>(value: T, strict: boolean): T {
+function copyDocument<T>(value: T, strict: boolean, validate?: (member: unknown) => void): T {
   type Frame = { source: any; target: any; keys: string[] | null; length: number; index: number; key: string };
   const stack: Frame[] = [], active = new Set<object>();
   const omitted = Symbol('omitted');
@@ -28,6 +29,7 @@ function copyDocument<T>(value: T, strict: boolean): T {
     const kind = typeof source;
     if (!strict && source !== null && (kind === 'object' || kind === 'function' || kind === 'bigint')
       && typeof source.toJSON === 'function') source = source.toJSON(key);
+    validate?.(source);
     if (!strict && typeof source === 'object' && (source instanceof Number || source instanceof String || source instanceof Boolean)) source = source.valueOf();
     if (source === null || typeof source === 'string' || typeof source === 'boolean') return source;
     if (typeof source === 'number') {
@@ -40,7 +42,7 @@ function copyDocument<T>(value: T, strict: boolean): T {
     }
     if (active.has(source)) reject('Circular JSON object', key);
     const array = Array.isArray(source);
-    if (strict && !array && ![null, Object.prototype].includes(Object.getPrototypeOf(source))) reject('Unsupported JSON object', key);
+    if (strict && !array && !isPlainProjectJsonObject(source)) reject('Unsupported JSON object', key);
     const keys = array ? null : Object.keys(source);
     if (strict) keys?.sort();
     const length = array ? source.length : keys!.length;
@@ -70,7 +72,14 @@ function copyDocument<T>(value: T, strict: boolean): T {
  * 512-level contract separate. This writer never recurses or calls toJSON.
  * Output ordering matches canonicalJsonStringify, including integer keys.
  */
-export function canonicalProjectJsonStringify(value: unknown): string {
+export function canonicalProjectJsonStringify(value: unknown): string { return writeProjectJson(value, true, ''); }
+
+/** Preserve captured ABI ordering/formatting without the native writer's stack limit. */
+export function stringifyProjectJson(value: unknown, space: number | '\t' = 0): string {
+  return writeProjectJson(value, false, space === '\t' ? space : ' '.repeat(Math.min(10, Math.max(0, Math.trunc(space)))));
+}
+
+function writeProjectJson(value: unknown, canonical: boolean, indent: string): string {
   type Frame = { value: any; keys: string[] | null; length: number; index: number; key: string };
   const stack: Frame[] = [], parts: string[] = [], active = new Set<object>();
   // Blockly documents repeat the same property names across thousands of
@@ -102,10 +111,11 @@ export function canonicalProjectJsonStringify(value: unknown): string {
     const object = current as object;
     if (active.has(object)) reject('Circular JSON object', key);
     const array = Array.isArray(object);
-    if (!array && ![null, Object.prototype].includes(Object.getPrototypeOf(object))) reject('Unsupported JSON object', key);
+    if (!array && !isPlainProjectJsonObject(object)) reject('Unsupported JSON object', key);
     // JSON.stringify orders array-index object keys numerically, even after the
     // original canonical normalizer inserted all keys in lexical order.
-    const keys = array ? null : Object.keys(object).sort((a, b) => {
+    const keys = array ? null : Object.keys(object);
+    if (canonical) keys?.sort((a, b) => {
       const ai = isIndex(a), bi = isIndex(b);
       return ai && bi ? Number(a) - Number(b) : ai ? -1 : bi ? 1 : a < b ? -1 : a > b ? 1 : 0;
     });
@@ -118,15 +128,17 @@ export function canonicalProjectJsonStringify(value: unknown): string {
   while (stack.length) {
     const frame = stack[stack.length - 1];
     if (frame.index === frame.length) {
+      if (indent && frame.length) parts.push('\n', indent.repeat(stack.length - 1));
       parts.push(frame.keys ? '}' : ']'); active.delete(frame.value); stack.pop(); continue;
     }
     if (frame.index) parts.push(',');
+    if (indent) parts.push('\n', indent.repeat(stack.length));
     const key = frame.keys?.[frame.index] ?? String(frame.index);
     frame.index++;
     if (frame.keys) {
       let encoded = encodedKeys.get(key);
       if (encoded === undefined) { encoded = JSON.stringify(key); encodedKeys.set(key, encoded); }
-      parts.push(encoded, ':');
+      parts.push(encoded, indent ? ': ' : ':');
     }
     // Preserve the existing codec's JSON representation of sparse arrays.
     if (!frame.keys && !(key in frame.value)) {parts.push('null'); continue;}

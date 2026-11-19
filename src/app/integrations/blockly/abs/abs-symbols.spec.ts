@@ -1,3 +1,4 @@
+import { splitAbsState } from './abs-full-state';
 import * as Blockly from 'blockly';
 import { createAbsProjection, validateAbsProjection } from './abs-identity-map';
 import { reconcileAbs } from './abs-reconciler';
@@ -18,7 +19,7 @@ describe('ABS model identity and readable reference projection', () => {
   it('keeps symbol IDs out of ABS and maps the field reference without copying model state', async () => {
     const baseline = await project();
     expect(baseline.abs).toContain('BINDING=$"计数 😀"');
-    expect(baseline.abs).not.toContain('v1');
+    expect(splitAbsState(baseline.abs).program).not.toContain('v1');
     expect(baseline.map.symbols).toEqual([{ nodeKey: 'n0', astPath: '/blocks/0/fields/BINDING', kind: 'variable', modelId: 'v1' }]);
     const result = await reconcileAbs(baseline, baseline.abs.replace('TEXT="keep"', 'TEXT="edited"'));
     expect(result.workspace.blocks.blocks[0].fields!['BINDING']).toEqual({ id: 'v1' });
@@ -88,6 +89,16 @@ describe('ABS model identity and readable reference projection', () => {
     const result = await reconcileAbs(baseline, edited, { newId: () => 'new-id', fieldDefinition: (type) => type === 'new_get' ? variable : undefined });
     expect(result.workspace.blocks.blocks[1].fields!['BINDING']).toEqual({ id: 'v2' });
     expect(result.workspace['variables']).toEqual(workspace()['variables']);
+  });
+
+  it('requires native preparation for an unknown dynamic variable field without guessing its kind', async () => {
+    const baseline = await project();
+    await expectAsync(reconcileAbs(baseline, baseline.abs + '\nnew_dynamic(BINDING=$next)'))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_RUNTIME_SHAPE_UNSUPPORTED' }));
+    await expectAsync(reconcileAbs(baseline, baseline.abs + '\nnew_dynamic(BINDING=$next)', {
+      fieldDefinition: type => type === 'new_dynamic' ? { type: 'field_input' } : undefined,
+    })).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_FIELD_INVALID' }));
+    expect(baseline.workspace['variables']).toEqual(workspace()['variables']);
   });
 
   it('rejects forged symbol bindings and changed projection contracts', async () => {

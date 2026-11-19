@@ -24,7 +24,7 @@ export class ProjectLifecycleGate {
     const paths = new Set(projectPaths.filter(Boolean).map(normalize));
     if (owner) {
       const owned = this.owners.get(owner);
-      if (!owned || [...paths].some(path => !owned.has(path))) {
+      if (!owned || (!owned.has('*') && [...paths].some(path => !owned.has(path)))) {
         throw new ProjectLifecycleError('PROJECT_LIFECYCLE_OWNER_STALE', 'Project lifecycle owner is stale or belongs to another project.');
       }
     }

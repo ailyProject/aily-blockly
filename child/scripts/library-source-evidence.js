@@ -3,6 +3,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+// Resolve the same physical identity without JS re-walking every ancestor for
+// each source file (particularly expensive on Windows and deep library trees).
+const realpath = fs.realpathSync.native || fs.realpathSync;
 // A project-local graphics library can legitimately contain more than 256 MiB
 // of fonts and images. Keep capture bounded without rejecting that source tree.
 const MAX_LIBRARY_SOURCE_BYTES = 512 * 1024 * 1024;
@@ -17,22 +20,26 @@ const fail = text => { throw new Error(`LIBRARY_INPUTS_CHANGED: ${text}`); };
 const identity = filename => hash(process.platform === 'win32' ? filename.toLowerCase() : filename);
 
 /** Preserves the existing library cache fingerprint; adds bounded race evidence. */
-function captureLibrarySource(sourcePath) {
-    const root = fs.realpathSync(sourcePath), active = new Set(), digest = crypto.createHash('sha256');
+function captureLibrarySource(sourcePath, { include = () => true, maxFiles = 4096, maxBytes = MAX_LIBRARY_SOURCE_BYTES } = {}) {
+    const root = realpath(sourcePath), active = new Set(), digest = crypto.createHash('sha256');
     const states = [];
-    let fileCount = 0, sizeBytes = 0;
+    let fileCount = 0, sizeBytes = 0, maxRelativePathBytes = 0;
     const visit = (filename, relative, depth) => {
         if (depth > 64) fail('Source depth exceeds limit.');
-        const real = fs.realpathSync(filename);
+        const real = realpath(filename);
         if (!within(root, real)) fail(`Library source link escapes its root: ${filename}`);
         const before = fs.statSync(filename), normalized = relative.split(path.sep).join('/');
         if (before.isDirectory()) {
             if (active.has(real)) fail('Library source contains a directory link cycle.');
             digest.update(`directory\0${normalized}\0`); active.add(real);
-            for (const name of fs.readdirSync(filename).sort((a, b) => a.localeCompare(b))) visit(path.join(filename, name), path.join(relative, name), depth + 1);
+            for (const name of fs.readdirSync(filename).sort((a, b) => a.localeCompare(b))) {
+                const child = path.join(relative, name);
+                if (include(child.split(path.sep).join('/'))) visit(path.join(filename, name), child, depth + 1);
+            }
             active.delete(real);
         } else if (before.isFile()) {
-            if (++fileCount > 4096 || (sizeBytes += before.size) > MAX_LIBRARY_SOURCE_BYTES) fail('Source exceeds capture budget.');
+            maxRelativePathBytes = Math.max(maxRelativePathBytes, Buffer.byteLength(relative));
+            if (++fileCount > maxFiles || (sizeBytes += before.size) > maxBytes) fail('Source exceeds capture budget.');
             const fd = fs.openSync(filename, 'r');
             try {
                 const opened = fs.fstatSync(fd);
@@ -52,7 +59,7 @@ function captureLibrarySource(sourcePath) {
         } else fail('Unsupported source entry.');
     };
     visit(root, '', 0);
-    return { location: root, requestedPath: path.resolve(sourcePath), fingerprint: `sha256:${digest.digest('hex')}`, states, fileCount, sizeBytes };
+    return { location: root, requestedPath: path.resolve(sourcePath), fingerprint: `sha256:${digest.digest('hex')}`, states, fileCount, sizeBytes, maxRelativePathBytes };
 }
 const createLibrarySourceFingerprint = source => captureLibrarySource(source).fingerprint;
 function confirmSource(before) {

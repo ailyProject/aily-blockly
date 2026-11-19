@@ -11,6 +11,8 @@ import * as Blockly from 'blockly';
 import { normalizeLegacyVariableToolboxSource } from '../utils/blockly-legacy-library-compat';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
+import { adaptXiaozhiParameterDeclarations } from './blockly-xiaozhi-parameter-declarations';
+import { adaptXiaozhiDisplayContext } from './blockly-xiaozhi-display-context';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { registerCustomFunctionContract, clearCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { registerVariableDeclarationContract, clearVariableDeclarationRegistration } from './blockly-variable-declaration-contract';
@@ -406,6 +408,8 @@ export class BlocklyGeneratorRuntimeService {
     wrapProjectDataGeneratorFunctions(session.generator, result.registeredBlockTypes);
     if (session.context.mode === 'arduino') {
       adaptBundledArduinoProcedureCalls(session.generator);
+      adaptXiaozhiParameterDeclarations(session.generator, session.realmWindow);
+      adaptXiaozhiDisplayContext(session.generator, session.realmWindow);
       session.projectEffects.wrap(session.generator);
     }
     if (session.context.mode === 'arduino') result.contractsReady = Promise.all([
@@ -697,9 +701,18 @@ export class BlocklyGeneratorRuntimeService {
             if (!wrapped) {
               wrapped = event => {
                 const loading = event.type === Blockly.Events.FINISHED_LOADING;
+                const previousGroup = Blockly.Events.getGroup();
+                // Declaration cleanup runs after the delete event is queued.
+                // Keep its variable removals in the same undo transaction.
+                const inheritDeleteGroup = event.type === Blockly.Events.BLOCK_DELETE &&
+                  event.recordUndo && event.group && !previousGroup;
+                if (inheritDeleteGroup) Blockly.Events.setGroup(event.group);
                 if (loading) this.initializationDepth++;
                 try { listener(event); }
-                finally { if (loading) this.initializationDepth--; }
+                finally {
+                  if (loading) this.initializationDepth--;
+                  if (inheritDeleteGroup) Blockly.Events.setGroup(previousGroup);
+                }
               };
               wrappers.set(listener, wrapped);
             }

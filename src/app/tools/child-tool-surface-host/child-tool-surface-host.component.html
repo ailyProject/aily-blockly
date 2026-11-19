@@ -5,25 +5,26 @@
   @if (iframeSrc) {
     <iframe
       [src]="iframeSrc"
-      [attr.title]="toolId + ' ' + surface + ' surface'"
+      [attr.title]="'SUBAPP_DOCK.SURFACE_TITLE' | translate: { toolId: toolId, surface: surface }"
       (load)="onFrameLoad($event)"></iframe>
   }
 
   @if (isLoading) {
     <div class="compact-surface-overlay" role="status" aria-live="polite" aria-busy="true">
       <span class="compact-surface-spinner" aria-hidden="true"></span>
-      <span>{{ hostStatus === 'starting' ? 'Waiting for Runtime' : 'Loading compact surface' }}</span>
+      <span>{{ (hostStatus === 'starting' ? 'SUBAPP_DOCK.WAITING_RUNTIME' : 'SUBAPP_DOCK.LOADING_SURFACE') | translate }}</span>
     </div>
   } @else if (hostStatus === 'idle' || hostStatus === 'stopped') {
     <div class="compact-surface-overlay" role="status">
       <i class="fa-light fa-power-off" aria-hidden="true"></i>
-      <span>{{ hostStatus === 'stopped' ? 'Runtime stopped' : 'Waiting for Runtime' }}</span>
-      <small>The Dock does not start or retain the subapp Runtime.</small>
+      <span>{{ (hostStatus === 'stopped' ? 'SUBAPP_DOCK.RUNTIME_STOPPED' : 'SUBAPP_DOCK.WAITING_RUNTIME') | translate }}</span>
+      <small>{{ 'SUBAPP_DOCK.RUNTIME_NOT_RETAINED' | translate }}</small>
     </div>
   } @else if (hostStatus === 'error') {
     <div class="compact-surface-overlay is-error" role="alert">
       <i class="fa-light fa-triangle-exclamation" aria-hidden="true"></i>
-      <span>{{ errorMessage }}</span>
+      <span>{{ 'SUBAPP_DOCK.SURFACE_ERROR' | translate }}</span>
+      <small>{{ errorMessage }}</small>
     </div>
   }
 </div>

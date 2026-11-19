@@ -1,4 +1,4 @@
-import { canonicalProjectJsonStringify, cloneBlocklyJson, cloneProjectJson } from './project-document-json';
+import { canonicalProjectJsonStringify, cloneBlocklyJson, cloneProjectJson, stringifyProjectJson } from './project-document-json';
 import { canonicalJsonStringify, createDefaultProjectDataCodecRegistry } from './project-data/project-data-codec.registry';
 
 describe('deep Blockly document canonical snapshots', () => {
@@ -49,4 +49,17 @@ describe('deep Blockly document canonical snapshots', () => {
     expect(Object.hasOwn(clone.data, '__proto__')).toBeTrue();
     expect(({} as any).polluted).toBeUndefined();
   });
+  it('retains native ABI key order, escaping and indentation exactly', () => {
+    const document = JSON.parse('{"z":[],"10":{},"2":[1,null,"中文\\n"],"a":{"__proto__":false,"a/b~":true}}');
+    for (const space of [0, 1, 2, 4, 10, '\t'] as const)
+      expect(stringifyProjectJson(document, space)).toBe(JSON.stringify(document, null, space));
+  });
+  it('writes deeply connected ABI in captured order without native stringify recursion', () => {
+    let block: any = { id: 'tail', type: 'tail' };
+    for (let i = 0; i < 6000; i++) block = { type: 'statement', id: String(i), next: { block } };
+    const text = stringifyProjectJson(block);
+    expect(text.startsWith('{"type":"statement"')).toBeTrue();
+    expect(text.match(/"type":/g)!.length).toBe(6001);
+  });
+
 });

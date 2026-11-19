@@ -128,4 +128,37 @@ describe('batch ABS text-edit identity', () => {
     expect(result.added).toEqual([]);
     expect(result.removed).toEqual([]);
   });
+
+  it('keeps repeated unchanged function-owner tokens and their hidden state through ordinary body edits', async () => {
+    const owner = (id: string, valueId: string) => ({ type: 'custom_function_def', id,
+      fields: { NAME: 'same-name', TYPE: 'void' }, deletable: false, collapsed: true,
+      data: { owner: id, keep: 'opaque owner state' }, extraState: { preserved: ['same', { value: 1 }] },
+      inputs: { BODY: { block: { type: 'math_number', id: valueId, fields: { NUM: 1 } } } } });
+    const dormant = { type: 'dormant', id: 'disabled-keep', disabledReasons: ['MANUALLY_DISABLED'], collapsed: true,
+      deletable: false, data: 'unrelated dormant state', extraState: { bytes: [1, 2, 3] } };
+    const base = await project({ blocks: { blocks: [owner('owner-a', 'number-a'), owner('owner-b', 'number-b'), dormant] } });
+    const first = base.abs.indexOf('NUM=1') + 4, second = base.abs.lastIndexOf('NUM=1') + 4;
+    expect(first).toBeGreaterThan(3); expect(second).toBeGreaterThan(first);
+    const batches: AbsSourceEdits = [[{ start: first, end: first + 1, text: '100' },
+      { start: second, end: second + 1, text: '200' }]];
+    const intermediate = apply(base.abs, batches);
+    batches.push([edit(intermediate, 'NUM=100', 'NUM=300')]);
+    const source = apply(base.abs, batches);
+    for (const batch of batches) for (const e of batch) expect(e.text).not.toContain('custom_function_def');
+    await expectAsync(reconcileAbs(base, source)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_IDENTITY_AMBIGUOUS' }));
+    const result = await reconcileAbs(base, source, { sourceEdits: batches });
+    const before = indexAbsAbi(base.workspace), after = indexAbsAbi(result.workspace);
+    expect(result.added).toEqual([]); expect(result.removed).toEqual([]);
+    for (const id of ['owner-a', 'owner-b', 'disabled-keep']) {
+      const { inputs: _beforeInputs, ...saved } = before.get(id)!;
+      const { inputs: _afterInputs, ...retained } = after.get(id)!;
+      expect(retained).toEqual(saved);
+    }
+    expect(after.get('number-a')!.fields!['NUM']).toBe(300);
+    expect(after.get('number-b')!.fields!['NUM']).toBe(200);
+    expect(source).not.toContain('@meta');
+    // A whole-source rewrite cannot manufacture evidence for the same change.
+    await expectAsync(reconcileAbs(base, source, { sourceEdits: [[{ start: 0, end: base.abs.length, text: source }]] }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_IDENTITY_AMBIGUOUS' }));
+  });
 });

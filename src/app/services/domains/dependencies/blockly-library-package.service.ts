@@ -624,16 +624,6 @@ export class BlocklyLibraryPackageService {
   private writeProjectPackageJson(projectPackageJsonPath: string, projectPackageJson: any): void {
     const content = `${JSON.stringify(projectPackageJson, null, 2)}\n`;
     this.electronService.writeFile(projectPackageJsonPath, content);
-
-    const pathApi = window['path'];
-    if (!pathApi?.dirname || !pathApi?.join) {
-      return;
-    }
-
-    const tempPackageJsonPath = pathApi.join(pathApi.dirname(projectPackageJsonPath), '.temp', 'package.json');
-    if (this.pathExists(tempPackageJsonPath)) {
-      this.electronService.writeFile(tempPackageJsonPath, content);
-    }
   }
 
   private findProjectLocalDependencyPath(projectPath: string, targets: BlocklyLibraryMetadataTarget[]): string {

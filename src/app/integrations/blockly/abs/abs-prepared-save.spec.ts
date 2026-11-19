@@ -109,8 +109,12 @@ describe('prepared Blockly save boundary', () => {
     let editor: any;
     let source: ReturnType<typeof document>;
     let oldFiles: unknown;
+    let oldBuilder: unknown;
+    let oldDependencies: unknown;
+    let oldPackage: unknown;
     beforeEach(() => {
       oldFiles = window['fs']; window['fs'] = files;
+      oldBuilder = window['builder']; oldDependencies = window['libraryDependencies']; oldPackage = window['packageJson'];
       source = document();
       const operations = new SerialOperationQueue();
       const gate = new BlocklyWorkspaceEditGate();
@@ -129,7 +133,10 @@ describe('prepared Blockly save boundary', () => {
       spyOn(service, 'syncUsedLibraryManifest').and.returnValue(false);
       spyOn(service as any, 'publishPreparedCode').and.resolveTo();
     });
-    afterEach(() => { window['fs'] = oldFiles; });
+    afterEach(() => {
+      (service as any).cancelDeferredSaveOutputs(); window['fs'] = oldFiles;
+      window['builder'] = oldBuilder; window['libraryDependencies'] = oldDependencies; window['packageJson'] = oldPackage;
+    });
     it('detects edits to other pages even without a generated-code revision change', async () => {
       (service.prepareSave as jasmine.Spy).and.callFake(async value => {
         source.pages[1].title = 'changed';
@@ -148,7 +155,7 @@ describe('prepared Blockly save boundary', () => {
       });
       await service.save('D:/project');
       expect(JSON.parse(disk.get('D:/project/project.abi')!).sharedModel.variables).toEqual(source.sharedModel['variables']);
-      expect((service as any).publishPreparedCode).toHaveBeenCalledOnceWith('D:/project', generated, jasmine.any(Function));
+      expect((service as any).publishPreparedCode).toHaveBeenCalledOnceWith('D:/project', generated, jasmine.any(Function), {});
       expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
       expect(editor.isWorkspaceEditBlocked()).toBeFalse();
     });
@@ -178,9 +185,124 @@ describe('prepared Blockly save boundary', () => {
     it('still saves editable ABI when generation fails, without attempting a second generation', async () => {
       editor.prepareProjectCode.and.resolveTo({ code: null, artifacts: null, blockCodeMapText: null, error: 'unfinished code', revision: editor.captureProjectSnapshot().revision });
       (service as any).publishPreparedCode.and.callThrough();
-      await service.save('D:/project');
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true, error: 'unfinished code' }));
       expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
       expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    });
+    it('retains a genuine generator failure after saving with isolated build publication', async () => {
+      window['builder'] = { isolatedBuildExecutionVersion: 1 };
+      disk.set('D:/project/package.json', '{"ailyBlocklyUsedLibraries":{}}');
+      editor.getProjectUsedLibraryManifest = () => ({});
+      editor.prepareProjectCode.and.resolveTo({ code: null, artifacts: null, blockCodeMapText: null,
+        error: 'unfinished code', revision: editor.captureProjectSnapshot().revision });
+      (service as any).publishPreparedCode.and.callThrough();
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true, code: 'PROJECT_CODE_NOT_PUBLISHED', error: 'unfinished code' }));
+      expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
+      expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    });
+    it('reports genuine dependency persistence failure after saving with isolated builds', async () => {
+      window['builder'] = { isolatedBuildExecutionVersion: 1 };
+      window['libraryDependencies'] = { save: jasmine.createSpy('saveDependencies').and.rejectWith(new Error('dependency manifest read-only')) };
+      editor.prepareProjectCode.and.resolveTo({ code: 'valid code', artifacts: [], blockCodeMapText: null,
+        revision: editor.captureProjectSnapshot().revision });
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true, error: jasmine.stringMatching(/dependency manifest read-only/) }));
+      expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
+      expect((service as any).publishPreparedCode).not.toHaveBeenCalled();
+    });
+    it('reports required build recovery after saving ABI, without losing the committed document', async () => {
+      (service as any).publishPreparedCode.and.rejectWith(new Error('BUILD_WORKSPACE_RECOVERY_REQUIRED: Restart the computer, then reopen.'));
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true, code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED',
+        error: jasmine.stringMatching(/Project file saved, but generated code could not be updated.*Restart the computer/) }));
+      expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
+      expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+    });
+    it('reports ordinary build contention as partial without denying the ABI commit', async () => {
+      (service as any).publishPreparedCode.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: compilation in progress'));
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true, code: 'BUILD_WORKSPACE_BUSY' }));
+      expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+    });
+
+    describe('deferred derived outputs', () => {
+      let notice: any;
+      beforeEach(() => {
+        jasmine.clock().install();
+        notice = { update: jasmine.createSpy('notice') };
+        (service as any).noticeService = notice;
+        editor.publishPreparedCodeView = jasmine.createSpy('codeView');
+        editor.prepareProjectCode.and.callFake(async () => ({ code: 'saved code', artifacts: null,
+          blockCodeMapText: null, revision: editor.captureProjectSnapshot().revision }));
+      });
+      afterEach(() => jasmine.clock().uninstall());
+      const retry = async (delay = 250) => {
+        jasmine.clock().tick(delay);
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      };
+      it('waits outside the input lease and publishes the exact capture without re-saving or regenerating', async () => {
+        const publish = (service as any).publishPreparedCode as jasmine.Spy;
+        publish.and.callFake(async (_path, _generated, guard) => {
+          guard();
+          if (publish.calls.count() < 3) throw new Error('BUILD_WORKSPACE_BUSY: preprocessing');
+        });
+        const result = await service.save('D:/project');
+        expect(result.projectSaved).toBeTrue(); expect(result.generatedCodePublished).toBeFalse();
+        expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+        await retry(); expect(publish).toHaveBeenCalledTimes(2);
+        await retry(500); expect(publish).toHaveBeenCalledTimes(3);
+        expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+        expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+        expect((service as any).deferredSaveOutputs).toBeUndefined();
+        expect(notice.update).not.toHaveBeenCalled();
+      });
+      it('replaces an older pending save rather than replaying both captures', async () => {
+        const publish = (service as any).publishPreparedCode as jasmine.Spy;
+        publish.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: preprocessing'));
+        await service.save('D:/project');
+        source.pages[1].title = 'new saved document';
+        await service.save('D:/project');
+        const latestCapture = publish.calls.mostRecent().args[1];
+        publish.and.resolveTo();
+        await retry();
+        expect(publish).toHaveBeenCalledTimes(3);
+        expect(publish.calls.mostRecent().args[1]).toBe(latestCapture);
+        expect(files.replaceProjectText).toHaveBeenCalledTimes(2);
+        expect(editor.prepareProjectCode).toHaveBeenCalledTimes(2);
+      });
+      for (const change of ['canvas', 'disk', 'project', 'destroy', 'isolated-host'] as const) {
+        it(`cancels the pending capture after ${change} changes`, async () => {
+          const publish = (service as any).publishPreparedCode as jasmine.Spy;
+          publish.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: preprocessing'));
+          await service.save('D:/project');
+          if (change === 'canvas') source.pages[1].title = 'newer unsaved edit';
+          if (change === 'disk') disk.set('D:/project/project.abi', 'external document');
+          if (change === 'project') service.currentProjectPath = 'D:/other';
+          if (change === 'isolated-host') window['builder'] = { isolatedBuildExecutionVersion: 1 };
+          if (change === 'destroy') {
+            (service as any).actionService = { unlisten: () => {} };
+            service.destroy();
+          }
+          await retry();
+          expect(publish).toHaveBeenCalledTimes(1);
+          expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+          expect(notice.update).not.toHaveBeenCalled();
+        });
+      }
+      it('reports genuine errors from a deferred write while keeping the saved document', async () => {
+        const publish = (service as any).publishPreparedCode as jasmine.Spy;
+        publish.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: preprocessing'));
+        await service.save('D:/project');
+        publish.and.rejectWith(new Error('disk full'));
+        await retry();
+        expect(notice.update).toHaveBeenCalledOnceWith(jasmine.objectContaining({ state: 'error', detail: 'disk full' }));
+        expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
+        expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+      });
     });
     it('rejects stale queued saves after switching project/page', async () => {
       const pending = service.save('D:/project');
@@ -231,6 +353,7 @@ describe('prepared Blockly save boundary', () => {
   describe('shared post-commit code publication', () => {
     let oldBuilder: unknown;
     let oldFs: unknown;
+    let oldPackage: unknown;
     let service: _ProjectService;
     let editor: any;
     let publishArtifacts: jasmine.Spy;
@@ -238,6 +361,7 @@ describe('prepared Blockly save boundary', () => {
       blockCodeMapText: '[["original-id",{"codeSnippet":"prepared code"}]]', revision: 1 } as any;
     beforeEach(() => {
       oldBuilder = window['builder'];
+      oldPackage = window['packageJson'];
       oldFs = window['fs']; window['fs'] = files;
       publishArtifacts = jasmine.createSpy('artifacts');
       window['builder'] = { publishArduinoGeneratedCode: publishArtifacts };
@@ -248,13 +372,21 @@ describe('prepared Blockly save boundary', () => {
       disk.set('D:/project/project.abi', prepared.abiText);
       spyOn(service, 'syncUsedLibraryManifest').and.returnValue(false);
     });
-    afterEach(() => { window['builder'] = oldBuilder; window['fs'] = oldFs; });
+    afterEach(() => { window['builder'] = oldBuilder; window['fs'] = oldFs; window['packageJson'] = oldPackage; });
     it('publishes code and its captured block map before disk outputs without regenerating', async () => {
       publishArtifacts.and.callFake(() => {
         expect(editor.publishPreparedCodeView).toHaveBeenCalledOnceWith(generated.code, generated.blockCodeMapText);
       });
       await service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined);
       expect(publishArtifacts).toHaveBeenCalledOnceWith('D:/project', { artifacts: [], sketchCode: generated.code });
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('propagates the explicit preservation flag and the actual source archive receipt after an ABI commit', async () => {
+      const receipt = { changed: true, sourceArchive: { version: 1 as const, manifest: '.aily/generated-source-archives/id/manifest.json',
+        hash: `sha256:${'a'.repeat(64)}`, fileCount: 1, bytes: 12 } };
+      window['builder'].generatedSourceArchiveVersion = 1; publishArtifacts.and.returnValue(receipt);
+      expect(await service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined, { preserveSuperseded: true })).toBe(receipt);
+      expect(publishArtifacts).toHaveBeenCalledOnceWith('D:/project', { artifacts: [], sketchCode: generated.code, preserveSuperseded: true });
       expect(editor.prepareProjectCode).not.toHaveBeenCalled();
     });
     it('publishes the same prepared sketch and headers together, including an empty sketch', async () => {
@@ -285,11 +417,77 @@ describe('prepared Blockly save boundary', () => {
       expect(disk.get('D:/project/.temp/sketch/sketch.ino')).toBe('last complete code');
     });
     it('keeps the committed view current even if artifact publication is busy', async () => {
+      spyOn(service as any, 'deferSaveOutputs').and.stub();
       publishArtifacts.and.throwError('BUILD_WORKSPACE_BUSY: preprocessing');
       await expectAsync(service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined))
         .toBeRejectedWithError('BUILD_WORKSPACE_BUSY: preprocessing');
       expect(editor.publishPreparedCodeView).toHaveBeenCalledOnceWith(generated.code, generated.blockCodeMapText);
       expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('publishes only the captured preview and canonical used libraries with isolated builds under a legacy root lock', async () => {
+      window['builder'].isolatedBuildExecutionVersion = 1;
+      publishArtifacts.and.throwError('BUILD_WORKSPACE_RECOVERY_REQUIRED: previous delegated owner exited');
+      const patchMetadata = jasmine.createSpy('patchMetadata').and.throwError('legacy metadata lease');
+      window['builder'].patchBuildMetadata = patchMetadata;
+      const calculateHash = jasmine.createSpy('calculateHash').and.rejectWith(new Error('must not publish metadata'));
+      (service as any).electronService = { calculateHash };
+      spyOn(service as any, 'deferSaveOutputs').and.stub();
+      const manifest = { dependencies: { '@aily-project/lib-mqtt': '1.0.0' },
+        MACROS: [['USER_FLAG=1'], ['OLD_GENERATED=1']], ailyGeneratorMacros: { OLD_GENERATED: 'OLD_GENERATED=1' },
+        ailyBlocklyUsedLibraries: { stale: true } };
+      const usage = { '@aily-project/lib-mqtt': { version: '1.0.0', blocks: ['mqtt_create'] } };
+      editor.getProjectUsedLibraryManifest = jasmine.createSpy('usedLibraries').and.callFake((pkg, document) => {
+        expect(pkg).toEqual(manifest); expect(document).toEqual(JSON.parse(prepared.documentText)); return usage;
+      });
+      disk.set('D:/project/package.json', JSON.stringify(manifest));
+      const protectedFiles = new Map([
+        ['D:/project/.aily/build-workspace/owner.json', '{"pid":23432,"state":"delegated"}'],
+        ['D:/project/.temp/sketch/sketch.ino', 'old compiler source'],
+        ['D:/project/src/variables_old-12345678.h', 'old compiler declarations'],
+        ['D:/project/.build/build.json', '{"codeHash":"old"}'],
+      ]);
+      for (const [path, bytes] of protectedFiles) disk.set(path, bytes);
+      const receipt = await service.publishPreparedSaveOutputs('D:/project', prepared,
+        { ...generated, projectMacros: [{ name: 'NEW_GENERATED', value: 'NEW_GENERATED=2' }],
+          artifacts: [{ fileName: 'variables_new-12345678.h', content: 'new declarations', sourceTag: 'new' }] }, () => undefined,
+        { preserveSuperseded: true });
+      expect(receipt).toEqual({ changed: false, target: 'preview', previewPublished: true, diskPublished: false });
+      expect(editor.publishPreparedCodeView).toHaveBeenCalledOnceWith(generated.code, generated.blockCodeMapText);
+      expect(editor.getProjectUsedLibraryManifest).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(disk.get('D:/project/package.json')!)).toEqual({ ...manifest, ailyBlocklyUsedLibraries: usage });
+      expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+      expect(files.replaceProjectText.calls.mostRecent().args[0].fileName).toBe('package.json');
+      for (const [path, bytes] of protectedFiles) expect(disk.get(path)).withContext(path).toBe(bytes);
+      expect(disk.has('D:/project/src/variables_new-12345678.h')).toBeFalse();
+      expect(publishArtifacts).not.toHaveBeenCalled(); expect(patchMetadata).not.toHaveBeenCalled();
+      expect(calculateHash).not.toHaveBeenCalled(); expect((service as any).deferSaveOutputs).not.toHaveBeenCalled();
+      expect(service.syncUsedLibraryManifest).not.toHaveBeenCalled();
+    });
+    it('reports a used-library persistence failure instead of declaring the isolated save outputs complete', async () => {
+      window['builder'].isolatedBuildExecutionVersion = 1;
+      disk.set('D:/project/package.json', '{"ailyBlocklyUsedLibraries":{}}');
+      editor.getProjectUsedLibraryManifest = jasmine.createSpy('usedLibraries').and.returnValue({ required: true });
+      files.replaceProjectText.and.resolveTo({ status: 'NOT_COMMITTED', error: 'permission denied' });
+      await expectAsync(service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_FILE_NOT_COMMITTED', message: 'permission denied' }));
+      expect(editor.publishPreparedCodeView).not.toHaveBeenCalled();
+      expect(publishArtifacts).not.toHaveBeenCalled();
+      expect(disk.get('D:/project/package.json')).toBe('{"ailyBlocklyUsedLibraries":{}}');
+    });
+    it('preserves concurrent manifest changes when publishing isolated used-library data', async () => {
+      window['builder'].isolatedBuildExecutionVersion = 1;
+      disk.set('D:/project/package.json', '{"ailyBlocklyUsedLibraries":{}}');
+      editor.getProjectUsedLibraryManifest = jasmine.createSpy('usedLibraries').and.returnValue({ required: true });
+      files.replaceProjectText.and.callFake(async (request, guard) => {
+        disk.set('D:/project/package.json', '{"dependencies":{"newer":"2"}}');
+        guard();
+        expect(request.expectedHash).toBe(await hashAbsText('{"ailyBlocklyUsedLibraries":{}}'));
+        return { status: 'CONFLICT', error: 'external edit' };
+      });
+      await expectAsync(service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_FILE_CONFLICT' }));
+      expect(disk.get('D:/project/package.json')).toBe('{"dependencies":{"newer":"2"}}');
+      expect(editor.publishPreparedCodeView).not.toHaveBeenCalled(); expect(publishArtifacts).not.toHaveBeenCalled();
     });
     it('publishes neither view nor artifacts after the context changes', async () => {
       await expectAsync(service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => { throw new Error('stale context'); }))

@@ -12,7 +12,7 @@ import path from 'node:path';
  * 已安装。通过环境变量 AILY_E2E_PROJECT 指定项目目录的绝对路径，例如：
  *
  *   $env:AILY_E2E_PROJECT = 'D:\\path\\to\\blockly-project'
- *   npm run test:e2e -- blockly-editor.spec.ts
+ *   npm --prefix e2e run test -- blockly-editor.spec.ts
  *
  * 未设置该变量时整套用例自动跳过。
  */

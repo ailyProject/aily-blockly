@@ -11,6 +11,7 @@ import { UiService, UpdateService, OnboardingService } from '@core/app-shell/pub
 import { ChildToolPresentationComponent } from '../tools/child-tool-presentation/child-tool-presentation.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '@domain/project/public-api';
+import { SerialService } from '@domain/device/public-api';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AppStoreComponent } from '../tools/app-store/app-store.component';
@@ -18,7 +19,7 @@ import { AppStoreService } from '../tools/app-store/app-store.service';
 import { NzModalModule, NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import { NpmService } from '@domain/dependencies/public-api';
 import { NavigationEnd, Router, RouterModule } from '@angular/router';
-import { combineLatest, distinctUntilChanged, filter, merge, Subscription, take } from 'rxjs';
+import { combineLatest, distinctUntilChanged, filter, map, merge, Subscription, take } from 'rxjs';
 import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
@@ -35,6 +36,7 @@ import {
 } from '@core/auth/public-api';
 import { extractApiErrorDetails } from '../utils/api-error.utils';
 import { ElectronService } from '@core/platform/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import {
   SubappManagerService,
   ChildToolProcessService,
@@ -123,10 +125,14 @@ export class MainWindowComponent implements OnDestroy {
   private configNoticeSubscription: Subscription | null = null;
   private projectContextSubscription: Subscription | null = null;
   private projectStateSubscription: Subscription | null = null;
+  private projectLoadingMessageTimer: ReturnType<typeof setTimeout> | null = null;
+  private projectProgressMessageId: string | null = null;
   private loginDialogSubscription: Subscription | null = null;
   private loginModalRef: NzModalRef<LoginComponent> | null = null;
   private authSessionInvalidationSubscription: Subscription | null = null;
   private authStateBroadcastSubscription: Subscription | null = null;
+  private ailyChatAutoOpenSubscription: Subscription | null = null;
+  private destroyed = false;
   private authSessionInvalidationPromise: Promise<void> | null = null;
   private cancelAilyChatPrewarm: (() => void) | null = null;
   private ailyChatPrewarmAuthSubscription: Subscription | null = null;
@@ -155,6 +161,8 @@ export class MainWindowComponent implements OnDestroy {
     private childToolProcessService: ChildToolProcessService,
     private workspaceHostProviders: SubappWorkspaceHostProviderService,
     private toolI18n: ToolI18nService,
+    private metrics: MetricsService,
+    private serialService: SerialService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -179,16 +187,19 @@ export class MainWindowComponent implements OnDestroy {
       this.toolI18n.loadChildTools(),
       this.toolI18n.load('aily-chat'),
     ]);
+    if (this.destroyed) return;
     this.uiService.init();
     this.projectService.init();
     this.workspaceHostProviders.start();
     this.projectContextSubscription = combineLatest([
       this.workspaceHostProviders.readyBaseWorkspace$,
       this.projectService.coderWorkspace$,
-    ]).subscribe(([workspace, coderWorkspace]) => {
+      this.serialService.selectedPort$,
+    ]).subscribe(([workspace, coderWorkspace, serialPort]) => {
       window['ipcRenderer']?.send?.('host-project-context-changed', {
         workspace: workspace || null,
         coderWorkspace,
+        serialPort,
       });
     });
     this.updateService.init();
@@ -196,6 +207,17 @@ export class MainWindowComponent implements OnDestroy {
     this.setupGlobalOAuthListener();
     this.setupExampleListListener();
     void this.electronService.sendRendererReady();
+    this.metrics.record('app_opened');
+    this.ailyChatAutoOpenSubscription = combineLatest([
+      this.authService.isLoggedIn$,
+      this.subappManager.state$,
+    ]).pipe(
+      // First-run installation may finish after login. Only open a runnable
+      // Chat, and do not reopen a closed panel on unrelated catalog refreshes.
+      map(([loggedIn]) => loggedIn && this.isAilyChatAvailable()),
+      distinctUntilChanged(),
+      filter(Boolean),
+    ).subscribe(() => this.uiService.openPreferredAilyChat());
     void this.initializeAuthAndPromptIfNeeded();
     void this.ensureDefaultSubapps();
     // 重置 footer 状态
@@ -312,6 +334,11 @@ export class MainWindowComponent implements OnDestroy {
         },
         readCatalog: () => this.subappManager.state.apps,
         isAvailable: item => isAppAvailableForApplication(item.only, this.configService.getApplicationName()),
+        // These decisions were only persisted after a successful installation.
+        // Preserve old removals without treating a fresh install as an opt-out.
+        wasAilyChatInstalled: catalogId => Object.prototype.hasOwnProperty.call(
+          this.configService.data?.subappToolbarDefaults || {}, catalogId,
+        ),
         install: async catalogId => { await this.requiredSubapps.ensureInstalled(catalogId); },
         onError: (toolId, error) => console.warn(`[Subapp] Default ${toolId} startup setup failed:`, error),
       });
@@ -396,7 +423,7 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   private scheduleAilyChatPrewarm(): void {
-    if (this.cancelAilyChatPrewarm) return;
+    if (this.destroyed || this.cancelAilyChatPrewarm) return;
     if (!this.authService.isLoggedIn) {
       if (!this.ailyChatPrewarmAuthSubscription) {
         this.ailyChatPrewarmAuthSubscription = this.authService.isLoggedIn$
@@ -408,10 +435,7 @@ export class MainWindowComponent implements OnDestroy {
       }
       return;
     }
-    const installed = this.subappManager.state.apps.some(
-      item => item.toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID && item.installed && item.config,
-    );
-    if (!installed) return;
+    if (!this.isAilyChatAvailable()) return;
 
     const run = () => {
       this.cancelAilyChatPrewarm = null;
@@ -420,9 +444,10 @@ export class MainWindowComponent implements OnDestroy {
         this.scheduleAilyChatPrewarm();
         return;
       }
+      if (this.destroyed || !this.isAilyChatAvailable()) return;
 
       void this.childToolProcessService.prewarm(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID, 90000).catch(error => {
-        console.warn('[Subapp] Aily Chat prewarm failed:', error);
+        console.warn('[Subapp] aily Chat prewarm failed:', error);
       });
     };
 
@@ -436,8 +461,19 @@ export class MainWindowComponent implements OnDestroy {
     this.cancelAilyChatPrewarm = () => clearTimeout(timer);
   }
 
+  private isAilyChatAvailable(): boolean {
+    return this.subappManager.state.apps.some(item =>
+      item.toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID && item.installed && !!item.config
+      && !item.uninstalling && item.enabled !== false && item.app?.enabled !== false
+      && isAppAvailableForApplication(item.only, this.configService.getApplicationName()),
+    );
+  }
+
   ngOnDestroy(): void {
     void this.workspaceHostProviders.stop();
+    this.destroyed = true;
+    this.ailyChatAutoOpenSubscription?.unsubscribe();
+    this.ailyChatAutoOpenSubscription = null;
     this.unregisterAilyChatHostAuthRuntimeBridge?.();
     this.unregisterAilyChatHostAuthRuntimeBridge = null;
     this.cancelAilyChatPrewarm?.();
@@ -457,6 +493,7 @@ export class MainWindowComponent implements OnDestroy {
     this.projectContextSubscription = null;
     this.projectStateSubscription?.unsubscribe();
     this.projectStateSubscription = null;
+    this.clearProjectProgressMessage();
     this.oauthResultListener?.();
     this.oauthResultListener = null;
     this.exampleListListener?.();
@@ -553,6 +590,9 @@ export class MainWindowComponent implements OnDestroy {
     this.uiService.actionSubject.subscribe((e: any) => {
       // console.log(e);
       switch (e.type) {
+        case 'log':
+          if (e.action === 'reveal') void this.logComponent?.reveal(e.data);
+          break;
         case 'tool':
           if (e.action === 'open') {
             this.showRbox = true;
@@ -596,29 +636,28 @@ export class MainWindowComponent implements OnDestroy {
     this.projectStateSubscription = this.projectService.stateSubject.pipe(
       distinctUntilChanged(),
     ).subscribe((state) => {
+      this.clearProjectProgressMessage();
       switch (state) {
         case 'loading':
-          // this.loaded = false;
-          setTimeout(() => {
-            this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'));
-            // this.loaded = true;
+          this.projectLoadingMessageTimer = setTimeout(() => {
+            this.projectLoadingMessageTimer = null;
+            if (this.projectService.stateSubject.value !== 'loading') return;
+            this.projectProgressMessageId = this.message.loading(
+              this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'), { nzDuration: 0 },
+            ).messageId;
           }, 20);
           break;
         case 'loaded':
-          this.message.remove();
           this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_LOADED'));
           void this.reloadTerminalAfterProjectOpen();
           break;
         case 'saving':
-          this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'));
+          this.projectProgressMessageId = this.message.loading(
+            this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'), { nzDuration: 0 },
+          ).messageId;
           break;
         case 'saved':
-          this.message.remove();
           this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_SAVED'));
-          break;
-        case 'default':
-          // this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_CLOSED'));
-          // this.loaded = false;
           break;
         default:
           break;
@@ -628,18 +667,52 @@ export class MainWindowComponent implements OnDestroy {
 
   }
 
+  private clearProjectProgressMessage(): void {
+    if (this.projectLoadingMessageTimer != null) {
+      clearTimeout(this.projectLoadingMessageTimer);
+      this.projectLoadingMessageTimer = null;
+    }
+    if (this.projectProgressMessageId != null) {
+      this.message.remove(this.projectProgressMessageId);
+      this.projectProgressMessageId = null;
+    }
+  }
+
   closeRightBox() {
     this.showRbox = false;
   }
 
   bottomHeight = 210;
+  // Persist the content width; the active Chat Dock adds temporary space on its left.
   siderWidth = this.readPersistedSiderWidth();
+  private ailyChatDockWidth = 0;
+
+  private get activeDockWidth(): number {
+    return this.topTool === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID ? this.ailyChatDockWidth : 0;
+  }
+
+  get rightSiderWidth(): number {
+    return this.siderWidth + this.activeDockWidth;
+  }
+
+  get rightSiderMinWidth(): number {
+    return RIGHT_SIDER_MIN_WIDTH + this.activeDockWidth;
+  }
+
+  get rightSiderMaxWidth(): number {
+    return RIGHT_SIDER_MAX_WIDTH + this.activeDockWidth;
+  }
+
+  onToolDockWidthChange(toolId: string, width: number): void {
+    if (toolId !== DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID || !Number.isFinite(width)) return;
+    this.ailyChatDockWidth = Math.max(0, Math.round(width));
+  }
 
   onSideResize({ width }: NzResizeEvent): void {
     if (!Number.isFinite(width)) {
       return;
     }
-    this.siderWidth = this.normalizeSiderWidth(width!);
+    this.siderWidth = this.normalizeSiderWidth(width! - this.activeDockWidth);
     try {
       localStorage.setItem(RIGHT_SIDER_WIDTH_STORAGE_KEY, String(this.siderWidth));
     } catch (error) {

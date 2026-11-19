@@ -60,6 +60,7 @@ function sendNpmLog(log) {
 const lifecycle = createManagedToolLifecycle({
   toolKey: AILY_BUILDER_KEY,
   packageName: PACKAGE_NAME,
+  preserveNewerThanLatest: true,
   probe: probeAilyBuilderCommand,
   emptyState: () => ({ path: getAilyBuilderCommandPath() }),
   statusFields: state => ({ entryPath: state.ok ? state.entryPath || '' : '' }),
@@ -86,12 +87,12 @@ function applyCommandEnv() {
   applyManagedCommandEnv();
 }
 
-function initialize(childPath, options = {}) {
-  return lifecycle.initialize(childPath, null, options);
+function configure(childPath, options = {}) {
+  lifecycle.configure(childPath, options);
 }
 
-function waitForReady() {
-  return lifecycle.waitForReady();
+function ensureReady() {
+  return lifecycle.ensureReady();
 }
 
 function registerHandlers(mainWindowProvider) {
@@ -104,7 +105,7 @@ function registerHandlers(mainWindowProvider) {
   ipcMain.handle('aily-builder-status', async () => lifecycle.getStatus());
   ipcMain.handle('aily-builder-check-update', async () => lifecycle.checkForUpdate());
   ipcMain.handle('aily-builder-wait-ready', async () => {
-    const result = await lifecycle.waitForReady();
+    const result = await ensureReady();
     if (!result.ok) {
       throw new Error(result.error || 'aily-builder 未安装或启动初始化失败');
     }
@@ -126,7 +127,7 @@ function registerHandlers(mainWindowProvider) {
 module.exports = {
   applyCommandEnv,
   configureCacheEnvironment,
-  initialize,
+  configure,
+  ensureReady,
   registerHandlers,
-  waitForReady,
 };

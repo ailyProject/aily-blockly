@@ -2,6 +2,7 @@ import * as Blockly from 'blockly';
 import { createBrowserFrameBudget } from '@shared/public-api';
 import { withNativeStateLoading } from '../../../editors/blockly-editor/services/blockly-native-state-loading';
 import { primeBlocklyTextWidths } from '../../../editors/blockly-editor/utils/blockly-text-measurement';
+import { withNativeFragmentRenders } from '../../../editors/blockly-editor/utils/blockly-native-render-batch';
 
 type BlockState = Blockly.serialization.blocks.State;
 
@@ -57,6 +58,7 @@ export async function loadAbsWorkspaceInChunks(
   onProgress?: (blocks: number, batches: number) => void,
   assertCurrent: () => void = () => undefined,
   fieldOrder?: (block: Blockly.Block) => readonly string[] | undefined,
+  withFragment: <T>(load: () => T) => T = load => load(),
 ): Promise<{ blockCount: number; batchCount: number }> {
   // appendInternal is exported by the bundled Blockly runtime. It preserves
   // parent-before-field loading and queues rendering instead of forcing it.
@@ -70,6 +72,7 @@ export async function loadAbsWorkspaceInChunks(
     .reverse();
   let blockCount = 0;
   let batchCount = 0;
+  let fragmentLimit = BLOCKS_PER_FRAGMENT;
   // Keep models complete while yielding input handling between fragments.
   // Geometry and the viewport index are refreshed after the graph is connected,
   // rather than repeatedly rendering a growing long stack at every browser frame.
@@ -95,7 +98,7 @@ export async function loadAbsWorkspaceInChunks(
       while (pending.length > 0 && batchBlocks < BLOCKS_PER_BATCH) {
         assertCurrent();
         const item = pending.pop()!;
-        const fragment = takeFragment(item.state, Math.min(BLOCKS_PER_FRAGMENT, BLOCKS_PER_BATCH - batchBlocks));
+        const fragment = takeFragment(item.state, Math.min(fragmentLimit, BLOCKS_PER_BATCH - batchBlocks));
         const parent = item.parent ? workspace.getBlockById(item.parent.id) : undefined;
         const parentConnection = item.parent
           ? item.parent.input !== undefined
@@ -107,11 +110,12 @@ export async function loadAbsWorkspaceInChunks(
         }
 
         const group = Blockly.Events.getGroup(), recordUndo = Blockly.Events.getRecordUndo();
+        const fragmentStarted = performance.now();
         try {
-          withNativeStateLoading(Blockly, workspace, fragment.state, () => Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
+          withFragment(() => withNativeFragmentRenders(workspace, () => withNativeStateLoading(Blockly, workspace, fragment.state, () => Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
             parentConnection: parentConnection || undefined,
             recordUndo: false,
-          }), fieldOrder);
+          }), fieldOrder)));
         } finally {
           // Native appendInternal restores these only on success. A rejected
           // library field/type must not change the next project's undo policy.
@@ -119,6 +123,11 @@ export async function loadAbsWorkspaceInChunks(
         }
         pending.push(...fragment.deferred.reverse());
         batchBlocks += fragment.blockCount;
+        // Fixed 32-block fragments exceed a frame on slower machines. Adapt
+        // using actual construction time; never skip models to meet the budget.
+        const elapsed = performance.now() - fragmentStarted;
+        fragmentLimit = Math.max(1, Math.min(BLOCKS_PER_FRAGMENT,
+          Math.floor(fragment.blockCount * 16 / Math.max(1, elapsed))));
         await budget.checkpoint('abs.native-load');
         assertCurrent();
       }

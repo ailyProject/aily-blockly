@@ -1,6 +1,7 @@
 import { indexAbsAbi } from './abs-abi-index';
 import { AbsAbiWorkspace, AbsSyncError } from './abs-state';
 import { readAbsStatePath } from './abs-state-path';
+import { indexAbsBlockActivity } from './abs-block-activity';
 
 /** Host-declared serialization contract; paths are schema, never duplicated model state. */
 export interface AbsProcedureStateContract {
@@ -24,6 +25,24 @@ export interface AbsProcedureReference { blockId: string; statePath: string; kin
 /** Blockly legacy procedure namespace is case-insensitive. Validate before callbacks can auto-create/retarget definitions. */
 export function getAbsProcedureReferences(
   workspace: AbsAbiWorkspace, contracts: Record<string, AbsProcedureStateContract> = {},
+): AbsProcedureReference[] {
+  const activity = indexAbsBlockActivity(workspace);
+  const active = Object.fromEntries(Object.entries(contracts).filter(([id]) => activity.get(id)));
+  const references = procedureReferences(workspace, active);
+  if (Object.keys(active).length === Object.keys(contracts).length) return references;
+  // Older immutable maps recorded references from valid inactive signatures.
+  // Retain that pure identity evidence when it is still provable, without
+  // making an inactive definition satisfy an executable call. An orphaned or
+  // stale inactive signature remains opaque JSON, not a reason to lose export.
+  try { return procedureReferences(workspace, contracts); }
+  catch (error) {
+    if (!(error instanceof AbsSyncError) || error.code !== 'ABS_PROCEDURE_INVALID') throw error;
+    return references;
+  }
+}
+
+function procedureReferences(
+  workspace: AbsAbiWorkspace, contracts: Record<string, AbsProcedureStateContract>,
 ): AbsProcedureReference[] {
   const blocks = indexAbsAbi(workspace);
   const variables = new Map((Array.isArray(workspace['variables']) ? workspace['variables'] : []).map(model => [model.id, model]));

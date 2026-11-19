@@ -10,8 +10,11 @@ const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, p
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource, confirmPreparedBuildSource } = require('./build-source-capture');
-const { compileWithArchiveRecovery } = require('./builder-archive-recovery');
+const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
+const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
+const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
+const { captureBlocklyCompileSource } = require('./compile-source');
 
 // 简单的日志工具
 const logger = {
@@ -141,15 +144,22 @@ async function main() {
     let workspace;
 
     try {
+        if (config.execution) recordFor(config);
+
         workspace = acquireBuildWorkspace(currentProjectPath, 'compile');
+
+        startBuildExecution(config, workspace);
+
+        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+
+        if (isAilyCode) invalidateCoderUploadState(currentProjectPath);
 
         confirmBuildSource(config);
         invalidateBuildDelivery(currentProjectPath);
 
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
-        // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
-        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
 
+        // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
         if (!isAilyCode) invalidateBlocklyUploadState(currentProjectPath);
 
         const tempPath = isAilyCode
@@ -231,12 +241,14 @@ async function main() {
         await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
         workspace.assertOwned();
         confirmBuildSource(config);
+
         const preparedSnapshot = confirmPreparedBuildSource(config);
 
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config, 'before-target-compile');
 
+        const materializedSource = !isAilyCode ? captureBlocklyCompileSource(config, compileSourcePath) : undefined;
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
-        const uploadInputs = !isAilyCode ? captureBlocklyUploadInputs(config) : null;
+        const uploadInputs = isAilyCode ? captureCoderUploadInputs(config) : captureBlocklyUploadInputs(config);
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
         const boardJsonPath = path.join(boardModulePath, 'board.json');
@@ -291,7 +303,7 @@ async function main() {
             throw new Error('Current Builder does not support the host-authorized simulation compilation profile; upgrade it before simulating.');
         }
 
-        if (recordBuildInputs && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace)) {
+        if (recordBuildInputs && (!capabilities.artifact || !(capabilities.inputs || capabilities.verification) || !capabilities.workspace)) {
             throw new Error('Current Builder cannot record build-graph facts with workspace ownership; upgrade it before requesting project delivery.');
         }
 
@@ -369,18 +381,24 @@ async function main() {
 
         if (recordBuildInputs) args.push('--record-build-inputs');
         if (simulationTransport) args.push('--simulation-transport-profile', simulationTransport.profile);
-        if (projectSnapshot) args.push('--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
 
-        if (!projectSnapshot && (isDevelopmentEnvironment() || process.env.AILY_E2E === '1')) {
-            args.push('--generate-archive-cloud-cache');
-        }
+        const archive = builderArchiveOptions({
+            execution: config.execution,
+            projectPath: currentProjectPath,
+            recordsProjectDelivery: !!projectSnapshot,
+            isAilyCode,
+            verifiedLocalArchiveCache: capabilities.verifiedLocalArchiveCache,
+            generateLegacy: isDevelopmentEnvironment() || process.env.AILY_E2E === '1'
+        });
+
+        args.push(...archive.args);
 
         /** @type {{ cwd: string, shell: boolean, stdio: string[], env?: NodeJS.ProcessEnv }} */
         const spawnOpts = {
             cwd: currentProjectPath,
             shell: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: workspace.builderEnvironment('compile')
+            env: { ...workspace.builderEnvironment('compile'), ...archive.env }
         };
 
         if (frameworkOutputDir) {
@@ -394,12 +412,15 @@ async function main() {
 
         const startedAt = new Date();
 
+        if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
+
         const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
             confirmPreparedBuildSource(config, preparedSnapshot);
             simulationTransport?.assertCurrent();
 
+            if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
             if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
 
@@ -412,10 +433,12 @@ async function main() {
         let deliveryError = null;
 
         try {
+            if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
                 confirmPreparedBuildSource(config, preparedSnapshot);
+
                 if (simulationTransport) await simulationTransport.confirm();
 
                 if (projectSnapshot) {
@@ -430,6 +453,9 @@ async function main() {
             deliveryError = error;
 
             invalidateBuildDelivery(currentProjectPath);
+
+            if (!isAilyCode) invalidateBlocklyUploadState(currentProjectPath);
+
             output.push(`\n[BUILD_DELIVERY_ERROR] ${formatFatalError(error)}\n`);
         }
 
@@ -463,6 +489,8 @@ async function main() {
             throw new Error(`编译进程异常退出，退出码: ${exitCode}`);
         }
 
+        if (isAilyCode) publishCoderUploadState(config, uploadInputs);
+
         logger.log('编译完成');
     } catch (error) {
         writeProjectInputDifference(error);
@@ -472,7 +500,15 @@ async function main() {
     } finally {
         // Only the acquiring host releases, after preprocess/compiler close and
         // delivery/report completion. A rejected contender never owns cleanup.
-        if (workspace) workspace.release();
+        try {
+            if (workspace) workspace.release();
+        } catch (error) {
+            finishBuildExecution(config, false);
+
+            throw error;
+        }
+
+        finishBuildExecution(config, !!workspace && process.exitCode !== 1);
     }
 }
 

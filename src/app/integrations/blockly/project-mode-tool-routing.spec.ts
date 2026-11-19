@@ -13,6 +13,7 @@ describe('shared project tools route by project mode', () => {
       currentProjectPath: '/coder', coderProjects: [{ path: '/coder' }],
       getProjectMode: () => 'coder', isAilyCodeProject: () => true,
       isProjectTransitionInProgress: () => false,
+      isLibraryMutationInProgress: () => false,
       currentBoardConfig: {}, getRuntimeBoardModule: () => activeBoard,
       getPackageJson: async () => manifest,
       setPackageJson: jasmine.createSpy('persist').and.callFake(async value => { manifest = value; }),

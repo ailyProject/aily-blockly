@@ -1,6 +1,11 @@
+import { localCompileDiagnostic, localCompileErrorEvents } from '../../../../../tests/fixtures/local-compile-error-events';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { CompileService } from './compile.service';
-import { of } from 'rxjs';
+import { recordCompileNotices } from '../../../../../tests/fixtures/compile-notice-probe';
+import { NpmService } from '../dependencies/public-api';
+import { CmdService } from '@core/platform/public-api';
+import { of, Subject } from 'rxjs';
+import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 
 describe('Coder build metadata', () => {
   const root = '/projects/coder';
@@ -8,6 +13,7 @@ describe('Coder build metadata', () => {
   let originalFs: any;
   let originalPath: any;
   let originalBuilder: any;
+  let originalCmd: any;
   let electron: any;
   let project: any;
   let metadata: CoderBuildInfoService;
@@ -19,6 +25,7 @@ describe('Coder build metadata', () => {
     originalFs = window['fs'];
     originalPath = window['path'];
     originalBuilder = window['builder'];
+    originalCmd = window['cmd'];
     files = new Map([
       [packagePath, JSON.stringify({
         type: 'coder', entry: 'src/main.cpp', dependencies: { '@aily-project/board-test': '1.0.0' },
@@ -34,6 +41,7 @@ describe('Coder build metadata', () => {
         return files.get(path);
       },
       writeFileSync: (path: string, content: string) => files.set(path, content),
+      mkdirSync() {}, renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
       readFileAsBase64: (path: string) => btoa(files.get(path)!),
       existsSync: exists,
       readDirSync: (path: string) => {
@@ -45,6 +53,7 @@ describe('Coder build metadata', () => {
       },
     };
     window['path'] = {
+      join: (...parts: string[]) => parts.join('/'),
       isExists: exists,
       getAilyBuilderPath: () => '/builder',
       getAppDataPath: () => '/app-data',
@@ -57,8 +66,11 @@ describe('Coder build metadata', () => {
         return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
       },
     };
-    project = { currentProjectPath: root, isAilyCodeProject: () => true, copyPackageJsonToTemp: async () => true,
-      getProjectDependencyBlockMessage: () => undefined };
+    project = { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'coder-opening' }),
+      ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
+      getProjectDependencyBlockMessage: () => undefined,
+      ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true) };
     metadata = new CoderBuildInfoService(electron);
     window['builder'] = { captureBuildSource: jasmine.createSpy('captureBuildSource').and.returnValue({ digest: 'captured' }),
       patchBuildMetadata: (projectPath: string, patch: any) => {
@@ -72,6 +84,7 @@ describe('Coder build metadata', () => {
     window['fs'] = originalFs;
     window['path'] = originalPath;
     window['builder'] = originalBuilder;
+    window['cmd'] = originalCmd;
   });
 
   it('persists a content hash covering headers, local libraries and build configuration', async () => {
@@ -132,16 +145,31 @@ describe('Coder build metadata', () => {
     expect(await metadata.updateCodeHash(root)).not.toBe(hash);
   });
 
+  it('hashes the selected board custom partition fallback and preserves project overrides', async () => {
+    writeManifest({ ...readManifest(), projectConfig: { PartitionScheme: 'custom' } });
+    const boardCsv = `${root}/node_modules/@aily-project/board-test/partitions.csv`;
+    files.set(boardCsv, 'board partitions');
+    const before = await metadata.updateCodeHash(root);
+    files.set(`${root}/sketch/src/partitions.csv`, 'board partitions');
+    expect(await metadata.updateCodeHash(root)).toBe(before);
+    files.set(boardCsv, 'new board default');
+    expect(await metadata.updateCodeHash(root)).toBe(before);
+    files.set(`${root}/sketch/src/partitions.csv`, 'user partitions');
+    expect(await metadata.updateCodeHash(root)).not.toBe(before);
+  });
+
   function createCompiler(command: (call: number, service: CompileService) => number) {
     const service = new CompileService(
       project, {} as any, { createDirectory: async () => {} } as any, electron,
       { startBuild: () => true, finishBuild: () => {}, updateNotice: () => {} } as any,
-      { za7: '/7z' } as any, { data: {}, isCoderProduct: () => true } as any,
+      { za7: '/7z' } as any, { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {}, isCoderProduct: () => true } as any,
       { warning: () => {}, error: () => {} } as any,
       { triggerAfterSuccessfulCompile: () => {} } as any,
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
-      { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo() } as any,
+      { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo(),
+        ensureLocalCompilerDependencies: jasmine.createSpy('compilerIntegrity').and.resolveTo() } as any,
+      { record: jasmine.createSpy('record') } as any,
     );
     let calls = 0;
     spyOn<any>(service, 'runOneShotCommand').and.callFake(async () => ({
@@ -153,13 +181,247 @@ describe('Coder build metadata', () => {
     return service;
   }
 
+
+
+  for (const scenario of [
+    { name: 'stdout-typed-error', stream: 'stdout', newline: true, ending: 'typed-error', noWarning: true },
+    { name: 'stderr-tail-typed-error', stream: 'stderr', newline: false, ending: 'typed-error' },
+    { name: 'captured-native-error', stream: 'stderr', newline: true, ending: 'close', native: true },
+    { name: 'silent-stderr-close', stream: 'stderr', newline: true, ending: 'close', silent: true },
+    { name: 'stderr-close', stream: 'stderr', newline: true, ending: 'close' },
+    { name: 'stderr-tail-close', stream: 'stderr', newline: false, ending: 'close' },
+    { name: 'stdout-close-fallback', stream: 'stdout', newline: true, ending: 'close' },
+    { name: 'request-log-full-raw', stream: 'stderr', newline: false, ending: 'close', requestLog: true },
+    { name: 'stderr-tail-observable-error', stream: 'stderr', newline: false, ending: 'observable-error' },
+  ]) it('local Coder diagnostic appears once: ' + scenario.name, async () => {
+    const compiler: any = createCompiler(() => 1), entries: any[] = [], notices: any[] = [];
+    const logService = { update: (entry: any) => entries.push(entry) };
+    const noticeService = recordCompileNotices(logService, notices);
+    compiler.logService = logService; compiler.application.updateNotice = (notice: any) => noticeService.update(notice);
+    let listener: any, rejectRun!: (reason: unknown) => void;
+    window['cmd'] = { onData: (_id: string, callback: any) => { listener = callback; return () => { listener = undefined; }; },
+      run: () => new Promise((_resolve, reject) => { rejectRun = reject; }) };
+    const cmd = new CmdService(logService as any), spawn = cmd.spawn.bind(cmd);
+    spyOn(cmd, 'spawn').and.callFake((command, args, options, silent) => spawn(command, args, options, scenario.silent || silent));
+    compiler.cmdService = cmd;
+    compiler.runOneShotCommand.and.callThrough(); compiler.publishBuildLog.and.callThrough(); compiler.handleFailNotice.and.callThrough();
+    window['fs'].appendFileSync = (file: string, content: string) => files.set(file, (files.get(file) || '') + content);
+    if (scenario.requestLog) window['fs'].lstatSync = () => ({ _isSymbolicLink: false });
+    const normal = scenario.native ? 'Starting compilation of' : 'LOCAL_CODER_NORMAL_' + scenario.name;
+    const warning = 'warning: LOCAL_CODER_WARNING_' + scenario.name;
+    const diagnostic = scenario.native ? localCompileDiagnostic : '[ERROR] source.cpp:4:3: LOCAL_CODER_DIAGNOSTIC_' + scenario.name;
+    const transport = 'LOCAL_CODER_TRANSPORT_' + scenario.name;
+    const pending = compiler.runCompileFromDisk({ requestId: 'owned-request-log' });
+    for (let n = 0; n < 100 && !compiler.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(compiler.cmdService.spawn).toHaveBeenCalledTimes(1);
+    expect(compiler.cmdService.spawn.calls.first().args[2]).toEqual(jasmine.objectContaining({
+      projectPath: root, projectSessionId: 'coder-opening',
+    }));
+    if (scenario.native) localCompileErrorEvents.forEach(event => listener({ ...event }));
+    else {
+    if (scenario.requestLog) listener({ type: 'stdout', data: '\n  RAW_MARGIN_PRESERVED  \r\n' });
+    listener({ type: 'stdout', data: normal + '\n' });
+    if (!scenario.noWarning) listener({ type: 'stderr', data: warning + '\n' });
+    listener({ type: scenario.stream, data: diagnostic + (scenario.newline ? '\n' : '') });
+    }
+    if (scenario.ending === 'observable-error') rejectRun(new Error(transport));
+    else if (scenario.ending === 'typed-error') listener({ type: 'error', error: transport });
+    else listener({ type: 'close', code: 1 });
+    const outcome = await pending;
+    expect(outcome.success).toBeFalse();
+    if (scenario.requestLog) {
+      expect(outcome.result.buildLog).toEqual(jasmine.objectContaining({
+        version: 1, requestId: 'owned-request-log', project: root, complete: true,
+      }));
+      const captured = files.get(outcome.result.buildLog.path)!;
+      expect(captured).toContain('\n  RAW_MARGIN_PRESERVED  \r\n');
+      expect(captured).toContain(normal + '\n');
+      expect(captured).toContain(warning + '\n');
+      expect(captured).toContain(diagnostic);
+    }
+    const count = (marker: string) => entries.reduce((n, entry) => n + String(entry.detail || '').split(marker).length - 1, 0);
+    console.log('LOCAL_LOG_REPRO ' + JSON.stringify({ editor: 'Coder', scenario: scenario.name,
+      normal: count(normal), warning: count(warning), diagnostic: count(diagnostic),
+      errorEntries: entries.filter(entry => entry.state === 'error').length,
+      finalNoticeHasDiagnostic: notices.filter(notice => notice.state === 'error').at(-1)?.detail?.includes(diagnostic) || false }));
+    expect(count(normal)).withContext('normal stdout replayed after local failure').toBe(1);
+    if (!scenario.native && !scenario.noWarning) expect(count(warning)).withContext('warning missing or replayed after local failure').toBe(1);
+    expect(count(diagnostic)).withContext('diagnostic missing or replayed after local failure').toBe(1);
+    expect(notices.filter(notice => notice.state === 'error').at(-1)?.detail).toContain(diagnostic);
+    if (scenario.ending === 'typed-error') expect(notices.filter(notice => notice.state === 'error').at(-1)?.detail).toContain(transport);
+  });
+
+  for (const stage of ['preflight', 'cloud-execution', 'local-error', 'cancel-preparation']) it(`retries a failed cloud Coder task only after clicking: ${stage}`, async () => {
+    const compiler: any = createCompiler(() => stage === 'local-error' ? 1 : 0);
+    let local = false, owners = 0;
+    project.beginBuildBackendOperation = () => {
+      owners++;
+      return { useLocal() { local = true; }, release() { if (--owners === 0) local = false; } };
+    };
+    project.isCloudBuild = () => !local;
+    project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', capabilities: { compile: true } });
+    Object.assign(compiler.configService, { getCompileBackend: () => 'cloud', getCompileSettingsKey: () => 'cloud', getCloudBuildSettings: () => ({}) });
+    compiler.application.currentProcessState = 'IDLE';
+    compiler.application.startBuild = () => { compiler.application.currentProcessState = 'BUILDING'; return true; };
+    compiler.application.finishBuild = (ok: boolean) => { compiler.application.currentProcessState = ok ? 'IDLE' : 'ERROR'; };
+    Object.assign(compiler.npmService, { prepareCompileBackend: async () => {
+      if (!local && stage !== 'cloud-execution') throw new Error('unsupported board');
+    }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
+      expect(local).toBeTrue(); expect(owners).toBe(1);
+      if (stage === 'cancel-preparation') { compiler.cancel(); throw new Error('cancelled'); }
+    }) });
+    spyOn(compiler, 'runCloudCompile').and.rejectWith(new Error('gateway failed'));
+    const result = await compiler.runCompileFromDisk();
+    expect(result.success).toBeFalse();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+    expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+    const retry = compiler.handleFailNotice.calls.mostRecent().args[4];
+    expect(retry).toEqual(jasmine.any(Function)); expect(owners).toBe(0);
+    const pending = retry(); await retry(); await pending;
+    expect(compiler.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
+    expect(compiler.runOneShotCommand.calls.count()).toBe(stage === 'cancel-preparation' ? 0 : 1);
+    expect(readManifest().buildInfo.lastBuildStatus).toBe(stage === 'cancel-preparation' ? 'cancelled' : stage === 'local-error' ? 'failed' : 'success');
+    expect(JSON.parse(files.get(`${root}/.log/compile/latest-result.json`)!)).toEqual(jasmine.objectContaining({
+      success: stage !== 'local-error' && stage !== 'cancel-preparation', source: 'manual',
+    }));
+    expect(local).toBeFalse(); expect(owners).toBe(0);
+    expect(compiler.configService.getCompileBackend()).toBe('cloud');
+    if (stage === 'local-error') expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toBeUndefined();
+  });
+
+  function createSwitchingCompiler(exitCode = 0) {
+    const compiler: any = createCompiler(() => exitCode);
+    const operation = { local: false, useLocal() { this.local = true; }, useCloud() { this.local = false; }, release: jasmine.createSpy('release') };
+    project.beginBuildBackendOperation = () => operation;
+    project.isCloudBuild = () => !operation.local;
+    project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', profileDigest: 'profile', capabilities: { compile: true } });
+    Object.assign(compiler.configService, { getCompileBackend: () => 'cloud', getCompileSettingsKey: () => 'cloud', getCloudBuildSettings: () => ({}) });
+    Object.assign(compiler.npmService, { prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {},
+      prepareLocalCompileBackend: jasmine.createSpy('prepareLocal').and.callFake(async () => { expect(project.isCloudBuild()).toBeFalse(); }) });
+    spyOn(compiler.application, 'finishBuild');
+    spyOn(compiler, 'runCloudCompile').and.rejectWith(Object.assign(new Error('local requested'), { code: CLOUD_BUILD_LOCAL_REQUESTED }));
+    return { compiler, operation };
+  }
+
+  it('does not report cloud analysis as a Build success', async () => {
+    const { compiler } = createSwitchingCompiler();
+    project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', profileDigest: 'profile', capabilities: { analysis: true } });
+    compiler.runCloudCompile.and.resolveTo({ success: true });
+    expect((await compiler.runCompileFromDisk({ preprocessOnly: true })).success).toBeTrue();
+    expect(compiler.metrics.record).not.toHaveBeenCalled();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+  });
+
+  for (const exitCode of [0, 1]) it(`returns the local result and publishes metadata only once after cloud handoff (exit ${exitCode})`, async () => {
+    const { compiler, operation } = createSwitchingCompiler(exitCode);
+    let finish!: (value: any) => void;
+    compiler.runOneShotCommand.and.returnValue(new Promise(resolve => { finish = resolve; }));
+    let settled = false;
+    const pending = compiler.runCompileFromDisk().finally(() => { settled = true; });
+    for (let n = 0; n < 40 && !compiler.runOneShotCommand.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(compiler.runOneShotCommand).toHaveBeenCalledTimes(1);
+    expect(settled).toBeFalse(); expect(compiler.application.finishBuild).not.toHaveBeenCalled();
+    expect(operation.release).not.toHaveBeenCalled();
+    finish({ exitCode, combined: 'local compiler diagnostic', stdout: '', stderr: '', signal: null });
+    const result = await pending;
+    expect(result.success).toBe(exitCode === 0);
+    expect(compiler.metrics.record.calls.allArgs()).toEqual(exitCode === 0
+      ? [['compile_attempted'], ['build_succeeded']] : [['compile_attempted']]);
+    if (exitCode) expect(result.result.fullStdErr).toBe('local compiler diagnostic');
+    expect(readManifest().buildInfo.lastBuildStatus).toBe(exitCode ? 'failed' : 'success');
+    expect(compiler.application.finishBuild).toHaveBeenCalledTimes(1);
+    expect(operation.release).toHaveBeenCalledTimes(1);
+    const request = [...files.entries()].find(([name]) => name.includes('compile-request-'))!;
+    expect(JSON.parse(request[1]).ailyBuilderPath).toBe('/builder');
+  });
+
+  for (const ending of ['cloud', 'local', 'unsupported', 'cancel']) it(`keeps the Coder request and metadata through a round trip ending in ${ending}`, async () => {
+    const { compiler, operation } = createSwitchingCompiler();
+    compiler.runOneShotCommand.and.callThrough();
+    const commands = [new Subject<any>(), new Subject<any>()];
+    let launches = 0, stopped!: (value: boolean) => void, clouds = 0;
+    compiler.cmdService = { spawn: jasmine.createSpy('spawn').and.callFake(() => commands[launches++]),
+      kill: jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; })) };
+    Object.assign(project, {
+      getProjectDependencySession: () => ({ projectPath: root }), assertProjectDependencySession() {},
+      getCoderProjectContext: () => project,
+      resolveCompileBackend: async () => {
+        if (ending === 'unsupported') throw Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+        return 'cloud';
+      },
+    });
+    // Exercise the real reentry adapter: ProjectService rejects unsupported boards.
+    compiler.npmService = Object.assign(Object.create(NpmService.prototype), compiler.npmService,
+      { prjService: project, configService: compiler.configService });
+    compiler.runCloudCompile.and.callFake(async () => {
+      if (++clouds === 1 || ending === 'local') throw Object.assign(new Error('local requested'), { code: CLOUD_BUILD_LOCAL_REQUESTED });
+      return { success: true };
+    });
+    const save = spyOn(metadata, 'saveBuildInfo').and.callThrough();
+    if (ending === 'cancel') {
+      window['fs'].appendFileSync = (file: string, content: string) => files.set(file, (files.get(file) || '') + content);
+      window['fs'].lstatSync = () => ({ _isSymbolicLink: false });
+    }
+    const pending = compiler.runCompileFromDisk({ requestId: 'owned-round-trip' });
+    for (let n = 0; n < 100 && !launches; n++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(launches).toBe(1);
+    commands[0].next({ type: 'stdout', data: 'compiling locally\n' }); compiler.localSwitchAction();
+    if (ending === 'cancel') compiler.cancel();
+    commands[0].complete(); await new Promise(resolve => setTimeout(resolve, 0));
+    expect(compiler.runCloudCompile).toHaveBeenCalledTimes(1);
+    expect(compiler.application.finishBuild).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
+    stopped(true);
+    if (ending === 'local') {
+      for (let n = 0; n < 100 && launches < 2; n++) await new Promise(resolve => setTimeout(resolve, 1));
+      expect(launches).toBe(2);
+      commands[1].next({ type: 'stdout', data: 'compiled\n' });
+      commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
+    }
+    const result = await pending;
+    if (ending === 'cancel') {
+      expect(result.result.buildLog).toEqual(jasmine.objectContaining({ requestId: 'owned-round-trip', complete: false }));
+      expect(result.result.buildLog.error).toContain('streaming');
+      expect(files.get(result.result.buildLog.path)).toContain('compiling locally');
+    }
+    expect(result.result.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
+    expect(compiler.metrics.record.calls.allArgs()).toEqual(ending === 'cancel' || ending === 'unsupported'
+      ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
+    if (ending === 'unsupported') {
+      expect(result.result.text).toContain('Board no longer supports cloud builds');
+      expect(launches).toBe(1);
+      expect(operation.local).toBeFalse();
+      expect(compiler.localSwitchAction).toBeUndefined();
+      expect(readManifest().buildInfo.lastBuildStatus).toBe('failed');
+    }
+    expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
+    expect(compiler.application.finishBuild).toHaveBeenCalledTimes(1); expect(save).toHaveBeenCalledTimes(1);
+    expect(operation.release).toHaveBeenCalledTimes(1);
+    expect(window['builder'].captureBuildSource).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer cloud reentry to an originally local Coder task', async () => {
+    const compiler: any = createCompiler(() => 0);
+    expect((await compiler.runCompileFromDisk()).success).toBeTrue();
+    expect(compiler.runOneShotCommand.calls.first().args[3]).toBeUndefined();
+  });
+
+  it('stops before local launch when cancelled while preparing the local toolchain', async () => {
+    const { compiler, operation } = createSwitchingCompiler();
+    compiler.npmService.prepareLocalCompileBackend.and.callFake(async () => compiler.cancel());
+    const result = await compiler.runCompileFromDisk();
+    expect(result.result.state).toBe('warn');
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+    expect(readManifest().buildInfo.lastBuildStatus).toBe('cancelled');
+    expect(operation.release).toHaveBeenCalledTimes(1);
+  });
+
   for (const reason of ['installing', 'retry required']) {
     it(`rejects direct disk compilation while dependencies report ${reason}`, async () => {
       project.getProjectDependencyBlockMessage = jasmine.createSpy('block').and.returnValue(reason);
       const command = jasmine.createSpy('command').and.returnValue(0);
       const compiler = createCompiler(command);
       const result = await compiler.runCompileFromDisk({ projectPath: root });
-      expect(result).toEqual({ success: false, result: { state: 'warn', text: reason } });
+      expect(result).toEqual({ success: false, result: { state: 'warn', text: reason, buildOutcome: 'not-started' } });
       expect(project.getProjectDependencyBlockMessage).toHaveBeenCalledOnceWith(root);
       expect(command).not.toHaveBeenCalled();
       expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();
@@ -185,7 +447,7 @@ describe('Coder build metadata', () => {
     const compiler = createCompiler(command);
     (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('SDK incomplete'));
     const start = spyOn((compiler as any).application, 'startBuild');
-    expect(await compiler.runCompileFromDisk()).toEqual({ success: false, result: { state: 'warn', text: 'SDK incomplete' } });
+    expect(await compiler.runCompileFromDisk()).toEqual({ success: false, result: { state: 'warn', text: 'SDK incomplete', buildOutcome: 'not-started' } });
     expect(start).not.toHaveBeenCalled();
     expect(command).not.toHaveBeenCalled();
     expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();
@@ -197,6 +459,75 @@ describe('Coder build metadata', () => {
     (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('must not run'));
     expect((await compiler.runCompileFromDisk()).success).toBeTrue();
     expect((compiler as any).npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+    expect(project.ensureCoderBoardSelected).not.toHaveBeenCalled();
+  });
+
+  for (const backend of ['local', 'cloud']) {
+    it(`opens board selection before ${backend} preparation for an unconfigured Arduino project`, async () => {
+      writeManifest({ type: 'coder', arduinoSketch: true, entry: 'Blink.ino', dependencies: {} });
+      files.set(`${root}/Blink.ino`, 'void setup() {}\nvoid loop() {}');
+      const before = files.get(packagePath);
+      project.ensureCoderBoardSelected.and.resolveTo(false);
+      project.isCloudBuild = () => backend === 'cloud';
+      const compiler: any = createCompiler(() => 0);
+      compiler.configService.getCompileBackend = () => backend;
+      compiler.configService.getCloudBuildSettings = () => ({});
+      compiler.npmService.prepareCompileBackend = jasmine.createSpy('prepareBackend');
+      const start = spyOn(compiler.application, 'startBuild');
+      expect(await compiler.runCompileFromDisk()).toEqual({ success: false,
+        result: { state: 'warn', text: '请先选择开发板，再编译或上传 Arduino 工程。', buildOutcome: 'not-started' } });
+      expect(project.ensureCoderBoardSelected).toHaveBeenCalledOnceWith(root);
+      expect(start).not.toHaveBeenCalled();
+      expect(compiler.npmService.ensureLocalCompilerDependencies).not.toHaveBeenCalled();
+      expect(compiler.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+      expect(compiler.npmService.prepareCompileBackend).not.toHaveBeenCalled();
+      expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+      expect(compiler.metrics.record).not.toHaveBeenCalled();
+      expect(files.get(packagePath)).toBe(before);
+    });
+  }
+
+  it('compiles the native source after the user selects a board', async () => {
+    electron.pathJoin = (...parts: string[]) => parts.filter(part => part && part !== '.').join('/');
+    writeManifest({ ...readManifest(), arduinoSketch: true, entry: 'Blink.ino' });
+    files.set(`${root}/Blink.ino`, 'void setup() {}\nvoid loop() {}');
+    project.currentPackageData = readManifest();
+    const compiler: any = createCompiler(() => 0);
+    expect((await compiler.runCompileFromDisk()).success).toBeTrue();
+    expect(project.ensureCoderBoardSelected).toHaveBeenCalledOnceWith(root);
+    expect(compiler.runOneShotCommand).toHaveBeenCalled();
+  });
+
+  it('waits for automatic compiler repair before starting a local compilation', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    let repaired!: () => void;
+    (compiler as any).npmService.ensureLocalCompilerDependencies.and.returnValue(new Promise<void>(resolve => { repaired = resolve; }));
+    const running = compiler.runCompileFromDisk();
+    expect(command).not.toHaveBeenCalled();
+    repaired();
+    expect((await running).success).toBeTrue();
+    expect(command).toHaveBeenCalled();
+  });
+
+  it('does not launch compilation after automatic compiler repair fails', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    (compiler as any).npmService.ensureLocalCompilerDependencies.and.rejectWith(new Error('Compiler extraction incomplete'));
+    expect((await compiler.runCompileFromDisk()).success).toBeFalse();
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it('preserves compiler diagnostics when a cloud-style error reaches the shared failure handler', async () => {
+    const detail = "src/main.cpp:4:3: error: 'missing_symbol' was not declared in this scope\n  4 | missing_symbol();";
+    const service = createCompiler(() => {
+      throw Object.assign(new Error('Compiler exited with code 1'), { fullStdErr: detail });
+    });
+    const result = await service.runCompileFromDisk({ projectPath: root });
+    expect(result.success).toBeFalse();
+    expect(result.result.fullStdErr).toBe(detail);
+    expect(result.result.text).toBe('Compiler exited with code 1');
+    expect((service as any).handleFailNotice).toHaveBeenCalledWith(root, jasmine.any(String), 'Compiler exited with code 1', detail, undefined, false);
   });
 
   it('records successful compilation against the captured project even after a project switch', async () => {
@@ -244,10 +575,13 @@ describe('Coder build metadata', () => {
   it('records preprocess-only completion as successful and releases the build lock once', async () => {
     const service = createCompiler(() => 0);
     const finish = spyOn((service as any).application, 'finishBuild');
+    const notice = spyOn((service as any).application, 'updateNotice');
 
     expect((await service.runCompileFromDisk({ preprocessOnly: true })).success).toBeTrue();
+    expect((service as any).metrics.record).not.toHaveBeenCalled();
     expect(readManifest().buildInfo.lastBuildStatus).toBe('success');
     expect(finish).toHaveBeenCalledOnceWith(true, undefined);
+    expect(notice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ state: 'done', progress: 100, setTimeout: 3000 }));
   });
 
   it('holds the build lock until build metadata has been persisted', async () => {

@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.abs-sync.spec.json","include":["../src/app/tools/cloud-space/cloud-space.component.spec.ts","../src/**/*.d.ts"]}

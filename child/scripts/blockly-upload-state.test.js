@@ -47,6 +47,7 @@ for (const [name, mutate] of [
     ['new library source', f => f.write('node_modules/@aily-project/lib-test/src/new.cpp', 'int x;')],
     ['deleted firmware', f => fs.unlinkSync(path.join(f.root, '.build/sketch.ino.hex'))],
     ['changed firmware', f => f.write('.build/sketch.ino.hex', 'other firmware')],
+    ['added firmware', f => f.write('.build/ai-output.bin', 'extra firmware')],
     ['empty firmware', f => f.write('.build/sketch.ino.hex', '')],
 ]) test(`${name} requires rebuilding`, t => {
     const f = fixture(t); mutate(f); assert.equal(reusable(f.config), false);

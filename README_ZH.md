@@ -63,6 +63,10 @@ AI 会根据需求自主规划任务，逐步理解项目依赖和库的使用�
 [库适配文档](https://github.com/ailyProject/aily-blockly-libraries/blob/main/%E5%BA%93%E8%A7%84%E8%8C%83.md)  
 [软件开发文档](./develop.md)  
 
+[开发文档仓库](https://github.com/ailyProject/aily-blockly-docs)：集中维护需求、架构、实现说明和接口协议。
+
+[文档仓库管理与使用](DOCUMENTATION.md)：克隆更新、文档检索、维护规则与跨仓提交流程。
+
 ## 相关仓库
 [开发板](https://github.com/ailyProject/aily-blockly-boards)  
 [block库](https://github.com/ailyProject/aily-blockly-libraries)  
@@ -121,4 +125,3 @@ AI 会根据需求自主规划任务，逐步理解项目依赖和库的使用�
     <td>由 <a href="https://signpath.io/">SignPath.io</a> 提供 Windows 免费代码签名，证书由 <a href="https://signpath.org/">SignPath Foundation</a> 颁发</td>
   </tr>
 </table>
-

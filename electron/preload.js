@@ -12,10 +12,32 @@ const { tmpdir } = require("os");
 const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
+const { createNotificationApi } = require('./notification-preload');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
-const { copyProjectDirectory, importProjectDirectory } = require("./project-file-copy");
-const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload } = require('./build-workspace-publication');
+const { storageExecutor } = require('./project-file-lock-owner');
+const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
+const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
+const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
+    prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
+const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
+const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
+
+async function readDependencyEnvironmentCapability() {
+  let capability;
+  try { capability = await ipcRenderer.invoke('library-dependencies:capabilities'); }
+  catch { /* A static preload property cannot prove the running Main was updated. */ }
+  if (capability?.dependencyEnvironmentVersion !== 2) {
+    throw Object.assign(new Error('The running application does not support durable dependency changes.'),
+      { code: 'LIBRARY_ENVIRONMENT_UNAVAILABLE' });
+  }
+  return capability;
+}
+
+async function invokeDependencyEnvironmentMutation(operation, projectPath, request) {
+  await readDependencyEnvironmentCapability();
+  return ipcRenderer.invoke('library-dependencies', { operation, projectPath, request });
+}
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -40,10 +62,26 @@ async function invokeAilyConnector(channel, payload) {
     throw new Error('Invalid aily-connector IPC response');
   }
   if (!envelope.ok) {
-    const error = new Error(envelope.error?.message || 'Aily Connector request failed');
+    const error = new Error(envelope.error?.message || 'aily Connector request failed');
     error.code = envelope.error?.code || 'CONNECTOR_ERROR';
     if (envelope.error?.details) error.details = envelope.error.details;
     throw error;
+  }
+  return envelope.result;
+}
+
+// contextBridge 复制 Error 时会丢弃自定义属性；使用可复制的数据保留错误码。
+async function invokeCloudBuild(payload) {
+  const envelope = await ipcRenderer.invoke('cloud-build', payload);
+  if (!envelope?.ok) {
+    throw {
+      name: 'CloudBuildError',
+      message: envelope?.error?.message || 'Cloud build failed.',
+      code: envelope?.error?.code || 'CLOUD_BUILD_ERROR',
+      ...(envelope?.error?.sourceReason ? { sourceReason: envelope.error.sourceReason } : {}),
+      ...(envelope?.error?.buildSnapshot ? { buildSnapshot: envelope.error.buildSnapshot } : {}),
+      ...(typeof envelope?.error?.logComplete === 'boolean' ? { logComplete: envelope.error.logComplete } : {}),
+    };
   }
   return envelope.result;
 }
@@ -369,6 +407,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   iWindow: {
+    getState: () => ipcRenderer.sendSync('window-get-state'),
+    toggleMaximize: () => ipcRenderer.invoke('window-toggle-maximize'),
+    diagnostics: () => ipcRenderer.invoke('window-get-diagnostics'),
+    onStateChanged: callback => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('window-state-changed', listener);
+      return () => ipcRenderer.removeListener('window-state-changed', listener);
+    },
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
     isMaximized: () => ipcRenderer.sendSync("window-is-maximized"),
@@ -431,6 +477,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
         force: options && options.force,
       }),
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
+    recordActive: (projectPath) => ipcRenderer.invoke('project-navigation-active', projectPath),
+    clearActive: (projectPath) => ipcRenderer.invoke('project-navigation-clear', projectPath),
     focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
   },
   subWindow: (() => {
@@ -533,11 +581,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   subapps: {
+    diagnostics: () => ipcRenderer.invoke('subapp-manager-diagnostics'),
     prepareLaunch: (options) => ipcRenderer.invoke("subapp-manager-prepare-launch", options),
     finishLaunch: (token) => ipcRenderer.invoke("subapp-manager-finish-launch", token),
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
     install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
     reinstall: (options) => ipcRenderer.invoke("subapp-manager-reinstall", options),
+    repair: (options) => ipcRenderer.invoke("subapp-manager-repair", options),
     update: (options) => ipcRenderer.invoke("subapp-manager-update", options),
     downloadUpdate: (options) => ipcRenderer.invoke("subapp-manager-download-update", options),
     installUpdate: (options) => ipcRenderer.invoke("subapp-manager-install-update", options),
@@ -563,14 +613,51 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   builder: {
+    generatedSourceArchiveVersion: GENERATED_SOURCE_ARCHIVE_VERSION,
     publishArduinoGeneratedCode,
     patchBuildMetadata,
     captureBuildSource,
     canReuseBlocklyUpload,
+    canReuseCoderUpload,
+    inspectBlocklyCompileProof,
+    isolatedBuildExecutionVersion: ISOLATED_BUILD_EXECUTION_VERSION,
+    prepareBuildExecution,
+    abandonPreparedPreprocess,
+    resolveBuildExecution,
+    resolveBuildProjectPath,
+    inspectBuildExecution,
+    cancelBuildExecution,
     status: () => ipcRenderer.invoke("aily-builder-status"),
     checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
     update: () => ipcRenderer.invoke("aily-builder-update"),
     waitForReady: () => ipcRenderer.invoke("aily-builder-wait-ready"),
+  },
+  // 只暴露云任务操作和进度订阅；签名校验与本地烧录进程保留在主进程内。
+  cloudBuild: {
+    configuration: () => invokeCloudBuild({ action: 'configuration' }),
+    health: () => invokeCloudBuild({ action: 'health' }),
+    boardSupport: options => invokeCloudBuild({ ...options, action: 'boardSupport' }),
+    targets: options => invokeCloudBuild({ action: 'targets', ...options }),
+    preparationRequirements: options => invokeCloudBuild({ ...options, compileAction: options.action || 'compile', action: 'preparationRequirements' }),
+    completeCIToolPreparation: options => invokeCloudBuild({ ...options, action: 'completeCIToolPreparation' }),
+    run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
+    cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
+    artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
+    artifactUploadInfo: options => invokeCloudBuild({ ...options, action: 'artifactUploadInfo' }),
+    prepareArtifactUpload: options => invokeCloudBuild({ ...options, action: 'prepareArtifactUpload' }),
+    assertArtifactUpload: options => invokeCloudBuild({ ...options, action: 'assertArtifactUpload' }),
+    beginArtifactUploadRoute: options => invokeCloudBuild({ ...options, action: 'beginArtifactUploadRoute' }),
+    runArtifactUpload: options => invokeCloudBuild({ ...options, action: 'runArtifactUpload' }),
+    finishArtifactUpload: options => invokeCloudBuild({ ...options, action: 'finishArtifactUpload' }),
+    reusable: options => invokeCloudBuild({ action: 'reusable', ...options }),
+    invalidate: options => invokeCloudBuild({ action: 'invalidate', ...options }),
+    upload: options => invokeCloudBuild({ action: 'upload', ...options }),
+    cancelUpload: options => invokeCloudBuild({ action: 'cancelUpload', ...options }),
+    onProgress: callback => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('cloud-build-progress', listener);
+      return () => ipcRenderer.removeListener('cloud-build-progress', listener);
+    },
   },
   connector: {
     status: () => ipcRenderer.invoke("aily-connector-status"),
@@ -596,11 +683,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
   },
   fs: {
+    projectRecoveryReceipts: recoveryReceipts,
+    projectSaveIdentities: saveIdentities,
+    projectRepairEnvironment: {
+      forkPolicy: params => ipcRenderer.invoke('project-repair-fork-policy', params),
+      admission: () => ipcRenderer.invoke('project-repair-admission'),
+      ensure: (sourceProject, requestId) => ipcRenderer.invoke('project-repair-environment-ensure', sourceProject, requestId),
+    },
     projectFilePublicationVersion: PROJECT_FILE_PUBLICATION_VERSION,
     projectShadowIdentityMigrationVersion: PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION,
     replaceProjectText: (request, assertCurrent) => replaceProjectText(request, assertCurrent),
     projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
+    nativeSaveReceiptVersion: 2,
+    projectProgramPublicationVersion: 1,
     openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
+    selectProjectWorkspaceMode: (projectPath, input, assertCurrent) => selectProjectWorkspaceModeBridge(projectPath, input, assertCurrent),
+    projectCopySourceVersion: 1,
+    withProjectCopySource: (projectPath, assertCurrent, action) => require('./project-copy-source').withProjectCopySource(projectPath, assertCurrent, action),
     readCodeDeclaration: (candidate, roots) => require('./code-suggestion-declarations').readCodeDeclaration(candidate, roots),
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
     readFileBufferAsync: async (path) => {
@@ -620,7 +719,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       return entries.map(e => ({ name: e.name, _isDirectory: e.isDirectory(), _isFile: e.isFile() }));
     },
     readdirSync: (path) => require("fs").readdirSync(path),
-    writeFileSync: (path, data) => require("fs").writeFileSync(path, data),
+    writeFileSync: (path, data, options) => require("fs").writeFileSync(path, data, options),
     writeFileBuffer: (path, data) => {
       require("fs").writeFileSync(path, Buffer.from(data));
     },
@@ -641,11 +740,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
     copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
     copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
+    copyRecoveryProjectDirectory: (src, dest) => copyRecoveryProjectDirectory(src, dest),
     importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
+    blocklyCoderConversionVersion: 2,
+    convertBlocklyProjectToCoder: (src, entry, generatedSource) => require('./blockly-coder-conversion').convertBlocklyProjectToCoder(src, entry, generatedSource),
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => {
       const s = require("fs").statSync(path);
-      return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
+      return { size: s.size, mode: s.mode, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
     },
     lstatSync: (path) => {
       const s = require("fs").lstatSync(path);
@@ -758,10 +860,38 @@ contextBridge.exposeInMainWorld("electronAPI", {
   npm: {
     run: (data) => ipcRenderer.invoke("npm-run", data),
   },
+  libraryDependencies: {
+    environmentVersion: 2,
+    capabilities: () => readDependencyEnvironmentCapability(),
+    onChanged: callback => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('library-dependencies:changed', listener);
+      return () => ipcRenderer.removeListener('library-dependencies:changed', listener);
+    },
+    historyBegin: (projectPath, request) => invokeDependencyEnvironmentMutation('historyBegin', projectPath, request),
+    historyCommit: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyCommit', projectPath, request }),
+    historyRestore: (projectPath, request) => invokeDependencyEnvironmentMutation('historyRestore', projectPath, request),
+    historyPreview: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyPreview', projectPath, request }),
+    historyDiscard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyDiscard', projectPath, request }),
+    status: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'status', projectPath, reader: storageExecutor() }),
+    recover: (projectPath, request) => request?.action === 'resolve' ? invokeDependencyEnvironmentMutation('recover', projectPath, request)
+      : ipcRenderer.invoke('library-dependencies', { operation: 'recover', projectPath, request }),
+    mutate: (projectPath, request) => invokeDependencyEnvironmentMutation('mutate', projectPath, request),
+    prepare: projectPath => invokeDependencyEnvironmentMutation('prepare', projectPath),
+    patch: (projectPath, request) => invokeDependencyEnvironmentMutation('patch', projectPath, request),
+    configure: (projectPath, request) => invokeDependencyEnvironmentMutation('configure', projectPath, request),
+    reconcile: (projectPath, request) => invokeDependencyEnvironmentMutation('reconcile', projectPath, request),
+    observeEnvironment: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'observeEnvironment', projectPath, request }),
+    pendingEnvironment: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'pendingEnvironment', projectPath }),
+    settleLinkedEnvironment: (projectPath, request) => invokeDependencyEnvironmentMutation('settleLinkedEnvironment', projectPath, request),
+    save: projectPath => invokeDependencyEnvironmentMutation('save', projectPath),
+    discard: (projectPath, request) => invokeDependencyEnvironmentMutation('discard', projectPath, request),
+  },
   // 执行命令行命令
   cmd: {
     run: (options) => ipcRenderer.invoke('cmd-run', options),
     kill: (streamId) => ipcRenderer.invoke('cmd-kill', { streamId }),
+    status: (streamId) => ipcRenderer.invoke('cmd-status', { streamId }),
     killByName: (processName) => ipcRenderer.invoke('cmd-kill-by-name', { processName }),
     input: (streamId, input) => ipcRenderer.invoke('cmd-input', { streamId, input }),
     onData: (streamId, callback) => {
@@ -1087,39 +1217,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     debugState: () => ipcRenderer.invoke('ble-debug-state'),
   },
   // 系统通知 API
-  notification: {
-    /**
-     * 显示系统通知
-     * @param {Object} options - 通知选项
-     * @param {string} options.title - 通知标题
-     * @param {string} options.body - 通知内容
-     * @param {string} [options.icon] - 通知图标路径（可选）
-     * @param {boolean} [options.silent=false] - 是否静音（可选）
-     * @param {string} [options.timeoutType='default'] - 超时类型（可选，'default' | 'never'）
-     * @param {string} [options.urgency] - 紧急程度（可选，'normal' | 'critical' | 'low'，仅 Linux）
-     * @returns {Promise<{success: boolean, result?: any, error?: string}>}
-     */
-    show: (options) => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke("notification-show", options)
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      });
-    },
-    /**
-     * 检查系统是否支持通知
-     * @returns {Promise<boolean>}
-     */
-    isSupported: () => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke("notification-is-supported")
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      });
-    }
-  },
+  notification: createNotificationApi(ipcRenderer),
   base64: {
     atob: (b64String) => Buffer.from(b64String, 'base64').toString('binary'),
   },

@@ -10,8 +10,10 @@ import {
 } from '@core/platform/public-api';
 
 import { CompileService, type DiskCompileOptions } from './compile.service';
+import { isBuildCancelled } from './build-cancellation';
 import { persistBuildResult, type BuildCheckpoint, type BuildResultSnapshot } from './build-result-snapshot';
 import { BUILD_ACTION_PORT, type BuildActionPort } from './ports/build-action.port';
+import { BLOCKLY_BUILD_PORT, type BlocklyBuildPort } from './ports/blockly-build.port';
 
 export interface BuildFinishedEvent {
   projectPath?: string;
@@ -25,6 +27,7 @@ export interface ActiveBlocklyProjectBuildInput {
   graphSemanticRevision: string;
   requestId: string;
   sceneDocument: SceneEditorDocumentV2;
+  clearCache?: boolean;
 }
 
 export interface CoderSimulationBuildInput {
@@ -51,6 +54,7 @@ export class BuilderService {
     private electronService: ElectronService,
     private compileService: CompileService,
     @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution?: CoderExecutionPort,
+    @Optional() @Inject(BLOCKLY_BUILD_PORT) private blocklyBuild?: BlocklyBuildPort,
   ) {
     this.init();
   }
@@ -76,17 +80,38 @@ export class BuilderService {
   /*
    * 开始编译
    */
-  async build(projectPath?: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; simulationDebug?: boolean } = {}) {
-    const targetPath = projectPath || this.projectService.currentProjectPath;
+  async build(projectPath?: string, options: {
+    preprocessOnly?: boolean;
+    source?: BuildResultSnapshot['source'];
 
-    if (this.coderExecution && this.projectService.isAilyCodeProject(targetPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.build(targetPath, options);
+    requestId?: string;
+    expectedProjectPath?: string;
+    clearCache?: boolean;
+    simulationDebug?: boolean;
+  } = {}) {
+    const activePath = this.projectService.currentProjectPath;
+    const targetPath = projectPath || activePath;
+
+    if (options.expectedProjectPath !== undefined && (activePath !== options.expectedProjectPath || targetPath !== activePath)) {
+      throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { buildOutcome: 'not-started' });
+    }
+
+    const coder = this.projectService.isAilyCodeProject(targetPath);
+
+    if (this.coderExecution && coder && !this.projectService.isCoderProjectContext) return this.coderExecution.build(targetPath, options);
+
+    if (!coder && (!activePath || targetPath !== activePath || this.projectService.isProjectOpening)) {
+      throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { buildOutcome: 'not-started' });
+    }
 
     const finish = this.projectService.beginCoderOperation('build', targetPath);
 
     try {
-      if (projectPath || this.projectService.isAilyCodeProject(targetPath)) return await this.buildFromProjectPath(targetPath, options);
+      if (coder) return await this.buildFromProjectPath(targetPath, options);
 
-      return await this.buildCurrentBlocklyProject({ source: options.source, simulationDebug: options.simulationDebug });
+      return await this.buildCurrentBlocklyProject(targetPath, {
+        source: options.source, requestId: options.requestId, clearCache: options.clearCache, simulationDebug: options.simulationDebug,
+      });
     } finally {
       finish();
     }
@@ -95,6 +120,7 @@ export class BuilderService {
   /** Called on the original Coder project's independent service instance. */
   async buildCoderProjectForSimulation(projectPath: string, input: CoderSimulationBuildInput) {
     input.signal.throwIfAborted();
+
     if (!projectPath || !this.projectService.isCoderProjectContext
       || !this.projectService.isAilyCodeProject(projectPath)
       || !this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)
@@ -105,6 +131,7 @@ export class BuilderService {
       || input.sceneDocument.graphSemanticRevision !== input.graphSemanticRevision) {
       throw new Error('Coder simulation build does not match the original project and Scene.');
     }
+
     return this.buildFromProjectPath(projectPath, { ...input, recordProjectDelivery: true });
   }
 
@@ -115,6 +142,7 @@ export class BuilderService {
    */
   async buildActiveBlocklyProject(input: ActiveBlocklyProjectBuildInput) {
     const projectPath = String(input?.projectPath || '').trim();
+    const activePath = this.projectService.currentProjectPath;
 
     const graphSemanticRevision = String(
       input?.graphSemanticRevision || '',
@@ -137,24 +165,26 @@ export class BuilderService {
       this.projectService.isProjectOpening
       || !this.isSameProjectPath(
         projectPath,
-        this.projectService.currentProjectPath,
+        activePath,
       )
       || this.projectService.isAilyCodeProject(projectPath)
-      || !this.actionService.hasListener('builder-compile-begin')
+      || !this.blocklyBuild?.isAvailable()
     ) {
       throw new Error('The requested Blockly Project is not active.');
     }
 
-    return this.buildCurrentBlocklyProject({
+    return this.buildCurrentBlocklyProject(activePath, {
       source: 'ai',
       graphSemanticRevision,
       sceneDocument: structuredClone(input.sceneDocument),
       sourceDocumentSchemaVersion: 2,
       requestId,
+      clearCache: input.clearCache,
     });
   }
 
   private async buildCurrentBlocklyProject(
+    projectPath: string,
     payload: {
       source?: BuildResultSnapshot['source'];
       simulationDebug?: boolean;
@@ -163,10 +193,9 @@ export class BuilderService {
 
       sourceDocumentSchemaVersion?: 1 | 2;
       requestId?: string;
+      clearCache?: boolean;
     },
   ) {
-    const projectPath = this.projectService.currentProjectPath;
-
     if (payload.simulationDebug && !this.actionService.hasListener('builder-compile-begin')) {
       throw new Error('Headless simulation build requires the active Blockly editor to be ready.');
     }
@@ -174,58 +203,37 @@ export class BuilderService {
     let checkpoint: BuildCheckpoint | undefined;
 
     try {
-      await this.persistActiveCoderProjectBeforeBuild(
-        projectPath,
-      );
-
-      // Pro / code-editor-pro 路由下 Blockly 未挂载，compile-begin 无监听者会一直等反馈；
-      // Coder 工程改为直接走磁盘源码 + 同一套 preprocess/compile 脚本。
-      let feedback: any;
-
-      if (!this.actionService.hasListener('builder-compile-begin')) {
-        const r = await this.compileService.runCompileFromDisk({ projectPath });
-
-        feedback = {
-          success: true,
-          data: { success: r.success, result: r.result },
-        };
-      } else {
-        feedback = await this.actionService.dispatchWithFeedback(
-          'compile-begin',
-          payload,
-          600000,
-        ).toPromise();
+      if (!this.blocklyBuild?.isAvailable()) {
+        throw new Error('The active Blockly build executor is unavailable.');
       }
 
-      // listener handler 内部 catch 了编译错误，所以 feedback.success 总是 true
-      // 需要检查 data.success 来判断编译是否真正成功
-      checkpoint = feedback?.data?.checkpoint;
+      const completion = await this.blocklyBuild.build({ projectPath, ...payload });
 
-      const buildResult = feedback?.data?.result;
+      checkpoint = completion.checkpoint;
+      const buildResult = completion.result;
 
-      const buildSuccess = feedback?.success !== false
-        && feedback?.data?.success !== false
+      const buildSuccess = completion.success === true
         && !!buildResult
         && buildResult?.state !== 'error';
 
-      if (!this.electronService.isWindowFocused()) {
-        this.electronService.notify('编译', buildResult?.text || '');
-      }
-
       if (!buildSuccess) {
         // 编译失败，构造包含状态和错误详情的错误对象抛出
-        const error: any = new Error(buildResult?.text || feedback?.error || '编译失败');
+        const error: any = new Error(buildResult?.text || buildResult?.message || '编译失败');
         error.state = buildResult?.state || 'error';
-        error.text = buildResult?.text || feedback?.error || '编译失败';
+        error.text = error.message;
         error.fullStdErr = buildResult?.fullStdErr;
+        error.buildLog = buildResult?.buildLog;
+        error.buildInput = (buildResult as any)?.buildInput;
+        error.buildSnapshot = buildResult?.buildSnapshot;
+        error.buildOutcome = (buildResult as any)?.buildOutcome;
         error.buildResult = buildResult;
 
-        if (buildResult?.errorCode === 'build-cancelled') {
-          error.errorCode = 'build-cancelled';
-        }
+        if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
 
         throw error;
       }
+
+      this.notifyBuildCompletion(buildResult, true);
 
       if (checkpoint?.startedAt) persistBuildResult(projectPath, true, buildResult, undefined, checkpoint, payload.source);
 
@@ -233,12 +241,15 @@ export class BuilderService {
 
       return buildResult;
     } catch (error: any) {
-      // console.error('编译失败:', error);
-      if (!this.electronService.isWindowFocused()) {
-        this.electronService.notify('编译', error?.text || error?.message || '编译失败');
-      }
+      if (!error || typeof error !== 'object') error = new Error(String(error));
 
-      if (checkpoint?.startedAt) persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
+      // Editor admission (busy/stale/unmounted) does not attest a compiler exit.
+      if (!checkpoint?.startedAt) error.buildOutcome = 'not-started';
+
+      // console.error('编译失败:', error);
+      this.notifyBuildCompletion(error, false);
+
+      if (checkpoint?.startedAt && error?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
 
       this.buildFinishedSubject.next({ projectPath, success: false, result: error?.buildResult, error });
 
@@ -256,11 +267,20 @@ export class BuilderService {
   }
 
   private async buildFromProjectPath(projectPath: string, options: DiskCompileOptions & { source?: BuildResultSnapshot['source'] } = {}) {
-    options.signal?.throwIfAborted();
-    await this.persistActiveCoderProjectBeforeBuild(projectPath);
-    options.signal?.throwIfAborted();
+    let compileResult: Awaited<ReturnType<CompileService['runCompileFromDisk']>>;
 
-    const compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
+    try {
+      options.signal?.throwIfAborted();
+      await this.persistActiveCoderProjectBeforeBuild(projectPath);
+      options.signal?.throwIfAborted();
+
+      compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
+    } catch (error) {
+      this.notifyBuildCompletion(error, false, options);
+
+      throw error;
+    }
+
     const buildResult = compileResult.result;
 
     if (!compileResult.success || buildResult?.state === 'error') {
@@ -268,12 +288,16 @@ export class BuilderService {
       error.state = buildResult?.state || 'error';
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
+      error.buildLog = buildResult?.buildLog;
+      error.buildInput = buildResult?.buildInput;
+      error.buildOutcome = buildResult?.buildOutcome;
       error.buildResult = buildResult;
-      if (buildResult?.errorCode === 'build-cancelled') error.errorCode = 'build-cancelled';
 
-      if (!options.preprocessOnly) persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
+      if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
+      if (!options.preprocessOnly && buildResult?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
 
       this.buildFinishedSubject.next({ projectPath, success: false, result: buildResult, error });
+      this.notifyBuildCompletion(error, false, options);
 
       throw error;
     }
@@ -281,8 +305,27 @@ export class BuilderService {
     if (!options.preprocessOnly) persistBuildResult(projectPath, true, buildResult, undefined, undefined, options.source);
 
     this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
+    this.notifyBuildCompletion(buildResult, true, options);
 
     return buildResult;
+  }
+
+  /** 编译结果由实际执行窗口提醒；预处理、取消和未启动不发送完成通知。 */
+  private notifyBuildCompletion(result: any, success: boolean, options: { preprocessOnly?: boolean } = {}): void {
+    const outcome = result?.buildOutcome || result?.buildResult?.buildOutcome;
+
+    if (
+      options.preprocessOnly
+      || outcome === 'cancelled'
+      || outcome === 'not-started'
+      || result?.code === 'BUILD_CANCELLED'
+      || this.electronService.isWindowFocused()
+    ) return;
+
+    void this.electronService.notify(
+      '编译',
+      result?.text || result?.message || (success ? '编译完成' : '编译失败'),
+    );
   }
 
   /**
@@ -311,14 +354,28 @@ export class BuilderService {
     if (feedback?.success !== true) {
       throw new Error(
         feedback?.error
-        || 'Aily Coder source could not be saved to disk before compilation.',
+        || 'aily Coder source could not be saved to disk before compilation.',
       );
     }
   }
 
-  /*
-   * 取消当前编译过程
-   */
+  /** 本地与云端复用都先把当前编辑器内容保存到磁盘。 */
+  async canReuseBuildForUpload(projectPath: string, isCancelled: () => boolean = () => false): Promise<boolean> {
+    if (!this.projectService.isAilyCodeProject(projectPath)) return false;
+
+    const cloud = this.projectService.isCloudBuild(projectPath);
+
+    if (!cloud && !window['builder']?.canReuseCoderUpload) return false;
+
+    await this.persistActiveCoderProjectBeforeBuild(projectPath);
+
+    if (isCancelled() || this.projectService.isCloudBuild(projectPath) !== cloud) return false;
+
+    return cloud ? this.compileService.canReuseCloudBuildForUpload(projectPath, isCancelled)
+      : this.compileService.canReuseLocalCoderBuildForUpload(projectPath, isCancelled);
+  }
+
+  /** 取消当前编译过程。 */
   cancel(projectPath = this.projectService.currentProjectPath) {
     if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) { this.coderExecution.cancel(projectPath, 'build'); return; }
 
@@ -359,6 +416,22 @@ export class BuilderService {
       } else {
         console.warn('预编译触发失败:', result);
       }
+    });
+  }
+
+  /** Only the mounted editor may admit a cache-mutating advisory request. */
+  triggerPreprocessWithCacheClear(projectPath: string, reason: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.actionService.dispatch<Record<string, unknown>>(
+        'preprocess-trigger', { reason, projectPath, clearCache: true }, feedback => {
+          if (feedback.success && feedback.data?.['success'] === true) resolve();
+
+          else reject(feedback.data?.['error'] ?? Object.assign(
+            new Error(feedback.error || 'The active Blockly preprocessing executor is unavailable.'),
+            { buildOutcome: 'not-started' },
+          ));
+        }, 0, { requireHandler: true },
+      );
     });
   }
 

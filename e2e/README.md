@@ -1,17 +1,23 @@
 # 端到端测试（E2E）
 
 使用 [Playwright](https://playwright.dev/) 的 `_electron` API 对 aily-blockly 桌面应用做端到端测试。
-测试直接启动 `electron/main.js` 主进程，针对 **生产构建产物** 运行。
+测试直接启动 `electron/main.js` 主进程，默认 Playwright 套件针对 **生产构建产物** 运行。`test:onboarding` 专项使用源码开发服务，并与 Eval 共用引导验证实现。
 
 需要由 AI 按改动/发布类型选择测试、执行并汇报时，使用 [AI 执行手册](AI-RUNBOOK.md)。
 
 ## 快速开始：运行命令与场景
 
-所有命令均在项目根目录执行。`npm run test:e2e* -- ...` 中 `--` 后面的参数会原样传给 Playwright。
+所有命令均在项目根目录执行。`npm --prefix e2e run test* -- ...` 中 `--` 后面的参数会原样传给 Playwright。
+
+端到端、模拟器验收和性能命令统一由 `e2e/package.json` 管理；单元、集成和架构检查使用 `tests/package.json`。子目录命令会先回到主软件根目录，保留相对路径、构建和报告位置的原有语义。依赖仍在根目录安装，不需要分别安装子目录依赖。
+
+主配置位于 `e2e/playwright.config.ts`，HTML 报告输出到 `e2e/playwright-report/`；npm 入口自动使用这些路径。直接使用 Playwright CLI 时，运行 `npx playwright test -c e2e/playwright.config.ts`，查看报告使用 `npx playwright show-report e2e/playwright-report`。测试代码仍在 `e2e/tests/`，失败附件输出到 `e2e/test-results/`。
+
+测试产物按套件归类：默认 E2E 附件位于 `e2e/test-results/`，性能对比与真实工程性能附件分别位于 `e2e/performance/test-results/compare/`、`e2e/performance/test-results/real/`；各专项已有的 `e2e/.artifacts/<专项>/` 和日志目录保持独立。单测覆盖率由 `tests/karma.conf.cjs` 配置到 `tests/coverage/aily-blockly/`；单测与 E2E 的 TypeScript 输出目录分别为 `tests/out-tsc/`、`e2e/out-tsc/`。这些生成目录不提交 Git。
 
 运行前注意：
 
-- 所有 E2E 测试入口都会先重新执行 Angular 构建并暂存 `renderer/`，不会复用上一次运行留下的渲染产物。`test:e2e:fast` 仅作为历史兼容命令保留。
+- 默认 Playwright 测试入口会先重新执行 Angular 构建并暂存 `renderer/`，不会复用上一次运行留下的渲染产物。`test:fast` 仅作为历史兼容命令保留。独立源码专项按各自说明运行。
 - 运行中需要停止时只按一次 `Ctrl+C`，等待测试关闭 Electron、编译/终端子进程并生成 HTML 报告；再次按下会强制终止，此时报告可能不完整。
 - PowerShell 环境变量会保留在当前终端。全流程场景统一使用 `AILY_E2E_MODE` 选择，切换场景时直接覆盖该变量即可。
 - 旧版的 `AILY_E2E_FULLFLOW`、`AILY_E2E_ALL_BOARDS`、`AILY_E2E_PROJECT_PLAZA` 仍兼容单独使用；若同时启用多个，测试会立即报错，不再串到其他场景。
@@ -21,22 +27,32 @@
 
 | 运行目标 | 命令 | 说明 |
 |----------|------|------|
-| 完整回归 | `npm run test:e2e` | 重新构建并暂存生产渲染层后运行测试 |
-| 兼容入口 | `npm run test:e2e:fast` | 与完整回归一样重新构建，不再复用旧产物 |
-| Playwright UI | `npm run test:e2e:ui` | 以 `--ui` 模式运行 |
-| 有界面调试 | `npm run test:e2e:headed` | 以 `--headed` 模式运行 |
-| 查看上次报告 | `npm run test:e2e:report` | 打开 Playwright HTML 报告，不运行测试 |
-| 只跑某个文件 | `npm run test:e2e -- smoke.spec.ts` | 文件名也可换成下方测试套件中的任意 spec |
-| 兼容入口跑某个文件 | `npm run test:e2e:fast -- full-flow.spec.ts` | 同样先重新构建，再运行指定 spec |
+| 完整回归 | `npm --prefix e2e run test` | 重新构建并暂存生产渲染层后运行测试 |
+| 兼容入口 | `npm --prefix e2e run test:fast` | 与完整回归一样重新构建，不再复用旧产物 |
+| Playwright UI | `npm --prefix e2e run test:ui` | 以 `--ui` 模式运行 |
+| 有界面调试 | `npm --prefix e2e run test:headed` | 以 `--headed` 模式运行 |
+| 查看上次报告 | `npm --prefix e2e run report` | 打开 Playwright HTML 报告，不运行测试 |
+| 只跑某个文件 | `npm --prefix e2e run test -- smoke.spec.ts` | 文件名也可换成下方测试套件中的任意 spec |
+| 兼容入口跑某个文件 | `npm --prefix e2e run test:fast -- full-flow.spec.ts` | 同样先重新构建，再运行指定 spec |
+
+### 启动与项目引导
+
+```bash
+npm --prefix e2e run test:onboarding -- --lex-root <aily-lex-pro> --project <已安装依赖的Blockly项目> --reuse-angular
+```
+
+该入口与 Eval 的“验证启动与项目引导”共用判定器和运行逻辑，验证助手入口显示/隐藏时的完整步骤、独立 AI/应用商店文案、实际工作区高亮、正常及最小原生窗口、前进后退、跳过和完成标记持久化。仅复制传入项目，使用独立用户目录，通过真实本地 aily Chat 便携包注册助手入口；不注入 DOM、不调用 Angular 调试接口、不手动启动引导服务，不发送 AI 消息或编译烧录。
+
+`--reuse-angular` 要求已有开发服务来自当前主软件源码；否则省略该参数，由 Eval 启动并核对开发服务。默认读取 Lex 的 `packages/aily-chat/dist/aily-chat`，可用 `--chat-root` 指定已有便携构建；本专项只验证入口和引导，不代表 AI 任务验收。证据保存在 `e2e/.artifacts/onboarding/<运行ID>/` 的 `onboarding.json` 和逐步截图中，可通过 `--output` 更改。测试结束恢复本次修改的引导及工具栏配置，并清除私有用户目录。
 
 常用定向组合：
 
 ```powershell
 # 只运行无需额外环境变量的应用 UI 回归
-npm run test:e2e -- smoke.spec.ts guide.spec.ts project-new.spec.ts tools.spec.ts
+npm --prefix e2e run test -- smoke.spec.ts guide.spec.ts project-new.spec.ts tools.spec.ts
 
 # 只运行编译诊断、错误决策与断点逻辑回归
-npm run test:e2e:fast -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
+npm --prefix e2e run test:fast -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
 ```
 
 ### PowerShell：按场景运行
@@ -45,7 +61,7 @@ npm run test:e2e:fast -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts
 
 ```powershell
 $env:AILY_E2E_PROJECT = 'D:\path\to\blockly-project'
-npm run test:e2e -- blockly-editor.spec.ts
+npm --prefix e2e run test -- blockly-editor.spec.ts
 ```
 
 编译已有项目（需要已安装对应编译器、SDK 和 `aily-builder`）：
@@ -53,7 +69,7 @@ npm run test:e2e -- blockly-editor.spec.ts
 ```powershell
 $env:AILY_E2E_PROJECT = 'D:\path\to\blockly-project'
 $env:AILY_E2E_COMPILE = '1'
-npm run test:e2e -- compile.spec.ts
+npm --prefix e2e run test -- compile.spec.ts
 ```
 
 以下全流程场景会真实安装依赖、创建项目并调用编译工具链，需要本机具备内置 Node 工具链、`aily-builder` 及相应编译器和 SDK。
@@ -63,7 +79,7 @@ npm run test:e2e -- compile.spec.ts
 ```powershell
 $env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORD = 'uno r4' # 可省略，默认 uno r4
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 指定多个开发板逐个执行相同全流程：
@@ -71,21 +87,21 @@ npm run test:e2e:fast -- full-flow.spec.ts
 ```powershell
 $env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 验证所有可创建开发板，每块板连续编译两次：
 
 ```powershell
 $env:AILY_E2E_MODE = 'all-boards'
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 下载、打开并编译项目广场全部公开项目：
 
 ```powershell
 $env:AILY_E2E_MODE = 'project-plaza'
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 测试 `aily-builder` 时，从项目广场随机抽取 50%，并记录 seed 以支持断点续跑：
@@ -96,7 +112,7 @@ $env:AILY_E2E_MODE = 'project-plaza'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE = '0.5'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED = [guid]::NewGuid().ToString('N')
 $env:AILY_E2E_STOP_ON_ERROR = '0'
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 如果 AI 根据编译诊断和对照项目确认失败只由项目自身导致，可在复用同一 seed 的续跑中设置 `AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS=id1,id2`。测试会从 checkpoint 移除这些项目且不再编译。builder、环境或无法确定归因的错误不得加入跳过列表；完整规则见 [AI 执行手册](AI-RUNBOOK.md#ai-错误归因与自动跳过规则)。
@@ -144,17 +160,17 @@ npm 命令与 Windows 相同，环境变量可直接写在命令前：
 
 ```bash
 # 打开或编译已有项目
-AILY_E2E_PROJECT='/path/to/blockly-project' npm run test:e2e -- blockly-editor.spec.ts
-AILY_E2E_PROJECT='/path/to/blockly-project' AILY_E2E_COMPILE=1 npm run test:e2e -- compile.spec.ts
+AILY_E2E_PROJECT='/path/to/blockly-project' npm --prefix e2e run test -- blockly-editor.spec.ts
+AILY_E2E_PROJECT='/path/to/blockly-project' AILY_E2E_COMPILE=1 npm --prefix e2e run test -- compile.spec.ts
 
 # 指定单板、多板、所有开发板、项目广场
-AILY_E2E_MODE=specified-boards AILY_E2E_BOARD_KEYWORD='uno r4' npm run test:e2e:fast -- full-flow.spec.ts
-AILY_E2E_MODE=specified-boards AILY_E2E_BOARD_KEYWORDS='uno r4,esp32' npm run test:e2e:fast -- full-flow.spec.ts
-AILY_E2E_MODE=all-boards npm run test:e2e:fast -- full-flow.spec.ts
-AILY_E2E_MODE=project-plaza npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_MODE=specified-boards AILY_E2E_BOARD_KEYWORD='uno r4' npm --prefix e2e run test:fast -- full-flow.spec.ts
+AILY_E2E_MODE=specified-boards AILY_E2E_BOARD_KEYWORDS='uno r4,esp32' npm --prefix e2e run test:fast -- full-flow.spec.ts
+AILY_E2E_MODE=all-boards npm --prefix e2e run test:fast -- full-flow.spec.ts
+AILY_E2E_MODE=project-plaza npm --prefix e2e run test:fast -- full-flow.spec.ts
 
 # 项目广场无人值守执行；其他全流程模式同样可添加 STOP_ON_ERROR=0
-AILY_E2E_MODE=project-plaza AILY_E2E_STOP_ON_ERROR=0 npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_MODE=project-plaza AILY_E2E_STOP_ON_ERROR=0 npm --prefix e2e run test:fast -- full-flow.spec.ts
 
 # 放弃全部全流程断点并从头运行
 rm -rf e2e/.artifacts/full-flow-checkpoints
@@ -200,22 +216,22 @@ rm -rf e2e/.artifacts/full-flow-checkpoints
 
 ```powershell
 # 完整跑（每次重新构建渲染层，最接近真实）
-npm run test:e2e
+npm --prefix e2e run test
 
 # 快速迭代（复用已暂存的 renderer/，跳过重新构建）
-npm run test:e2e:fast
+npm --prefix e2e run test:fast
 
-# 注意：fast 模式会复用现有 renderer/，改过前端代码后请先跑一次完整 test:e2e
+# 注意：fast 是兼容名称，同样重新构建并暂存 renderer/。
 
 # 可视化 / 调试
-npm run test:e2e:ui
-npm run test:e2e:headed
+npm --prefix e2e run test:ui
+npm --prefix e2e run test:headed
 
 # 查看上次 HTML 报告
-npm run test:e2e:report
+npm --prefix e2e run report
 
 # 只跑某个文件
-npm run test:e2e -- smoke.spec.ts
+npm --prefix e2e run test -- smoke.spec.ts
 ```
 
 ## ESP32-S3 仿真与块调试闭环
@@ -224,7 +240,7 @@ Windows x64 可使用单命令执行 Blockly 编辑、真实 Arduino ESP32-S3 �
 项目块断点及 QEMU/GDB 命中：
 
 ```powershell
-npm run test:e2e:simulator-debug
+npm --prefix e2e run test:simulator-debug
 ```
 
 命令要求 `aily-builder` 和 `aily-simulator` 与本仓库相邻。准备阶段会：
@@ -238,7 +254,7 @@ npm run test:e2e:simulator-debug
 已完成准备时可快速重跑：
 
 ```powershell
-npm run test:e2e:simulator-debug -- --skip-prepare
+npm --prefix e2e run test:simulator-debug -- --skip-prepare
 ```
 
 完整用例会验证 iframe 调试面板折叠/展开、项目块断点应用、调用栈 blockId 与
@@ -256,7 +272,7 @@ GPIO3 ── 220Ω Resistor ── LED(A→C) ── GND
 GPIO4(INPUT_PULLUP) ── Button(NO) ── GND
 ```
 
-它会检查 iframe 中 Aily 自有 `aily.appearance.resistor@1.0.0` 外观、LED
+它会检查 iframe 中 aily 自有 `aily.appearance.resistor@1.0.0` 外观、LED
 `off → on → off` 闪烁、按下后持续点亮及松开后恢复闪烁。Button 没有隐藏上拉电阻；
 松开时由 QEMU IOMUX 根据固件的 `INPUT_PULLUP` 解析电平。若改用外接上拉/下拉，
 电阻必须作为连接图中的独立双端组件出现。
@@ -278,12 +294,12 @@ SDK/FreeRTOS 外部源码时只显示相对文件和行号、不转发源码正�
 可独立复核生成的结构化报告：
 
 ```powershell
-npm run validate:e2e:simulator-debug
+npm --prefix e2e run validate:simulator-debug
 ```
 
 从当前 Simulator 源码重新打包使用 `--refresh-runtime`；没有补丁 QEMU 构建和现成
 runtime bundle 时，安装 Docker 后使用 `--build-patched-qemu`。脚本不会回退到不含
-Aily Engine Bridge 的官方 QEMU。
+aily Engine Bridge 的官方 QEMU。
 
 结构化结果保存在：
 
@@ -315,7 +331,7 @@ e2e/.artifacts/simulator-debug-report.json
 
 ## 失败处理与断点续跑
 
-全流程默认启用遇错停止（`AILY_E2E_STOP_ON_ERROR` 默认为 `1`）。通过上述 `npm run test:e2e*` 命令在交互式终端运行时，遇错会先保存断点和输出错误信息，再提示选择：输入 `c` 将该项视为已处理并继续，输入 `a` 或直接回车中止。选择继续的失败项会从断点移除，不再阻塞后续运行，但仍会列入最终错误汇总，因此本次测试仍以失败结束；选择中止则保留当前失败项和其他未完成项。
+全流程默认启用遇错停止（`AILY_E2E_STOP_ON_ERROR` 默认为 `1`）。通过上述 `npm --prefix e2e run test*` 命令在交互式终端运行时，遇错会先保存断点和输出错误信息，再提示选择：输入 `c` 将该项视为已处理并继续，输入 `a` 或直接回车中止。选择继续的失败项会从断点移除，不再阻塞后续运行，但仍会列入最终错误汇总，因此本次测试仍以失败结束；选择中止则保留当前失败项和其他未完成项。
 
 CI、输入或输出不是 TTY，或者直接调用 Playwright CLI 时不会等待输入，而是直接中止并保留断点。设置 `AILY_E2E_STOP_ON_ERROR=0` 后不会显示提示，测试会自动执行所有条目并在最后汇总错误；成功项会从断点移除，失败项留待下次重试。
 
@@ -330,4 +346,4 @@ CI、输入或输出不是 TTY，或者直接调用 Playwright CLI 时不会等�
 - Playwright 用例仍串行执行（`workers: 1`）；项目广场通常内部并发处理 2 个隔离 Electron，交互错误决策模式下会临时降为单并发。
 - 选择器优先使用组件标签（如 `app-header`、`app-terminal`）与稳定 CSS 类；
   应用目前几乎没有 `data-testid`，后续可逐步补充以提升稳定性。
-- `renderer/`、`test-results/`、`playwright-report/` 已加入 `.gitignore`。
+- `renderer/`、`e2e/test-results/`、`e2e/playwright-report/` 已加入 `.gitignore`。

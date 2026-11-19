@@ -26,6 +26,15 @@ describe('NotificationComponent progress animation', () => {
 
   afterEach(() => component.ngOnDestroy());
 
+  it('查看详情传递通知自己的日志目标，不依赖终端 PID', () => {
+    const openLog = jasmine.createSpy('openLog');
+    const target = { timestamp: 1000, mergeKey: 'notice-error' };
+    const notice = new NotificationComponent({} as any, {} as any, { openLog } as any);
+    notice.data = { state: 'error', detail: 'failure', logTarget: target };
+    notice.view();
+    expect(openLog).toHaveBeenCalledOnceWith(target);
+  });
+
   it('never goes negative when a shared frame timestamp predates a long render', () => {
     component.startProgressAnimation(100);
     nextFrame(400);
@@ -74,13 +83,13 @@ describe('NotificationComponent progress animation', () => {
     await TestBed.configureTestingModule({
       imports: [NotificationComponent, TranslateModule.forRoot()],
       providers: [
-        { provide: NoticeService, useValue: { stateSubject } },
+        { provide: NoticeService, useValue: { stateSubject, restoreOwnedPresentation() {} } },
         { provide: UiService, useValue: {} },
       ],
     }).compileComponents();
     const fixture = TestBed.createComponent(NotificationComponent);
     fixture.detectChanges();
-    stateSubject.next({ state: 'doing', title: 'Download', text: 'Progress', progress: 100 });
+    stateSubject.next({ state: 'doing', title: 'Download', text: 'Progress' });
     fixture.componentInstance.startProgressAnimation(100);
     // Angular's render scheduler also requests frames. Retain this animation's
     // callback so scheduler callbacks cannot replace the controlled test frame.
@@ -99,7 +108,7 @@ describe('NotificationComponent progress animation', () => {
     const stateSubject = new BehaviorSubject<any>(null);
     await TestBed.configureTestingModule({
       imports: [NotificationComponent, TranslateModule.forRoot()],
-      providers: [{provide: NoticeService, useValue: {stateSubject}}, {provide: UiService, useValue: {}}],
+      providers: [{provide: NoticeService, useValue: {stateSubject, restoreOwnedPresentation() {}}}, {provide: UiService, useValue: {}}],
     }).compileComponents();
     const fixture = TestBed.createComponent(NotificationComponent);
     fixture.detectChanges();
@@ -121,5 +130,109 @@ describe('NotificationComponent progress animation', () => {
     expect(box.querySelectorAll('.btns .btn').length).toBe(3);
     expect(box.getBoundingClientRect().width).toBeLessThanOrEqual(450);
     fixture.destroy();
+  });
+  it('shows the task-local switch only on error and invokes it only on click', async () => {
+    const stateSubject = new BehaviorSubject<any>(null), retry = jasmine.createSpy('retry');
+    await TestBed.configureTestingModule({
+      imports: [NotificationComponent, TranslateModule.forRoot()],
+      providers: [{provide: NoticeService, useValue: {stateSubject, restoreOwnedPresentation() {}}}, {provide: UiService, useValue: {}}],
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NotificationComponent);
+    fixture.detectChanges();
+    stateSubject.next({state: 'doing', text: 'cloud', onRetryLocally: retry});
+    expect(fixture.nativeElement.querySelector('.retry-locally')).toBeNull();
+    stateSubject.next({state: 'error', text: 'gateway failed', onRetryLocally: retry});
+    const button = fixture.nativeElement.querySelector('button.retry-locally');
+    expect(button.textContent).toContain('CLOUD_BUILD.SWITCH_TO_LOCAL');
+    expect(retry).not.toHaveBeenCalled(); button.click();
+    expect(retry).toHaveBeenCalledTimes(1);
+    stateSubject.next({state: 'error', text: 'local compiler error'});
+    expect(fixture.nativeElement.querySelector('.retry-locally')).toBeNull();
+    fixture.destroy();
+  });
+
+});
+
+describe('NotificationComponent owned notice lifecycle', () => {
+  let notices: NoticeService;
+
+  beforeEach(async () => {
+    notices = new NoticeService({ update() {} } as any);
+    await TestBed.configureTestingModule({
+      imports: [NotificationComponent, TranslateModule.forRoot()],
+      providers: [
+        { provide: NoticeService, useValue: notices },
+        { provide: UiService, useValue: {} },
+      ],
+    }).compileComponents();
+  });
+
+  it('renders the same running owner and Stop action after the editor view is recreated', () => {
+    const stop = jasmine.createSpy('stop');
+    notices.updateOwned('running-owner', {
+      title: 'AI正在操作', state: 'doing', stop, closable: false, showProgress: false,
+    });
+    const current = notices.data;
+    const first = TestBed.createComponent(NotificationComponent);
+    first.detectChanges();
+    expect(first.nativeElement.querySelector('.notification-box .title').textContent).toBe('AI正在操作');
+    first.destroy();
+
+    const next = TestBed.createComponent(NotificationComponent);
+    next.detectChanges();
+    expect(next.nativeElement.querySelector('.notification-box .title').textContent).toBe('AI正在操作');
+    expect(notices.data).toBe(current);
+    expect(stop).not.toHaveBeenCalled();
+    next.nativeElement.querySelector('.btn.red').click();
+    expect(stop).toHaveBeenCalledTimes(1);
+    notices.clearOwned('running-owner');
+    expect(next.nativeElement.querySelector('.notification-box')).toBeNull();
+    next.destroy();
+
+    const settled = TestBed.createComponent(NotificationComponent);
+    settled.detectChanges();
+    expect(settled.nativeElement.querySelector('.notification-box')).toBeNull();
+    settled.destroy();
+  });
+
+  it('does not resurrect a closed owned result that has no owner dismissal callback', () => {
+    const first = TestBed.createComponent(NotificationComponent);
+    first.detectChanges();
+    notices.updateOwned('finished-owner', { title: 'Finished result', state: 'done', showProgress: false });
+    first.nativeElement.querySelector('.close').click();
+    first.destroy();
+    expect(notices.data.title).toBe('Finished result');
+
+    const next = TestBed.createComponent(NotificationComponent);
+    next.detectChanges();
+    expect(next.nativeElement.querySelector('.notification-box')).toBeNull();
+    next.destroy();
+  });
+
+  it('restores the live owner covered by a load error and clears that presentation when the owner settles', () => {
+    const stop = jasmine.createSpy('stop');
+    const running = { title: 'AI正在操作', state: 'doing', stop, closable: false, showProgress: false };
+    notices.updateOwned('running-owner', running);
+    const first = TestBed.createComponent(NotificationComponent);
+    first.detectChanges();
+    notices.update({ title: '加载项目失败', state: 'error', showProgress: false });
+    expect(first.nativeElement.querySelector('.notification-box .title').textContent).toBe('加载项目失败');
+    first.destroy();
+
+    const next = TestBed.createComponent(NotificationComponent);
+    next.detectChanges();
+    expect(next.nativeElement.querySelector('.notification-box .title').textContent).toBe('AI正在操作');
+    expect(notices.data).toBe(running);
+    expect(stop).not.toHaveBeenCalled();
+    next.nativeElement.querySelector('.btn.red').click();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(notices.clearOwned('running-owner')).toBeTrue();
+    expect(next.nativeElement.querySelector('.notification-box')).toBeNull();
+    next.destroy();
+
+    const settled = TestBed.createComponent(NotificationComponent);
+    settled.detectChanges();
+    expect(settled.nativeElement.querySelector('.notification-box')).toBeNull();
+    settled.destroy();
   });
 });

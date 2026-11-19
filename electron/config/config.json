@@ -1,4 +1,5 @@
 {
+  "metricsEnabled": true,
   "lang": "zh_CN",
   "theme": "default",
   "font": "default",
@@ -11,6 +12,10 @@
   "installed": "",
   "build_flavor": "cn",
   "region": "cn",
+  "download_region_order": {
+    "cn": ["cn", "eu"],
+    "eu": ["eu", "cn"]
+  },
   "resource_source": "auto",
   "resource_sources": [
     {
@@ -29,10 +34,6 @@
   },
   "update_download_strategy": {
     "enabled": true,
-    "mirror_region_order": [
-      "eu",
-      "cn"
-    ],
     "fallback_on_error": true,
     "first_byte_timeout_ms": 15000,
     "stall_timeout_ms": 20000,
@@ -94,7 +95,9 @@
   "platform": "win32",
   "devmode": false,
   "blockly": {
-    "renderer": "thrasos"
+    "autoSave": false,
+    "renderer": "thrasos",
+    "sounds": true
   },
   "coder": {
     "enabled": false

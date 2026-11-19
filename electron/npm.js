@@ -1,8 +1,9 @@
 // 管理 npm 命令进程，并将执行状态和日志回传给渲染进程。
 const { ipcMain } = require("electron");
-const { spawn } = require('child_process');
+const { spawn, getOwnedProcessInfo = () => null, stopOwnedProcess } = require('./owned-process');
 const { killRegisteredProcessTree } = require('./process-tree');
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
+const { acquireNpmMutation } = require('./npm-mutation-queue');
 
 const activeNpmProcesses = new Map();
 let npmShutdown = false;
@@ -195,10 +196,14 @@ function runNpmCommand(entry, option, mainWindow) {
             // already started process (or its install scripts) has stopped.
         });
 
-        child.once('close', (code, signal) => {
+        child.once('close', async (code, signal) => {
             entry.closed = true;
             entry.completedNormally = Number.isInteger(code) && !signal;
-            if (!entry.completedNormally && child.pid && !processError) entry.terminationUnconfirmed = true;
+            if (!entry.completedNormally && child.pid) {
+                const nativeStopped = getOwnedProcessInfo(child) ? await stopOwnedProcess(child).catch(() => false) : false;
+                entry.terminationUnconfirmed = !nativeStopped;
+                if (nativeStopped && !processError) processError = new Error('NPM_PROCESS_TERMINATED');
+            }
             if (entry.cancelled) return reject(new Error('NPM_COMMAND_CANCELLED'));
             if (processError) return option?.ignoreErr ? resolve(false) : reject(processError);
             if (code !== 0) {
@@ -262,6 +267,11 @@ function registerNpmHandlers(mainWindow) {
         owner.on('render-process-gone', onDestroyed);
         owner.on('destroyed', onDestroyed);
         try {
+            const permit = acquireNpmMutation({ commandText: cmd }, {
+                signal: entry.retryAbort.signal,
+                onWait: () => sendRendererLog(mainWindow, '依赖正在安装，已排队等待完成…', 'doing', `${sourceId}:install-wait`),
+            });
+            if (permit) entry.releaseNpmMutation = await permit;
             return await runNpmWithRetries(entry, option, mainWindow);
         } finally {
             owner.removeListener('did-start-navigation', onNavigation);
@@ -274,6 +284,8 @@ function registerNpmHandlers(mainWindow) {
 }
 
 function releaseNpmEntry(entry) {
+    entry.releaseNpmMutation?.();
+    entry.releaseNpmMutation = undefined;
     if (activeNpmProcesses.get(entry.sourceId) === entry) activeNpmProcesses.delete(entry.sourceId);
 }
 
@@ -289,7 +301,13 @@ async function stopNpmEntry(entry) {
     }
     entry.stopRequested = true;
     entry.stopPromise = (async () => {
-        const stopped = await killRegisteredProcessTree(entry.process?.pid, `npm:${entry.sourceId}`).catch(() => false);
+        const originalProcess = entry.process;
+        const stopped = await killRegisteredProcessTree(originalProcess?.pid, `npm:${entry.sourceId}`, {
+            ownedProcess: originalProcess,
+            originalProcessCompletedNormally: () => activeNpmProcesses.get(entry.sourceId) === entry
+                && entry.process === originalProcess && entry.closed === true
+                && entry.completedNormally === true && !entry.terminationUnconfirmed,
+        }).catch(() => false);
         entry.terminationUnconfirmed = !stopped;
         if (stopped) releaseNpmEntry(entry);
         entry.stopRequested = false;
@@ -326,6 +344,8 @@ module.exports = {
     registerNpmHandlers,
     killAllNpmProcesses,
     killOwnerProjectNpmProcesses,
+    hasOwnerProjectNpmProcesses: (owner, projectPath, projectSessionId) => [...activeNpmProcesses.values()]
+        .some(entry => matchesProjectTask(entry, owner, projectPath, projectSessionId)),
     getActiveNpmProcesses,
     beginNpmShutdown: () => { npmShutdown = true; },
 };

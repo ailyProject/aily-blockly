@@ -1,3 +1,5 @@
+import { SubappOwnerRecovery } from './subapp-owner-recovery';
+
 export interface SubappAgentOwnerLease {
   ownerLeaseId: string;
   sessionId: string;
@@ -10,54 +12,107 @@ export class SubappAgentOwnerLeases {
   private readonly releasing = new Map<string, { sessionId: string; cleanup: Promise<Record<string, unknown>> }>();
   private readonly cancellations = new Map<string, Map<string, number>>();
   private timer: ReturnType<typeof setInterval> | undefined;
+  private readonly recovery: SubappOwnerRecovery;
   readonly ttlMs = 45_000;
   readonly heartbeatMs = 10_000;
 
   constructor(
     private readonly onRelease: (lease: SubappAgentOwnerLease) => Promise<Record<string, unknown>>,
     private readonly now: () => number = Date.now,
-  ) {}
+    pendingRequests: (ownerLeaseId: string) => number = () => 0,
+  ) {
+    this.recovery = new SubappOwnerRecovery({ active: id => this.leases.get(id),
+      release: (id, session) => this.release(id, session), acquire: session => this.acquire(session),
+      pending: pendingRequests, now });
+  }
+
+  inspect(ownerLeaseId: string, sessionId: string): Record<string, unknown> {
+    return this.recovery.inspect(ownerLeaseId, sessionId);
+  }
+
+  recover(ownerLeaseId: string, sessionId: string, requestId: string): Record<string, unknown> {
+    return this.recovery.recover(ownerLeaseId, sessionId, requestId);
+  }
 
   acquire(sessionId: string): SubappAgentOwnerLease {
     if (!sessionId || sessionId.length > 256) throw this.error('SUBAPP_SESSION_REQUIRED', 'A valid session id is required');
     if (this.leases.size + this.releasing.size >= 256) throw this.error('SUBAPP_OWNER_LIMIT', 'Too many active or unconfirmed Subapp owners');
+
     const lease = { ownerLeaseId: `owner-${crypto.randomUUID()}`, sessionId, expiresAt: this.now() + this.ttlMs };
+
     this.leases.set(lease.ownerLeaseId, lease);
+
     if (!this.timer) {
       this.timer = setInterval(() => void this.expire(), 1000);
       (this.timer as unknown as { unref?(): void }).unref?.();
     }
+
+    return { ...lease };
+  }
+
+  /** Only the bridge may adopt a main-process-proven incarnation. */
+  adopt(lease: SubappAgentOwnerLease): SubappAgentOwnerLease {
+    if (!lease.ownerLeaseId || !lease.sessionId || !Number.isSafeInteger(lease.expiresAt)) {
+      throw this.error('SUBAPP_OWNER_CONTROL_INVALID', 'Invalid main-process owner lease.');
+    }
+
+    const current = this.leases.get(lease.ownerLeaseId);
+
+    if (current && current.sessionId !== lease.sessionId) throw this.error('SUBAPP_OWNER_MISMATCH', 'Owner belongs to another session.');
+
+    if (lease.expiresAt > this.now()) {
+      this.leases.set(lease.ownerLeaseId, { ...lease });
+
+      if (!this.timer) {
+        this.timer = setInterval(() => void this.expire(), 1000);
+        (this.timer as unknown as { unref?(): void }).unref?.();
+      }
+    }
+
     return { ...lease };
   }
 
   require(ownerLeaseId: string, sessionId: string, requestId = ''): SubappAgentOwnerLease {
     const lease = this.leases.get(ownerLeaseId);
+
     if (!lease || lease.expiresAt <= this.now()) {
       throw this.error('SUBAPP_OWNER_EXPIRED', 'Subapp owner has closed or expired; reopen the Agent session');
     }
+
     if (lease.sessionId !== sessionId) throw this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session');
+
     const cancellations = this.cancellations.get(ownerLeaseId);
+
     if (requestId && (cancellations?.get(requestId) || 0) > this.now()) {
       throw this.error('SUBAPP_RPC_CANCELLED', 'Subapp Agent request was cancelled');
     }
+
     return lease;
   }
 
   renew(ownerLeaseId: string, sessionId: string): SubappAgentOwnerLease {
     const lease = this.require(ownerLeaseId, sessionId);
+
     lease.expiresAt = this.now() + this.ttlMs;
+
     return { ...lease };
   }
 
   cancel(ownerLeaseId: string, sessionId: string, requestId: string): void {
     this.require(ownerLeaseId, sessionId);
+
     if (!requestId || requestId.length > 256) throw this.error('SUBAPP_REQUEST_REQUIRED', 'A valid request id is required');
+
     let requests = this.cancellations.get(ownerLeaseId);
+
     if (!requests) this.cancellations.set(ownerLeaseId, requests = new Map());
+
     for (const [id, expiry] of requests) if (expiry <= this.now()) requests.delete(id);
+
     if (requests.size >= 1024 && !requests.has(requestId)) {
       throw this.error('SUBAPP_CANCEL_LIMIT', 'Too many cancelled requests; close this owner before continuing');
     }
+
     // Fence a cancel that arrives before the corresponding HTTP tool call.
     requests.set(requestId, this.now() + 620_000);
   }
@@ -66,29 +121,37 @@ export class SubappAgentOwnerLeases {
   hasSession(sessionId: string): boolean { return [...this.leases.values()].some(lease => lease.sessionId === sessionId); }
 
   release(ownerLeaseId: string, sessionId?: string): Promise<Record<string, unknown>> {
-    const pending = this.releasing.get(ownerLeaseId);
-    if (pending) {
-      if (sessionId && sessionId !== pending.sessionId) {
-        return Promise.reject(this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session'));
-      }
-      return pending.cleanup;
+    const known = this.leases.get(ownerLeaseId) ?? this.recovery.retryLease(ownerLeaseId, sessionId);
+
+    if (known && sessionId && sessionId !== known.sessionId) {
+      return Promise.reject(this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session'));
     }
-    const lease = this.leases.get(ownerLeaseId);
+
+    const pending = this.releasing.get(ownerLeaseId);
+
+    if (pending) return sessionId && pending.sessionId !== sessionId
+      ? Promise.reject(this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session'))
+      : pending.cleanup;
+
+    const lease = known;
+
     if (!lease) return Promise.resolve({ ok: true, released: false });
+
     if (sessionId && sessionId !== lease.sessionId) {
       return Promise.reject(this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session'));
     }
+
     // Revoke synchronously, before awaiting any Runtime callback.
     this.leases.delete(ownerLeaseId);
     this.cancellations.delete(ownerLeaseId);
+
     if (!this.leases.size && this.timer) { clearInterval(this.timer); this.timer = undefined; }
-    const cleanup = Promise.resolve().then(() => this.onRelease(lease)).then(result => {
-      // Admission is already revoked. Keep a failed release as the original
-      // responsibility: a repeated release must not turn it into "not found".
-      if (result['ok'] === true) this.releasing.delete(ownerLeaseId);
-      return result;
-    });
+
+    const cleanup = Promise.resolve().then(() => this.onRelease(lease)).finally(() => this.releasing.delete(ownerLeaseId));
+
     this.releasing.set(ownerLeaseId, { sessionId: lease.sessionId, cleanup });
+    this.recovery.remember(lease, cleanup);
+
     return cleanup;
   }
 
@@ -96,6 +159,7 @@ export class SubappAgentOwnerLeases {
     await Promise.all([...this.leases.values()].filter(lease => lease.expiresAt <= this.now()).map(async lease => {
       try {
         const result = await this.release(lease.ownerLeaseId);
+
         if (result['ok'] === false) console.warn('[subapp-owner] Expiry cleanup failed', lease.sessionId, result);
       } catch (error) { console.warn('[subapp-owner] Expiry cleanup failed', lease.sessionId, error); }
     }));
@@ -103,13 +167,17 @@ export class SubappAgentOwnerLeases {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+
     this.timer = undefined;
+
     // Revoke through the same release path so a pending or failed cleanup
     // stays owned even when its presentation/bridge is being destroyed.
     for (const lease of [...this.leases.values()]) {
       void this.release(lease.ownerLeaseId).catch(error => console.warn('[subapp-owner] Stop cleanup failed', lease.sessionId, error));
     }
+
     this.cancellations.clear();
+    this.recovery.clear();
   }
 
   private error(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }

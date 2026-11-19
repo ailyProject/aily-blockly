@@ -1,120 +1,81 @@
+import { BehaviorSubject, Subject } from 'rxjs';
 import { ProjectService } from './project.service';
 
-describe('ProjectService canonical manifest mirror', () => {
+describe('ProjectService root manifest authority', () => {
   const root = '/project';
   const manifestPath = `${root}/package.json`;
-  const mirrorPath = `${root}/.temp/package.json`;
-  const current = JSON.stringify({
-    name: 'project',
-    dependencies: {
-      '@aily-project/board-stm32f407g-discovery': '3.0.0',
-      '@aily-project/lib-core-custom': '1.1.0',
-    },
-    projectConfig: { pnum: 'DISCO_F407VG' },
-    MACROS: [['USER_OPTION', '1']],
-  }, null, 2);
+  const legacyPath = `${root}/.temp/package.json`;
+  const current = { name: 'project', dependencies: { '@aily-project/lib-custom': '1.1.0' }, projectConfig: { pnum: 'DISCO_F407VG' } };
   let files: Map<string, string>;
-  let directories: Set<string>;
-  let previous: { fs: any; path: any };
+  let previous: any;
   let service: any;
   let fs: any;
 
   beforeEach(() => {
-    previous = { fs: window['fs'], path: window['path'] };
-    files = new Map([[manifestPath, current]]);
-    directories = new Set([root]);
+    previous = { fs: window['fs'], path: window['path'], libraryDependencies: window['libraryDependencies'], packageJson: window['packageJson'] };
+    files = new Map([[manifestPath, JSON.stringify(current)]]);
     fs = {
-      existsSync: (path: string) => files.has(path) || directories.has(path),
+      existsSync: (path: string) => files.has(path),
       readFileSync: jasmine.createSpy('read').and.callFake((path: string) => {
         if (!files.has(path)) throw new Error(`ENOENT: ${path}`);
         return files.get(path);
       }),
       writeFileSync: jasmine.createSpy('write').and.callFake((path: string, content: string) => files.set(path, content)),
-      mkdirSync: jasmine.createSpy('mkdir').and.callFake((path: string) => directories.add(path)),
     };
-    window['fs'] = fs;
-    window['path'] = { join: (...parts: string[]) => parts.join('/') };
+    Object.assign(window, { fs, path: { join: (...parts: string[]) => parts.join('/') }, libraryDependencies: undefined });
     service = Object.create(ProjectService.prototype);
-    service.isAilyCodeProject = jasmine.createSpy('coder').and.returnValue(false);
+    service.currentProjectPathSubject = new BehaviorSubject(root);
+    service.libraryChanges = new Map();
+    service.coderProjectContexts = new Map();
   });
 
-  afterEach(() => {
-    window['fs'] = previous.fs;
-    window['path'] = previous.path;
-  });
+  afterEach(() => Object.assign(window, previous));
 
-  it('refreshes a stale mirror without rolling back dependencies, board configuration or macros', async () => {
-    files.set(mirrorPath, JSON.stringify({ name: 'old', dependencies: {}, projectConfig: { pnum: 'old' } }));
-    await service.syncPackageJsonWithTemp(root);
-    expect(files.get(manifestPath)).toBe(current);
-    expect(files.get(mirrorPath)).toBe(current);
-    expect(fs.readFileSync).toHaveBeenCalledOnceWith(manifestPath, 'utf8');
-    expect(fs.writeFileSync).toHaveBeenCalledOnceWith(mirrorPath, current);
-  });
+  for (const legacy of [undefined, '{ invalid old backup']) {
+    it(`reads and updates only the root manifest with ${legacy ? 'a damaged' : 'no'} legacy backup`, async () => {
+      if (legacy) files.set(legacyPath, legacy);
+      expect(await service.getPackageJson()).toEqual(current);
+      const next = { ...current, nickname: 'Renamed' };
+      await service.setPackageJson(next);
+      expect(JSON.parse(files.get(manifestPath)!)).toEqual(next);
+      expect(files.get(legacyPath)).toBe(legacy);
+      expect(fs.readFileSync.calls.allArgs().every(args => args[0] === manifestPath)).toBeTrue();
+      expect(fs.writeFileSync).toHaveBeenCalledOnceWith(manifestPath, JSON.stringify(next, null, 2));
+    });
+  }
 
-  it('preserves a normal npm declaration added between two project opens', async () => {
-    await service.syncPackageJsonWithTemp(root);
-    const installed = JSON.parse(current);
-    installed.dependencies['@aily-project/lib-user'] = '2.0.0';
-    const installedText = JSON.stringify(installed, null, 2);
-    files.set(manifestPath, installedText);
-    await service.syncPackageJsonWithTemp(root);
-    expect(files.get(manifestPath)).toBe(installedText);
-    expect(files.get(mirrorPath)).toBe(installedText);
-    expect(fs.writeFileSync.calls.allArgs().every(args => args[0] === mirrorPath)).toBeTrue();
-  });
-
-  it('creates a missing mirror from the actual root bytes', async () => {
-    await service.syncPackageJsonWithTemp(root);
-    expect(fs.mkdirSync).toHaveBeenCalledOnceWith(`${root}/.temp`, { recursive: true });
-    expect(files.get(manifestPath)).toBe(current);
-    expect(files.get(mirrorPath)).toBe(current);
-  });
-
-  it('never parses or restores a damaged mirror', async () => {
-    files.set(mirrorPath, '{ invalid old cache');
-    await service.syncPackageJsonWithTemp(root);
-    expect(files.get(manifestPath)).toBe(current);
-    expect(files.get(mirrorPath)).toBe(current);
-    expect(fs.readFileSync).toHaveBeenCalledOnceWith(manifestPath, 'utf8');
-  });
-
-  it('does not resurrect a missing root manifest from its mirror', async () => {
+  it('does not resurrect a missing root manifest from a legacy backup', async () => {
     files.delete(manifestPath);
-    files.set(mirrorPath, current);
-    await service.syncPackageJsonWithTemp(root);
-    expect(files.has(manifestPath)).toBeFalse();
-    expect(files.get(mirrorPath)).toBe(current);
-    expect(fs.readFileSync).not.toHaveBeenCalled();
+    files.set(legacyPath, JSON.stringify(current));
+    await expectAsync(service.getPackageJson()).toBeRejectedWithError(`ENOENT: ${manifestPath}`);
     expect(fs.writeFileSync).not.toHaveBeenCalled();
-    expect(fs.mkdirSync).not.toHaveBeenCalled();
   });
 
-  it('leaves Coder projects and their absent temp directory untouched', async () => {
-    service.isAilyCodeProject.and.returnValue(true);
-    await service.syncPackageJsonWithTemp(root);
-    expect(service.isAilyCodeProject).toHaveBeenCalledOnceWith(root);
-    expect(fs.readFileSync).not.toHaveBeenCalled();
+  it('publishes acknowledged library dirtiness and serves title reads without IPC/filesystem work', async () => {
+    service.libraryChangesChanged = new Subject();
+    const changed = jasmine.createSpy('changed'); service.libraryChangesChanged.subscribe(changed);
+    const status = jasmine.createSpy('status').and.resolveTo({dirty:true,manifest:current});
+    window['libraryDependencies'] = {status};
+    await service.getPackageJson();
+    for(let i=0;i<10;i++) expect(service.hasCachedLibraryChanges(root)).toBeTrue();
+    expect(status).toHaveBeenCalledTimes(1); expect(fs.readFileSync).not.toHaveBeenCalled();
+    expect(changed).toHaveBeenCalledTimes(1);
+    status.and.resolveTo({dirty:false,manifest:current}); await service.getPackageJson();
+    expect(service.hasCachedLibraryChanges(root)).toBeFalse(); expect(changed).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards the pending view using the manifest restored by Chat, leaving the old backup untouched', async () => {
+    files.set(legacyPath, JSON.stringify(current));
+    const restored = { name: 'restored', dependencies: {} };
+    files.set(manifestPath, JSON.stringify(restored));
+    service.libraryChanges.set(root, current);
+    const discard = jasmine.createSpy('discard').and.resolveTo({ dirty: false, manifest: restored });
+    window['libraryDependencies'] = { discard };
+    await service.discardLibraryChanges(root, true);
+    expect(discard).toHaveBeenCalledOnceWith(root, { reconcile: true, historyRestored: false });
+    expect(service.currentPackageData).toEqual(restored);
+    expect(JSON.parse(service.getEffectivePackageText(root))).toEqual(restored);
+    expect(files.get(legacyPath)).toBe(JSON.stringify(current));
     expect(fs.writeFileSync).not.toHaveBeenCalled();
-    expect(fs.mkdirSync).not.toHaveBeenCalled();
-  });
-
-  it('retains root bytes when refreshing the mirror fails', async () => {
-    spyOn(console, 'warn');
-    fs.writeFileSync.and.throwError('cache is read-only');
-    await service.syncPackageJsonWithTemp(root);
-    expect(files.get(manifestPath)).toBe(current);
-    expect(files.has(mirrorPath)).toBeFalse();
-    expect(console.warn).toHaveBeenCalled();
-  });
-
-  it('mirrors an explicitly restored root rather than undoing that restore', async () => {
-    files.set(mirrorPath, current);
-    const restored = JSON.stringify({ name: 'restored', dependencies: {} });
-    files.set(manifestPath, restored);
-    await service.syncPackageJsonWithTemp(root);
-    expect(files.get(manifestPath)).toBe(restored);
-    expect(files.get(mirrorPath)).toBe(restored);
-    expect(fs.writeFileSync).toHaveBeenCalledOnceWith(mirrorPath, restored);
   });
 });

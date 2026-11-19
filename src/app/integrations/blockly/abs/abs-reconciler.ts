@@ -1,3 +1,5 @@
+import { applyAbsStateEdits } from './abs-state-edits';
+import { assertAbsStateUnchanged } from './abs-full-state';
 import { assertNoOversizedInlineValues, collectProjectDataPayloads, cloneBlocklyJson } from '@domain/project/public-api';
 import { AbsFieldDefinition, normalizeAbsSerializedField, resolveAbsFieldValue } from './abs-field-values';
 import { serializeAbsFailure } from './abs-diagnostics';
@@ -20,12 +22,20 @@ import type { AbsSourceEdits } from './abs-edit-provenance';
 import { createAbsReconcileAnalysis, createAbsReconcileAnalysisFactory } from './abs-reconcile-analysis';
 import { retireEmptyProjectModels } from './abs-empty-project-models';
 import { copyAbsBlockForRebuild } from './abs-reconciled-block';
+import { indexAbsBlockActivity } from './abs-block-activity';
+import { inactiveAbsSyntax, samePreservedAbsCall } from './abs-native-preservation';
+import { assertAbsDeletionIntent } from './abs-deletion-intent';
 
 export interface AbsReconcileOptions extends AbsSyntaxOptions {
   /** Share declaration integrity checks only inside a pure synchronous traversal. */
   withSynchronousRead?: <T>(read: () => T) => T;
   /** Exact text-edit provenance, replayed against the immutable generation. */
   sourceEdits?: AbsSourceEdits;
+  /** Host-only admission for an external bound candidate; not a wire option. */
+  requireDeletionEvidence?: boolean;
+  /** Exact verified host source, supplied only by the fixed-candidate reader.
+   * Its unchanged state is read-only provenance; Working still owns all state. */
+  readonlyStateOrigin?: string;
   /** Pure definitions captured for this runtime session, never a global Blockly lookup. */
   fieldDefinition?: (blockType: string, fieldName: string, blockId?: string) => AbsFieldDefinition | undefined;
   newId?: (node: AbsSyntaxNode) => string;
@@ -105,6 +115,7 @@ async function reconcileDraft(
 ): Promise<AbsReconcileDraft> {
   // Detach before awaiting; mutable caller state cannot race baseline validation.
   const baseline = analysis.snapshot();
+  assertAbsStateUnchanged(editedAbs, options.readonlyStateOrigin ?? baseline.abs);
   options = { ...options };
   const variableCreation = options.variableCreation ? JSON.parse(absJson(options.variableCreation)) : undefined;
   const nativeBinding = options.nativeBinding ? cloneBlocklyJson(options.nativeBinding) : undefined;
@@ -139,11 +150,18 @@ async function reconcileDraft(
     || nativeInstances.size + hostCalls.size !== newEntries.length
     || newEntries.some(({ node }) => {
       const hosted = hostCalls.get(node.start), native = nativeInstances.get(node.start);
-      return hosted ? !!native || hosted.type !== node.type || !options.prepareBlock || !options.hostPrepared?.(node.type)
+      return hosted ? !!native || hosted.type !== node.type || !hosted.preserveInactive && (!options.prepareBlock || !options.hostPrepared?.(node.type))
         : !native || native.type !== node.type;
     }))) throw new AbsSyncError('ABS_NATIVE_BINDING_INVALID', 'Each call requires native evidence or a captured host preparation adapter.');
   const abiBlocks = indexAbsAbi(baseline.workspace);
   const { matches, originalIds, identity } = await analysis.match(edited, sourceEdits);
+  const inactive = inactiveAbsSyntax(edited), beforeActivity = indexAbsBlockActivity(baseline.workspace);
+  for (const { node } of newEntries) if (hostCalls.get(node.start)?.preserveInactive) {
+    const previous = matches.get(node), id = previous && originalIds.get(previous);
+    if (!previous || !id || beforeActivity.get(id) !== false || !inactive.has(node) || !samePreservedAbsCall(previous, node)) {
+      throw new AbsSyncError('ABS_NATIVE_BINDING_INVALID', 'Inactive preservation requires an unchanged retained call and its original identity.', node);
+    }
+  }
 
   const contracts = baseline.contracts;
   if (options.declaration) {
@@ -181,12 +199,20 @@ async function reconcileDraft(
       (previous ? retained : added).push(id);
       const nativeInstance = nativeInstances.get(node.start);
       if (nativeBinding && !nativeInstance && !hostCalls.has(node.start)) throw new AbsSyncError('ABS_NATIVE_BINDING_INVALID', 'Native instance does not match this call.', node);
-      const prepareBlock = options.prepareBlock && options.hostPrepared?.(node.type) !== false ? options.prepareBlock : undefined;
+      const prepareBlock = !hostCalls.get(node.start)?.preserveInactive && options.prepareBlock && options.hostPrepared?.(node.type) !== false ? options.prepareBlock : undefined;
       const block: AbsAbiBlock = previous
         ? prepareBlock ? JSON.parse(absJson(previous)) : copyAbsBlockForRebuild(previous)
         : { ...structuredClone(nativeInstance?.seed), type: node.type, id };
-      if (node.disabled !== (matched?.disabled ?? false)) {
-        throw new AbsSyncError('ABS_STATE_EDIT_REQUIRES_HOST', 'Change disabled state through an explicit host operation.', node, [id]);
+      if (previous && node.disabled !== (matched?.disabled ?? false)) {
+        throw new AbsSyncError('ABS_STATE_EDIT_REQUIRES_HOST', 'Ordinary ABS edits preserve the user disabled state.', node, [id], {
+          blockType: node.type, reason: 'explicit-block-state-operation-required',
+          hint: 'Keep the exported @disabled marker. Only when the user explicitly asks to change state, use blocks_set_state(action="inspect") to obtain current IDs/generation, then action="update". Never enable or delete blocks merely to make ABS validation pass.',
+        });
+      }
+      if (!previous && node.disabled) {
+        block['disabledReasons'] = [...new Set([
+          ...(Array.isArray(block['disabledReasons']) ? block['disabledReasons'] : []), 'MANUALLY_DISABLED',
+        ])];
       }
       const declaredShape = options.blockContract?.(node.type, node.extraState, Object.fromEntries(Object.entries(node.fields).map(([name, token]) => [name, token.value])));
       const preparedShape = nativeInstance?.shape ?? (!previous || declaredShape?.mutation || declaredShape?.fieldShape ? declaredShape : undefined);
@@ -204,6 +230,8 @@ async function reconcileDraft(
         try {
           const definition = preparedShape?.fields[name] ?? options.fieldDefinition?.(node.type, name, previous?.id)
             ?? (previous ? getAbsFieldDefinition(baseline.contracts, previous.id, name) : undefined);
+          if (token.reference && !definition) throw new AbsSyncError('ABS_RUNTIME_SHAPE_UNSUPPORTED',
+            'The variable field contract requires native preparation.');
           if (token.reference && definition?.symbol?.kind !== 'variable') throw new Error('$ references require a variable field.');
           if (definition) {
             if (!Object.hasOwn(contracts.fields, id)) setJsonMember(contracts.fields, id, {});
@@ -229,6 +257,9 @@ async function reconcileDraft(
         else block.extraState = preparedShape.extraState;
       }
       prepareBlock?.(block, previous, candidate, contracts);
+      // Host preparation cannot erase an explicitly requested restriction.
+      // Missing annotations retain the trusted baseline's opaque attributes.
+      Object.assign(block, node.protection);
       const defaultInputs = previous ? new Set<string>() : adoptAbsNativeDefaults(nativeBinding, node, block, { ids, contracts, added, defaultIds });
       const inputs = { ...block.inputs };
       for (const name of new Set([...Object.keys(inputs), ...Object.keys(node.inputs)])) {
@@ -256,6 +287,16 @@ async function reconcileDraft(
       }
       if (Object.keys(inputs).length) block.inputs = inputs;
       else delete block.inputs;
+      applyAbsStateEdits(block, node, (shadow, name) => {
+        const definition = options.fieldDefinition?.(shadow.type, name, shadow.id)
+          ?? options.blockContract?.(shadow.type, shadow.extraState, shadow.fields)?.fields[name]
+          ?? getAbsFieldDefinition(baseline.contracts, shadow.id, name);
+        if (definition) {
+          if (!Object.hasOwn(contracts.fields, shadow.id)) setJsonMember(contracts.fields, shadow.id, {});
+          setJsonMember(contracts.fields[shadow.id], name, JSON.parse(absJson(definition)));
+        }
+        return definition;
+      });
       const nextMetadata = block.next;
       delete block.next;
       if (!root || first) { delete block['x']; delete block['y']; }
@@ -273,6 +314,8 @@ async function reconcileDraft(
   getAbsProcedureReferences(candidate, baseline.contracts.procedures);
   const afterIds = indexAbsAbi(candidate);
   identity.assertReferencesPreserved(afterIds);
+  const removed = [...abiBlocks.keys()].filter(id => !afterIds.has(id));
+  if (options.requireDeletionEvidence) assertAbsDeletionIntent(baseline, editedAbs, removed, sourceEdits);
   // Use the same payload traversal as resource externalization: no second ABI graph walker.
   const literals: AbsLiteralBinding[] = [];
   for (const payload of collectProjectDataPayloads(candidate)) {
@@ -282,7 +325,7 @@ async function reconcileDraft(
     if (range) literals.push({ ...range, jsonPointer: payload.jsonPointer });
   }
   return { workspace: candidate, literals, ...(retiredModels.length ? { retiredModels } : {}), ...(defaultIds.size ? { implicitBlockIds: [...defaultIds] } : {}), contracts, identities: [...sources].map(([id, node]) => ({ start: node.start, id })),
-    added, retained, removed: [...abiBlocks.keys()].filter(id => !afterIds.has(id)) };
+    added, retained, removed };
 }
 
 function setJsonMember(target: object, key: string, value: unknown): void {

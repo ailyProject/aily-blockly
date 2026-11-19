@@ -7,7 +7,7 @@ import { expect, getMainWindow, launchAilyElectron, openBlocklyProject, test } f
 const source = process.env['AILY_E2E_PROJECT'];
 test('large project initialization preserves roots through input races, editing and reopen', async () => {
   test.skip(!source, 'Set AILY_E2E_PROJECT to an installed large Blockly project.');
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'aily-initialization-'));
+  const temporary = await mkdtemp(path.join(process.env['BLOCKLY_INIT_PROJECT_ROOT'] || os.tmpdir(), 'aily-initialization-'));
   const sourceHash = createHash('sha256').update(await readFile(path.join(source!, 'project.abi'))).digest('hex');
   const project = path.join(temporary, 'project');
   await cp(source!, project, { recursive: true, dereference: true, filter: file => ![
@@ -21,6 +21,28 @@ test('large project initialization preserves roots through input races, editing 
   const launched = await launchAilyElectron({ config });
   const win = await getMainWindow(launched.app);
   const report: any = { source, rounds: [], errors: [], gpu: await launched.app.evaluate(({ app }) => app.getGPUFeatureStatus()) };
+  report.projectAbiSha256 = sourceHash;
+  report.environment = { platform: process.platform, arch: process.arch, os: os.release(), cpu: os.cpus()[0]?.model,
+    versions: await launched.app.evaluate(() => process.versions),
+    blockly: JSON.parse(await readFile(path.resolve('node_modules/blockly/package.json'), 'utf8')).version,
+    schedulerYield: await win.evaluate(() => typeof (globalThis as any).scheduler?.yield === 'function') };
+  report.cpuProfile = process.env['BLOCKLY_INIT_PROFILE'] !== '0';
+  report.editorOnly = process.env['BLOCKLY_INIT_EDITOR_ONLY'] === '1';
+  const openProject = async () => {
+    await openBlocklyProject(win, project);
+    if (report.editorOnly) {
+      // An isolated profile has no SDKs. Exclude automatic compiler downloads
+      // AFTER editor readiness from this editor-only benchmark and its reopens.
+      await win.waitForFunction(() => {
+        const element = document.querySelector('app-blockly-editor');
+        return element && (window as any).ng?.getComponent(element)?.npmService;
+      });
+      await win.evaluate(() => {
+        const editor = (window as any).ng.getComponent(document.querySelector('app-blockly-editor'));
+        editor.npmService.installBoardDeps = async () => {};
+      });
+    }
+  };
   let edited: { id: string; before: number; after: number } | undefined;
   let expectedCode: string | undefined;
   win.on('pageerror', error => report.errors.push(error.message));
@@ -65,7 +87,7 @@ test('large project initialization preserves roots through input races, editing 
       } });
     }, !!process.env['BLOCKLY_INIT_RACE']);
     if (process.env['BLOCKLY_INIT_CANCEL']) {
-      await openBlocklyProject(win, project);
+      await openProject();
       await win.waitForFunction(() => {
         const ws = (window as any).blocklyWorkspace;
         return ws && !ws.getCanvas().isConnected && ws.getAllBlocks(false).length > 64;
@@ -121,10 +143,10 @@ test('large project initialization preserves roots through input races, editing 
         };
         requestAnimationFrame(frame);
       }, !!process.env['BLOCKLY_INIT_RACE']);
-      const session = round === 0 ? await win.context().newCDPSession(win) : null;
+      const session = round === 0 && report.cpuProfile ? await win.context().newCDPSession(win) : null;
       if (session) { await session.send('Profiler.enable'); await session.send('Profiler.start'); }
       const start = Date.now();
-      await openBlocklyProject(win, project!);
+      await openProject();
       await expect(win.locator('iframe[data-runtime-ready="true"]')).toHaveCount(1, { timeout: 90_000 });
       await win.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       const visibleMs = Date.now() - start;
@@ -189,6 +211,44 @@ test('large project initialization preserves roots through input races, editing 
       Object.assign(report.rounds.at(-1), { codeLength: code.length, codeSha256: createHash('sha256').update(code).digest('hex') });
       if (edited) expect(await win.evaluate(id => (window as any).blocklyWorkspace.getBlockById(id).getFieldValue('NUM'), edited.id)).toBe(edited.after);
       if (round === 0 && process.env['BLOCKLY_INIT_INTERACTIONS']) {
+        await win.locator('.toolbox-search__input').fill('math number');
+        await expect.poll(() => win.evaluate(() => (window as any).blocklyWorkspace.getFlyout()
+          .getWorkspace().getAllBlocks(false).some(block => block.type === 'math_number'))).toBe(true);
+        await win.locator('.toolbox-search__input').press('Escape');
+        report.toolboxSearch = true;
+        if (process.env['BLOCKLY_INIT_GEOMETRY']) {
+          report.geometry = await win.evaluate(async () => {
+            const w = window as any, ws = w.blocklyWorkspace;
+            const saved = { scale: ws.scale, x: ws.scrollX, y: ws.scrollY };
+            const root = ws.getTopBlocks(false).sort((a, b) => b.getDescendants(false).length - a.getDescendants(false).length)[0];
+            const bounds = root.getBoundingRectangle(), views = [];
+            w.Blockly.getFocusManager().focusNode(ws.getRootFocusableNode());
+            for (const [fraction, scale] of [[0, 1], [0.25, 1], [0.5, 0.5], [0.75, 1.5], [1, 1]]) {
+              ws.setScale(scale); ws.scroll(240 - bounds.left * scale,
+                100 - (bounds.top + (bounds.bottom - bounds.top - 700) * fraction) * scale);
+              await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+              const view = ws.getMetricsManager().getViewMetrics(true), canvas = ws.getCanvas().getCTM();
+              let missing = 0, incorrect = 0;
+              for (const block of ws.getAllBlocks(false)) {
+                const box = block.getBoundingRectangleWithoutChildren();
+                if (box.right >= view.left && box.left <= view.left + view.width && box.bottom >= view.top && box.top <= view.top + view.height) {
+                  let visible = true;
+                  for (let parent = block; parent; parent = parent.getParent()) if (parent.getSvgRoot().style.display === 'none') { visible = false; break; }
+                  if (visible && !block.getSvgRoot().isConnected) missing++;
+                }
+                if (!block.getSvgRoot().isConnected) continue;
+                const point = block.getRelativeToSurfaceXY(), matrix = block.getSvgRoot().getCTM();
+                if (!matrix || Math.abs(matrix.e - canvas.e - canvas.a * point.x) > 0.1 || Math.abs(matrix.f - canvas.f - canvas.d * point.y) > 0.1) incorrect++;
+              }
+              views.push({ fraction, scale, missing, incorrect, count: ws.getAllBlocks(false).length });
+            }
+            ws.setScale(saved.scale); ws.scroll(saved.x, saved.y);
+            return views;
+          });
+          for (const view of report.geometry) {
+            expect(view.missing).toBe(0); expect(view.incorrect).toBe(0); expect(view.count).toBe(result.count);
+          }
+        }
         edited = await win.evaluate(async () => {
           const w = window as any, ws = w.blocklyWorkspace;
           const block = ws.getAllBlocks(false).filter(b => b.type === 'math_number').at(-1);

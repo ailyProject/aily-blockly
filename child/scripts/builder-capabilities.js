@@ -14,12 +14,16 @@ function supportsSimulationTransportProfile(value) {
 /** Probe once per compile. Only legacy ordinary Artifact output may use help fallback. */
 function readBuilderCapabilities(command, launch = spawnSync) {
     const options = { shell: true, encoding: 'utf8', windowsHide: true, timeout: 5000 };
+
     try {
         const result = launch(command, ['capabilities', '--json'], options);
+
         if (result.status === 0) {
             const data = JSON.parse(result.stdout || '{}');
+
             if (data.schemaVersion === 1) {
                 const c = data.capabilities || {};
+
                 return {
                     artifact: c.simulationArtifactManifest?.schemaVersion === 1,
                     debug: c.simulationSourceDebug?.schemaVersion === 1 && c.simulationSourceDebug.cliOption === '--simulation-debug',
@@ -29,14 +33,30 @@ function readBuilderCapabilities(command, launch = spawnSync) {
                         && c.buildInputRecord.defaultFileName === 'aily-build-inputs.json',
                     workspace: c.buildWorkspaceLease?.schemaVersion === 1 && c.buildWorkspaceLease.delegationEnvironment === 'AILY_BUILDER_WORKSPACE',
                     ...(supportsSimulationTransportProfile(c.simulationTransportProfile) ? { simulationTransportProfile: PROFILE } : {}),
+                    packages: c.buildPackageInputs?.schemaVersion === 1 && c.buildPackageInputs.scope === 'resolved-sdk-tool-trees'
+                        && c.buildPackageInputs.verification === 'content-and-state-at-build-boundaries',
+                    verification: c.buildInputVerification?.schemaVersion === 1 && c.buildInputVerification.command === 'verify-build-inputs'
+                        && c.buildInputVerification.contextFileName === 'aily-build-input-context.json'
+                        && c.buildInputVerification.scope === 'prepared-dependency-trees-and-sdk-tools',
+                    verifiedLocalArchiveCache: c.verifiedLocalArchiveCache?.schemaVersion === 1
+                        && c.verifiedLocalArchiveCache.cliOption === '--verified-local-archive-cache',
+                    projectLibraryPaths: c.projectLibraryPaths?.schemaVersion === 1
+                        && c.projectLibraryPaths.cliOption === '--project-library-path',
                 };
             }
         }
     } catch { /* Older Builder can still perform ordinary compilation. */ }
+
     try {
         const result = launch(command, ['compile', '--help'], options);
-        return { artifact: result.status === 0 && `${result.stdout || ''}\n${result.stderr || ''}`.includes('--emit-artifact-manifest'), debug: false, graph: false, inputs: false, workspace: false };
-    } catch { return { artifact: false, debug: false, graph: false, inputs: false, workspace: false }; }
+
+        return { artifact: result.status === 0 && `${result.stdout || ''}\n${result.stderr || ''}`.includes('--emit-artifact-manifest'),
+            debug: false, graph: false, inputs: false, workspace: false, packages: false,
+            verification: false, verifiedLocalArchiveCache: false, projectLibraryPaths: false };
+    } catch {
+        return { artifact: false, debug: false, graph: false, inputs: false, workspace: false, packages: false,
+            verification: false, verifiedLocalArchiveCache: false, projectLibraryPaths: false };
+    }
 }
 
 module.exports = { readBuilderCapabilities, supportsSimulationTransportProfile };

@@ -1,4 +1,4 @@
-import { canonicalProjectJsonStringify, cloneBlocklyJson } from '@domain/project/public-api';
+import { canonicalProjectJsonStringify, cloneBlocklyJson } from '@domain/project/project-document-json';
 
 export interface BlocklyWorkspaceViewState {
   scale: number;

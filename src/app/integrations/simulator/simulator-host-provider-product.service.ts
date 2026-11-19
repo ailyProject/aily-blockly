@@ -13,19 +13,21 @@ import {
   createSimulatorGattHostProviderAdapter,
   type SimulatorProjectHostProviderAdapterOptions,
 } from '@aily-project/simulator-host-sdk';
+
 import type {
   SimulatorSubappHostProjectDebugConfigurationReadV1,
   SimulatorSubappHostProjectDebugConfigurationSnapshotV1,
   HostGattProducerStateV1, HostGattBoundProviderResultV1,
 } from '@aily-project/simulator-protocol/host';
+
 import type { HostNetworkProviderRequestV1, HostNetworkProviderResultV1 } from '@aily-project/simulator-protocol/connectivity-network-provider';
 import type { HostGattProviderRequestV1 } from '@aily-project/simulator-protocol/connectivity-gatt-provider';
-
 import { BuilderService } from '@domain/build/public-api';
 import { ProjectDebugConfigurationService, ProjectService } from '@domain/project/public-api';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
 import { SimulatorEntitlementAccountService } from './simulator-entitlement-account.service';
 import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-scene-change.service';
+
 import {
   SubappHostProviderDispatcher,
   SubappHostProviderProductRegistryService,
@@ -33,6 +35,7 @@ import {
   type SubappHostProviderProductOpenContext,
   type SubappHostProviderProductSession,
 } from '@integration/subapps/public-api';
+
 import { SimulatorBuildProductComposition } from './simulator-build-product-composition';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
 import { CoderSimulatorSourceBridgeService } from '../coder/coder-simulator-source-bridge.service';
@@ -41,17 +44,22 @@ import { CoderSimulatorBuildExecutionPort } from './simulator-coder-build-execut
 import { createSimulatorCoderSourceReader } from './simulator-coder-source-reader';
 import { SimulatorCoderEditorCallbackAuthority } from './simulator-coder-editor-callback-authority';
 import { createSimulatorBuildExecutionSlot } from './simulator-build-callback-authority';
+
 import {
   SimulatorBlocklyEditorCallbackAuthority,
 } from './simulator-blockly-editor-callback-authority';
+
 import {
   SimulatorEntitlementCallbackAuthority,
 } from './simulator-entitlement-callback-authority';
+
 import type {
   SimulatorActiveProjectBindingPort,
 } from './simulator-build-execution-port';
+
 import { createSimulatorElectronProjectArtifactFilePort } from './simulator-electron-project-artifact-file-port';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
+
 import { captureSimulatorProjectReadAuthority,
   type SimulatorCurrentProjectScope, type SimulatorProjectReadAuthorityCapture } from './simulator-current-project-scope';
 
@@ -64,8 +72,10 @@ const SIMULATOR_PROVIDER_MESSAGE_BUDGET = 4 * 1024 * 1024 + 16 * 1024;
  * process; the generic Child Tool Host supplies and owns that lifecycle.
  */
 @Injectable({ providedIn: 'root' })
+
 export class SimulatorHostProviderProductService {
   private readonly buildExecutionSlot = createSimulatorBuildExecutionSlot();
+
   private unregister: (() => void) | null = null;
 
   constructor(
@@ -87,6 +97,7 @@ export class SimulatorHostProviderProductService {
 
   ensureRegistered(): void {
     if (this.unregister) return;
+
     this.unregister = this.registry.register(SIMULATOR_TOOL_ID, {
       open: (context) => this.open(context),
     });
@@ -97,10 +108,12 @@ export class SimulatorHostProviderProductService {
   ): Promise<SubappHostProviderProductSession> {
     const scope = await this.openCurrentProjectScope(undefined, context.runtimePackagePath);
     const hardware = context.localSerial ? createSimulatorLocalSerialHostProvider(context.localSerial) : null;
+
     const network = context.localNetwork ? createSimulatorNetworkHostProviderAdapter({
       request: (request: HostNetworkProviderRequestV1, signal: AbortSignal) => context.localNetwork!.request(request as unknown as Record<string, unknown>, signal) as unknown as Promise<HostNetworkProviderResultV1>,
       close: () => context.localNetwork!.close(),
     }) : null;
+
     const gatt = context.localGatt ? createSimulatorGattHostProviderAdapter({
       bound: true,
       bindingState: (signal: AbortSignal) => context.localGatt!.bindingState(signal) as unknown as Promise<HostGattProducerStateV1>,
@@ -108,21 +121,23 @@ export class SimulatorHostProviderProductService {
       closeProducer: (producerId: string) => context.localGatt!.closeProducer(producerId),
       close: () => context.localGatt!.close(),
     }) : null;
+
     return bindProviderSession(context, [...(scope?.adapters ?? []), ...(hardware ? [hardware] : []), ...(network ? [network] : []), ...(gatt ? [gatt] : [])] as readonly SubappHostProviderAdapter[], async () => {
       const results = await Promise.allSettled([scope?.close(), hardware?.close?.(), network?.close(), gatt?.close()]);
       const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+
       if (errors.length) throw new AggregateError(errors, 'Simulator product resource cleanup requires retry.');
     }, gatt ? { [gatt.provider]: gatt.capabilities } : undefined);
   }
 
   /** Build the active code once before opening the Simulator, through Blockly's normal Builder. */
-  async prepareCurrentProjectForSimulation(signal?: AbortSignal): Promise<void> {
+  async prepareCurrentProjectForSimulation(signal?: AbortSignal, options: { requestId?: string; clearCache?: boolean } = {}) {
     const scope = await this.openCurrentProjectScope(signal);
 
     if (!scope) throw new Error('请先打开一个 Blockly 或 Coder 项目。');
 
     const current = AbortSignal.any([scope.activation.signal, ...(signal ? [signal] : [])]);
-    const requestId = `simulator-open-${crypto.randomUUID()}`;
+    const requestId = options.requestId ?? `simulator-open-${crypto.randomUUID()}`;
     const isCoder = this.project.isAilyCodeProject(scope.activation.path);
     const cancel = () => { if (!isCoder) this.builder.cancelActiveBlocklyProjectBuild(requestId); };
 
@@ -140,16 +155,16 @@ export class SimulatorHostProviderProductService {
         throw new Error('当前项目还没有电路场景，请先生成电路连线。');
       }
 
-      if (isCoder) {
-        if (!this.coder) throw new Error('Coder simulation builder is unavailable.');
-        await this.coder.buildForSimulation(scope.activation.path, { requestId,
-          graphSemanticRevision: scene.document.graphSemanticRevision, sceneDocument: scene.document, signal: current });
-      } else await this.builder.buildActiveBlocklyProject({
-        projectPath: scope.activation.path,
-        graphSemanticRevision: scene.document.graphSemanticRevision,
-        sceneDocument: scene.document,
-        requestId,
-      });
+      const input = { requestId, graphSemanticRevision: scene.document.graphSemanticRevision, sceneDocument: scene.document };
+
+      if (isCoder && !this.coder) throw new Error('Coder simulation builder is unavailable.');
+
+      const result = isCoder
+        ? await this.coder!.buildForSimulation(scope.activation.path, { ...input, signal: current })
+
+        : await this.builder.buildActiveBlocklyProject({
+          ...input, projectPath: scope.activation.path, clearCache: options.clearCache,
+        });
 
       scope.requireCurrent();
 
@@ -163,6 +178,8 @@ export class SimulatorHostProviderProductService {
       }, current);
 
       scope.requireCurrent();
+
+      return result;
     } finally {
       current.removeEventListener('abort', cancel);
       await scope.close();
@@ -177,75 +194,110 @@ export class SimulatorHostProviderProductService {
     runtimePackagePath?: string,
   ): Promise<SimulatorCurrentProjectScope | null> {
     signal?.throwIfAborted();
+
     const captured = this.project.captureCurrentProjectActivation();
     const projectRoot = this.readActiveProjectRoot();
+
     if (!captured || !projectRoot || !sameProjectRoot(captured.path, projectRoot)) return null;
+
     const editorKind = this.project.isAilyCodeProject(projectRoot) ? 'coder' as const : 'blockly' as const;
     const lifetime = new AbortController();
     const activationSignal = AbortSignal.any([captured.signal, lifetime.signal, ...(signal ? [signal] : [])]);
     let closeRequested = false, closed = false, closing: Promise<void> | null = null;
     const pending = new Set<Promise<unknown>>();
     const cleanup = new Set<() => void | Promise<void>>();
+
     const requireCurrent = () => {
       activationSignal.throwIfAborted();
+
       if (closeRequested) throw new SimulatorHostProviderOperationError('cancelled');
+
       captured.requireCurrent();
+
       const current = this.readActiveProjectRoot();
+
       if (!current || !sameProjectRoot(current, projectRoot)) throw new SimulatorHostProviderOperationError('conflict');
     };
+
     function trackOriginal<T>(action: () => T | Promise<T>): Promise<T> {
       const original = Promise.resolve().then(action).finally(() => { pending.delete(original); });
+
       pending.add(original);
       void original.catch(() => { /* Observing rejection does not cancel or release the actual operation. */ });
+
       return original;
     }
+
     function run<T>(external: AbortSignal, action: (current: AbortSignal) => T | Promise<T>): Promise<T> {
       try { requireCurrent(); external.throwIfAborted(); }
+
       catch (error) { return Promise.reject(error); }
+
       const current = AbortSignal.any([activationSignal, external]);
+
       const original = Promise.resolve().then(() => { requireCurrent(); current.throwIfAborted(); return action(current); })
         .then(value => { requireCurrent(); current.throwIfAborted(); return value; })
         .finally(() => { pending.delete(original); });
+
       pending.add(original);
       void original.catch(() => { /* Original callbacks remain joined until their actual outcome. */ });
+
       return original;
     }
     function close(): Promise<void> {
       closeRequested = true;
+
       lifetime.abort(new DOMException('The caller closed its original Simulator product scope.', 'AbortError'));
+
       if (closed) return Promise.resolve();
       if (closing) return closing;
+
       const original = Promise.resolve().then(async () => {
         const failures: unknown[] = [];
+
         for (const release of [...cleanup]) {
           try { await release(); cleanup.delete(release); } catch (error) { failures.push(error); }
         }
+
         // Abort is an intent, not proof that an ignored file operation settled.
         // A composite callback may reject before a sibling file operation.
         // Join each original operation, including children started while a
         // currently pending callback unwinds after cancellation.
         while (pending.size) await Promise.allSettled([...pending]);
+
         if (failures.length) throw new AggregateError(failures, 'Original Simulator product cleanup remains unconfirmed.');
+
         closed = true;
       }).finally(() => { if (closing === original) closing = null; });
+
       closing = original;
+
       void original.catch(() => { /* Keep failed releases for retry on this exact scope. */ });
+
       return original;
     }
+
     const ended = () => {
       if (!closeRequested) void close().catch(error => console.error('Original Simulator product scope cleanup remains unconfirmed', error));
     };
+
     try {
       requireCurrent();
+
       const normalizedRoot = normalizeProjectRoot(projectRoot);
       const rootDigest = await sha256Text(normalizedRoot);
+
       requireCurrent();
+
       const projectIdentity = `project-v1-${rootDigest}`;
       const workspaceIdentity = `workspace-v1-${rootDigest}`;
+
       const activeProject: SimulatorActiveProjectBindingPort = {
         readActiveBinding: () => {
           try { requireCurrent(); } catch { return null; }
+
           const activeRoot = this.project.currentProjectPath;
+
           if (
             !activeRoot
             || this.project.isProjectOpening
@@ -254,6 +306,7 @@ export class SimulatorHostProviderProductService {
           ) {
             return null;
           }
+
           return {
             projectRoot,
             projectIdentity,
@@ -263,6 +316,7 @@ export class SimulatorHostProviderProductService {
         },
         isSameProjectRoot: sameProjectRoot,
       };
+
       const files = createSimulatorElectronProjectArtifactFilePort({
         path: {
           join: (...segments) => window['path'].join(...segments),
@@ -281,6 +335,7 @@ export class SimulatorHostProviderProductService {
           realpathAsync: (filePath) => trackOriginal(() => window['fs'].realpathAsync(filePath)),
         },
       });
+
       const coderSource = editorKind === 'coder' ? createSimulatorCoderSourceReader({
         requireCurrent,
         hasSavedProject: async () => this.coderPersistence?.hasSavedProject(projectRoot) ?? false,
@@ -292,9 +347,11 @@ export class SimulatorHostProviderProductService {
         }),
         readDelivery: () => {
           const filename = files.join(projectRoot, '.build', 'aily-build-delivery.json');
+
           return window['fs'].existsSync(filename) ? JSON.parse(window['fs'].readFileSync(filename, 'utf8')) : null;
         },
       }) : null;
+
       const composition = new SimulatorBuildProductComposition({
         buildExecutionSlot: this.buildExecutionSlot,
         projectRoot,
@@ -309,23 +366,31 @@ export class SimulatorHostProviderProductService {
           isArtifactCurrent: (artifact, current) => coderSource.isArtifactCurrent(artifact, current),
           createExecution: (readers) => {
             if (!this.coder) throw new Error('Coder simulation builder is unavailable.');
+
             return new CoderSimulatorBuildExecutionPort({ projectRoot, projectIdentity, sceneId: 'main',
               activeProject, builder: this.coder, ...readers });
           },
         } : {}),
         readWorkspaceSource: async (signal) => {
           if (coderSource) return coderSource.read(signal);
+
           if (signal.aborted) {
             throw new SimulatorHostProviderOperationError('cancelled');
           }
+
           if (!activeProject.readActiveBinding()) return null;
+
           const revision = this.blockly.getWorkspaceContentRevision();
           const code = this.blockly.getReusableGeneratedCode();
+
           if (code === null) return null;
+
           const sourceSha256 = await sha256Text(code);
+
           if (signal.aborted) {
             throw new SimulatorHostProviderOperationError('cancelled');
           }
+
           // Hashing is asynchronous: never pair an old source with a changed
           // project, generation revision, or active workspace edit lease.
           const isCurrent = () => (
@@ -333,25 +398,35 @@ export class SimulatorHostProviderProductService {
             && revision === this.blockly.getWorkspaceContentRevision()
             && code === this.blockly.getReusableGeneratedCode()
           );
+
           return isCurrent() ? { sha256: sourceSha256, isCurrent } : null;
         },
       });
+
       cleanup.add(() => composition.close());
+
       const demonstrations = new SimulatorBoardDemonstrationProvider({ projectIdentity, projectRoot, workspaceIdentity, files,
         compile: async (board, graph, signal, program) => {
           const streamId = `board-demo-${crypto.randomUUID()}`;
           const script = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'compile-board-demonstration.js');
           let releasing: Promise<void> | null = null;
+
           const release = (): Promise<void> => {
             if (releasing) return releasing;
+
             const original = Promise.resolve().then(() => this.commands.kill(streamId)).then(stopped => {
               if (stopped !== true) throw new Error('Board demonstration process cleanup remains unconfirmed.');
+
               cleanup.delete(release);
             }).finally(() => { if (releasing === original) releasing = null; });
+
             releasing = original;
+
             return original;
           };
+
           cleanup.add(release);
+
           const cancel = () => { void release().catch(() => { /* Retain this original stream for cleanup retry. */ }); };
           let failed = false;
           let failure: unknown;
@@ -375,12 +450,15 @@ export class SimulatorHostProviderProductService {
           } catch (error) {
             failed = true;
             failure = error;
+
             throw error;
           } finally {
             signal.removeEventListener('abort', cancel);
+
             try { await release(); }
             catch (cleanupError) {
               if (failed) throw new AggregateError([failure, cleanupError], 'Board demonstration compilation and cleanup failed.');
+
               throw cleanupError;
             }
           }
@@ -424,6 +502,7 @@ export class SimulatorHostProviderProductService {
         source: {
           readState: (boundProjectRoot) => {
             const state = this.projectDebug.refresh(boundProjectRoot);
+
             return {
               sourceMapRevision: state.sourceMapRevision,
               sourcePath: state.artifactSourcePath,
@@ -458,16 +537,22 @@ export class SimulatorHostProviderProductService {
         show: (path, line, sha256, focus) => this.coderSimulatorSources!.show(projectRoot, { path, line, sha256, focus }),
         clear: () => this.coderSimulatorSources!.clear(projectRoot),
       }) : null;
+
       cleanup.add(() => editor?.close());
+
       const entitlement = new SimulatorEntitlementCallbackAuthority({
         account: this.entitlementAccount,
       });
+
       cleanup.add(() => entitlement.close());
+
       const projectActivationSubscription =
         // An activation event itself revokes this capture. Do not depend on
         // whether other subscribers have already updated their selected state.
         this.project.projectActivation$.subscribe(ended);
+
       cleanup.add(() => projectActivationSubscription.unsubscribe());
+
       const callbacks = Object.freeze<SimulatorProjectHostProviderAdapterOptions>({
         ...(editorKind === 'blockly' ? {
         requestBoardDemonstrationCode: (request, current) => run(current, async signal => {
@@ -505,6 +590,7 @@ export class SimulatorHostProviderProductService {
         })),
         } satisfies Partial<SimulatorProjectHostProviderAdapterOptions> : {}),
       });
+
       const captureArtifactReadAuthority = (input: SimulatorProjectReadAuthorityCapture) => {
         return captureSimulatorProjectReadAuthority(input, {
           activation: activationSignal, projectIdentity, workspaceIdentity, requireCurrent,
@@ -514,18 +600,23 @@ export class SimulatorHostProviderProductService {
           readContext: async signal => callbacks.readContext({ projectIdentity }, signal),
         });
       };
+
       const bundle = createSimulatorHostProviderDispatcherAdapterBundle({
         project: callbacks,
         build: composition.buildCallbacks,
         ...(editor ? { editor: editor.callbacks } : {}),
         entitlement: entitlement.callbacks,
       });
+
       cleanup.add(() => bundle.close());
+
       let projectAdapter: SimulatorProjectHostProviderAdapter | null = null;
+
       cleanup.add(() => projectAdapter?.close());
       activationSignal.addEventListener('abort', ended, { once: true });
       cleanup.add(() => activationSignal.removeEventListener('abort', ended));
       requireCurrent();
+
       return Object.freeze({
         activation: Object.freeze({ path: captured.path, projectSessionId: captured.projectSessionId,
           signal: activationSignal, requireCurrent }),
@@ -541,18 +632,21 @@ export class SimulatorHostProviderProductService {
     } catch (error) {
       try { await close(); }
       catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Simulator product scope creation and cleanup failed.'); }
+
       throw error;
     }
   }
 
   private readActiveProjectRoot(): string | null {
     const projectRoot = this.project.currentProjectPath;
+
     if (
       !projectRoot
       || this.project.isProjectOpening
     ) {
       return null;
     }
+
     return projectRoot;
   }
 
@@ -567,7 +661,9 @@ export class SimulatorHostProviderProductService {
     if (input.signal.aborted) {
       throw new SimulatorHostProviderOperationError('cancelled');
     }
+
     const binding = input.activeProject.readActiveBinding();
+
     if (
       !binding
       || binding.projectIdentity !== input.projectIdentity
@@ -576,28 +672,35 @@ export class SimulatorHostProviderProductService {
     ) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
+
     const context = await input.composition.projectCallbacks.readContext(
       { projectIdentity: input.projectIdentity },
       input.signal,
     );
+
     if (
       context.activeArtifactRevision !== input.request.artifactRevision
     ) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
+
     const state = this.projectDebug.refresh(input.projectRoot);
+
     if (input.signal.aborted) {
       throw new SimulatorHostProviderOperationError('cancelled');
     }
+
     if (state.configurationError || state.sourceMapError) {
       throw new SimulatorHostProviderOperationError('operation-failed');
     }
+
     if (
       state.sourceMapRevision !== input.request.sourceMapRevision
       || state.buildConsistency === 'dirty'
     ) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
+
     return {
       schemaVersion: 1,
       kind: 'aily-simulator-host-project-debug-configuration-snapshot',
@@ -623,14 +726,18 @@ async function bindProviderSession(
   capabilityAliases?: ConstructorParameters<typeof SubappHostProviderDispatcher>[0]['capabilityAliases'],
 ): Promise<SubappHostProviderProductSession> {
   const hostInstanceId = `simulator-host:${context.hostInstanceId}`;
+
   context.localNetwork?.bindHostInstanceId(hostInstanceId);
+
   const dispatcher = new SubappHostProviderDispatcher({
     hostInstanceId,
     adapters,
     ...(capabilityAliases ? { capabilityAliases } : {}),
     maxMessageBytes: SIMULATOR_PROVIDER_MESSAGE_BUDGET,
   });
+
   let unbind: (() => void) | null = null;
+
   // Each successful release is recorded independently. Closing intent remains
   // latched after a failure, while the exact failed release can be retried.
   const releases = new Set<() => void | Promise<void>>([
@@ -638,30 +745,42 @@ async function bindProviderSession(
     () => { unbind?.(); unbind = null; },
     closeProduct,
   ]);
+
   let closed = false, closing: Promise<void> | null = null;
+
   const close = (): Promise<void> => {
     if (closed) return Promise.resolve();
     if (closing) return closing;
+
     const original = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
+
       for (const release of [...releases]) {
         try { await release(); releases.delete(release); }
         catch (error) { failures.push(error); }
       }
+
       if (failures.length) throw new AggregateError(failures, 'Simulator provider session cleanup remains unconfirmed.');
+
       closed = true;
     }).finally(() => { if (closing === original) closing = null; });
+
     closing = original;
+
     void original.catch(() => { /* Retain the original failed release for retry. */ });
+
     return original;
   };
+
   try {
     unbind = dispatcher.bindTransport(context.transport);
   } catch (error) {
     try { await close(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Simulator provider binding and cleanup failed.'); }
+
     throw error;
   }
+
   return Object.freeze({ close });
 }
 
@@ -669,6 +788,7 @@ function normalizeProjectRoot(projectRoot: string): string {
   const normalized = window['path'].resolve(projectRoot)
     .replaceAll('\\', '/')
     .replace(/\/+$/u, '');
+
   return isWindowsPath(normalized) ? normalized.toLowerCase() : normalized;
 }
 
@@ -685,6 +805,7 @@ async function sha256Text(value: string): Promise<string> {
     'SHA-256',
     new TextEncoder().encode(value),
   );
+
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');

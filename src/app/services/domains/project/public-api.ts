@@ -1,5 +1,5 @@
 export * from './coder/coder-board-resolution';
-export { coderSourceDirectory } from './coder/arduino-sketch';
+export { coderSourceDirectory, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 export * from './coder/coder-project-create-operation';
 export * from './coder/coder-project-template';
 export * from './project-data/blockly-project-data-adapter';
@@ -14,10 +14,18 @@ export * from './project-data/project-data-policy';
 export * from './project-data/project-data-runtime';
 export * from './project-data/project-data-store';
 export * from './project-data/project-data.types';
+export { normalizeProjectDataDocument, isDeferredProjectDataNormalization,
+  type ProjectDataNormalizationStore, type DeferredProjectDataNormalization } from './project-data/project-data-normalization';
 export * from './project-debug-configuration.service';
 export * from './operations/project-creation-workflow';
 export * from './project-root-path';
+export * from './project-view-ownership';
 export * from './project-package-name';
+export * from './project-save-outcome';
+export * from './project-save-receipts';
+export * from './project-conflict';
+export { captureProjectDiskRecovery, inspectProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
+export { inspectLegacyProjectRecovery } from './project-recovery-backup';
 export * from './project-mode';
 export * from './project-document-json';
 export * from './legacy-shadow-identities';

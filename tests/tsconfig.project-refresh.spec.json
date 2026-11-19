@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "./cloud-compilation-access.spec.ts",
+    "../src/app/editors/blockly-editor/blockly-editor-load.spec.ts",
+    "../src/app/editors/blockly-editor/services/blockly-project-open.spec.ts",
+    "../src/app/services/domains/project/project-lifecycle-operation.spec.ts",
+    "../src/app/services/domains/project/project-coder-menu.spec.ts",
+    "../src/**/*.d.ts"
+  ],
+  "exclude": []
+}

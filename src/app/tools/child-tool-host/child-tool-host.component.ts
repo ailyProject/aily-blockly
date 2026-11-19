@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectorRef, Component, Input, NgZone, OnChanges, OnDestroy, OnInit, SimpleChanges, ViewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, EventEmitter, Input, NgZone, OnChanges, OnDestroy, OnInit, Output, SimpleChanges, ViewChild } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -20,6 +20,7 @@ import {
   type SubappInstallProgress,
   SubappManagerService,
   ChildAppHostRegistryService,
+  resolveChildCloseDecision,
   type ChildAppLifecycleOptions,
   type ChildAppWindowPlacement,
   RequiredSubappService,
@@ -40,6 +41,7 @@ import { ElectronService, LogService, PlatformService } from '@core/platform/pub
 import { MainUiAutomationService, AiOperationRegistryService } from '@integration/automation/public-api';
 import { NoticeService, UiService } from '@core/app-shell/public-api';
 import { ProjectService, type CoderWorkspaceContext } from '@domain/project/public-api';
+import { SerialService, type HostSerialPort } from '@domain/device/public-api';
 import { SubappActivityDockComponent } from '../../components/subapp-activity-dock/subapp-activity-dock.component';
 import { ChildToolNativeObserverComponent } from '../child-tool-native-observer/child-tool-native-observer.component';
 import { ChildToolBrowserSurfaceComponent } from '../child-tool-browser-surface/child-tool-browser-surface.component';
@@ -48,12 +50,16 @@ import {
   normalizeChildAuthStateSnapshot,
   resolveChildAuthStateSnapshot,
 } from './child-auth-state';
+import { ChildAiOperationNotice } from './child-tool-ai-operation-notice';
+import { ChildAiOperationState, type ChildAiRunOwner } from './child-tool-ai-operation-state';
 
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
+
 type ChildLifecycleReason = 'close' | 'restart' | 'update';
 
 interface HostProjectContext {
+  serialPort?: HostSerialPort | null;
   workspace?: string | null;
   coderWorkspace?: CoderWorkspaceContext | null;
   version?: number;
@@ -109,6 +115,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   @Input() toolId = '';
   @Input() active = true;
   @Input() presentationId = '';
+  @Output() readonly dockWidthChange = new EventEmitter<number>();
 
   currentUrl = '';
   resolvedToolId = '';
@@ -162,9 +169,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
   private projectPathSubscription: Subscription | null = null;
+  private serialPortSubscription: Subscription | null = null;
+  private standaloneSerialPort: HostSerialPort | null = null;
   private blockSelectionSubscription: Subscription | null = null;
   private toolSignalSubscription: Subscription | null = null;
   private subappActivitySubscription: Subscription | null = null;
+  private chatActivityTitlesVersion = 0;
   private configReloadSubscription: Subscription | null = null;
   private aiWritingStateSubscription: Subscription | null = null;
   private authStateSubscription: Subscription | null = null;
@@ -186,7 +196,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private unregisterHostController: (() => void) | null = null;
   private ailyChatOperationActive = false;
   private ailyChatOperationSessionId = '';
-  private aiOperationNoticeShown = false;
+  private aiOperationStateScope = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  private aiOperationProtocol?: ChildAiOperationState;
+  private aiOperationVersion2 = false;
+  private aiLegacyRunning = false;
+  private aiLegacyRunSessionId = '';
+  private aiLegacyStopping = false;
+  private aiOperationNotice?: ChildAiOperationNotice;
   private readonly pendingExternalInputSignals: Array<Record<string, unknown>> = [];
   ailyChatSessionId = '';
 
@@ -218,17 +234,25 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private aiOperationRegistry: AiOperationRegistryService,
     platformService: PlatformService,
     private workspaceHostProviders: SubappWorkspaceHostProviderService,
+    private serialService: SerialService,
   ) {
     this.standaloneWinBtns = platformService.isWindows()
       ? ['go-main', 'minimize', 'maximize', 'close']
       : ['go-main'];
-    this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
+    this.langSubscription = this.translate.onLangChange.subscribe(() => {
+      this.syncHostContext();
+      this.pushChatSubappActivities();
+    });
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
+    this.serialPortSubscription = this.serialService.selectedPort$.subscribe(() => {
+      if (this.initialized && !this.isStandalone && this.resolvedToolId === 'serial-debugger') this.syncHostContext();
+    });
     this.projectPathSubscription = combineLatest([
       this.projectService.currentProjectPath$,
       this.projectService.coderWorkspace$,
       this.workspaceHostProviders.readyWorkspaceChanges$,
     ]).subscribe(() => {
+      this.refreshAiOperationNotice();
       if (this.initialized) {
         this.syncHostContext(true);
       }
@@ -244,11 +268,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.aiWritingStateSubscription = combineLatest([
       this.blocklyService.aiWriting$,
       this.blocklyService.aiWaitWriting$,
-    ]).subscribe(([writing, waitWriting]) => {
-      if (!writing && !waitWriting && !this.ailyChatOperationActive) {
-        this.clearAiOperationNotice();
-      }
-    });
+      this.blocklyService.workspaceRecoveryRequired$,
+    ]).subscribe(() => this.refreshAiOperationNotice());
     this.authStateSubscription = merge(
       this.authService.isLoggedIn$,
       this.authService.authChanged$,
@@ -399,6 +420,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.initialized = true;
     this.subappCatalogSubscription = this.subappManager.state$.subscribe(() => {
       this.syncSubappRestartRequirement();
+      this.pushChatSubappActivities();
       this.cdr.markForCheck();
     });
     this.subappProgressSubscription = this.subappManager.progress$.subscribe((progress) => {
@@ -427,6 +449,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.serialPortSubscription?.unsubscribe();
     this.langSubscription?.unsubscribe();
     this.langSubscription = null;
     this.themeSubscription?.unsubscribe();
@@ -609,6 +632,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     const previousApiServer = this.lastKnownApiServer;
     this.lastKnownApiServer = nextApiServer;
+
     if (!this.initialized || !this.acquired || !this.isAilyChatTool()) {
       return;
     }
@@ -790,6 +814,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.config = config;
     this.resolvedToolId = config.id;
+    this.refreshAiOperationNotice();
     const catalogItemAtOpen = this.subappManager.state.apps.find(item => item.toolId === config.id);
     this.deferPreparedUpdateOnInitialLaunch = catalogItemAtOpen?.installed === true
       && catalogItemAtOpen.updatePolicy?.install === 'next-launch'
@@ -1027,7 +1052,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private showSubappActionError(error: unknown): void {
-    const actionError = error instanceof Error ? error.message : String(error || 'Unknown error');
+    const raw = error instanceof Error ? error.message : String(error || 'Unknown error');
+    const actionError = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
     this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message: actionError }));
   }
 
@@ -1035,6 +1061,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.unregisterHostController?.();
     this.unregisterHostController = this.childHostRegistry.register(this.resolvedToolId, {
       status: () => this.hostAutomationStatus(),
+      reportIssue: () => this.reportChatSessionIssue(),
       restart: () => this.restart(),
       close: options => this.close(options),
       detach: options => this.detach(options),
@@ -1059,6 +1086,19 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       pid: this.serverInfo?.pid ?? null,
       port: this.serverInfo?.port ?? null,
     };
+  }
+
+  private async reportChatSessionIssue(): Promise<Record<string, unknown>> {
+    const sessionId = this.ailyChatSessionId;
+    if (!this.isAilyChatTool() || !sessionId || typeof this.remoteApi?.reportSessionIssue !== 'function') {
+      return { ok: true, skipped: true };
+    }
+    try {
+      return await this.remoteApi.reportSessionIssue({ sessionId });
+    } catch {
+      // Supplementary diagnostics must not affect the host or the active turn.
+      return { ok: false };
+    }
   }
 
   private async startServer(restart: boolean): Promise<void> {
@@ -1169,6 +1209,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private startPenpalConnection(iframe: HTMLIFrameElement): void {
     this.destroyPenpalConnection();
+    const operationScope = this.aiOperationStateScope;
     this.penpalRemoteWindow = iframe.contentWindow;
     this.penpalState = 'connecting';
 
@@ -1240,6 +1281,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         },
         startGithubLogin: (payload: { inviteCode?: string } = {}) => this.startGithubLogin(payload),
         requestLogin: (payload: { reason?: string } = {}) => this.requestHostLogin(payload),
+        requestServiceRegion: (payload: { regionKey?: string } = {}) => this.requestHostServiceRegion(payload),
         openUserSubscription: () => this.openUserSubscription(),
         selectChatResources: (payload: ChatResourcePickerRequest = {}) => this.selectChatResources(payload),
         listChildApps: (payload: { limit?: number } = {}) => this.listChatChildApps(payload),
@@ -1252,8 +1294,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         focusChildFrame: () => this.focusChildFrame(),
         writeClipboardText: (payload: { text?: string } = {}) => this.writeClipboardText(payload),
         openFile: (payload: { path?: string } = {}) => this.openFile(payload),
-        reportAiOperationState: (payload: { active?: boolean; sessionId?: string | null } = {}) => {
-          return this.ngZone.run(() => this.reportAiOperationState(payload));
+        reportAiOperationState: (payload: unknown = {}) => {
+          return this.ngZone.run(() => this.reportAiOperationState(payload, operationScope));
         },
         reportActiveChatSession: (payload: { sessionId?: string | null } = {}) => {
           return this.ngZone.run(() => this.reportActiveChatSession(payload));
@@ -1494,10 +1536,23 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return !!value && typeof value === 'object' && !Array.isArray(value);
   }
 
-  private destroyPenpalConnection(): void {
+  private destroyPenpalConnection(preserveKnownRuns = true): void {
     this.settledCloseForDestroy = null;
     this.clearChildReadyTimer();
-    this.setAilyChatOperationActive(false);
+    const retain = preserveKnownRuns && this.isAilyChatTool() && this.aiOperationVersion2
+      && this.aiOperationProtocol?.hasRunning;
+    this.aiOperationStateScope = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    this.aiOperationProtocol?.reset(this.aiOperationStateScope, !!retain);
+    this.aiOperationVersion2 = !!retain;
+    this.aiLegacyRunning = false;
+    this.aiLegacyRunSessionId = '';
+    this.aiLegacyStopping = false;
+    this.setAilyChatOperationActive(!!retain && this.aiOperationProtocol.hasActive,
+      retain ? this.aiOperationProtocol.selected?.owner.sessionId : '');
+    this.aiOperationRegistry.setActive(`child-chat-run:${this.hostContextId}`, !!retain, {
+      projectPath: this.projectService.currentProjectPath,
+      sessionId: retain ? this.aiOperationProtocol.selected?.owner.sessionId : null,
+    });
     void this.closeNativeWebviewSurface();
     this.remoteApi = null;
     if (this.penpalConnection) {
@@ -1679,12 +1734,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       const result = await this.withTimeout(
         Promise.resolve(beforeClose({
           reason,
+          waitForDecision: true,
           toolId: this.resolvedToolId,
           context: this.createHostContext()
         })),
         reason === 'restart' || reason === 'update' ? 10_000 : 1500
       );
-      const canClose = result !== false && result?.canClose !== false;
+      const canClose = await resolveChildCloseDecision(this.remoteApi, result);
 
       if (!canClose) {
         const message = this.stringifyHostMessageValue(result?.message || result?.reason)
@@ -1715,7 +1771,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         'beforeClose failed',
         `reason=${reason}${errorCode ? ` code=${errorCode}` : ''} error=${errorMessage}`
       );
-      return !strict;
+      // A lost partition UI handshake must never silently discard its draft.
+      return !strict && this.resolvedToolId !== 'ffs-manager-child';
     }
   }
 
@@ -1875,6 +1932,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private createHostContext(): Record<string, unknown> {
     const isAilyChat = this.isAilyChatTool();
+    const hostAuthentication = this.hasHostAuthentication();
     const launch = this.resolveLaunchContext();
     const workspace = this.resolveHostWorkspace();
     const developmentModeContext = resolveDevelopmentModeContext({
@@ -1890,21 +1948,27 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       theme: this.normalizeTheme(this.themeService.theme()),
       platform: (window as any).electronAPI?.platform?.type || 'browser',
       embedded: !this.isStandalone,
+      active: this.isStandalone || this.active,
+      ...(this.resolvedToolId === 'serial-debugger' ? {
+        serialPort: this.isStandalone ? this.standaloneSerialPort : this.serialService.selectedPort$.value,
+      } : {}),
       ...developmentModeContext,
       surface: launch.surface,
       surfaceParams: launch.params,
       workspace,
       coderWorkspace: this.resolveHostCoderWorkspace(),
       activeChatSessionId: isAilyChat ? (this.ailyChatSessionId || null) : null,
+      ...(isAilyChat ? { aiOperationStateScope: this.aiOperationStateScope } : {}),
       blockResources: isAilyChat && this.active ? this.createSelectedBlockResources() : [],
       capabilities: {
         snapshotRefresh: true,
         // Detached renderers receive the same token-free, host-owned auth
         // snapshot through Electron IPC. Older hosts retain the child fallback.
-        authStateRefresh: isAilyChat && (!this.isStandalone || this.standaloneAuthSnapshot !== null),
+        authStateRefresh: hostAuthentication && (!this.isStandalone || this.standaloneAuthSnapshot !== null),
         userInteractionNotifications: true,
         hostGithubLogin: isAilyChat,
-        hostLoginDialog: isAilyChat,
+        hostLoginDialog: hostAuthentication,
+        hostServiceRegion: hostAuthentication,
         userSubscription: isAilyChat,
         resourcePicker: isAilyChat
           && typeof (window as any).dialog?.selectFiles === 'function',
@@ -1916,6 +1980,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         childFrameFocus: isAilyChat,
         childSurfaceWindow: true,
         aiOperationState: isAilyChat,
+        ...(isAilyChat ? { aiOperationStateVersion: 2 } : {}),
         subappDock: isAilyChat,
         runtimeRecovery: isAilyChat,
         developmentModeControl: isAilyChat
@@ -1936,7 +2001,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         : {
           ok: false,
           code: 'DEVELOPMENT_MODE_LOCKED',
-          message: 'Aily Coder is locked to Coder mode.',
+          message: 'aily Coder is locked to Coder mode.',
           context: this.createHostContext(),
         };
     }
@@ -2036,7 +2101,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     payload: { sessionId?: string | null } = {},
   ): Record<string, unknown> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Active chat session reporting is only available to Aily Chat' };
+      return { ok: false, message: 'Active chat session reporting is only available to aily Chat' };
     }
 
     const sessionId = typeof payload.sessionId === 'string'
@@ -2060,7 +2125,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     surfaceState?: 'collapsed' | 'expanded';
   } = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Subapp Dock controls are only available to Aily Chat' };
+      return { ok: false, message: 'Subapp Dock controls are only available to aily Chat' };
     }
 
     const sessionId = String(payload.sessionId || '').trim();
@@ -2095,22 +2160,44 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private pushChatSubappActivities(): void {
+    const version = ++this.chatActivityTitlesVersion;
     if (!this.isAilyChatTool() || typeof this.remoteApi?.setSubappActivities !== 'function') {
       return;
     }
 
     const sessionId = this.ailyChatSessionId;
-    const items = sessionId
-      ? this.subappActivityService.getSessionActivities(sessionId).map(activity => this.projectSubappActivity(activity))
-      : [];
-    void Promise.resolve(this.remoteApi.setSubappActivities({ sessionId, items })).catch(() => undefined);
+    const remote = this.remoteApi;
+    const lang = this.translate.currentLang || this.translate.defaultLang || 'en';
+    const activities = sessionId ? this.subappActivityService.getSessionActivities(sessionId) : [];
+    const items = activities.map(activity => this.projectSubappActivity(activity));
+    void Promise.resolve(remote.setSubappActivities({ sessionId, items })).catch(() => undefined);
+
+    if (!activities.length) return;
+    const titles = new Map(items.map(item => [item['toolId'], item['title']]));
+    // Collapsed cards also need their namespace. Keep state updates immediate;
+    // only the latest pending title load may publish a translated snapshot.
+    void Promise.all([...new Set(activities.map(activity => activity.toolId))]
+      .map(toolId => this.toolI18n.load(toolId, lang)))
+      .then(() => {
+        if (version !== this.chatActivityTitlesVersion || this.remoteApi !== remote
+          || this.ailyChatSessionId !== sessionId
+          || (this.translate.currentLang || this.translate.defaultLang || 'en') !== lang) return;
+        const latest = this.subappActivityService.getSessionActivities(sessionId)
+          .map(activity => this.projectSubappActivity(activity));
+        if (!latest.some(item => titles.get(item['toolId']) !== item['title'])) return;
+        return Promise.resolve(remote.setSubappActivities({ sessionId, items: latest }));
+      })
+      .catch(() => undefined);
   }
 
   private projectSubappActivity(activity: SubappActivity): Record<string, unknown> {
+    const config = getChildToolConfig(activity.toolId);
+    const translatedTitle = config?.titleKey ? this.translate.instant(config.titleKey) : '';
     return {
       sessionId: activity.sessionId,
       toolId: activity.toolId,
-      title: activity.title,
+      title: typeof translatedTitle === 'string' && translatedTitle && translatedTitle !== config?.titleKey
+        ? translatedTitle : activity.title,
       icon: activity.icon,
       toolName: activity.toolName,
       invocationState: activity.invocationState,
@@ -2119,24 +2206,39 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       invocationCount: activity.invocationCount,
       activeInvocationCount: activity.activeInvocationCount,
       lastUsedAt: activity.lastUsedAt,
-      extension: getChildToolConfig(activity.toolId)?.app?.extension === true,
+      extension: config?.app?.extension === true,
       ...(activity.summary ? { summary: { ...activity.summary } } : {}),
     };
   }
 
-  private reportAiOperationState(
-    payload: { active?: boolean; sessionId?: string | null } = {},
-  ): Record<string, unknown> {
+  private reportAiOperationState(payload: unknown = {}, scope = this.aiOperationStateScope): Record<string, unknown> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'AI operation state is only available to Aily Chat' };
+      return { ok: false, message: 'AI operation state is only available to aily Chat' };
     }
+    if (scope !== this.aiOperationStateScope) return { ok: false, code: 'AI_OPERATION_SCOPE_CHANGED' };
+    const value = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+    if (value['version'] === 2) {
+      this.aiOperationProtocol ??= new ChildAiOperationState(this.aiOperationStateScope);
+      const acknowledgement = this.aiOperationProtocol.apply(value);
+      if (acknowledgement['ok'] !== true || acknowledgement['applied'] !== true) return acknowledgement;
+      this.aiOperationVersion2 = true;
+      const state = this.aiOperationProtocol;
+      this.aiOperationRegistry.setActive(`child-chat-run:${this.hostContextId}`, state.hasRunning, {
+        projectPath: this.projectService.currentProjectPath, sessionId: state.selected?.owner.sessionId,
+      });
+      this.setAilyChatOperationActive(state.hasActive, state.selected?.owner.sessionId);
+      if (!state.hasRunning) this.blocklyService.clearAiWaitWriting();
+      this.refreshAiOperationNotice();
+      return acknowledgement;
+    }
+    if (this.aiOperationVersion2) return { ok: false, code: 'AI_OPERATION_VERSION_REQUIRED' };
 
-    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+    const sessionId = typeof value['sessionId'] === 'string' ? value['sessionId'].trim() : '';
     if (
-      payload.active !== true &&
+      value['active'] !== true &&
       sessionId &&
-      this.ailyChatOperationSessionId &&
-      sessionId !== this.ailyChatOperationSessionId
+      (this.aiLegacyRunSessionId || this.ailyChatOperationSessionId) &&
+      sessionId !== (this.aiLegacyRunSessionId || this.ailyChatOperationSessionId)
     ) {
       return {
         ok: true,
@@ -2144,8 +2246,18 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         sessionId: this.ailyChatOperationSessionId,
       };
     }
-
-    this.setAilyChatOperationActive(payload.active === true, sessionId);
+    // Legacy clients retain their one surface/session scope. Do not retire a
+    // different owner, or mutate the whole-run registry before this check.
+    this.aiLegacyRunning = value['running'] === true || value['active'] === true;
+    this.aiLegacyRunSessionId = this.aiLegacyRunning ? sessionId : '';
+    if (!this.aiLegacyRunning) {
+      this.aiLegacyStopping = false;
+      this.blocklyService.clearAiWaitWriting();
+    }
+    this.aiOperationRegistry.setActive(`child-chat-run:${this.hostContextId}`, this.aiLegacyRunning, {
+      projectPath: this.projectService.currentProjectPath, sessionId,
+    });
+    this.setAilyChatOperationActive(value['active'] === true, sessionId);
     return {
       ok: true,
       active: this.ailyChatOperationActive,
@@ -2154,17 +2266,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private setAilyChatOperationActive(active: boolean, sessionId = ''): void {
-    if (this.ailyChatOperationActive === active) {
-      if (active) {
-        if (sessionId) {
-          this.ailyChatOperationSessionId = sessionId;
-        }
-        // 已 active 时仍刷新通知，防止被其它 notice 覆盖后只剩 Blockly 遮罩。
-        this.showAiOperationNotice();
-      }
-      return;
-    }
-
     this.ailyChatOperationActive = active;
     this.ailyChatOperationSessionId = active ? sessionId : '';
     this.aiOperationRegistry.setActive(
@@ -2178,39 +2279,58 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     // 会话执行态用于预编译等宿主协调；视觉遮罩由 live Blockly 写入态精确驱动。
     this.blocklyService.setAiExecutionActive(`child-tool:${this.hostContextId}`, active);
 
-    if (active) {
-      this.showAiOperationNotice();
-      return;
-    }
-
-    if (!this.blocklyService.aiWriting && !this.blocklyService.aiWaitWriting) {
-      this.clearAiOperationNotice();
-    }
+    this.refreshAiOperationNotice();
   }
 
-  private showAiOperationNotice(): void {
-    const sessionId = this.ailyChatOperationSessionId;
-    this.aiOperationNoticeShown = true;
-    this.noticeService.update({
-      title: 'AI正在操作',
-      state: 'doing',
-      showProgress: false,
-      setTimeout: 0,
-      sendToLog: false,
-      stop: () => {
-        void Promise.resolve(this.remoteApi?.stopActiveTurn?.({ sessionId: sessionId || undefined })).catch(error => {
-          this.logError('stop active Aily Chat turn failed', error);
-        });
-      },
+  private refreshAiOperationNotice(): void {
+    if (!this.isAilyChatTool()) return;
+    this.aiOperationNotice ??= new ChildAiOperationNotice(this.noticeService, `child-ai-notice:${this.hostContextId}`);
+    const selected = this.aiOperationVersion2 ? this.aiOperationProtocol?.selected : undefined;
+    const legacySession = this.aiLegacyRunSessionId || this.ailyChatOperationSessionId;
+    const running = this.aiOperationVersion2 ? !!selected : this.aiLegacyRunning || this.ailyChatOperationActive;
+    this.aiOperationNotice.update({
+      running,
+      stopping: selected?.stopping ?? this.aiLegacyStopping,
+      synchronizing: this.aiOperationVersion2 && this.aiOperationProtocol?.awaitingSnapshot,
+      writing: this.blocklyService.aiWriting,
+      recoveryRequired: this.blocklyService.isWorkspaceRecoveryRequired(),
+      projectPath: this.projectService.currentProjectPath || '',
+      executionKey: selected ? JSON.stringify(selected.owner) : legacySession,
+      ...(running && (selected || legacySession) ? { stop: () => { void this.requestAiOperationStop(selected?.owner, legacySession); } } : {}),
     });
   }
 
-  private clearAiOperationNotice(): void {
-    if (!this.aiOperationNoticeShown) {
-      return;
+  private async requestAiOperationStop(owner: ChildAiRunOwner | undefined, legacySession: string): Promise<void> {
+    const remote = this.remoteApi, scope = this.aiOperationStateScope;
+    if (!remote?.stopActiveTurn) return;
+    if (owner) {
+      if (!this.aiOperationProtocol?.beginStop(owner)) return;
+    } else {
+      if (this.aiLegacyStopping || !this.aiLegacyRunning || !legacySession) return;
+      this.aiLegacyStopping = true;
     }
-    this.aiOperationNoticeShown = false;
-    this.noticeService.clear();
+    this.refreshAiOperationNotice();
+    try {
+      const result = await remote.stopActiveTurn(owner ? { ...owner, scope } : { sessionId: legacySession });
+      if (scope !== this.aiOperationStateScope || remote !== this.remoteApi) return;
+      // Acceptance acknowledges a cancellation request, not native settlement.
+      // Only a newer run snapshot and the writer's own finally end this notice.
+      if (result?.ok === false || (owner && result?.requestAccepted !== true && result?.settled !== true)) {
+        if (owner) this.aiOperationProtocol?.stopRejected(owner);
+        else if (this.aiLegacyRunSessionId === legacySession) this.aiLegacyStopping = false;
+        this.refreshAiOperationNotice();
+      }
+    } catch (error) {
+      if (scope !== this.aiOperationStateScope || remote !== this.remoteApi) return;
+      if (owner) this.aiOperationProtocol?.stopRejected(owner);
+      else if (this.aiLegacyRunSessionId === legacySession) this.aiLegacyStopping = false;
+      this.refreshAiOperationNotice();
+      this.logError('stop active aily Chat turn failed', error);
+    }
+  }
+
+  private clearAiOperationNotice(): void {
+    this.aiOperationNotice?.clear();
   }
 
   private createSelectedBlockResources(): Record<string, unknown>[] {
@@ -2226,6 +2346,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return this.resolvedToolId === 'aily-chat';
   }
 
+  private hasHostAuthentication(): boolean {
+    return this.isAilyChatTool() || this.resolvedToolId === 'device-manager';
+  }
+
   private async writeClipboardText(payload: { text?: string }): Promise<Record<string, unknown>> {
     const text = typeof payload?.text === 'string' ? payload.text : '';
     if (!text) {
@@ -2237,7 +2361,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private openFile(payload: { path?: string }): Record<string, unknown> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'File reveal is only available to Aily Chat' };
+      return { ok: false, message: 'File reveal is only available to aily Chat' };
     }
 
     const fullPath = typeof payload?.path === 'string' ? payload.path.trim() : '';
@@ -2276,7 +2400,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async selectChatResources(payload: ChatResourcePickerRequest = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Resource selection is only available to Aily Chat' };
+      return { ok: false, message: 'Resource selection is only available to aily Chat' };
     }
     const dialog = (window as any).dialog;
     const fs = (window as any).fs;
@@ -2377,7 +2501,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async listChatChildApps(payload: { limit?: number } = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Child app listing is only available to Aily Chat' };
+      return { ok: false, message: 'Child app listing is only available to aily Chat' };
     }
     const listed = await this.mainUiAutomation.listChildApps({
       limit: Math.max(1, Math.min(100, Number(payload?.limit) || 100)),
@@ -2403,7 +2527,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     payload: { toolId?: string; mode?: 'embedded' | 'window' } = {},
   ): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Opening child apps is only available to Aily Chat' };
+      return { ok: false, message: 'Opening child apps is only available to aily Chat' };
     }
     return this.mainUiAutomation.openChildApp({
       toolId: String(payload?.toolId || ''),
@@ -2413,7 +2537,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async startGithubLogin(payload: { inviteCode?: string } = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      throw new Error('GitHub login is only available to Aily Chat');
+      throw new Error('GitHub login is only available to aily Chat');
     }
 
     const inviteCode = typeof payload?.inviteCode === 'string'
@@ -2428,14 +2552,37 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return { ok: true, state: response.state };
   }
 
+  private async requestHostServiceRegion(payload: { regionKey?: string }): Promise<Record<string, unknown>> {
+    if (!this.hasHostAuthentication()) return { ok: false, message: 'Service region access is unavailable' };
+
+    try {
+      const regionKey = typeof payload.regionKey === 'string' ? payload.regionKey.trim() : '';
+      if (!regionKey) throw new Error('Service region key is required');
+
+      if (this.isStandalone) {
+        const response = await window['iWindow']?.send?.({
+          to: 'main', data: { action: 'switch-service-region', regionKey }, timeout: 30000,
+        });
+
+        if (response?.success !== true) throw new Error(response?.error || '服务区域切换失败');
+      } else {
+        await this.uiService.switchHostServiceRegion(regionKey);
+      }
+
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   private async requestHostLogin(payload: { reason?: string } = {}): Promise<Record<string, unknown>> {
-    if (!this.isAilyChatTool()) {
+    if (!this.hasHostAuthentication()) {
       return { ok: false, message: 'The main-window login dialog is unavailable' };
     }
 
     const reason = typeof payload.reason === 'string' && payload.reason.trim()
       ? payload.reason.trim().slice(0, 80)
-      : 'aily-chat';
+      : this.resolvedToolId;
 
     if (this.isStandalone) {
       const sendToMain = window['iWindow']?.send;
@@ -2461,7 +2608,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private async openUserSubscription(): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'The user subscription page is only available to Aily Chat' };
+      return { ok: false, message: 'The user subscription page is only available to aily Chat' };
     }
     if (!this.authService.isLoggedIn) {
       return { ok: false, message: 'The user is not signed in' };
@@ -2602,10 +2749,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const coderWorkspace = context?.coderWorkspace && typeof context.coderWorkspace === 'object'
       ? context.coderWorkspace
       : null;
-    const changed = this.standaloneWorkspace !== workspace ||
+    const changed = JSON.stringify(this.standaloneSerialPort) !== JSON.stringify(context?.serialPort || null) || this.standaloneWorkspace !== workspace ||
       JSON.stringify(this.standaloneCoderWorkspace) !== JSON.stringify(coderWorkspace);
 
     this.standaloneWorkspace = workspace;
+    this.standaloneSerialPort = context?.serialPort || null;
     this.standaloneCoderWorkspace = coderWorkspace;
     if (Number.isFinite(version)) {
       this.standaloneWorkspaceVersion = version;

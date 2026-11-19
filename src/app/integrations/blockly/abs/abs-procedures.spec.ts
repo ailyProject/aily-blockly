@@ -1,8 +1,9 @@
+import { decodeAbsState, splitAbsState } from './abs-full-state';
 import * as Blockly from 'blockly';
 import { blocks as builtinBlocks } from 'blockly/blocks';
 import { getAbsProcedureReferences, AbsProcedureStateContract } from './abs-procedures';
 import { captureAbsProcedureContracts } from './abs-runtime-procedures';
-import { createAbsProjection } from './abs-identity-map';
+import { createAbsProjection, validateAbsProjection } from './abs-identity-map';
 import { reconcileAbs } from './abs-reconciler';
 import { AbsAbiWorkspace } from './abs-state';
 import { captureAbsRuntimeContracts } from './abs-runtime-contracts';
@@ -41,13 +42,56 @@ describe('ABS explicit procedure serialization contracts', () => {
   });
   it('permits an explicitly consistent rename, preserving IDs and unknown extraState members', async () => {
     const baseline = await project();
-    const result = await reconcileAbs(baseline, baseline.abs.replaceAll('"work"', '"renamed"'));
+    const result = await reconcileAbs(baseline, splitAbsState(baseline.abs).program.replaceAll('"work"', '"renamed"'));
     expect(result.workspace.blocks.blocks.map(block => block.id)).toEqual(['d', 'c']);
     expect((result.workspace.blocks.blocks[0].extraState as any).arguments[0].argId).toBe('opaque');
   });
   it('does not interpret ordinary extraState objects as procedure signatures', () => {
     const state = workspace(); delete state['variables'];
     expect(getAbsProcedureReferences(state)).toEqual([]);
+  });
+  it('preserves a disabled orphan call and unknown parameter JSON without fabricating a model', async () => {
+    const state = workspace(); state.blocks.blocks.shift(); state['variables'] = [];
+    state.blocks.blocks[0]['disabledReasons'] = ['MANUALLY_DISABLED', 'LIBRARY_REASON'];
+    state.blocks.blocks[0].extraState = { target: 'missing definition', arguments: [{ opaque: [null, false, 7] }], custom: { keep: true } };
+    const before = JSON.stringify(state);
+    expect(getAbsProcedureReferences(state, contracts)).toEqual([]);
+    const baseline = await project(state);
+    expect((await decodeAbsState(baseline.abs)).workspace).toEqual(state);
+    await validateAbsProjection(baseline);
+    expect(JSON.stringify(state)).toBe(before);
+  });
+  it('requires every active call to have an active definition even when a disabled definition matches', () => {
+    const state = workspace(); state.blocks.blocks[0]['disabledReasons'] = ['MANUALLY_DISABLED'];
+    expect(() => getAbsProcedureReferences(state, contracts)).toThrowMatching(error => error.code === 'ABS_PROCEDURE_INVALID');
+    state.blocks.blocks[1]['disabledReasons'] = ['MANUALLY_DISABLED'];
+    expect(() => getAbsProcedureReferences(state, contracts)).not.toThrow();
+  });
+  it('retains legacy identity references for valid inactive signatures and immutable-map reconstruction', async () => {
+    const state = workspace(), previous = getAbsProcedureReferences(state, contracts);
+    for (const block of state.blocks.blocks) block['disabledReasons'] = ['MANUALLY_DISABLED'];
+    expect(getAbsProcedureReferences(state, contracts)).toEqual(previous);
+    const baseline = await project(state);
+    expect(baseline.map.symbols).toContain(jasmine.objectContaining({ kind: 'procedure', modelId: 'd', astPath: '/blocks/1/extraState/target' }));
+    await validateAbsProjection(baseline);
+  });
+  it('does not make inactive stale/duplicate signatures constrain active definitions and calls', () => {
+    const state = workspace();
+    state.blocks.blocks.push({ type: 'custom_define', id: 'old', disabledReasons: ['MANUALLY_DISABLED'],
+      fields: { TITLE: 'work' }, extraState: { arguments: [{ label: 'stale', variable: 'removed-id' }] } });
+    const refs = getAbsProcedureReferences(state, { ...contracts, old: definition });
+    expect(refs).toContain(jasmine.objectContaining({ blockId: 'c', kind: 'procedure', modelId: 'd' }));
+    expect(refs.some(reference => reference.blockId === 'old')).toBeFalse();
+  });
+  it('distinguishes a disabled surrounding input from an active next call and covered shadow definition', () => {
+    const orphan = workspace().blocks.blocks[1];
+    const parent: any = { type: 'container', id: 'container', disabledReasons: ['MANUALLY_DISABLED'], inputs: { DO: { block: orphan } } };
+    expect(getAbsProcedureReferences({ blocks: { blocks: [parent] } }, contracts)).toEqual([]);
+    delete parent.inputs; parent.next = { block: orphan };
+    expect(() => getAbsProcedureReferences({ blocks: { blocks: [parent] } }, contracts)).toThrowMatching(error => error.code === 'ABS_PROCEDURE_INVALID');
+    const state = workspace(), dormant = state.blocks.blocks.shift()!;
+    state.blocks.blocks.push({ type: 'owner', id: 'owner', inputs: { VALUE: { block: { type: 'value', id: 'value' }, shadow: dormant } } });
+    expect(() => getAbsProcedureReferences(state, contracts)).toThrowMatching(error => error.code === 'ABS_PROCEDURE_INVALID');
   });
   it('refuses an unadapted model-backed runtime instead of guessing its JSON layout', () => {
     const ws = new Blockly.Workspace();
@@ -58,6 +102,25 @@ describe('ABS explicit procedure serialization contracts', () => {
       expect(() => captureAbsProcedureContracts(ws, state, () => undefined))
         .toThrowMatching(error => error.code === 'ABS_PROCEDURE_CONTRACT_UNSUPPORTED');
     } finally { ws.dispose(); delete Blockly.Blocks['abs_model_backed']; }
+  });
+  it('never reads inactive procedure capability getters and preserves their serialized state', async () => {
+    const ws = new Blockly.Workspace(), type = 'abs_inactive_procedure';
+    Blockly.Blocks[type] = { init() { this.appendDummyInput().appendField(new Blockly.FieldTextInput('unknown'), 'NAME'); },
+      saveExtraState() { return { name: 'orphan', params: [{ unknown: [1, false] }], opaque: 'retained' }; } };
+    try {
+      const block = ws.newBlock(type, 'inactive');
+      block.setDisabledReason(true, 'MANUALLY_DISABLED');
+      const getter = jasmine.createSpy('inactive procedure capability').and.throwError('must not invoke');
+      for (const key of ['getProcedureModel', 'getProcedureDef', 'getProcedureCall']) Object.defineProperty(block, key, { get: getter, configurable: true });
+      const state = Blockly.serialization.workspaces.save(ws) as AbsAbiWorkspace;
+      const captured = captureAbsProcedureContracts(ws, state, () => undefined);
+      expect(captured).toEqual({}); expect(getter).not.toHaveBeenCalled();
+      const baseline = await createAbsProjection(state, { document: state, contracts: { fields: {}, procedures: captured },
+        generation: 'g', baselineRef: 'r', savedAbiHash: null, scope: { projectKey: 'p', pageId: 'main' } });
+      expect((await decodeAbsState(baseline.abs)).workspace).toEqual(state);
+      block.setDisabledReason(false, 'MANUALLY_DISABLED');
+      expect(() => captureAbsProcedureContracts(ws, Blockly.serialization.workspaces.save(ws) as AbsAbiWorkspace, () => undefined)).toThrowError('must not invoke');
+    } finally { ws.dispose(); delete Blockly.Blocks[type]; }
   });
   it('round trips dynamic parameter field names and arbitrary input names without adding metadata syntax', async () => {
     const state = workspace();

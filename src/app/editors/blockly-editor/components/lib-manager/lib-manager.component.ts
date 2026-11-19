@@ -1,4 +1,5 @@
-import { ChangeDetectorRef, Component, EventEmitter, Input, OnDestroy, Output } from '@angular/core';
+import { AfterViewInit, ChangeDetectorRef, Component, computed, ElementRef, EventEmitter, Input, NgZone, OnDestroy, Output, signal, viewChild } from '@angular/core';
+import { injectVirtualizer } from '@tanstack/angular-virtual';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
@@ -10,18 +11,19 @@ import { NzTagModule } from 'ng-zorro-antd/tag';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subject } from 'rxjs';
 import { debounceTime, takeUntil } from 'rxjs/operators';
-import { NpmService, AILY_LOCAL_LIBRARY_SOURCES_KEY, LocalLibrarySyncService } from '@domain/dependencies/public-api';
+import { NpmService, LocalLibrarySyncService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { CompatibleDialogComponent } from '../compatible-dialog/compatible-dialog.component';
-import { CmdOutput, CmdService, ElectronService, CrossPlatformCmdService } from '@core/platform/public-api';
+import { ElectronService, CrossPlatformCmdService } from '@core/platform/public-api';
 import { BlocklyService } from '../../services/blockly.service';
 import { WorkflowService } from '@core/app-shell/public-api';
 import { LibManagerService, type PackageInfo } from './lib-manager.service';
 
 @Component({
   selector: 'app-lib-manager',
+  host: { '[class.lib-manager-host--panel]': 'embedInPanel' },
   imports: [
     FormsModule,
     CommonModule,
@@ -35,17 +37,76 @@ import { LibManagerService, type PackageInfo } from './lib-manager.service';
   templateUrl: './lib-manager.component.html',
   styleUrl: './lib-manager.component.scss'
 })
-export class LibManagerComponent implements OnDestroy {
+export class LibManagerComponent implements AfterViewInit, OnDestroy {
 
   /** 嵌入主窗口右侧工具栏时为 true（非 Blockly 全屏遮罩） */
-  @Input() embedInPanel = false;
+  private readonly panelMode = signal(false);
+  @Input() set embedInPanel(value: boolean) { this.panelMode.set(value); }
+  get embedInPanel(): boolean { return this.panelMode(); }
+
+  readonly scrollElement = viewChild<ElementRef<HTMLDivElement>>('scrollElement');
+  private readonly viewportWidth = signal(0);
+  private readonly libraries = signal<PackageInfo[]>([]);
+  readonly columnCount = computed(() => this.panelMode() ? 1
+    : Math.max(1, Math.floor((this.viewportWidth() - 30 + 15) / (365 + 15))));
+  readonly rowSize = computed(() => 165 + (this.panelMode() ? 10 : 15));
+  readonly libraryRows = computed(() => {
+    const libraries = this.libraries();
+    const columns = this.columnCount();
+    const rows: PackageInfo[][] = [];
+    for (let index = 0; index < libraries.length; index += columns) {
+      rows.push(libraries.slice(index, index + columns));
+    }
+    return rows;
+  });
+  readonly virtualizer = injectVirtualizer(() => ({
+    scrollElement: this.scrollElement(),
+    count: this.libraryRows().length,
+    estimateSize: () => this.rowSize(),
+    overscan: 2,
+  }));
+  private resizeObserver?: ResizeObserver;
+  private resizeFrame?: number;
+
+  ngAfterViewInit(): void {
+    const element = this.scrollElement()?.nativeElement;
+    if (!element) return;
+    const resize = () => {
+      if (this.isDestroyed || element.clientWidth === this.viewportWidth()) return;
+      const previousColumns = this.columnCount();
+      const firstLibrary = Math.floor(element.scrollTop / this.rowSize()) * previousColumns;
+      this.zone.run(() => {
+        this.viewportWidth.set(element.clientWidth);
+        this.cd.detectChanges();
+        // Keep the first visible library in view when the grid changes columns.
+        if (this.resizeFrame !== undefined) cancelAnimationFrame(this.resizeFrame);
+        if (previousColumns !== this.columnCount() && firstLibrary > 0) {
+          this.resizeFrame = requestAnimationFrame(() => {
+            if (!this.isDestroyed && this.libraryRows().length) this.virtualizer.scrollToIndex(
+              Math.min(this.libraryRows().length - 1, Math.floor(firstLibrary / this.columnCount())),
+              { align: 'start' });
+          });
+        }
+      });
+    };
+    resize();
+    this.resizeObserver = new ResizeObserver(resize);
+    this.resizeObserver.observe(element);
+  }
+
+  private resetListScroll(): void {
+    if (this.resizeFrame !== undefined) cancelAnimationFrame(this.resizeFrame);
+    this.scrollElement()?.nativeElement.scrollTo({ top: 0 });
+    this.virtualizer.scrollToOffset(0);
+  }
 
   @Output() close = new EventEmitter();
 
   keyword: string = '';
   tagList: { key: string; label: string }[] = [];
   displayTagList: { key: string; label: string }[] = [];
-  libraryList: PackageInfo[] = [];
+  get libraryList(): PackageInfo[] { return this.libraries(); }
+  set libraryList(value: PackageInfo[]) { this.libraries.set(value); }
   _libraryList: PackageInfo[] = [];
   installedPackageList: string[] = [];
 
@@ -59,6 +120,7 @@ export class LibManagerComponent implements OnDestroy {
   private isDestroyed = false;
 
   constructor(
+    private zone: NgZone,
     private npmService: NpmService,
     private configService: ConfigService,
     private projectService: ProjectService,
@@ -67,7 +129,6 @@ export class LibManagerComponent implements OnDestroy {
     private cd: ChangeDetectorRef,
     private translate: TranslateService,
     private modal: NzModalService,
-    private cmdService: CmdService,
     private crossPlatformCmdService: CrossPlatformCmdService,
     private electronService: ElectronService,
     private workflowService: WorkflowService,
@@ -77,6 +138,8 @@ export class LibManagerComponent implements OnDestroy {
 
   ngOnDestroy() {
     this.isDestroyed = true;
+    this.resizeObserver?.disconnect();
+    if (this.resizeFrame !== undefined) cancelAnimationFrame(this.resizeFrame);
     this.initialDataLoadToken++;
     this.searchRequestToken++;
     this.installedStateRefreshToken++;
@@ -232,6 +295,8 @@ export class LibManagerComponent implements OnDestroy {
 
   async search(keyword = this.keyword) {
     this.keyword = keyword;
+    // Invalidate in-flight searches immediately, before the debounce elapses.
+    this.searchRequestToken++;
     this.searchSubject.next(keyword);
   }
 
@@ -254,6 +319,7 @@ export class LibManagerComponent implements OnDestroy {
       }
 
       this.libraryList = libraryList;
+      this.resetListScroll();
       this.cd.detectChanges();
       return;
     }
@@ -268,6 +334,7 @@ export class LibManagerComponent implements OnDestroy {
     if (keywordLower === 'installed' || keywordLower === 'lib-core') {
       const matchedItems = this.libManagerService.filterByFulltext(libraryList, keywordLower);
       this.libraryList = this.libManagerService.applyLocalization(matchedItems, this.translate.currentLang);
+      this.resetListScroll();
       this.cd.detectChanges();
       return;
     }
@@ -283,6 +350,7 @@ export class LibManagerComponent implements OnDestroy {
     }
 
     this.libraryList = results;
+    this.resetListScroll();
     this.cd.detectChanges();
   }
 
@@ -311,25 +379,7 @@ export class LibManagerComponent implements OnDestroy {
       return;
     }
 
-    // 检查库兼容性
-    // console.log('当前开发板内核：', this.projectService.currentBoardConfig.core.replace('aily:', ''));
-    // console.log('当前库兼容内核：', JSON.stringify(lib.compatibility.core));
-    // if (!await this.checkCompatibility(lib.compatibility.core, this.projectService.currentBoardConfig.core.replace('aily:', ''))) {
-    //   return;
-    // }
-    // 处理 core 字符串，去掉第一个以 ':' 分割的部分
-    const boardConfig = this.projectService.currentBoardConfig;
-    const boardType = typeof boardConfig?.type === 'string' ? boardConfig.type.trim() : '';
-    const boardCore = typeof boardConfig?.core === 'string'
-      ? boardConfig.core.split(':').slice(1).join(':')
-      : '';
-    // Linux 库按 board.type 校验；旧 Arduino 库未声明 type 时继续按 core 校验。
-    const hasBoardTypeCompatibility = Array.isArray(lib.compatibility?.type);
-    const compatibility = hasBoardTypeCompatibility
-      ? lib.compatibility?.type
-      : lib.compatibility?.core;
-    const compatibilityTarget = hasBoardTypeCompatibility ? boardType : boardCore;
-    if (!await this.checkCompatibility(compatibility, compatibilityTarget)) {
+    if (!await this.checkCompatibility(lib.compatibility, this.projectService.currentBoardConfig)) {
       return;
     }
 
@@ -369,11 +419,12 @@ export class LibManagerComponent implements OnDestroy {
     }
 
     this.isProcessingLibraryOperationQueue = true;
+    const projectPath = this.projectService.currentProjectPath;
     const workflowStarted = this.workflowService.startInstall();
     const errors: string[] = [];
 
     try {
-      while (this.libraryOperationQueue.length > 0) {
+      while (this.libraryOperationQueue.length > 0 && this.projectService.currentProjectPath === projectPath) {
         const operation = this.libraryOperationQueue.shift();
         if (!operation) {
           continue;
@@ -389,14 +440,18 @@ export class LibManagerComponent implements OnDestroy {
         }
       }
     } finally {
-      this.isProcessingLibraryOperationQueue = false;
-      if (workflowStarted) {
-        this.workflowService.finishInstall(errors.length === 0, errors.join('\n'));
-      }
-      if (this.libraryOperationRequiresRuntimeRebuild) {
-        this.libraryOperationRequiresRuntimeRebuild = false;
-        const projectPath = this.projectService.currentProjectPath;
-        await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+      try {
+        if (this.libraryOperationRequiresRuntimeRebuild && this.projectService.currentProjectPath === projectPath) {
+          this.libraryOperationRequiresRuntimeRebuild = false;
+          await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+        }
+      } catch (error) {
+        errors.push(this.getErrorMessage(error, 'Library runtime refresh failed'));
+        this.message.error(errors[errors.length - 1]);
+      } finally {
+        this.isProcessingLibraryOperationQueue = false;
+        if (workflowStarted) this.workflowService.finishInstall(errors.length === 0, errors.join('\n'));
+        if (this.libraryOperationQueue.length && this.projectService.currentProjectPath === projectPath) void this.processLibraryOperationQueue();
       }
     }
   }
@@ -409,16 +464,8 @@ export class LibManagerComponent implements OnDestroy {
     this.output = '';
     try {
       const packageSpec = lib.version ? `${lib.name}@${lib.version}` : lib.name;
-      // 安装来源跟随项目 devmode，和当前展示的 libraries.json 保持一致。
-      const command = this.configService.withProjectNpmRegistry(
-        `npm install ${packageSpec}`,
-        this.projectService.currentPackageData,
-      );
-      const { code, stderr } = await this.cmdService.runAsync(command, this.projectService.currentProjectPath);
-
-      if (code !== 0) {
-        throw new Error(stderr || `退出码: ${code}`);
-      }
+      await this.projectService.changeLibraries('install', [packageSpec]);
+      this.libraryOperationRequiresRuntimeRebuild = true;
 
       this.clearLibraryOperationState(lib.name);
       await this.refreshCurrentLibraryList();
@@ -448,10 +495,7 @@ export class LibManagerComponent implements OnDestroy {
         throw new Error(message);
       }
 
-      const { code, stderr } = await this.cmdService.runAsync(`npm uninstall ${lib.name}`, this.projectService.currentProjectPath);
-      if (code !== 0) {
-        throw new Error(stderr || `退出码: ${code}`);
-      }
+      await this.projectService.changeLibraries('remove', [lib.name]);
 
       this.clearLibraryOperationState(lib.name);
       await this.refreshCurrentLibraryList();
@@ -539,18 +583,21 @@ export class LibManagerComponent implements OnDestroy {
       || this.blocklyService.isLibraryPackageNameUsedByCurrentProject(lib.name);
   }
 
-  async checkCompatibility(libCompatibility, boardCore): Promise<boolean> {
-    // 检查项目是否有未保存的更改
-    if (!libCompatibility || libCompatibility.length == 0 || libCompatibility.includes(boardCore)) {
+  async checkCompatibility(
+    compatibility: PackageInfo['compatibility'],
+    board: { type?: string; core?: string } | null | undefined,
+  ): Promise<boolean> {
+    const libCompatibility = Array.isArray(compatibility?.type)
+      ? compatibility.type
+      : compatibility?.core;
+    // Unconstrained packages remain installable. Declared constraints use the
+    // same matching rule as visibility, without shortening the board identity.
+    if (!Array.isArray(libCompatibility) || libCompatibility.length === 0
+        || this.libManagerService.matchesBoardCompatibility(compatibility, board?.type, board?.core)) {
       return true;
     }
-    // 遍历libCompatibility，判断每个元素是否包含boardCore
-    for (let i = 0; i < libCompatibility.length; i++) {
-      const element = libCompatibility[i];
-      if (element.includes(boardCore)) {
-        return true;
-      }
-    }
+
+    const boardCore = board?.type || board?.core || '';
 
     return new Promise<boolean>((resolve) => {
       const modalRef = this.modal.create({
@@ -624,22 +671,6 @@ export class LibManagerComponent implements OnDestroy {
     return { importedLibraryPath, packageName };
   }
 
-  /** 记录包名 → 本机原库目录，供打开项目时监听原库变更并同步到 local-libraries */
-  private mergeAilyLocalLibrarySource(packageName: string, sourceFolderPath: string): void {
-    const projectPath = this.projectService.currentProjectPath;
-    const pkgPath = this.electronService.pathJoin(projectPath, 'package.json');
-    const pkg = JSON.parse(this.electronService.readFile(pkgPath));
-    if (!pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY] || typeof pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY] !== 'object') {
-      pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY] = {};
-    }
-    pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY][packageName] = sourceFolderPath;
-    this.electronService.writeFile(pkgPath, JSON.stringify(pkg, null, 2));
-    window['packageJson'] = pkg;
-    if (this.projectService.currentPackageData) {
-      Object.assign(this.projectService.currentPackageData, pkg);
-    }
-  }
-
   /** 将绝对路径转为 npm file: 用的 POSIX 相对路径（相对项目根） */
   private fileDependencyFromProject(importedLibraryPath: string): string {
     const projectPath = this.projectService.currentProjectPath;
@@ -676,25 +707,14 @@ export class LibManagerComponent implements OnDestroy {
 
       // 先复制库到当前项目目录下，再从项目内的副本执行安装（file: 相对路径，便于整项目拷贝/压缩）
       const { importedLibraryPath, packageName } = await this.copyLibraryToProject(folderPath);
-      this.mergeAilyLocalLibrarySource(packageName, folderPath);
 
       const fileDep = this.fileDependencyFromProject(importedLibraryPath);
       const installSpec = `${packageName}@file:${fileDep}`;
-      // 本地包仍通过统一命令构造器执行；只有 Python 项目会附加 Linux 作用域仓库。
-      const { code, stderr } = await this.cmdService.runAsync(
-        this.configService.withProjectNpmRegistry(
-          `npm install "${installSpec}"`,
-          this.projectService.currentPackageData,
-        ),
-        this.projectService.currentProjectPath,
-      );
-
-      if (code !== 0) {
-        throw new Error(stderr || '安装导入库失败');
-      }
+      await this.projectService.changeLibraries('install', [installSpec], { [packageName]: folderPath });
+      await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange();
 
       this.localLibrarySyncService.stop();
-      this.localLibrarySyncService.start(this.projectService.currentProjectPath);
+      this.localLibrarySyncService.start(this.projectService.currentProjectPath, await this.projectService.getPackageJson());
 
       // 重新检查已安装的库
       this.libraryList = this.libManagerService.applyLocalization(

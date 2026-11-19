@@ -16,13 +16,20 @@ export const TOOL_I18N_NAMESPACES = {
 
 export type ToolI18nName = keyof typeof TOOL_I18N_NAMESPACES;
 
+interface ToolI18nEntry {
+  toolName: string;
+  config: ChildToolConfig | null;
+  sourceKey: string;
+  loaded: boolean;
+  promise?: Promise<void>;
+}
+
 @Injectable({
   providedIn: 'root',
 })
 export class ToolI18nService {
-  private loaded = new Set<string>();
   private registeredTools = new Set<string>();
-  private inFlight = new Map<string, Promise<void>>();
+  private entries = new Map<string, ToolI18nEntry>();
 
   constructor(
     private http: HttpClient,
@@ -42,37 +49,62 @@ export class ToolI18nService {
     }
 
     this.registeredTools.add(toolName);
-    const key = `${lang}:${toolName}`;
-
-    if (!force && this.loaded.has(key)) {
-      return Promise.resolve();
+    const key = JSON.stringify([toolName, lang]);
+    const sourceKey = this.sourceKey(childConfig);
+    const current = this.entries.get(key);
+    if (current?.config === childConfig && current.sourceKey === sourceKey) {
+      if (current.promise) return current.promise;
+      if (!force && current.loaded) return Promise.resolve();
     }
 
-    const currentRequest = this.inFlight.get(key);
-    if (currentRequest) {
-      return currentRequest;
-    }
-
-    const request = Promise.resolve()
-      .then(() => this.loadTranslationData(toolName, lang, childConfig))
+    const entry: ToolI18nEntry = { toolName, config: childConfig, sourceKey, loaded: false };
+    const snapshot = childConfig ? { ...childConfig } : null;
+    this.entries.set(key, entry);
+    entry.promise = Promise.resolve()
+      .then(() => this.isCurrent(key, entry) ? this.loadTranslationData(toolName, lang, snapshot) : null)
       .then((data) => {
-        this.translate.setTranslation(lang, data, true);
-        this.loaded.add(key);
+        if (!data || !this.isCurrent(key, entry)) return;
+        this.translate.setTranslation(lang, this.normalizeChildToolCopy(data, snapshot), true);
+        entry.loaded = true;
       })
       .catch((error) => {
-        console.warn(`Failed to load i18n for tool ${toolName} (${lang}):`, error);
+        if (this.isCurrent(key, entry)) {
+          console.warn(`Failed to load i18n for tool ${toolName} (${lang}):`, error);
+        }
       })
       .finally(() => {
-        this.inFlight.delete(key);
+        if (this.isCurrent(key, entry)) entry.promise = undefined;
       });
 
-    this.inFlight.set(key, request);
-    return request;
+    return entry.promise;
   }
 
   async loadChildTools(lang: string = this.currentLang(), force = false): Promise<void> {
     const toolIds = Object.keys(getChildToolConfigs());
     await Promise.all(toolIds.map(toolId => this.load(toolId, lang, force)));
+  }
+
+  private normalizeChildToolCopy(data: Record<string, unknown>, config: ChildToolConfig | null): Record<string, unknown> {
+    if (!config) return data;
+    const namespace = data[config.namespace];
+    if (!namespace || typeof namespace !== 'object' || Array.isArray(namespace)) return data;
+    const copy = { ...namespace } as Record<string, unknown>;
+    const titleKey = config.titleKey.startsWith(`${config.namespace}.`)
+      ? config.titleKey.slice(config.namespace.length + 1)
+      : '';
+    for (const key of new Set(['TITLE', 'NAME', 'DESCRIPTION', titleKey])) {
+      if (typeof copy[key] === 'string') copy[key] = copy[key].replace(/\baily\b/gi, 'aily');
+    }
+    return { ...data, [config.namespace]: copy };
+  }
+
+  private sourceKey(config: ChildToolConfig | null): string {
+    return JSON.stringify(config ? [config.id, config.packagePath || '', config.childDir || '', config.version || ''] : null);
+  }
+
+  private isCurrent(key: string, entry: ToolI18nEntry): boolean {
+    const config = getChildToolConfig(entry.toolName);
+    return this.entries.get(key) === entry && config === entry.config && this.sourceKey(config) === entry.sourceKey;
   }
 
   private loadTranslationData(toolName: string, lang: string, childConfig: ChildToolConfig | null): Promise<Record<string, unknown>> {

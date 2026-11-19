@@ -2,9 +2,29 @@
 const { spawn } = require('node:child_process');
 
 const incompatibleArchive = /lto1: internal compiler error: bytecode stream: expected tag record_type instead of error_mark/;
+const archiveInputChanged = /^\[ERROR\] Compilation failed: BUILD_ARCHIVE_INPUT_CHANGED:/m;
+const verifiedArchiveOption = '--verified-local-archive-cache';
+const disabledArchiveArgs = ['--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache'];
 
-/** Retry only the observed incompatible LTO archive failure, once, under the
- * same host workspace lease and captured inputs. Source errors remain errors. */
+function builderArchiveOptions({ execution, projectPath, recordsProjectDelivery, isAilyCode, verifiedLocalArchiveCache, generateLegacy }) {
+    if (recordsProjectDelivery) return { args: disabledArchiveArgs };
+    if (execution) {
+        if (!verifiedLocalArchiveCache || isAilyCode) return { args: disabledArchiveArgs };
+        return {
+            args: [verifiedArchiveOption],
+            env: {
+                AILY_BUILDER_VERIFIED_ARCHIVE_PATH_MAP: JSON.stringify({
+                    physicalRoot: projectPath,
+                    logicalRoot: execution.logicalProjectPath
+                })
+            }
+        };
+    }
+    return { args: generateLegacy ? ['--generate-archive-cloud-cache'] : [] };
+}
+
+/** Retry recognized archive failures once under the same host workspace
+ * lease and captured source inputs. */
 async function compileWithArchiveRecovery(command, initialArgs, options, beforeRetry, emit = (type, data) => process[type].write(data)) {
     const output = [];
     const attempt = async (args, holdErrors) => {
@@ -26,27 +46,36 @@ async function compileWithArchiveRecovery(command, initialArgs, options, beforeR
     let args = [...initialArgs];
     let result = await attempt(args, true);
     let archiveRecovery = null;
-    const retry = !result.spawnError && !result.signal && result.exitCode !== 0
-        && !args.includes('--no-archive-cloud-cache') && incompatibleArchive.test(output.join(''));
-    if (retry) {
+    let reason;
+    if (!result.spawnError && !result.signal && result.exitCode !== 0 && !args.includes('--no-archive-cloud-cache')) {
+        const firstOutput = output.join('').replace(/\u001b\[[0-9;]*m/g, '');
+        if (args.includes(verifiedArchiveOption) && archiveInputChanged.test(firstOutput)) {
+            reason = 'verified-archive-input-changed';
+        } else if (incompatibleArchive.test(firstOutput)) {
+            reason = 'incompatible-lto-archive';
+        }
+    }
+    if (reason) {
         await beforeRetry();
         archiveRecovery = {
-            reason: 'incompatible-lto-archive',
+            reason,
             attempts: 2,
             firstExitCode: result.exitCode,
             firstStderr: Buffer.concat(result.errors).toString('utf8').slice(-256 * 1024)
         };
-        const message = '\n[BUILD_CACHE_RECOVERY] Cached LTO archive is incompatible; compiling from source once.\n';
+        const message = reason === 'verified-archive-input-changed'
+            ? '\n[BUILD_CACHE_RECOVERY] Verified archive inputs changed; compiling from source once.\n'
+            : '\n[BUILD_CACHE_RECOVERY] Cached LTO archive is incompatible; compiling from source once.\n';
         output.push(message); emit('stdout', message);
-        args = args.filter(arg => arg !== '--generate-archive-cloud-cache');
-        args.push('--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
+        args = args.filter(arg => arg !== '--generate-archive-cloud-cache' && arg !== verifiedArchiveOption);
+        args.push(...disabledArchiveArgs);
         // The first attempt is retained in the compile report. Its provisional
         // errors must not permanently mark a successful source retry as failed.
         result = await attempt(args, false);
     } else {
         for (const data of result.errors) emit('stderr', data);
     }
-    return { ...result, args, output, recoveredArchive: retry, archiveRecovery };
+    return { ...result, args, output, recoveredArchive: !!reason, archiveRecovery };
 }
 
-module.exports = { compileWithArchiveRecovery };
+module.exports = { builderArchiveOptions, compileWithArchiveRecovery };

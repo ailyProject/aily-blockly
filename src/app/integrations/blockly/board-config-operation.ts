@@ -1,7 +1,8 @@
 import type { IMenuItem } from '../../configs/menu.config';
 import type { ElectronService } from '@core/platform/public-api';
 import type { BuilderService } from '@domain/build/public-api';
-import type { ProjectService } from '@domain/project/public-api';
+import type { ProjectSaveReceipt, ProjectService } from '@domain/project/public-api';
+import type { ProjectSaveRequest } from '../../services/domains/project/project-save-receipts';
 import { describeBuildEnvironment } from './build-environment';
 
 function configOptions(menu: IMenuItem[]): IMenuItem[] {
@@ -102,6 +103,7 @@ export async function setBoardConfig(
   electronService: ElectronService,
   input: Record<string, unknown>,
   preprocess?: (project: string) => Promise<unknown>,
+  saveRequest?: ProjectSaveRequest,
 ): Promise<Record<string, unknown>> {
   const project = projectService.currentProjectPath;
   const board = projectService.currentBoardConfig;
@@ -146,17 +148,22 @@ export async function setBoardConfig(
   const changed = oldValue !== selection.data;
   const result = { ...base, old_value: oldValue ?? null, new_value: selection.data, changed };
   let persisted = false;
+  let publication: Record<string, unknown> | undefined;
 
   try {
-    packageJson.projectConfig = { ...packageJson.projectConfig, [configKey]: selection.data };
-    await projectService.setPackageJson(packageJson);
+    const nativeSelection = !projectService.isAilyCodeProject(project) && typeof projectService.applyBoardConfiguration === 'function';
+    if (nativeSelection) publication = await projectService.applyBoardConfiguration(selection, saveRequest);
+    else {
+      packageJson.projectConfig = { ...packageJson.projectConfig, [configKey]: selection.data };
+      await projectService.setPackageJson(packageJson);
+    }
     persisted = true;
 
     // A retry must also finish synchronization after a previous partial failure.
-    if (selection.extra?.refreshRuntimeBoardConfig) {
+    if (!nativeSelection && selection.extra?.refreshRuntimeBoardConfig) {
       await projectService.refreshRuntimeBoardConfig();
     }
-    if (selection.extra?.syncPinConfig) {
+    if (!nativeSelection && selection.extra?.syncPinConfig) {
       await projectService.syncBoardPinConfig(selection);
     }
 
@@ -184,20 +191,32 @@ export async function setBoardConfig(
     }
 
     return {
+      ...publication,
       ...result,
       ...customPartition,
       ok: true,
       persisted: true,
       preprocess_requested: !requiresFile,
       message: requiresFile
-        ? '配置已保存。请先在 required_file_path 创建自定义分区 CSV，再调用 project_build。'
+        ? '配置已保存，项目尚无自定义分区 CSV；编译前客户端会从主板默认文件或匹配模板补齐，无模板时按已确认的 Flash 容量生成。AI 调整请使用分区管理器的 partition_snapshot / partition_load 读取主板模板或缺省草稿，按实际 Flash、OTA 和存储需求配置并通过 partition_save 保存到 required_file_path，再调用 project_build；AI 调用默认在 Dock 展示。'
         : '配置已保存并请求预处理；这不代表编译完成，请调用 project_build 验证。',
     };
   } catch (error) {
+    const facts = error as { code?: unknown; partial?: unknown; saveReceipt?: Partial<ProjectSaveReceipt> };
+    const receipt = facts?.saveReceipt;
+    const saveReceipt: ProjectSaveReceipt | undefined = receipt?.version === 1 && receipt.project === project
+      && receipt.operation === 'project_save' && typeof receipt.requestId === 'string'
+      && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(receipt.requestId)
+      && ['queued', 'running', 'completed', 'unknown'].includes(receipt.state || '')
+      ? { version: 1, requestId: receipt.requestId, project, operation: 'project_save', state: receipt.state! }
+      : undefined;
     return {
       ...result,
       ok: false,
       persisted,
+      ...(typeof facts?.code === 'string' ? { code: facts.code } : {}),
+      ...(typeof facts?.partial === 'boolean' ? { partial: facts.partial } : {}),
+      ...(saveReceipt ? { saveReceipt } : {}),
       reason: persisted ? 'board_config_sync_failed' : 'board_config_save_failed',
       message: `${persisted ? '配置已保存，但同步或验证失败' : '配置保存失败'}：${error instanceof Error ? error.message : String(error)}`,
     };

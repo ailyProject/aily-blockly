@@ -29,7 +29,7 @@
         @for(project of recentlyProjects; track $index) {
         <div class="project btn link" (click)="openProjectByPath(project)">
           <div class="project-info">
-            <div class="name">{{project.nickname || project.name}}</div>
+            <div class="name ellipsis" [title]="project.nickname || project.name">{{project.nickname || project.name}}</div>
             <div class="project-actions">
               @if (project.coderWorkspaceId && project.coderProjects?.length > 1) {
               <div class="unmerge-btn" [title]="'GUIDE.UNMERGE_CODER_WORKSPACE' | translate"
@@ -42,7 +42,7 @@
               </div>
             </div>
           </div>
-          <div class="path ellipsis">{{project.path}}</div>
+          <div class="path ellipsis" [title]="project.path">{{project.path}}</div>
         </div>
         }
         <!-- <div class="project btn link" (click)="showMore=true">

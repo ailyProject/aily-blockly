@@ -16,6 +16,8 @@ export interface CmdOutput {
   error?: string;
   streamId: string;
   expected?: boolean;
+  ownershipReleased?: boolean;
+  recovered?: boolean;
   terminal?: CmdPhysicalTerminal;
   /** Bounded output collected when this command reaches its physical terminal. */
   stderr?: string;
@@ -25,7 +27,9 @@ export interface CmdOutput {
 /** Physical command completion only; never a domain or process-tree ACK. */
 export function isCmdTerminalOutput(output: Pick<CmdOutput, 'type' | 'code' | 'signal' | 'terminal'>): boolean {
   if (output.type === 'close') return true;
+
   const terminal = output.terminal;
+
   return output.type === 'terminal' && terminal?.kind === 'exit-and-stdio-closed'
     && terminal.closeObserved === false && terminal.code === output.code && terminal.signal === output.signal
     && (terminal.code === null || Number.isInteger(terminal.code))

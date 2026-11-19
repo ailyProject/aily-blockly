@@ -121,15 +121,26 @@
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.BLOCKLY' | translate }}</h2>
             <div class="right-inner">
               <div class="item">
+                <div><label for="blockly-autosave">{{ 'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE' | translate }}:</label></div>
+                <nz-switch nzId="blockly-autosave" [ngModel]="configData.blockly.autoSave === true"
+                  (ngModelChange)="saveBlocklyPreference('autoSave', $event)"
+                  nz-tooltip [nzTooltipTitle]="'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE_HINT' | translate"></nz-switch>
+              </div>
+              <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_THEME' | translate }}:</div>
-                <nz-radio-group [(ngModel)]="configData.blockly.renderer" [nzSize]="'small'" nzButtonStyle="solid">
+                <nz-radio-group [ngModel]="configData.blockly.renderer" (ngModelChange)="saveBlocklyPreference('renderer', $event)" [nzSize]="'small'" nzButtonStyle="solid">
                   <label nz-radio-button nzValue="thrasos">Thrasos</label>
                   <label nz-radio-button nzValue="zelos">Zelos</label>
                 </nz-radio-group>
               </div>
               <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_MINIMAP' | translate }}:</div>
-                <nz-switch [(ngModel)]="configData.blockly.minimap"></nz-switch>
+                <nz-switch [ngModel]="configData.blockly.minimap" (ngModelChange)="saveBlocklyPreference('minimap', $event)"></nz-switch>
+              </div>
+              <div class="item">
+                <div><label for="blockly-sounds-enabled">{{ 'SETTINGS.FIELDS.BLOCKLY_SOUNDS' | translate }}:</label></div>
+                <nz-switch nzId="blockly-sounds-enabled" [ngModel]="configData.blockly.sounds !== false"
+                  (ngModelChange)="saveBlocklyPreference('sounds', $event)"></nz-switch>
               </div>
               <!-- <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.FLYOUT_AUTO_CLOSE' | translate }}:</div>
@@ -141,25 +152,29 @@
           </div>
           }
 
-          <!-- 编译设置 -->
-          <!-- <div id="SETTINGS.SECTIONS.COMPILATION" class="section">
+          <!-- 云编译仅在非欧洲区的 Windows 显示，网关地址与签名身份由桌面主进程维护。 -->
+          @if (showCloudCompilation) {
+          <div id="SETTINGS.SECTIONS.COMPILATION" class="section">
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.COMPILATION' | translate }}</h2>
             <div class="right-inner">
-              <div class="item">
-                <div>{{ 'SETTINGS.FIELDS.COMPILATION_OPTIONS' | translate }}:</div>
-                <div class="item-inner">
-                  <div class="w50 ccenter">
-                    多核编译
-                    <nz-switch [ngModel]="true"></nz-switch>
-                  </div>
-                  <div class="w50 ccenter">
-                    显示详情
-                    <nz-switch [ngModel]="true"></nz-switch>
-                  </div>
-                </div>
+              <div class="item cloud-build-item">
+                <label for="cloud-compilation-enabled">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION' | translate }}:<span class="cloud-build-alpha">Alpha</span></label>
+                <span class="cloud-build-switch" [class.cloud-build-switch-disabled]="!canUseCloudCompilation"
+                  nz-tooltip [nzTooltipTitle]="canUseCloudCompilation ? null : ('SETTINGS.FIELDS.CLOUD_PRO_REQUIRED' | translate)">
+                  <nz-switch nzId="cloud-compilation-enabled" [ngModel]="cloudCompilationEnabled" [nzControl]="true"
+                    [nzLoading]="cloudConnectionChecking || cloudConnectionSaving" [nzDisabled]="applying || !canUseCloudCompilation"
+                    (click)="onCloudCompilationChange(!cloudCompilationEnabled)"
+                    (keydown.arrowleft)="onCloudCompilationChange(false); $event.preventDefault()"
+                    (keydown.arrowright)="onCloudCompilationChange(true); $event.preventDefault()"></nz-switch>
+                </span>
               </div>
+              <!-- <div class="cloud-build-details">
+                <div class="cloud-build-description">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION_DESC' | translate }}</div>
+                <div class="cloud-build-status" role="status" aria-live="polite" aria-atomic="true">{{ cloudConnectionStatus }}</div>
+              </div> -->
             </div>
-          </div> -->
+          </div>
+          }
           <!-- 仓库设置 -->
           <div id="SETTINGS.SECTIONS.REPOSITORY" class="section">
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.REPOSITORY' | translate }}</h2>
@@ -357,9 +372,14 @@
       </ngx-simplebar>
     </div>
     <div class="window-footer">
+      @if (!coderProduct) {
+      <p class="blockly-save-status" role="status" aria-live="polite" aria-atomic="true" [class.save-error]="blocklySaveState === 'error'">
+        {{ ('SETTINGS.FIELDS.BLOCKLY_SETTINGS_' + (blocklySaveState === 'saving' ? 'SAVING' : blocklySaveState === 'saved' ? 'SAVED' : blocklySaveState === 'error' ? 'SAVE_FAILED' : 'AUTO_SAVE')) | translate }}
+      </p>
+      }
       <div class="btns">
         <button nz-button nzType="default" (click)="cancel()">{{ 'SETTINGS.BUTTONS.CANCEL' | translate }}</button>
-        <button nz-button nzType="primary" [nzLoading]="applying" (click)="apply()">{{ 'SETTINGS.BUTTONS.APPLY' |
+        <button nz-button nzType="primary" [nzLoading]="applying" [disabled]="cloudConnectionChecking || cloudConnectionSaving" (click)="apply()">{{ 'SETTINGS.BUTTONS.APPLY' |
           translate }}</button>
       </div>
     </div>

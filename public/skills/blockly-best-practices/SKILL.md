@@ -1,6 +1,6 @@
 ---
 name: blockly-best-practices
-description: "Aily Blockly implementation workflow for scoped library evidence, ABS editing, workspace synchronization, and focused validation. Use for creating or modifying Blockly/ABS programs."
+description: "aily Blockly implementation workflow for scoped library evidence, ABS editing, workspace synchronization, and focused validation. Use for creating or modifying Blockly/ABS programs."
 metadata:
   version: "2.0.0"
   author: aily-team

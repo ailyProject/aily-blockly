@@ -21,6 +21,7 @@ import {
 import {MultiselectControls} from './multiselect_controls';
 import {MultiselectDraggable} from './multiselect_draggable';
 import {shouldAutoFocusWorkspace} from './workspace-auto-focus';
+import {fireBlocklySelectionChange} from '../../../../utils/blockly-selection-focus';
 
 // Install the host-owned policy before generator sessions snapshot Blockly.
 // A per-workspace flag survives library realm rebuilds without globally
@@ -69,6 +70,42 @@ export class Multiselect {
       });
     }
     const injectionDiv = this.workspace_.getInjectionDiv();
+    this.onContextPointerDown_ = (e) => {
+      if (!Blockly.browserEvents.isRightButton(e) || this.workspace_.isReadOnly()) return;
+      let block = this.workspace_.getBlockById(e.target.closest?.('[data-id]')?.getAttribute('data-id'));
+      while (block?.isShadow()) block = block.getParent();
+      if (!block || block.isInFlyout) return;
+      const group = multiDraggableWeakMap.get(this.workspace_);
+      // v13 opens the focused node's menu before pointer default focus runs.
+      Blockly.common.setSelected(group.subDraggables.has(block) ? group : block);
+    };
+    injectionDiv.addEventListener('pointerdown', this.onContextPointerDown_, true);
+    this.onCanvasPointerDown_ = (e) => {
+      if (this.workspace_.isReadOnly()) return;
+      // Shift may already be held when focus enters the workspace, so its
+      // keydown was delivered elsewhere. Start selection before the pointer
+      // reaches DragSelect's area listener in that case as well.
+      if (e.shiftKey && e.button === 0 && this.multiSelectKeys_.includes('shift') &&
+          this.workspace_.getParentSvg().contains(e.target) &&
+          !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
+        this.controls_.enableMultiselect();
+      }
+      if (e.button === 0 && inMultipleSelectionModeWeakMap.get(this.workspace_)) {
+        let block = this.workspace_.getBlockById(e.target.closest?.('[data-id]')?.getAttribute('data-id'));
+        while (block?.isShadow()) block = block.getParent();
+        if (block && !block.isInFlyout && (block.isDeletable() || block.isMovable()) && block.type !== 'drag_to_dupe') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.controls_.startBlockSelection_(block, e);
+        }
+      }
+      if (e.target === this.workspace_.svgBackground_ &&
+          (e.button === 0 || Blockly.browserEvents.isRightButton(e)) && !e.shiftKey &&
+          !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
+        this.clearSelection_();
+      }
+    };
+    injectionDiv.addEventListener('pointerdown', this.onCanvasPointerDown_, true);
     this.onKeyDownWrapper_ = Blockly.browserEvents.conditionalBind(
         injectionDiv, 'keydown', this, this.onKeyDown_);
     this.onKeyUpWrapper_ = Blockly.browserEvents.conditionalBind(
@@ -190,6 +227,8 @@ export class Multiselect {
    * @param {boolean} keepRegistry Keep the context menu and shortcut registry.
    */
   dispose(keepRegistry = false) {
+    this.workspace_.getInjectionDiv().removeEventListener('pointerdown', this.onContextPointerDown_, true);
+    this.workspace_.getInjectionDiv().removeEventListener('pointerdown', this.onCanvasPointerDown_, true);
     if (this.onMouseEnter_) {
       this.workspace_.getInjectionDiv().removeEventListener('mouseenter', this.onMouseEnter_);
       this.onMouseEnter_ = null;
@@ -397,7 +436,7 @@ export class Multiselect {
     // to cover all possible selection changes)
     if (e.type === Blockly.Events.SELECTED) {
       multiselectControlsList.forEach((controls) => {
-        controls.updateMultiselect();
+        controls.updateMultiselect(e);
       });
     }
   }
@@ -408,10 +447,30 @@ export class Multiselect {
    * @private
    */
   onKeyDown_(e) {
+    if (e.key === 'Escape' && !e.defaultPrevented &&
+        !e.ctrlKey && !e.metaKey && !e.altKey && this.dragSelection_.size &&
+        !Blockly.browserEvents.isTargetInput(e) &&
+        !Blockly.WidgetDiv.isVisible() && !Blockly.DropDownDiv.isVisible() &&
+        !Blockly.Gesture.inProgress() && !this.workspace_.keyboardAccessibilityMode) {
+      // Leave field editors, popups and active drags to Blockly's own Escape
+      // handlers. On the canvas, cancel both the group and additive mode.
+      this.controls_.disableMultiselect();
+      Blockly.getFocusManager().focusNode(this.workspace_.getRootFocusableNode());
+      this.clearSelection_();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (this.multiSelectKeys_.indexOf(e.key.toLocaleLowerCase()) > -1 &&
         !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
       this.controls_.enableMultiselect();
     }
+  }
+
+  /** Publish an intentional cancellation independently of keyboard focus. */
+  clearSelection_() {
+    this.controls_.clearSelection();
+    fireBlocklySelectionChange(this.workspace_, null);
   }
 
   /**
@@ -459,18 +518,14 @@ export class Multiselect {
    * @private
    */
   onBlur_(e) {
+    // Moving focus between the group, blocks and canvas is not leaving the
+    // workspace. Keep Shift selection active during these native transitions.
+    if (e.relatedTarget instanceof SVGElement &&
+        this.workspace_.getParentSvg().contains(e.relatedTarget)) {
+      return;
+    }
     if (inMultipleSelectionModeWeakMap.get(this.workspace_)) {
-      // Revert last unselected block if the related target
-      // is a field related element, for accomodating field update
-      // directly while the multi-selection mode is on.
-      if (e.relatedTarget && (e.relatedTarget.tagName === 'INPUT' ||
-          e.relatedTarget.tagName === 'TEXTAREA' ||
-          e.relatedTarget.tagName === 'DIV' &&
-          e.relatedTarget.classList.value.indexOf(
-              'blocklyDropdownMenu') > -1)) {
-        this.controls_.revertLastUnselectedBlock();
-      }
-      this.controls_.disableMultiselect();
+      this.controls_.disableMultiselect(false, false);
     }
   }
 }

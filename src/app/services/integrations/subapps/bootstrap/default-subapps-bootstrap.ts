@@ -5,6 +5,7 @@ export interface DefaultSubappCatalogItem {
   toolId: string;
   installed: boolean;
   uninstalling?: boolean;
+  manuallyUninstalled?: boolean;
   enabled?: boolean;
   only?: string;
   config?: unknown;
@@ -19,6 +20,8 @@ export interface DefaultSubappsBootstrapAdapter {
   initialize(): Promise<void>;
   readCatalog(): readonly DefaultSubappCatalogItem[];
   isAvailable(item: DefaultSubappCatalogItem): boolean;
+  /** Upgrade fallback for Chat removals before explicit uninstall records existed. */
+  wasAilyChatInstalled?(catalogId: string): boolean;
   install(catalogId: string): Promise<void>;
   onError(id: string, error: unknown): void;
 }
@@ -39,7 +42,10 @@ export async function bootstrapDefaultSubapps(
     try {
       const item = findItem(entry.id);
       if (!eligible(item)) continue;
-      if (item.app?.autoInstall === true && !item.installed) {
+      const previouslyRemovedChat = item.toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID
+        && adapter.wasAilyChatInstalled?.(item.id);
+      if (item.app?.autoInstall === true && !item.installed
+        && !item.manuallyUninstalled && !previouslyRemovedChat) {
         await adapter.install(item.id);
       }
     } catch (error) {

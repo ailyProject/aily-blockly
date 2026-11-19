@@ -7,6 +7,8 @@ import { BehaviorSubject, Observable } from 'rxjs';
 export interface OnboardingStep {
   /** 目标元素的 CSS 选择器 */
   target: string;
+  /** 开始引导时目标不存在则跳过此步 */
+  optional?: boolean;
   /** 标题的国际化 key */
   titleKey: string;
   /** 描述的国际化 key */
@@ -84,7 +86,8 @@ export class OnboardingService {
       onCompleted?: () => void;
     }
   ): void {
-    this.configSubject.next(config);
+    const steps = config.steps.filter(step => !step.optional || document.querySelector(step.target));
+    this.configSubject.next({ ...config, steps });
     this.closedCallback = options?.onClosed || null;
     this.completedCallback = options?.onCompleted || null;
     this.showSubject.next(true);

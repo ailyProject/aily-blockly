@@ -5,7 +5,7 @@ import { BlocklyService } from '../../../editors/blockly-editor/services/blockly
 describe('canonical selected-block context', () => {
   const projection = () => createAbsProjection({ blocks: { blocks: [{ type: 'text', id: 'selected',
     fields: { TEXT: '中文😀' }, next: { block: { type: 'text', id: 'sibling', fields: { TEXT: 'later' } } } }] } }, {
-    document: {}, generation: 'context-generation', baselineRef: 'baseline', scope: { projectKey: 'project', pageId: 'main' },
+    document: { blocks: { blocks: [{ type: 'text', id: 'selected', fields: { TEXT: '中文😀' }, next: { block: { type: 'text', id: 'sibling', fields: { TEXT: 'later' } } } }] } }, generation: 'context-generation', baselineRef: 'baseline', scope: { projectKey: 'project', pageId: 'main' },
     savedAbiHash: null, contracts: { fields: { selected: { TEXT: { type: 'field_input' } }, sibling: { TEXT: { type: 'field_input' } } },
       syntax: { selected: [{ kind: 'field', name: 'TEXT' }], sibling: [{ kind: 'field', name: 'TEXT' }] } },
   });

@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.abs-sync.spec.json","include":["../src/app/integrations/blockly/abs/abs-load-normalization.spec.ts","../src/app/integrations/blockly/abs/abs-project-restart.spec.ts","../src/app/integrations/blockly/abs/abs-baseline-recovery.spec.ts","../src/app/services/domains/project/project-data/project-data-normalization.spec.ts","../src/**/*.d.ts"]}

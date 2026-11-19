@@ -1,6 +1,24 @@
 import { createBrowserFrameBudget } from '@shared/public-api';
 
 describe('createBrowserFrameBudget', () => {
+  for (const available of [true, false]) it(`uses the native task scheduler when available (${available})`, async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler');
+    const yieldTask = jasmine.createSpy('scheduler.yield').and.resolveTo();
+    Object.defineProperty(globalThis, 'scheduler', { configurable: true, value: available ? { yield: yieldTask } : undefined });
+    let now = 0;
+    try {
+      const budget = createBrowserFrameBudget({ budgetMs: 1, now: () => now });
+      now = 1; await budget.checkpoint();
+      expect(yieldTask.calls.count()).toBe(available ? 1 : 0);
+      expect(budget.checkpointCount).toBe(1);
+      now = 60; await budget.checkpoint();
+      // Even a native scheduler must periodically admit ordinary timers.
+      expect(yieldTask.calls.count()).toBe(available ? 1 : 0);
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'scheduler', descriptor);
+      else delete (globalThis as any).scheduler;
+    }
+  });
   it('yields only after the frame budget is exhausted', async () => {
     let now = 0;
     const yields: string[] = [];

@@ -676,6 +676,7 @@ export class ChildToolProcessService implements OnDestroy {
         toolId: config.id,
         streamId,
         leaseId: session.leaseId,
+        restartShared: true,
       })
       : window['childToolSession']?.stop?.(config.id);
 
@@ -689,6 +690,10 @@ export class ChildToolProcessService implements OnDestroy {
     if (result?.reason === 'shared-runtime-in-use') {
       session.expectedStopReason = null;
       throw new Error(`${config.id} Runtime is in use by another window`);
+    }
+    if (result?.reason === 'owner-not-authorized' || result?.reason === 'stale-session') {
+      session.expectedStopReason = null;
+      throw new Error(`${config.id} Runtime restart rejected: ${result.reason}`);
     }
     if (result?.success !== true && result?.reason !== 'not-found' && streamId
       && (reason === 'shutdown' || session.removeListener)) {
@@ -863,7 +868,7 @@ export class ChildToolProcessService implements OnDestroy {
     this.ensureProcessMessageListener();
 
     if (!pathApi?.getAilyChildPath || !pathApi?.join) {
-      throw new Error('Aily child path API is not available');
+      throw new Error('aily child path API is not available');
     }
 
     const childPath = pathApi.getAilyChildPath();

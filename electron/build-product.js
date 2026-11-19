@@ -1,5 +1,11 @@
 const DEFAULT_BUILD_PRODUCT = 'blockly';
 
+// Keep these installer IDs stable: electron-builder also derives the uninstall
+// registry key from them. Running windows must use the ID written to shortcuts.
+function getProductAppId(product) {
+  return normalizeBuildProduct(product) === 'coder' ? 'coder.aily.pro' : 'blockly.aily.pro';
+}
+
 function normalizeBuildProduct(product) {
   return String(product || '').trim().toLowerCase() === 'coder'
     ? 'coder'
@@ -31,6 +37,7 @@ function isProductProtocolUrl(product, url) {
 }
 
 module.exports = {
+  getProductAppId,
   createDevelopmentProtocolArgs,
   isProductProtocolUrl,
   getProductAuthConfig,

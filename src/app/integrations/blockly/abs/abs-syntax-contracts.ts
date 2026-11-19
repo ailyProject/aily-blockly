@@ -1,7 +1,7 @@
 import type { AbsAbiWorkspace, AbsProjectionContracts } from './abs-state';
 import type { AbsArgumentDefinition, AbsSyntaxOptions } from './abs-syntax';
 import { indexAbsAbi } from './abs-abi-index';
-import { canonicalJsonStringify } from '@domain/project/public-api';
+import { canonicalJsonStringify } from '@domain/project/project-data/project-data-codec.registry';
 
 /** A type may use positional syntax only when all captured instances agree.
  * Never borrow one dynamic instance's order/options for a different shape.
@@ -44,7 +44,13 @@ export function absSyntaxOptions(
       const selectors = fieldSelectors(type);
       // Current declarations can prepare a new variant. Baseline-only parsing
       // selects captured variants by attested selectors, never by arbitrary field differences.
-      if (selectors?.length && fallback.fieldSelectors?.(type)?.length) return fallback.argumentOrder?.(type, extraState, fields);
+      if (selectors?.length && fallback.fieldSelectors?.(type)?.length) {
+        const prepared = fallback.argumentOrder?.(type, extraState, fields);
+        if (prepared) return prepared;
+        // Type-wide selector support does not prove every serializer variant.
+        // An opaque instance may use only its exact captured state/selectors;
+        // otherwise the existing no-match path still requires native proof.
+      }
       const cacheKey = canonicalJsonStringify([type, state, selectors ?? null, selectors?.map(name =>
         Object.hasOwn(fields ?? {}, name) ? [name, fields![name]] : [name]) ?? null]);
       if (ordersCache.has(cacheKey)) return ordersCache.get(cacheKey);

@@ -1,11 +1,14 @@
 import { Injectable } from '@angular/core';
 import { ActionService } from '@core/app-shell/public-api';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, type ProjectCopySnapshot } from '@domain/project/public-api';
 import { CoderBuildInfoService } from '@domain/build/public-api';
 
 export interface CodeEditorProPersistenceBridge {
   saveAll(): Promise<{ ok: boolean; message?: string }>;
   hasUnsavedChanges(): Promise<boolean>;
+  captureCopy?(): Promise<{ token: string; files: Array<{ path: string; bytes: Uint8Array }> }>;
+  checkCopy?(token: string): Promise<void>;
+  completeCopy?(token: string): Promise<void>;
 }
 
 @Injectable({
@@ -13,7 +16,9 @@ export interface CodeEditorProPersistenceBridge {
 })
 export class CodeEditorProProjectService {
   private initialized = false;
-  private readonly persistenceBridges = new Map<string, CodeEditorProPersistenceBridge>();
+  // Keys only match paths; host calls need the registered spelling because the
+  // native project-root check compares it with the on-disk case.
+  private readonly persistenceBridges = new Map<string, { path: string; bridge: CodeEditorProPersistenceBridge }>();
   private key(path: string): string {
     return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   }
@@ -45,9 +50,6 @@ export class CodeEditorProProjectService {
       async (action) => {
         const path = action.payload?.path || this.projectService.currentProjectPath;
         await this.saveAll(path);
-        if (path) {
-          await this.projectService.copyPackageJsonToTemp(path);
-        }
         return { success: true, path };
       },
       'code-editor-pro-project-save',
@@ -55,18 +57,20 @@ export class CodeEditorProProjectService {
   }
 
   registerPersistenceBridge(path: string, bridge: CodeEditorProPersistenceBridge): void {
-    this.persistenceBridges.set(this.key(path), bridge);
+    this.persistenceBridges.set(this.key(path), { path, bridge });
   }
 
   unregisterPersistenceBridge(path: string, bridge: CodeEditorProPersistenceBridge): void {
-    if (this.persistenceBridges.get(this.key(path)) === bridge) this.persistenceBridges.delete(this.key(path));
+    if (this.persistenceBridges.get(this.key(path))?.bridge === bridge) this.persistenceBridges.delete(this.key(path));
   }
 
-  async saveAll(path = this.projectService.currentProjectPath): Promise<{ ok: true }> {
-    const bridge = this.persistenceBridges.get(this.key(path));
-    if (!bridge) throw new Error(`Aily Coder 保存通道尚未就绪: ${path}`);
+  async saveAll(requestedPath = this.projectService.currentProjectPath): Promise<{ ok: true }> {
+    const entry = this.persistenceBridges.get(this.key(requestedPath));
+    if (!entry) throw new Error(`aily Coder 保存通道尚未就绪: ${requestedPath}`);
+    const { path, bridge } = entry;
     const result = await bridge.saveAll();
-    if (!result.ok) throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
+    if (!result.ok) throw new Error(result.message || 'aily Coder 未能保存全部代码文件');
+    await this.projectService.saveLibraryChanges(path);
     if (path && this.projectService.isAilyCodeProject(path)) {
       await this.coderBuildInfo.updateCodeHash(path);
     }
@@ -74,20 +78,54 @@ export class CodeEditorProProjectService {
   }
 
   async saveAllOpenProjects(): Promise<{ ok: true }> {
-    await Promise.all([...this.persistenceBridges.keys()].map(path => this.saveAll(path)));
+    await Promise.all([...this.persistenceBridges.values()].map(({ path }) => this.saveAll(path)));
     return { ok: true };
   }
 
+  async prepareCopy(path: string): Promise<ProjectCopySnapshot> {
+    const bridge = this.persistenceBridges.get(this.key(path))?.bridge;
+    if (!bridge?.captureCopy || !bridge.checkCopy) throw new Error('另存为需要更新后的 Coder 编辑器，请更新编辑器后重试。');
+    const captured = await bridge.captureCopy();
+    const assertCurrent = async () => {
+      if (this.persistenceBridges.get(this.key(path))?.bridge !== bridge) throw new Error('Coder 编辑器已切换，请重新执行另存为。');
+      await bridge.checkCopy!(captured.token);
+    };
+    await assertCurrent();
+    return {
+      assertCurrent, release: () => undefined,
+      complete: async () => { await bridge.completeCopy?.(captured.token); },
+      write: async target => {
+        const paths = window['path'], fs = window['fs'];
+        const root = await fs.realpathAsync(target);
+        for (const file of captured.files) {
+          const relative = paths.relative(path, file.path);
+          const inside = (value: string) => !!value && !paths.isAbsolute(value) && value !== '..' && !/^\.\.[/\\]/.test(value);
+          if (!inside(relative)) throw new Error(`未保存文件不在当前项目内，请先处理该文件：${file.path}`);
+          const destination = paths.join(target, relative);
+          // cp preserves symlinks. Never follow one back into A while applying dirty buffers.
+          const physical = fs.existsSync(destination) ? await fs.realpathAsync(destination)
+            : paths.join(await fs.realpathAsync(paths.dirname(destination)), paths.basename(destination));
+          if (!inside(paths.relative(root, physical))) throw new Error(`另存为文件指向项目外部：${relative}`);
+          await assertCurrent();
+          fs.writeFileSync(destination, file.bytes);
+        }
+        await assertCurrent();
+      },
+    };
+  }
+
   /** Missing/unmounted editors are unknown, never implicitly clean. No save. */
-  async hasSavedProject(path: string): Promise<boolean> {
-    const key = this.key(path), bridge = this.persistenceBridges.get(key);
+  async hasSavedProject(path: string, cachedLibraries = false): Promise<boolean> {
+    const key = this.key(path), bridge = this.persistenceBridges.get(key)?.bridge;
     if (!bridge) return false;
-    const dirty = await bridge.hasUnsavedChanges();
-    return this.persistenceBridges.get(key) === bridge && dirty === false;
+    const dirty = (cachedLibraries ? this.projectService.hasCachedLibraryChanges(path)
+      : await this.projectService.hasUnsavedLibraryChanges(path)) || await bridge.hasUnsavedChanges();
+    return this.persistenceBridges.get(key)?.bridge === bridge && dirty === false;
   }
 
   private async hasUnsavedChanges(): Promise<boolean> {
-    const states = await Promise.all([...this.persistenceBridges.values()].map(bridge => bridge.hasUnsavedChanges()));
+    const states = await Promise.all([...this.persistenceBridges.values()].map(async ({ path, bridge }) =>
+      await this.projectService.hasUnsavedLibraryChanges(path) || await bridge.hasUnsavedChanges()));
     return states.some(Boolean);
   }
 

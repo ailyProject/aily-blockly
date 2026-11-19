@@ -59,6 +59,25 @@ describe('workspace edit lease', () => {
       expect(shortcut).toHaveBeenCalledTimes(1);
     } finally { release(); document.removeEventListener('keydown', shortcut, true); root.remove(); }
   });
+  it('allows library-operation navigation while preserving edit and nested save fences', () => {
+    const root = document.createElement('div');
+    const background = document.createElement('div'), block = document.createElement('div');
+    background.className = 'blocklyMainBackground'; block.className = 'blocklyDraggable';
+    root.append(background, block); document.body.append(root);
+    const event = (type: string) => new Event(type, { bubbles: true, cancelable: true });
+    const release = fenceBlocklyWorkspaceInput(root, { allowNavigation: true });
+    try {
+      expect(background.dispatchEvent(event('pointerdown'))).toBeTrue();
+      expect(background.dispatchEvent(event('wheel'))).toBeTrue();
+      expect(block.dispatchEvent(event('pointerdown'))).toBeFalse();
+      expect(background.dispatchEvent(event('drop'))).toBeFalse();
+      expect(root.dispatchEvent(event('keydown'))).toBeFalse();
+      const strict = fenceBlocklyWorkspaceInput(root);
+      expect(background.dispatchEvent(event('wheel'))).toBeFalse();
+      strict();
+      expect(background.dispatchEvent(event('wheel'))).toBeTrue();
+    } finally { release(); root.remove(); }
+  });
 });
 
 describe('persisted project revision', () => {

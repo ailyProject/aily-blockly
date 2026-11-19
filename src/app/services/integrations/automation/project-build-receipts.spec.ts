@@ -1,0 +1,111 @@
+import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
+import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest } from './project-build-receipts';
+
+describe('project build receipt store', () => {
+  const request = (requestId = 'build-1', waitMs = 0) => readProjectBuildRequest({ version: 1, requestId, waitMs });
+
+  it('starts an identical request exactly once and allows different observation budgets', fakeAsync(() => {
+    const store = new ProjectBuildReceipts(), run = jasmine.createSpy('run').and.resolveTo({ ok: true });
+    const first = jasmine.createSpy('first'), second = jasmine.createSpy('second');
+    store.start('/isolated', request(), 'options', run).then(first);
+    store.start('/isolated', request('build-1', 10_000), 'options', run).then(second);
+    flushMicrotasks();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledWith(jasmine.objectContaining({
+      buildReceipt: jasmine.objectContaining({ state: 'completed' }), result: { ok: true },
+    }));
+  }));
+
+  it('rejects a reused ID with changed options or a different project without invoking code', () => {
+    const store = new ProjectBuildReceipts(), run = jasmine.createSpy('run').and.returnValue(new Promise(() => {}));
+    void store.start('/isolated', request(), 'original', run);
+    expect(() => store.start('/isolated', request(), 'changed', run)).toThrowError(/different compile options/);
+    expect(() => store.start('/another-project', request(), 'original', run)).toThrowError(/another project/);
+    expect(() => store.status('/another-project', request())).toThrowError(/another project/);
+  });
+
+  it('does not mistake a new renderer or missing receipt for failed or successful compilation', async () => {
+    const answer = await new ProjectBuildReceipts().status('/isolated', request());
+    expect(answer.buildReceipt.state).toBe('unknown');
+    expect(answer.result).toBeUndefined();
+  });
+
+  it('uses an exact persisted receipt after renderer replacement without dispatching the original twice', async () => {
+    const read = jasmine.createSpy('read').and.returnValue({ state: 'completed', result: { ok: true } });
+    const store = new ProjectBuildReceipts(0, 0, read);
+    const mutate = jasmine.createSpy('mutate');
+    const first = await store.status('/isolated', request());
+    expect(first.buildReceipt.state).toBe('completed');
+    expect(first.result).toEqual({ ok: true });
+    const second = await store.start('/isolated', request(), 'original', mutate);
+    expect(second.result).toEqual(first.result);
+    expect(read.calls.allArgs()).toEqual([['/isolated', 'build-1'], ['/isolated', 'build-1']]);
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('reobserves historical source evidence without restoring superseded firmware authority', async () => {
+    const original = window['builder'];
+    const buildSnapshot = { version: 1, buildRequestId: 'build-1', inputDigest: '1'.repeat(64), sourceSha256: '2'.repeat(64),
+      savedAbiHash: `sha256:${'3'.repeat(64)}`, documentSha256: '4'.repeat(64), workspaceRevision: 2, savedMatch: 'different' };
+    window['builder'] = { inspectBuildExecution: () => ({ version: 1, buildRequestId: 'build-1', status: 'completed', current: false,
+      buildSnapshot, buildInput: { abiHash: buildSnapshot.savedAbiHash } }) };
+    try {
+      const store = new ProjectBuildReceipts(undefined, undefined, readNativeBuildReceipt);
+      const historical = await store.status('/isolated', request());
+      expect(historical.result?.['buildSnapshot']).toBe(buildSnapshot);
+      expect(historical.result?.['buildInput']).toBeUndefined();
+      expect((await store.status('/isolated', request('different-id'))).buildReceipt.state).toBe('unknown');
+    } finally { window['builder'] = original; }
+  });
+
+  it('reobserves the exact completed log without executing or recreating it', async () => {
+    const store = new ProjectBuildReceipts();
+    const buildLog = { version: 1, requestId: 'with-log', project: '/isolated', path: '/isolated/.log/compile/requests/owned.log', complete: true };
+    const run = jasmine.createSpy('run').and.resolveTo({ ok: true, buildLog });
+    const first = await store.start('/isolated', request('with-log', 10_000), 'options', run);
+    const status = await store.status('/isolated', request('with-log'));
+    const replay = await store.start('/isolated', request('with-log'), 'options', run);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(first.result?.['buildLog']).toBe(buildLog);
+    expect(status.result?.['buildLog']).toBe(buildLog);
+    expect(replay.result?.['buildLog']).toBe(buildLog);
+    expect((await new ProjectBuildReceipts().status('/isolated', request('with-log'))).result).toBeUndefined();
+  });
+
+  it('retains running ownership beyond retention while only evicting completed entries', fakeAsync(() => {
+    const store = new ProjectBuildReceipts(50, 1);
+    let finish!: (result: Record<string, any>) => void;
+    const live = new Promise<Record<string, any>>(resolve => { finish = resolve; });
+    void store.start('/isolated', request('live'), 'options', () => live);
+    void store.start('/isolated', request('old'), 'options', async () => ({ ok: true }));
+    flushMicrotasks(); tick(1);
+    void store.start('/isolated', request('new'), 'options', async () => ({ ok: true }));
+    flushMicrotasks();
+    const old = jasmine.createSpy('old'), active = jasmine.createSpy('active'), expired = jasmine.createSpy('expired');
+    store.status('/isolated', request('old')).then(old); flushMicrotasks();
+    expect(old).toHaveBeenCalledWith(jasmine.objectContaining({ buildReceipt: jasmine.objectContaining({ state: 'unknown' }) }));
+    tick(100);
+    store.status('/isolated', request('live')).then(active);
+    store.status('/isolated', request('new')).then(expired); flushMicrotasks();
+    expect(active).toHaveBeenCalledWith(jasmine.objectContaining({ buildReceipt: jasmine.objectContaining({ state: 'running' }) }));
+    expect(expired).toHaveBeenCalledWith(jasmine.objectContaining({ buildReceipt: jasmine.objectContaining({ state: 'unknown' }) }));
+    finish({ ok: true }); flushMicrotasks();
+  }));
+
+  it('captures an unexpected execution rejection as that request terminal failure', async () => {
+    const store = new ProjectBuildReceipts();
+    const answer = await store.start('/isolated', request('failure', 10_000), 'options', async () => {
+      throw Object.assign(new Error('source changed'), { code: 'BUILD_SOURCE_STALE' });
+    });
+    expect(answer.buildReceipt.state).toBe('completed');
+    expect(answer.result).toEqual(jasmine.objectContaining({ ok: false, code: 'BUILD_SOURCE_STALE', message: 'source changed' }));
+  });
+
+  for (const value of [null, {}, { version: 2, requestId: 'id' }, { version: 1, requestId: '../id' },
+    { version: 1, requestId: 'id', waitMs: -1 }, { version: 1, requestId: 'id', waitMs: 10_001 },
+    { version: 1, requestId: 'id', waitMs: 0.5 }]) {
+    it(`rejects malformed observation ${JSON.stringify(value)}`, () => {
+      expect(() => readProjectBuildRequest(value)).toThrowError(/Invalid build receipt/);
+    });
+  }
+});

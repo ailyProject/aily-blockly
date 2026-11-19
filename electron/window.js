@@ -1,11 +1,15 @@
 // 管理主窗口和子窗口的创建、状态同步及窗口控制操作。
-const { ipcMain, BrowserWindow, MessageChannelMain, app, screen, webContents } = require("electron");
+const { ipcMain, BrowserWindow, MessageChannelMain, app, screen, webContents, safeStorage } = require("electron");
+const { createWindowStateController } = require('./window-state');
 const { createConfiguredBrowserExecutionHost } = require('./subapp-browser-resource-config');
+
 const browserExecutionHost = createConfiguredBrowserExecutionHost({ BrowserWindow, MessageChannelMain,
     allowLoopbackHttp: !app.isPackaged && process.argv.includes('--serve'),
     viewLoadTimeoutMs: 30000,
 });
+
 const { requestWindowAttention } = require('./window-attention');
+
 const {
     getActiveCmdProcesses,
     getCmdProcessMessagePortInfo,
@@ -14,16 +18,19 @@ const {
     onCmdProcessExit,
     sendCmdProcessMessage,
 } = require('./cmd');
+
 const { killRegisteredProcessTree } = require('./process-tree');
+
 const {
     buildSubWindowRouteUrl,
 } = require('./sub-window-route');
+
 const {
     acquireOwner: acquireChildToolOwner,
     authorizeMessagePortSend: authorizeChildToolMessagePortSend,
-    authorizeExclusiveRestart: authorizeChildToolExclusiveRestart,
     bindMessageController: bindChildToolMessageController,
     clearMessageControllerBinding: clearChildToolMessageControllerBinding,
+    authorizeRestart: authorizeChildToolRestart,
     classifyRegistration: classifyChildToolSessionRegistration,
     electMessageControllerOwner: electChildToolMessageControllerOwner,
     ownerCount: childToolOwnerCount,
@@ -33,11 +40,16 @@ const {
     setMessageControllerOwner: setChildToolMessageControllerOwner,
     unbindMessageController: unbindChildToolMessageController,
 } = require('./child-tool-session-leases');
+
 const { normalizeProcessMessage } = require('./child-process-message-port');
+
 const {
     stopChildToolSessionProcess: stopChildToolSessionProcessWithDependencies,
 } = require('./child-tool-session-process');
+
 const { AilyHostAuthRelay } = require('./aily-host-auth-relay');
+const { handleSubappSafeStorageMessage } = require('./subapp-safe-storage-bridge');
+
 const {
     BUILTIN_SUB_WINDOW_MINIMUM_SIZE,
     CHILD_WINDOW_LAYOUTS,
@@ -47,43 +59,46 @@ const {
     resolveChildWindowClass,
     resolveChildWindowMinimumSize,
 } = require('./child-window-layout');
+
 const {
     attachMacWindowCloseBridge,
     authorizeRendererWindowClose,
     shouldUseNativeMacFrame,
 } = require('./mac-window-controls');
+
 const { exec, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-
 const CODE_VIEWER_STATE_CHANNEL = 'blockly-code-viewer-state';
 const CODE_VIEWER_STATE_UPDATE_CHANNEL = 'blockly-code-viewer-state-update';
 const CODE_VIEWER_STATE_GET_CHANNEL = 'blockly-code-viewer-state-get';
-
 /** 后台预缓冲子窗口数量�? 个待�?+ 1 个备�?*/
 const SUB_WINDOW_POOL_SIZE = 2;
-
 const CHILD_TOOL_RELEASE_GRACE_MS = 15000;
 const CHILD_TOOL_PENDING_MESSAGE_LIMIT = 16;
 const CHILD_TOOL_PENDING_STREAM_LIMIT = 16;
 const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
-
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
 let localSerialHost = null;
 let localNetworkHost = null;
 let localGattHost = null;
 const { SubappBrowserOwnerBridge } = require('./subapp-browser-owner-bridge');
+
 const browserOwnerBridge = new SubappBrowserOwnerBridge({ send: sendCmdProcessMessage,
     resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
         && !session.exit && getCmdProcessMessagePortInfo(streamId)) || null,
 });
+
 const { SubappNodeControlBroker } = require('./subapp-node-control-broker');
+
 const nodeControlBroker = new SubappNodeControlBroker({ MessageChannelMain, send: sendCmdProcessMessage,
     resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
         && !session.exit && getCmdProcessMessagePortInfo(streamId)) || null,
 });
+
 const { SubappBrowserProcessBroker } = require('./subapp-browser-process-broker');
+
 const browserProcessBroker = new SubappBrowserProcessBroker({ host: browserExecutionHost,
     send: sendCmdProcessMessage,
     resolveStream: streamId => {
@@ -92,16 +107,21 @@ const browserProcessBroker = new SubappBrowserProcessBroker({ host: browserExecu
                 return { toolId, messagePort: session.messagePort };
             }
         }
+
         return null;
     },
 });
+
 const { SubappOwnerSupervisor, registerSubappOwnerSupervisor } = require('./subapp-owner-supervisor');
+
 const subappOwnerSupervisor = new SubappOwnerSupervisor({
     resolveRuntime: (toolId, ownerId) => {
         const runtime = childToolSessions.get(toolId);
+
         return runtime && childToolHasOwnerId(runtime, ownerId) ? runtime : null;
     },
 });
+
 const childToolOwnerCleanupRegistrations = new Set();
 const pendingChildToolProcessMessages = new Map();
 let ailyHostAuthRelay = null;
@@ -112,16 +132,19 @@ function readThemeFromConfigFile(configPath) {
     try {
         if (fs.existsSync(configPath)) {
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
             return config && config.theme;
         }
     } catch (e) {
         console.warn('[SubWindowPool] 读取主题配置失败:', e.message);
     }
+
     return null;
 }
 
 function getSubWindowBackgroundColor() {
     const appDataPath = process.env.AILY_APPDATA_PATH || app.getPath('userData');
+
     const theme =
         readThemeFromConfigFile(path.join(appDataPath, 'config.json')) ||
         readThemeFromConfigFile(path.join(__dirname, 'config', 'config.json'));
@@ -135,6 +158,7 @@ function applySubWindowMinimumSize(win, minimumSize = BUILTIN_SUB_WINDOW_MINIMUM
     if (!win || win.isDestroyed()) {
         return;
     }
+
     try {
         win.setMinimumSize(minimumSize.width, minimumSize.height);
     } catch (e) {
@@ -145,6 +169,7 @@ function applySubWindowMinimumSize(win, minimumSize = BUILTIN_SUB_WINDOW_MINIMUM
 function readSubWindowMinimumSize(win) {
     try {
         const [width, height] = win.getMinimumSize();
+
         return {
             width: Math.max(1, Math.round(Number(width) || 1)),
             height: Math.max(1, Math.round(Number(height) || 1)),
@@ -157,17 +182,23 @@ function readSubWindowMinimumSize(win) {
 /** Set only after the user accepts quit; a cancelled request must leave subapps alive. */
 let applicationIsQuitting = false;
 let rendererShutdownNotified = false;
+
 function beginWindowShutdown({ notifyRenderers = true } = {}) {
     applicationIsQuitting = true;
+
     if (notifyRenderers) notifyWindowShutdown();
 }
 
 /** Owner finalizers still need the original Renderer providers to ACK their
  * final clear. Notify those providers only after the owner drain has settled. */
+
 function notifyWindowShutdown() {
     applicationIsQuitting = true;
+
     if (rendererShutdownNotified) return;
+
     rendererShutdownNotified = true;
+
     // Notify every renderer in this host before main.js terminates its child processes.
     for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
@@ -177,11 +208,25 @@ function notifyWindowShutdown() {
     }
 }
 
-async function shutdownSubappOwners() {
+async function shutdownSubappOwners(options) {
     const results = await Promise.allSettled([localSerialHost?.dispose(), localNetworkHost?.dispose(), localGattHost?.dispose()]);
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
-    if (errors.length) throw new AggregateError(errors, 'Local Host resource cleanup remains unconfirmed');
-    return subappOwnerSupervisor.shutdown();
+    const owners = await subappOwnerSupervisor.shutdown(options);
+
+    return { ...owners, complete: owners.complete && errors.length === 0,
+      errors: [...owners.errors, ...errors.map(error => String(error?.message || error))] };
+}
+
+// 设置窗口只在仍停留于本应用的完整来源和路由时，才能读取部署信息或检测云连接。
+function isAppSettingsWindowUrl(actual, expected) {
+    try {
+        const source = new URL(actual), application = new URL(expected);
+
+        return ['http:', 'https:'].includes(application.protocol)
+            && !application.username && !application.password && !source.username && !source.password && source.origin === application.origin
+            && source.pathname === application.pathname && source.search === application.search
+            && /^#\/settings(?:\?[^#]*)?$/u.test(source.hash);
+    } catch { return false; }
 }
 
 /**
@@ -204,8 +249,10 @@ function isPidAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) {
         return false;
     }
+
     try {
         process.kill(pid, 0);
+
         return true;
     } catch (_) {
         return false;
@@ -220,11 +267,13 @@ function cloneChildToolSession(session) {
             messagePort: session.messagePort ? { ...session.messagePort } : null,
             refCount: childToolOwnerCount(session),
         }
+
         : null;
 }
 
 function broadcastChildToolSessionStateChanged() {
     const payload = listChildToolSessions();
+
     for (const win of BrowserWindow.getAllWindows()) {
         try {
             if (!win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
@@ -240,28 +289,45 @@ function cancelChildToolRelease(session) {
     if (!session || !session.releaseTimer) {
         return;
     }
+
     clearTimeout(session.releaseTimer);
+
     session.releaseTimer = null;
 }
+
+const stopRegisteredChildToolSessions = require('./child-tool-session-shutdown').createChildToolSessionShutdown({
+    beginShutdown: () => beginWindowShutdown({ notifyRenderers: false }),
+    drainOwners: shutdownSubappOwners,
+    getSessions: () => childToolSessions.values(),
+    cancelRelease: cancelChildToolRelease,
+    stopSession: stopChildToolSessionProcess,
+});
 
 async function stopChildToolSessionProcess(session) {
     if (!session) return false;
     if (session.stopPromise) return session.stopPromise;
+
     session.stopping = true;
+
     const stopPromise = Promise.resolve().then(async () => {
         await localNetworkHost?.closeRuntime(session.streamId);
         await localGattHost?.closeRuntime(session.streamId);
         await localSerialHost?.revokeRuntime(session.streamId);
         await browserExecutionHost.closeRuntime(session.streamId);
+
         if (session.nativeStop) {
             try { await session.nativeStop(); }
             catch (error) {
                 console.warn('[ChildToolSession] Native cleanup remains unconfirmed', { streamId: session.streamId, code: error.code || 'SUBAPP_STOP_UNCONFIRMED' });
+
                 return false;
             }
+
             handleChildToolProcessExit({ streamId: session.streamId, code: 0, signal: null, expected: true });
+
             return true;
         }
+
         const stopped = await stopChildToolSessionProcessWithDependencies(session, {
             fetchImpl: typeof fetch === 'function' ? fetch : undefined,
             getActiveProcesses: getActiveCmdProcesses,
@@ -269,72 +335,47 @@ async function stopChildToolSessionProcess(session) {
             killProcessTree: killRegisteredProcessTree,
             killStream: killCmdProcess,
         });
+
         // Windows may confirm termination before Node delivers the close event.
         if (stopped) {
             handleChildToolProcessExit({ streamId: session.streamId, code: null, signal: null, expected: true });
         }
+
         return stopped;
     });
+
     session.stopPromise = stopPromise;
+
     try {
         const stopped = await stopPromise;
+
         if (!stopped && session.stopPromise === stopPromise) session.stopPromise = null;
+
         return stopped;
     } catch (error) {
         if (session.stopPromise === stopPromise) session.stopPromise = null;
+
         throw error;
     } finally {
         session.stopping = false;
     }
 }
 
-let childToolSessionsStopPromise = null;
-function stopAllChildToolSessions() {
-    if (childToolSessionsStopPromise) return childToolSessionsStopPromise;
-    const sessions = Array.from(childToolSessions.entries());
-    for (const [, session] of sessions) {
-        cancelChildToolRelease(session);
-        pendingChildToolProcessMessages.delete(session.streamId);
-    }
-    const browserDrain = browserExecutionHost.closeAll();
-    const processDrain = Promise.allSettled(sessions.map(async ([toolId, session]) => {
-        try {
-            const stopped = await stopChildToolSessionProcess(session);
-            if (!stopped) return false;
-            if (childToolSessions.get(toolId) === session) childToolSessions.delete(toolId);
-            return true;
-        } finally {
-            cancelChildToolRelease(session);
-            pendingChildToolProcessMessages.delete(session.streamId);
-        }
-    }));
-    const nodeControlDrain = nodeControlBroker.closeAll();
-    childToolSessionsStopPromise = Promise.allSettled([browserDrain, processDrain, nodeControlDrain]).then(([browserResult, processResult, nodeControlResult]) => {
-        const results = processResult.status === 'fulfilled' ? processResult.value : [];
-        const failures = [];
-        if (browserResult.status === 'rejected') failures.push(browserResult.reason);
-        if (nodeControlResult.status === 'rejected') failures.push(nodeControlResult.reason);
-        if (processResult.status === 'rejected') failures.push(processResult.reason);
-        for (let index = 0; index < results.length; index += 1) {
-            if (results[index].status === 'rejected' || results[index].value !== true) {
-                failures.push(results[index].status === 'rejected' ? results[index].reason : new Error('Registered Runtime termination is unconfirmed'));
-                const [toolId, session] = sessions[index];
-                console.warn('[ChildToolSession] Shutdown remains unconfirmed; command cleanup will retry', {
-                    toolId, streamId: session.streamId,
-                });
-            }
-        }
-        broadcastChildToolSessionStateChanged();
-        if (failures.length) throw new AggregateError(failures, 'Registered Runtime drain remains unconfirmed');
-        return results;
-    });
-    return childToolSessionsStopPromise;
+async function stopAllChildToolSessions() {
+    const result = await stopRegisteredChildToolSessions();
+
+    notifyWindowShutdown();
+
+    const transports = await Promise.allSettled([browserExecutionHost.closeAll(), nodeControlBroker.closeAll()]);
+
+    return { ...result, complete: result.complete && transports.every(item => item.status === 'fulfilled') };
 }
 
 function deliverChildToolProcessMessage(toolId, session, message) {
     if (!session?.messagePort || !(session.owners instanceof Map)) {
         return 0;
     }
+
     // Retain only the latest bounded negotiation record for controller handoff.
     // It is an opaque channel transcript, not product-specific interpretation.
     if (message?.type === 'aily-subapp-host-provider.negotiation.request') {
@@ -346,27 +387,36 @@ function deliverChildToolProcessMessage(toolId, session, message) {
             delete session.lastProviderNegotiationRequest;
         }
     }
+
     const currentControllerOwnerId = electChildToolMessageControllerOwner(session);
+
     const orderedOwnerIds = Array.from(new Set([
         currentControllerOwnerId,
         ...Array.from(session.owners.values(), owner => owner.ownerId),
     ])).filter(Boolean);
+
     for (const ownerId of orderedOwnerIds) {
         const ownerWebContents = webContents.fromId(ownerId);
+
         if (!ownerWebContents || ownerWebContents.isDestroyed()) {
             clearChildToolMessageControllerBinding(session, ownerId);
+
             continue;
         }
+
         try {
             setChildToolMessageControllerOwner(session, ownerId);
+
             ownerWebContents.send('child-tool-session-message', {
                 toolId,
                 streamId: session.streamId,
                 message,
             });
+
             return 1;
         } catch (error) {
             clearChildToolMessageControllerBinding(session, ownerId);
+
             console.warn('[ChildToolSession] process message delivery failed', {
                 toolId,
                 streamId: session.streamId,
@@ -375,24 +425,36 @@ function deliverChildToolProcessMessage(toolId, session, message) {
             });
         }
     }
+
     return 0;
 }
 
 function routeChildToolProcessMessage(event) {
     const streamId = String(event?.streamId || '').trim();
+
     if (!streamId || !getCmdProcessMessagePortInfo(streamId)) return;
+
     const sessionEntry = Array.from(childToolSessions.entries())
         .find(([, session]) => session.streamId === streamId);
+
     if (sessionEntry) {
         if (browserOwnerBridge.handle(streamId, event.message)) return;
         if (nodeControlBroker.handle(streamId, event.message)) return;
         if (browserProcessBroker.handle(streamId, event.message)) return;
+
+        if (handleSubappSafeStorageMessage(sessionEntry[0], streamId, event.message, safeStorage, sendCmdProcessMessage)) {
+            return;
+        }
+
         if (ailyHostAuthRelay?.handle(sessionEntry[0], sessionEntry[1].streamId, event.message)) {
             return;
         }
+
         deliverChildToolProcessMessage(sessionEntry[0], sessionEntry[1], event.message);
+
         return;
     }
+
     bufferPendingChildToolProcessMessage(streamId, event);
 }
 
@@ -401,14 +463,19 @@ function bufferPendingChildToolProcessMessage(streamId, event) {
         while (pendingChildToolProcessMessages.size >= CHILD_TOOL_PENDING_STREAM_LIMIT) {
             pendingChildToolProcessMessages.delete(pendingChildToolProcessMessages.keys().next().value);
         }
+
         pendingChildToolProcessMessages.set(streamId, []);
     }
+
     const pending = pendingChildToolProcessMessages.get(streamId);
+
     pending.push({
         message: event.message,
         sizeBytes: Number(event.sizeBytes) || 0,
     });
+
     while (pending.length > CHILD_TOOL_PENDING_MESSAGE_LIMIT) pending.shift();
+
     trimPendingChildToolProcessMessages();
 }
 
@@ -416,7 +483,9 @@ function trimPendingChildToolProcessMessages() {
     while (pendingChildToolMessageBytes() > CHILD_TOOL_PENDING_TOTAL_BYTES) {
         const oldestStreamId = pendingChildToolProcessMessages.keys().next().value;
         const oldest = pendingChildToolProcessMessages.get(oldestStreamId);
+
         oldest?.shift();
+
         if (!oldest?.length) pendingChildToolProcessMessages.delete(oldestStreamId);
     }
 }
@@ -429,8 +498,13 @@ function pendingChildToolMessageBytes() {
 
 function flushPendingChildToolProcessMessages(toolId, session) {
     const pending = pendingChildToolProcessMessages.get(session.streamId) || [];
+
     pendingChildToolProcessMessages.delete(session.streamId);
+
     for (const entry of pending) {
+        if (handleSubappSafeStorageMessage(toolId, session.streamId, entry.message, safeStorage, sendCmdProcessMessage)) continue;
+        if (ailyHostAuthRelay?.handle(toolId, session.streamId, entry.message)) continue;
+
         deliverChildToolProcessMessage(toolId, session, entry.message);
     }
 }
@@ -442,26 +516,34 @@ function handleChildToolProcessExit(event) {
     void localGattHost?.closeRuntime(event.streamId).catch(error => {
         console.warn('[LocalGatt] Runtime exit cleanup requires retry', error.message);
     });
+
     void localNetworkHost?.closeRuntime(event.streamId).catch(error => {
         console.warn('[LocalNetwork] Runtime exit cleanup requires retry', error.message);
     });
+
     void localSerialHost?.revokeRuntime(event.streamId).catch(error => {
         console.warn('[LocalSerial] Runtime exit cleanup requires retry', error.message);
     });
+
     nodeControlBroker.runtimeExited(event.streamId);
+
     void browserExecutionHost.closeRuntime(event.streamId).catch(error => {
         console.warn('[BrowserExecution] Runtime exit teardown remains unconfirmed', error.message);
     });
+
     pendingChildToolProcessMessages.delete(event.streamId);
     ailyHostAuthRelay?.releaseProcess(event.streamId);
+
     for (const [toolId, session] of childToolSessions) {
         if (session.streamId !== event.streamId || session.exit) continue;
+
         session.exit = {
             code: event.code,
             signal: event.signal,
             expected: event.expected || session.stopping === true || applicationIsQuitting,
             ...(event.terminal ? { terminal: { ...event.terminal } } : {}),
         };
+
         clearChildToolMessageControllerBinding(session);
         delete session.lastProviderNegotiationRequest;
         cancelChildToolRelease(session);
@@ -480,6 +562,7 @@ function scheduleChildToolRelease(toolId, session) {
             toolId,
             streamId: session.streamId,
         });
+
         return;
     }
 
@@ -488,22 +571,28 @@ function scheduleChildToolRelease(toolId, session) {
         streamId: session.streamId,
         graceMs: CHILD_TOOL_RELEASE_GRACE_MS,
     });
+
     session.releaseTimer = setTimeout(() => {
         session.releaseTimer = null;
+
         if (childToolOwnerCount(session) > 0) {
             console.info('[ChildToolSession] Runtime release cancelled by active lease', {
                 toolId,
                 streamId: session.streamId,
                 refCount: childToolOwnerCount(session),
             });
+
             return;
         }
+
         console.info('[ChildToolSession] Runtime stopping after final lease release', {
             toolId,
             streamId: session.streamId,
         });
+
         void stopChildToolSessionProcess(session).then(stopped => {
             if (!stopped || childToolSessions.get(toolId) !== session) return;
+
             pendingChildToolProcessMessages.delete(session.streamId);
             childToolSessions.delete(toolId);
             broadcastChildToolSessionStateChanged();
@@ -517,12 +606,16 @@ function releaseChildToolSession(toolIdOrPayload, ownerId) {
     const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
         ? toolIdOrPayload
         : { toolId: toolIdOrPayload };
+
     const normalizedToolId = sanitizeChildToolId(payload.toolId);
     const session = childToolSessions.get(normalizedToolId);
+
     if (!session) {
         return { success: false, reason: 'not-found' };
     }
+
     const expectedStreamId = String(payload.streamId || '').trim();
+
     if (expectedStreamId && session.streamId !== expectedStreamId) {
         return {
             success: false,
@@ -532,6 +625,7 @@ function releaseChildToolSession(toolIdOrPayload, ownerId) {
     }
 
     const releaseResult = releaseChildToolOwner(session, ownerId, payload.leaseId);
+
     if (!releaseResult.success) {
         return {
             success: false,
@@ -539,9 +633,11 @@ function releaseChildToolSession(toolIdOrPayload, ownerId) {
             session: cloneChildToolSession(session),
         };
     }
+
     if (childToolOwnerCount(session) === 0) {
         scheduleChildToolRelease(normalizedToolId, session);
     }
+
     console.info('[ChildToolSession] lease released', {
         toolId: normalizedToolId,
         streamId: session.streamId,
@@ -557,17 +653,23 @@ function releaseChildToolSessionsForOwner(ownerId, reason = 'destroyed') {
     void localGattHost?.closeSender(ownerId).catch(error => {
         console.warn('[LocalGatt] Renderer cleanup requires retry', error.message);
     });
+
     void localNetworkHost?.closeSender(ownerId).catch(error => {
         console.warn('[LocalNetwork] Renderer cleanup requires retry', error.message);
     });
+
     void localSerialHost?.revokeSender(ownerId).catch(error => {
         console.warn('[LocalSerial] Renderer cleanup requires retry', error.message);
     });
+
     let controllerReleased = false;
+
     for (const session of childToolSessions.values()) {
         controllerReleased = clearChildToolMessageControllerBinding(session, ownerId) || controllerReleased;
     }
+
     const released = releaseChildToolOwnerFromSessions(childToolSessions, ownerId);
+
     for (const { toolId, session } of released) {
         console.info('[ChildToolSession] renderer owner released', {
             toolId,
@@ -576,10 +678,12 @@ function releaseChildToolSessionsForOwner(ownerId, reason = 'destroyed') {
             reason,
             refCount: childToolOwnerCount(session),
         });
+
         if (childToolOwnerCount(session) === 0) {
             scheduleChildToolRelease(toolId, session);
         }
     }
+
     if (released.length > 0 || controllerReleased) {
         broadcastChildToolSessionStateChanged();
     }
@@ -587,50 +691,79 @@ function releaseChildToolSessionsForOwner(ownerId, reason = 'destroyed') {
 
 function trackChildToolSessionOwner(webContents) {
     const ownerId = Number(webContents?.id);
+
     if (!Number.isInteger(ownerId) || ownerId <= 0 || childToolOwnerCleanupRegistrations.has(ownerId)) {
         return ownerId;
     }
+
     childToolOwnerCleanupRegistrations.add(ownerId);
     webContents.on('render-process-gone', () => releaseChildToolSessionsForOwner(ownerId));
+
     webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
         if (isMainFrame && !isInPlace) releaseChildToolSessionsForOwner(ownerId);
     });
+
     webContents.once('destroyed', () => {
         childToolOwnerCleanupRegistrations.delete(ownerId);
         releaseChildToolSessionsForOwner(ownerId, 'destroyed');
     });
+
     return ownerId;
 }
 
 async function restartChildToolSession(toolIdOrPayload, ownerId) {
     const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
         ? toolIdOrPayload : { toolId: toolIdOrPayload };
+
     const normalizedToolId = sanitizeChildToolId(payload.toolId);
     const session = childToolSessions.get(normalizedToolId);
+
     if (!session) {
         return { success: false, reason: 'not-found' };
     }
-    const authorization = authorizeChildToolExclusiveRestart(session, ownerId, payload);
-    if (!authorization.success) return authorization;
 
-    cancelChildToolRelease(session);
-    const stopped = await stopChildToolSessionProcess(session);
-    if (!stopped) {
-        return { success: false, reason: 'process-still-running' };
+    const authorization = authorizeChildToolRestart(session, ownerId, payload);
+
+    if (!authorization.success) return authorization;
+    if (session.restartPromise) return session.restartPromise;
+
+    const task = (async () => {
+        cancelChildToolRelease(session);
+
+        const stopped = await stopChildToolSessionProcess(session);
+
+        if (!stopped) {
+            return { success: false, reason: 'process-still-running' };
+        }
+
+        pendingChildToolProcessMessages.delete(session.streamId);
+
+        if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
+
+        return { success: true };
+    })();
+
+    session.restartPromise = task;
+
+    try {
+        return await task;
+    } finally {
+        session.restartPromise = null;
     }
-    pendingChildToolProcessMessages.delete(session.streamId);
-    if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
-    return { success: true };
 }
 
 function resolveChildToolIdsForCatalogId(catalogId, includeDependencies = false) {
     const id = sanitizeChildToolId(catalogId);
+
     if (!id) return [];
+
     const dependants = includeDependencies ? [...childToolSessions.entries()]
         .filter(([, session]) => session.nativePackageDependencies?.includes(id)).map(([toolId]) => toolId) : [];
+
     try {
         const { TOOL_ID_ALIASES } = require('./subapp-manager');
         const aliased = TOOL_ID_ALIASES[id];
+
         return Array.from(new Set([id, aliased, ...dependants].filter(Boolean)));
     } catch (_) {
         return [id, ...dependants];
@@ -640,20 +773,26 @@ function resolveChildToolIdsForCatalogId(catalogId, includeDependencies = false)
 function getRunningSubappConfig(catalogId) {
     for (const toolId of resolveChildToolIdsForCatalogId(catalogId)) {
         const session = childToolSessions.get(toolId);
-        if (session?.hostInfo?.runtimeConfig) return session.hostInfo.runtimeConfig;
+
+        if (session?.hostInfo?.runtimeConfig && isChildToolSessionAlive(session)) return session.hostInfo.runtimeConfig;
     }
+
     return null;
 }
 
 function listChildToolHoldersForCatalogId(catalogId) {
     const toolIds = resolveChildToolIdsForCatalogId(catalogId, true);
     const holders = [];
+
     for (const toolId of toolIds) {
         const session = childToolSessions.get(toolId);
+
         if (!session) continue;
+
         const pid = Number.isInteger(session?.hostInfo?.pid)
             ? session.hostInfo.pid
             : null;
+
         holders.push({
             pid,
             name: toolId,
@@ -661,6 +800,7 @@ function listChildToolHoldersForCatalogId(catalogId) {
             source: 'child-tool-session',
         });
     }
+
     return holders;
 }
 
@@ -668,24 +808,35 @@ async function forceStopChildToolByCatalogId(catalogId) {
     const toolIds = resolveChildToolIdsForCatalogId(catalogId, true);
     let stopped = false;
     let failed = false;
+
     for (const toolId of toolIds) {
         const session = childToolSessions.get(toolId);
+
         if (!session) continue;
+
         cancelChildToolRelease(session);
+
         const processStopped = await stopChildToolSessionProcess(session);
+
         if (!processStopped) {
             failed = true;
+
             continue;
         }
+
         if (session.streamId) {
             pendingChildToolProcessMessages.delete(session.streamId);
         }
+
         if (childToolSessions.get(toolId) === session) childToolSessions.delete(toolId);
+
         stopped = true;
     }
+
     if (stopped) {
         broadcastChildToolSessionStateChanged();
     }
+
     return {
         success: stopped && !failed,
         reason: failed ? 'process-still-running' : stopped ? undefined : 'not-found'
@@ -696,9 +847,11 @@ function isChildToolSessionAlive(session) {
     if (!session || session.exit || session.stopping) {
         return false;
     }
+
     if (session.streamId && getActiveCmdProcesses().some(processInfo => processInfo.streamId === session.streamId)) {
         return true;
     }
+
     return isPidAlive(session?.hostInfo?.pid);
 }
 
@@ -706,9 +859,11 @@ function listChildToolSessions() {
     const activeProcesses = new Map(
         getActiveCmdProcesses().map((processInfo) => [processInfo.streamId, processInfo])
     );
+
     return Array.from(childToolSessions.entries()).map(([toolId, session]) => {
         const processInfo = session?.streamId ? activeProcesses.get(session.streamId) : null;
         const running = !session.exit && (!!processInfo || isPidAlive(session?.hostInfo?.pid));
+
         return {
             toolId,
             streamId: session?.streamId || '',
@@ -734,15 +889,20 @@ function scheduleReplenishSubWindowPool(loadBasePage) {
     if (applicationIsQuitting) {
         return;
     }
+
     if (subWindowReplenishScheduled) {
         return;
     }
+
     subWindowReplenishScheduled = true;
+
     setImmediate(() => {
         subWindowReplenishScheduled = false;
+
         if (applicationIsQuitting) {
             return;
         }
+
         replenishSubWindowPool(loadBasePage);
     });
 }
@@ -755,6 +915,7 @@ function pushPooledSubWindow(loadBasePage) {
     if (applicationIsQuitting) {
         return;
     }
+
     try {
         const win = new BrowserWindow({
             frame: shouldUseNativeMacFrame(),
@@ -776,15 +937,20 @@ function pushPooledSubWindow(loadBasePage) {
 
         const onClosedWhilePooled = () => {
             const idx = subWindowPool.indexOf(win);
+
             if (idx !== -1) {
                 subWindowPool.splice(idx, 1);
             }
+
             delete win.__subWindowPoolClosedHandler;
+
             if (!applicationIsQuitting) {
                 scheduleReplenishSubWindowPool(loadBasePage);
             }
         };
+
         win.__subWindowPoolClosedHandler = onClosedWhilePooled;
+
         win.once('closed', onClosedWhilePooled);
         subWindowPool.push(win);
         loadBasePage(win.webContents);
@@ -797,9 +963,12 @@ function replenishSubWindowPool(loadBasePage) {
     if (applicationIsQuitting) {
         return;
     }
+
     while (subWindowPool.length < SUB_WINDOW_POOL_SIZE) {
         const prevLen = subWindowPool.length;
+
         pushPooledSubWindow(loadBasePage);
+
         if (subWindowPool.length === prevLen) {
             break;
         }
@@ -811,12 +980,15 @@ function replenishSubWindowPool(loadBasePage) {
  * @param {import('electron').BrowserWindow} win
  * @param {(wc: import('electron').WebContents) => void} loadBasePage
  */
+
 function removePoolHandlersFromWin(win, loadBasePage) {
     const h = win.__subWindowPoolClosedHandler;
+
     if (typeof h === 'function') {
         win.removeListener('closed', h);
         delete win.__subWindowPoolClosedHandler;
     }
+
     scheduleReplenishSubWindowPool(loadBasePage);
 }
 
@@ -838,14 +1010,17 @@ function centerSubWindowOnMainDisplay(
         if (!subWindow || subWindow.isDestroyed()) {
             return;
         }
+
         const wa =
             mainWin && !mainWin.isDestroyed()
                 ? screen.getDisplayMatching(mainWin.getBounds()).workArea
                 : screen.getPrimaryDisplay().workArea;
+
         const w = Math.min(Math.max(minimumSize.width, width), wa.width);
         const h = Math.min(Math.max(minimumSize.height, height), wa.height);
         const x = Math.round(wa.x + Math.max(0, (wa.width - w) / 2));
         const y = Math.round(wa.y + Math.max(0, (wa.height - h) / 2));
+
         subWindow.setBounds({ x, y, width: w, height: h });
     } catch (e) {
         console.warn('[SubWindowPool] 子窗口居中定位失�?', e.message);
@@ -865,41 +1040,52 @@ function placeSubWindowBeforeReveal(
 ) {
     try {
         if (!subWindow || subWindow.isDestroyed()) return;
+
         const displays = screen.getAllDisplays();
+
         const mainDisplay = mainWin && !mainWin.isDestroyed()
             ? screen.getDisplayMatching(mainWin.getBounds())
             : screen.getPrimaryDisplay();
+
         const requestedDisplayId = options && options.displayId;
+
         const targetDisplay = requestedDisplayId === undefined || requestedDisplayId === null
             ? mainDisplay
             : displays.find(display => String(display.id) === String(requestedDisplayId)) || mainDisplay;
+
         const workArea = targetDisplay.workArea;
         const requestedWidth = Number.isFinite(Number(width)) ? Math.round(Number(width)) : 800;
         const requestedHeight = Number.isFinite(Number(height)) ? Math.round(Number(height)) : 600;
         const nextWidth = clampNumber(requestedWidth, minimumSize.width, workArea.width);
         const nextHeight = clampNumber(requestedHeight, minimumSize.height, workArea.height);
+
         const relativeToDisplay = requestedDisplayId !== undefined
             && requestedDisplayId !== null
             && options.relativeToDisplay !== false;
+
         const hasX = Number.isFinite(Number(options && options.x));
         const hasY = Number.isFinite(Number(options && options.y));
         const requestedX = hasX ? Math.round(Number(options.x)) : Math.round((workArea.width - nextWidth) / 2);
         const requestedY = hasY ? Math.round(Number(options.y)) : Math.round((workArea.height - nextHeight) / 2);
+
         const candidate = {
             x: relativeToDisplay || !hasX ? workArea.x + requestedX : requestedX,
             y: relativeToDisplay || !hasY ? workArea.y + requestedY : requestedY,
             width: nextWidth,
             height: nextHeight,
         };
+
         const bounds = options && options.clampToWorkArea === false
             ? candidate
             : clampBoundsToWorkArea(candidate, workArea, {
                 width: minimumSize.width,
                 height: minimumSize.height,
             });
+
         if (subWindow.isFullScreen()) subWindow.setFullScreen(false);
         if (subWindow.isMinimized()) subWindow.restore();
         if (subWindow.isMaximized()) subWindow.unmaximize();
+
         subWindow.setBounds(bounds);
     } catch (e) {
         console.warn('[SubWindowPool] 子窗口初始定位失败:', e.message);
@@ -913,16 +1099,21 @@ function clampNumber(value, min, max) {
 
 function waitForWindowEvent(senderWindow, event, action) {
     let settle;
+
     const happened = new Promise(resolve => {
         settle = resolve;
     });
+
     senderWindow.once(event, settle);
+
     try {
         action();
     } catch (error) {
         senderWindow.removeListener(event, settle);
+
         throw error;
     }
+
     return Promise.race([
         happened,
         new Promise(resolve => setTimeout(resolve, 1000)),
@@ -936,6 +1127,7 @@ async function setCurrentWindowSize(senderWindow, requestedWidth, requestedHeigh
 
     const width = Math.round(Number(requestedWidth));
     const height = Math.round(Number(requestedHeight));
+
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
         return { success: false, error: 'invalid-size' };
     }
@@ -952,6 +1144,7 @@ async function setCurrentWindowSize(senderWindow, requestedWidth, requestedHeigh
     if (senderWindow.isFullScreen()) {
         await waitForWindowEvent(senderWindow, 'leave-full-screen', () => senderWindow.setFullScreen(false));
     }
+
     if (senderWindow.isMaximized()) {
         await waitForWindowEvent(senderWindow, 'unmaximize', () => senderWindow.unmaximize());
     }
@@ -976,14 +1169,19 @@ async function setCurrentWindowSize(senderWindow, requestedWidth, requestedHeigh
             height: nextHeight,
         });
     };
+
     apply();
+
     if (process.platform === 'win32') {
         await new Promise(resolve => setTimeout(resolve, 50));
+
         if (!senderWindow.isDestroyed()) apply();
     }
+
     if (senderWindow.isDestroyed()) return { success: false, error: 'window-not-found' };
 
     const [contentWidth, contentHeight] = senderWindow.getContentSize();
+
     return {
         success: true,
         requested: { width, height },
@@ -997,32 +1195,46 @@ function terminateAilyProcess() {
 }
 
 function registerWindowHandlers(mainWindow, options = {}) {
+    const stateController = options.windowStateController || createWindowStateController({ screen });
+
     registerSubappOwnerSupervisor(ipcMain, subappOwnerSupervisor);
+
     const authRelay = new AilyHostAuthRelay({
         sendToRenderer: payload => mainWindow.webContents.send('child-tool-host-auth-request', payload),
         sendToProcess: sendCmdProcessMessage,
     });
+
     ailyHostAuthRelay = authRelay;
+
     const resolveRendererUrl = typeof options.resolveRendererUrl === 'function'
         ? options.resolveRendererUrl
         : null;
+
     const onAuthResponse = (event, payload = {}) => {
         if (event.sender !== mainWindow.webContents) return;
+
         const relayId = typeof payload.relayId === 'string' ? payload.relayId.trim() : '';
+
         if (!relayId) return;
+
         authRelay.complete(relayId, payload.result);
     };
+
     const onAuthReady = (event, payload = {}) => {
         if (event.sender === mainWindow.webContents
             && payload.generation > 0
             && payload.generation === options.getRendererGeneration?.()) authRelay.rendererReady();
     };
+
     ipcMain.on('child-tool-host-auth-response', onAuthResponse);
     ipcMain.on('renderer-ready', onAuthReady);
+
     mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
         if (isMainFrame && !isInPlace) authRelay.rendererUnavailable();
     });
+
     mainWindow.webContents.on('render-process-gone', () => authRelay.rendererUnavailable());
+
     mainWindow.once('closed', () => {
         ipcMain.removeListener('child-tool-host-auth-response', onAuthResponse);
         ipcMain.removeListener('renderer-ready', onAuthReady);
@@ -1036,6 +1248,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     let settingsWarmWindowReady = false;
     let pendingSettingsOpenData = null;
     let settingsWarmCreateTimer = null;
+
     let codeViewerState = {
         code: '',
         selectedBlockId: null,
@@ -1063,12 +1276,16 @@ function registerWindowHandlers(mainWindow, options = {}) {
         if (typeof windowUrl !== 'string') {
             return '';
         }
+
         const trimmedUrl = windowUrl.trim();
+
         if (!trimmedUrl) {
             return '';
         }
+
         const hashRouteIndex = trimmedUrl.indexOf('#/');
         const routeUrl = hashRouteIndex >= 0 ? trimmedUrl.slice(hashRouteIndex + 2) : trimmedUrl;
+
         return `/${routeUrl.replace(/^\/+/, '')}`;
     };
 
@@ -1091,10 +1308,13 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     const applySubWindowClass = (targetWindow, windowUrl, requestedWindowClass = '') => {
         const windowClass = resolveChildWindowClass(windowUrl, requestedWindowClass);
+
         if (!targetWindow || targetWindow.isDestroyed()) {
             return windowClass;
         }
+
         targetWindow.__ailyWindowClass = windowClass;
+
         return windowClass;
     };
 
@@ -1119,41 +1339,54 @@ function registerWindowHandlers(mainWindow, options = {}) {
         if (!targetWindow || targetWindow.isDestroyed()) {
             return false;
         }
+
         if (targetWindow.isMinimized()) {
             targetWindow.restore();
         }
+
         if (!targetWindow.isVisible()) {
             targetWindow.setOpacity(1);
             targetWindow.show();
         }
+
         if (typeof targetWindow.moveTop === 'function') {
             targetWindow.moveTop();
         }
+
         targetWindow.focus();
+
         return true;
     };
 
     const focusSubWindowByUrl = (windowUrl) => {
         const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
+
         if (!normalizedWindowUrl) {
             return false;
         }
+
         const existingWindow = openWindows.get(normalizedWindowUrl);
+
         if (existingWindow && !existingWindow.isDestroyed()) {
             notifySubWindowState(normalizedWindowUrl, true);
+
             return focusSubWindow(existingWindow);
         }
+
         openWindows.delete(normalizedWindowUrl);
+
         return false;
     };
 
     const readSubWindowState = (windowUrl) => {
         const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
         const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+
         if (!targetWindow || targetWindow.isDestroyed()) {
             if (normalizedWindowUrl) {
                 openWindows.delete(normalizedWindowUrl);
             }
+
             return {
                 path: normalizedWindowUrl,
                 open: false,
@@ -1173,6 +1406,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
         const display = screen.getDisplayMatching(targetWindow.getBounds());
         const primaryDisplay = screen.getPrimaryDisplay();
         const parentWindow = targetWindow.getParentWindow();
+
         return {
             path: normalizedWindowUrl,
             open: true,
@@ -1201,6 +1435,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     const listDisplaySnapshots = () => {
         const primaryDisplay = screen.getPrimaryDisplay();
+
         return screen.getAllDisplays()
             .map((display) => ({
                 id: display.id,
@@ -1218,13 +1453,17 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     const listSubWindowEnvironment = () => {
         const windows = [];
+
         for (const [windowUrl, targetWindow] of openWindows.entries()) {
             if (!targetWindow || targetWindow.isDestroyed()) {
                 openWindows.delete(windowUrl);
+
                 continue;
             }
+
             windows.push(readSubWindowState(windowUrl));
         }
+
         return {
             success: true,
             mainWindow: mainWindow && !mainWindow.isDestroyed()
@@ -1256,6 +1495,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     const setSubWindowBoundsByUrl = async (windowUrl, options = {}) => {
         const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
         const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+
         if (!targetWindow || targetWindow.isDestroyed()) {
             return { success: false, error: 'window-not-found', path: normalizedWindowUrl };
         }
@@ -1264,9 +1504,11 @@ function registerWindowHandlers(mainWindow, options = {}) {
         const requestedDisplayId = options.displayId;
         const currentBounds = targetWindow.getBounds();
         const currentDisplay = screen.getDisplayMatching(currentBounds);
+
         const targetDisplay = requestedDisplayId === undefined || requestedDisplayId === null
             ? currentDisplay
             : displays.find(display => String(display.id) === String(requestedDisplayId));
+
         if (!targetDisplay) {
             return {
                 success: false,
@@ -1277,13 +1519,16 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         const requestedBounds = options.bounds && typeof options.bounds === 'object' ? options.bounds : options;
         const numberOr = (value, fallback) => Number.isFinite(Number(value)) ? Math.round(Number(value)) : fallback;
+
         const relativeToDisplay = requestedDisplayId !== undefined
             && requestedDisplayId !== null
             && options.relativeToDisplay !== false;
+
         const currentRelativeX = currentBounds.x - currentDisplay.workArea.x;
         const currentRelativeY = currentBounds.y - currentDisplay.workArea.y;
         const rawX = numberOr(requestedBounds.x, targetDisplay.workArea.x + currentRelativeX);
         const rawY = numberOr(requestedBounds.y, targetDisplay.workArea.y + currentRelativeY);
+
         const candidate = {
             x: relativeToDisplay && Number.isFinite(Number(requestedBounds.x))
                 ? targetDisplay.workArea.x + rawX
@@ -1294,16 +1539,21 @@ function registerWindowHandlers(mainWindow, options = {}) {
             width: numberOr(requestedBounds.width, currentBounds.width),
             height: numberOr(requestedBounds.height, currentBounds.height),
         };
+
         const minimum = readSubWindowMinimumSize(targetWindow);
         const sizeClamped = clampBoundsToWorkArea(candidate, targetDisplay.workArea, minimum);
+
         const nextBounds = options.clampToWorkArea === false
             ? { ...sizeClamped, x: candidate.x, y: candidate.y }
             : sizeClamped;
 
         prepareWindowForBoundsChange(targetWindow);
         targetWindow.setBounds(nextBounds);
+
         if (options.focus === true) focusSubWindow(targetWindow);
+
         await new Promise(resolve => setTimeout(resolve, 120));
+
         return {
             success: true,
             requested: {
@@ -1319,21 +1569,27 @@ function registerWindowHandlers(mainWindow, options = {}) {
     const resolveArrangementDisplays = (options = {}) => {
         const allDisplays = screen.getAllDisplays();
         const requestedIds = Array.isArray(options.displayIds) ? [...new Set(options.displayIds.map(String))] : [];
+
         if (requestedIds.length > 0) {
             const selected = requestedIds
                 .map(id => allDisplays.find(display => String(display.id) === id))
                 .filter(Boolean);
+
             if (selected.length !== requestedIds.length) {
                 const foundIds = new Set(selected.map(display => String(display.id)));
+
                 return {
                     error: `display-not-found:${requestedIds.filter(id => !foundIds.has(id)).join(',')}`,
                     displays: [],
                 };
             }
+
             return { displays: selected };
         }
+
         if (options.displayMode === 'all') {
             const current = screen.getDisplayMatching(mainWindow.getBounds());
+
             return {
                 displays: [
                     current,
@@ -1342,29 +1598,38 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 ],
             };
         }
+
         if (options.displayMode === 'primary') {
             return { displays: [screen.getPrimaryDisplay()] };
         }
+
         return { displays: [screen.getDisplayMatching(mainWindow.getBounds())] };
     };
 
     const arrangeSubWindows = async (options = {}) => {
         const layout = CHILD_WINDOW_LAYOUTS.includes(options.layout) ? options.layout : 'auto';
+
         const requestedPaths = Array.isArray(options.paths)
             ? [...new Set(options.paths.map(normalizeSubWindowUrl).filter(Boolean))]
             : [];
+
         const entries = [];
         const missingPaths = [];
         const candidates = requestedPaths.length > 0 ? requestedPaths : [...openWindows.keys()];
+
         for (const windowUrl of candidates) {
             const targetWindow = openWindows.get(windowUrl);
+
             if (!targetWindow || targetWindow.isDestroyed()) {
                 openWindows.delete(windowUrl);
                 missingPaths.push(windowUrl);
+
                 continue;
             }
+
             entries.push({ path: windowUrl, window: targetWindow });
         }
+
         if (requestedPaths.length > 0 && missingPaths.length > 0) {
             return {
                 success: false,
@@ -1373,11 +1638,13 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 message: '部分目标子窗口未打开；请先打开或 detach 后再排列。',
             };
         }
+
         if (entries.length === 0) {
             return { success: false, error: 'no-open-windows', message: '当前没有可排列的独立子窗口。' };
         }
 
         const displayResolution = resolveArrangementDisplays(options);
+
         if (displayResolution.error) {
             return {
                 success: false,
@@ -1385,35 +1652,46 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 availableDisplays: listDisplaySnapshots(),
             };
         }
+
         const displays = displayResolution.displays.slice(0, entries.length);
         const baseCount = Math.floor(entries.length / displays.length);
         let remainder = entries.length % displays.length;
         let cursor = 0;
         const arranged = [];
         const displayResults = [];
+
         for (const display of displays) {
             const groupSize = baseCount + (remainder > 0 ? 1 : 0);
             remainder = Math.max(0, remainder - 1);
             const group = entries.slice(cursor, cursor + groupSize);
+
             cursor += groupSize;
+
             const calculation = calculateChildWindowLayout(layout, group.length, display.workArea, options);
+
             displayResults.push({
                 displayId: display.id,
                 requestedLayout: calculation.requestedLayout,
                 resolvedLayout: calculation.resolvedLayout,
                 windowCount: group.length,
             });
+
             group.forEach((entry, index) => {
                 prepareWindowForBoundsChange(entry.window);
+
                 const minimum = readSubWindowMinimumSize(entry.window);
                 const bounds = clampBoundsToWorkArea(calculation.bounds[index], display.workArea, minimum);
+
                 entry.window.setBounds(bounds);
                 entry.window.show();
                 arranged.push({ path: entry.path, bounds, displayId: display.id });
             });
         }
+
         if (options.focus !== false && entries[0]) focusSubWindow(entries[0].window);
+
         await new Promise(resolve => setTimeout(resolve, 160));
+
         return {
             success: true,
             requestedLayout: layout,
@@ -1426,6 +1704,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     const controlSubWindowByUrl = async (windowUrl, action) => {
         const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
         const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+
         if (!targetWindow || targetWindow.isDestroyed()) {
             return { success: false, error: 'window-not-found', state: readSubWindowState(normalizedWindowUrl) };
         }
@@ -1433,25 +1712,33 @@ function registerWindowHandlers(mainWindow, options = {}) {
         switch (String(action || '')) {
             case 'focus':
                 focusSubWindow(targetWindow);
+
                 break;
             case 'restore':
                 if (targetWindow.isMinimized()) targetWindow.restore();
+
                 targetWindow.show();
                 targetWindow.focus();
+
                 break;
             case 'minimize':
                 targetWindow.minimize();
+
                 break;
             case 'maximize':
                 if (targetWindow.isMinimized()) targetWindow.restore();
                 if (!targetWindow.isMaximized()) targetWindow.maximize();
+
                 targetWindow.show();
+
                 break;
             case 'unmaximize':
                 if (targetWindow.isMaximized()) targetWindow.unmaximize();
+
                 break;
             case 'close':
                 targetWindow.close();
+
                 break;
             default:
                 return {
@@ -1462,12 +1749,14 @@ function registerWindowHandlers(mainWindow, options = {}) {
         }
 
         await new Promise((resolve) => setTimeout(resolve, 120));
+
         return { success: true, state: readSubWindowState(normalizedWindowUrl) };
     };
 
     const requestChildAppHostCommand = (windowUrl, command, timeoutMs = 120000) => {
         const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
         const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+
         if (!targetWindow || targetWindow.isDestroyed()) {
             return Promise.resolve({ ok: false, message: `独立子应用窗口未打开: ${normalizedWindowUrl}` });
         }
@@ -1475,22 +1764,33 @@ function registerWindowHandlers(mainWindow, options = {}) {
         return new Promise((resolve) => {
             const requestId = `child-app-host-${Date.now()}-${Math.random().toString(16).slice(2)}`;
             const responseChannel = 'child-app-host-command-response';
-            const timer = setTimeout(() => {
+
+            const finish = result => {
+                clearTimeout(timer);
                 ipcMain.removeListener(responseChannel, listener);
-                resolve({ ok: false, message: `子应用宿主命令超时: ${command?.action || 'unknown'}` });
+                targetWindow.removeListener('closed', onClosed);
+                resolve(result);
+            };
+
+            // A confirmed close can destroy the renderer before its IPC reply arrives.
+            const onClosed = () => finish({ ok: command?.action === 'close' || command?.action === 'closeAll' });
+
+            const timer = setTimeout(() => {
+                finish({ ok: false, message: `子应用宿主命令超时: ${command?.action || 'unknown'}` });
             }, timeoutMs);
+
             const listener = (event, payload = {}) => {
                 if (event.sender !== targetWindow.webContents || payload.requestId !== requestId) {
                     return;
                 }
-                clearTimeout(timer);
-                ipcMain.removeListener(responseChannel, listener);
-                resolve(payload.result && typeof payload.result === 'object'
+
+                finish(payload.result && typeof payload.result === 'object'
                     ? payload.result
                     : { ok: false, message: '子应用宿主返回了无效结果' });
             };
 
             ipcMain.on(responseChannel, listener);
+            targetWindow.once('closed', onClosed);
             targetWindow.webContents.send('child-app-host-command', { requestId, command });
         });
     };
@@ -1510,6 +1810,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
      */
     const attachSubWindowLifecycleListeners = (subWindow, windowUrl) => {
         subWindow.on('focus', () => moveFocusedWindowToTop(subWindow));
+
         attachMacWindowCloseBridge(
             subWindow,
             () => {
@@ -1578,8 +1879,10 @@ function registerWindowHandlers(mainWindow, options = {}) {
             || (settingsWarmWindow && !settingsWarmWindow.isDestroyed())) {
             return;
         }
+
         settingsWarmCreateTimer = setTimeout(() => {
             settingsWarmCreateTimer = null;
+
             createSettingsWarmWindow();
         }, delayMs);
     }
@@ -1591,6 +1894,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
         }
 
         let win;
+
         try {
             win = new BrowserWindow({
                 frame: shouldUseNativeMacFrame(),
@@ -1611,9 +1915,11 @@ function registerWindowHandlers(mainWindow, options = {}) {
             });
         } catch (error) {
             console.warn('[SettingsWindowWarmup] 创建窗口失败:', error.message);
+
             if (pendingSettingsOpenData) {
                 scheduleSettingsWarmWindow(1000);
             }
+
             return;
         }
 
@@ -1625,7 +1931,9 @@ function registerWindowHandlers(mainWindow, options = {}) {
             if (win.isDestroyed()) {
                 return;
             }
+
             win.__settingsWarmRetryDelayMs = 1000;
+
             console.warn(`[SettingsWindowWarmup] ${reason}，稍后重试`);
             win.destroy();
         };
@@ -1634,19 +1942,25 @@ function registerWindowHandlers(mainWindow, options = {}) {
             if (!isMainFrame || errorCode === -3) {
                 return;
             }
+
             replaceFailedWarmWindow(`页面加载失败 (${errorCode}: ${errorDescription})`);
         });
+
         win.webContents.on('render-process-gone', (_event, details) => {
             replaceFailedWarmWindow(`渲染进程退出 (${details.reason})`);
         });
+
         win.once('closed', () => {
             clearSettingsWarmReadyTimer(win);
+
             const wasActive = openWindows.get(SETTINGS_WINDOW_URL) === win;
             const retryDelayMs = Number(win.__settingsWarmRetryDelayMs) || 0;
+
             if (settingsWarmWindow === win) {
                 settingsWarmWindow = null;
                 settingsWarmWindowReady = false;
             }
+
             if (!applicationIsQuitting && (wasActive || retryDelayMs === 0 || pendingSettingsOpenData)) {
                 scheduleSettingsWarmWindow(retryDelayMs);
             }
@@ -1668,6 +1982,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     function revealSettingsWarmWindow(data) {
         const win = settingsWarmWindow;
+
         if (!win || win.isDestroyed() || !settingsWarmWindowReady
             || openWindows.get(SETTINGS_WINDOW_URL) === win) {
             return false;
@@ -1675,10 +1990,12 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         const width = data.width ? data.width : 700;
         const height = data.height ? data.height : 550;
+
         const minimumSize = resolveChildWindowMinimumSize(SETTINGS_WINDOW_URL, {
             width: data.minWidth,
             height: data.minHeight,
         }, 'builtin');
+
         try {
             applySubWindowClass(win, SETTINGS_WINDOW_URL, 'builtin');
             win.setAlwaysOnTop(!!data.alwaysOnTop);
@@ -1695,22 +2012,28 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
             win.setOpacity(1);
             win.setSkipTaskbar(false);
+
             if (!focusSubWindow(win)) {
                 throw new Error('窗口已不可用');
             }
         } catch (e) {
             console.warn('[SettingsWindowWarmup] 显示窗口失败:', e.message);
+
             win.__settingsWarmRetryDelayMs = 1000;
+
             if (!win.isDestroyed()) {
                 win.destroy();
             }
+
             return false;
         }
 
         pendingSettingsOpenData = null;
+
         openWindows.set(SETTINGS_WINDOW_URL, win);
         notifySubWindowState(SETTINGS_WINDOW_URL, true);
         attachSubWindowLifecycleListeners(win, SETTINGS_WINDOW_URL);
+
         return true;
     }
 
@@ -1719,12 +2042,16 @@ function registerWindowHandlers(mainWindow, options = {}) {
             || event.sender !== settingsWarmWindow.webContents) {
             return;
         }
+
         settingsWarmWindowReady = true;
+
         clearSettingsWarmReadyTimer(settingsWarmWindow);
+
         if (pendingSettingsOpenData) {
             revealSettingsWarmWindow(pendingSettingsOpenData);
         }
     };
+
     ipcMain.on('settings-window-ready', onSettingsWindowReady);
 
     const onMainRendererReadyForSettingsWarmup = (event) => {
@@ -1732,21 +2059,26 @@ function registerWindowHandlers(mainWindow, options = {}) {
             scheduleSettingsWarmWindow();
         }
     };
+
     ipcMain.on('renderer-ready', onMainRendererReadyForSettingsWarmup);
 
     mainWindow.once('closed', () => {
         ipcMain.removeListener('settings-window-ready', onSettingsWindowReady);
         ipcMain.removeListener('renderer-ready', onMainRendererReadyForSettingsWarmup);
+
         if (settingsWarmCreateTimer) {
             clearTimeout(settingsWarmCreateTimer);
+
             settingsWarmCreateTimer = null;
         }
+
         clearSettingsWarmReadyTimer(settingsWarmWindow);
     });
 
     mainWindow.on('focus', () => {
         try {
             moveFocusedWindowToTop(mainWindow);
+
             // 仅清除本功能设置�?Dock 角标，避免覆盖其它模块可能的徽章
             if (process.platform === 'darwin' && app.dock && typeof app.dock.getBadge === 'function') {
                 try {
@@ -1755,10 +2087,10 @@ function registerWindowHandlers(mainWindow, options = {}) {
                     }
                 } catch (_e) { /* dock API 不可用时忽略 */ }
             }
+
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-focus');
             }
-
         } catch (error) {
             console.error('Error sending window-focus:', error.message);
         }
@@ -1770,7 +2102,6 @@ function registerWindowHandlers(mainWindow, options = {}) {
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-blur');
             }
-
         } catch (error) {
             console.error('Error sending window-blur:', error.message);
         }
@@ -1817,17 +2148,19 @@ function registerWindowHandlers(mainWindow, options = {}) {
         }
     });
 
-
     ipcMain.on("window-open", (event, data) => {
         const normalizedWindowUrl = normalizeSubWindowUrl(data.path);
+
         const windowUrl = /^\/settings\/?(?:\?.*)?$/.test(normalizedWindowUrl)
             ? SETTINGS_WINDOW_URL
             : normalizedWindowUrl;
+
         const width = data.width ? data.width : 800;
         const height = data.height ? data.height : 600;
         const alwaysOnTop = data.alwaysOnTop ? data.alwaysOnTop : false;
         const needInitPayload = !!(data.data || data.url || data.title);
         const windowClass = resolveChildWindowClass(windowUrl, data.windowClass);
+
         const minimumSize = resolveChildWindowMinimumSize(windowUrl, {
             width: data.minWidth,
             height: data.minHeight,
@@ -1836,12 +2169,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
         // 检查是否已存在该URL的窗�?
         if (openWindows.has(windowUrl)) {
             const existingWindow = openWindows.get(windowUrl);
+
             // 确保窗口仍然有效
             if (existingWindow && !existingWindow.isDestroyed()) {
                 applySubWindowClass(existingWindow, windowUrl, windowClass);
                 applySubWindowMinimumSize(existingWindow, minimumSize);
+
                 // 激活已存在的窗�?
                 const currentBounds = existingWindow.getBounds();
+
                 if (
                     data.applyInitialBounds === true
                     || currentBounds.width < minimumSize.width
@@ -1856,8 +2192,10 @@ function registerWindowHandlers(mainWindow, options = {}) {
                         minimumSize,
                     );
                 }
+
                 notifySubWindowState(windowUrl, true);
                 focusSubWindow(existingWindow);
+
                 return;
             } else {
                 // 如果窗口已被销毁，从映射中移除
@@ -1867,25 +2205,35 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         if (windowUrl === SETTINGS_WINDOW_URL) {
             pendingSettingsOpenData = data;
+
             if (!settingsWarmWindow || settingsWarmWindow.isDestroyed()) {
                 settingsWarmWindow = null;
+
                 createSettingsWarmWindow();
             }
+
             if (settingsWarmWindowReady) {
                 revealSettingsWarmWindow(data);
             }
+
             return;
         }
 
         let subWindow = null;
+
         while (subWindowPool.length > 0) {
             const candidate = subWindowPool.shift();
+
             if (!candidate || candidate.isDestroyed()) {
                 continue;
             }
+
             removePoolHandlersFromWin(candidate, loadSubWindowBasePage);
+
             subWindow = candidate;
+
             subWindow.setBackgroundColor(getSubWindowBackgroundColor());
+
             break;
         }
 
@@ -1917,7 +2265,6 @@ function registerWindowHandlers(mainWindow, options = {}) {
         applySubWindowClass(subWindow, windowUrl, windowClass);
         applySubWindowMinimumSize(subWindow, minimumSize);
         placeSubWindowBeforeReveal(subWindow, mainWindow, data, width, height, minimumSize);
-
         openWindows.set(windowUrl, subWindow);
         notifySubWindowState(windowUrl, true);
         attachSubWindowLifecycleListeners(subWindow, windowUrl);
@@ -1937,6 +2284,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 if (subWindow.isDestroyed()) {
                     return;
                 }
+
                 subWindow.setOpacity(1);
                 subWindow.setSkipTaskbar(false);
                 subWindow.show();
@@ -1948,22 +2296,29 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         let subWindowRevealFinalized = false;
         let revealFallbackTimer = null;
+
         const finalizeSubWindowReveal = () => {
             if (subWindowRevealFinalized || subWindow.isDestroyed()) {
                 return;
             }
+
             subWindowRevealFinalized = true;
+
             if (revealFallbackTimer) {
                 clearTimeout(revealFallbackTimer);
+
                 revealFallbackTimer = null;
             }
+
             sendInitToSubWindow();
             revealPooledSubWindow();
         };
+
         const revealAfterRendererPaint = () => {
             if (subWindowRevealFinalized || subWindow.isDestroyed()) {
                 return;
             }
+
             subWindow.webContents.executeJavaScript(
                 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
                 true
@@ -1973,6 +2328,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
         subWindow.once('ready-to-show', revealAfterRendererPaint);
         subWindow.webContents.once('did-finish-load', revealAfterRendererPaint);
         subWindow.webContents.once('did-navigate-in-page', revealAfterRendererPaint);
+
         revealFallbackTimer = setTimeout(revealAfterRendererPaint, 3000);
 
         subWindow.loadURL(resolveSubWindowRouteUrl(data.path));
@@ -2004,6 +2360,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     ipcMain.handle("child-app-host-command-by-url", (_event, payload = {}) => {
         const timeoutMs = Number(payload.timeoutMs);
+
         return requestChildAppHostCommand(
             payload.path,
             payload.command,
@@ -2014,11 +2371,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     ipcMain.handle("child-tool-session-acquire", (event, toolIdOrPayload) => {
+        if (applicationIsQuitting) return null;
+
         const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
             ? toolIdOrPayload
             : { toolId: toolIdOrPayload, leaseId: 'legacy-renderer' };
+
         const normalizedToolId = sanitizeChildToolId(payload.toolId);
         const session = childToolSessions.get(normalizedToolId);
+
         if (!session?.hostInfo) {
             return null;
         }
@@ -2026,15 +2387,19 @@ function registerWindowHandlers(mainWindow, options = {}) {
         if (!isChildToolSessionAlive(session)) {
             cancelChildToolRelease(session);
             childToolSessions.delete(normalizedToolId);
+
             return null;
         }
 
         cancelChildToolRelease(session);
+
         const ownerId = trackChildToolSessionOwner(event.sender);
         const acquired = acquireChildToolOwner(session, ownerId, payload.leaseId || 'legacy-renderer');
+
         if (!acquired.success) {
             return null;
         }
+
         console.info('[ChildToolSession] shared lease acquired', {
             toolId: normalizedToolId,
             streamId: session.streamId,
@@ -2042,11 +2407,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
             leaseId: String(payload.leaseId || 'legacy-renderer'),
             refCount: childToolOwnerCount(session),
         });
+
         return cloneChildToolSession(session);
     });
 
     ipcMain.handle("child-tool-session-register", async (event, payload = {}) => {
+        if (applicationIsQuitting) return { success: false, reason: 'application-quitting' };
+
         const toolId = sanitizeChildToolId(payload.toolId);
+
         if (!toolId || !payload.hostInfo || !payload.streamId) {
             return { success: false, reason: 'invalid-payload' };
         }
@@ -2055,24 +2424,32 @@ function registerWindowHandlers(mainWindow, options = {}) {
         const existing = childToolSessions.get(toolId);
         const ownerId = trackChildToolSessionOwner(event.sender);
         const leaseId = String(payload.leaseId || 'legacy-renderer');
+
         const registration = classifyChildToolSessionRegistration(
             existing,
             payload.streamId,
             isChildToolSessionAlive(existing),
         );
+
         if (registration === 'same-stream') {
             cancelChildToolRelease(existing);
+
             const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
+
             return acquired.success
                 ? { success: true, session: cloneChildToolSession(existing) }
                 : { success: false, reason: acquired.reason };
         }
+
         if (registration === 'reuse-existing') {
             cancelChildToolRelease(existing);
+
             const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
+
             if (!acquired.success) {
                 return { success: false, reason: acquired.reason };
             }
+
             console.info('[ChildToolSession] Concurrent Runtime start reused existing process', {
                 toolId,
                 existingStreamId: existing.streamId,
@@ -2081,14 +2458,19 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 leaseId,
                 refCount: childToolOwnerCount(existing),
             });
+
             notifyChildToolSessionStateChanged();
+
             return { success: true, reused: true, session: cloneChildToolSession(existing) };
         }
+
         if (registration === 'replace-stale' && existing?.streamId) {
             cancelChildToolRelease(existing);
             await stopChildToolSessionProcess(existing);
             pendingChildToolProcessMessages.delete(existing.streamId);
         }
+
+        if (applicationIsQuitting) return { success: false, reason: 'application-quitting' };
 
         const session = {
             hostInfo: payload.hostInfo,
@@ -2097,11 +2479,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
             owners: new Map(),
             releaseTimer: null,
         };
+
         const acquired = acquireChildToolOwner(session, ownerId, leaseId);
+
         if (!acquired.success) {
             return { success: false, reason: acquired.reason };
         }
+
         childToolSessions.set(toolId, session);
+
         console.info('[ChildToolSession] Runtime registered', {
             toolId,
             streamId: payload.streamId,
@@ -2112,23 +2498,28 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         notifyChildToolSessionStateChanged();
         flushPendingChildToolProcessMessages(toolId, session);
+
         return { success: true, session: cloneChildToolSession(childToolSessions.get(toolId)) };
     });
 
     ipcMain.handle("child-tool-session-message-send", async (event, payload = {}) => {
         const toolId = sanitizeChildToolId(payload.toolId);
         const session = childToolSessions.get(toolId);
+
         const authorization = authorizeChildToolMessagePortSend(
             session,
             event.sender?.id,
             payload,
         );
+
         if (!authorization.success) return authorization;
+
         // This lifecycle namespace is issued only by the Main-owned View
         // broker. A legacy renderer controller cannot manufacture its context.
         if (typeof payload.message?.type === 'string' && payload.message.type.startsWith('aily-subapp-node-control.')) {
             return { success: false, reason: 'reserved-message-type' };
         }
+
         return await sendCmdProcessMessage(authorization.streamId, payload.message);
     });
 
@@ -2136,24 +2527,32 @@ function registerWindowHandlers(mainWindow, options = {}) {
         if (event.sender !== mainWindow.webContents) {
             return { success: false, reason: 'message-controller-not-authorized' };
         }
+
         const session = childToolSessions.get(sanitizeChildToolId(payload.toolId));
         const nextBinding = typeof payload.bindingId === 'string' ? payload.bindingId.trim() : '';
+
         if (session?.providerMessageController && payload.streamId === session.streamId
             && session.messagePort && !session.exit && !session.stopping && nextBinding && nextBinding.length <= 128
             && session.providerMessageController.bindingId !== nextBinding) {
             await localNetworkHost?.closeBinding({ senderId: session.providerMessageController.ownerId,
                 toolId: payload.toolId, streamId: session.streamId, bindingId: session.providerMessageController.bindingId });
+
             await localGattHost?.closeBinding({ senderId: session.providerMessageController.ownerId,
                 toolId: payload.toolId, streamId: session.streamId, bindingId: session.providerMessageController.bindingId });
+
             await localSerialHost?.revokeBinding(session.providerMessageController.ownerId, {
                 toolId: payload.toolId, streamId: session.streamId, bindingId: session.providerMessageController.bindingId,
             });
         }
+
         const result = bindChildToolMessageController(
             session, event.sender.id, payload, mainWindow.webContents.id,
         );
+
         if (!result.success) return result;
+
         trackChildToolSessionOwner(event.sender);
+
         return {
             ...result,
             negotiationRequest: session.lastProviderNegotiationRequest || null,
@@ -2164,11 +2563,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
         if (event.sender !== mainWindow.webContents) {
             return { success: false, reason: 'message-controller-not-authorized' };
         }
+
         await localNetworkHost?.closeBinding({ senderId: event.sender.id, toolId: payload.toolId,
             streamId: payload.streamId, bindingId: payload.bindingId });
+
         await localGattHost?.closeBinding({ senderId: event.sender.id, toolId: payload.toolId,
             streamId: payload.streamId, bindingId: payload.bindingId });
+
         await localSerialHost?.revokeBinding(event.sender.id, payload);
+
         return unbindChildToolMessageController(
             childToolSessions.get(sanitizeChildToolId(payload.toolId)),
             event.sender.id, payload, mainWindow.webContents.id,
@@ -2177,21 +2580,27 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     ipcMain.handle("child-tool-session-release", (event, payload) => {
         const result = releaseChildToolSession(payload, event.sender?.id);
+
         notifyChildToolSessionStateChanged();
+
         return result;
     });
 
     ipcMain.handle("child-tool-session-restart", async (event, toolId) => {
         const result = await restartChildToolSession(toolId, event.sender?.id);
+
         notifyChildToolSessionStateChanged();
+
         return result;
     });
 
     ipcMain.handle("child-tool-session-unregister", (_event, payload = {}) => {
         const toolId = sanitizeChildToolId(payload.toolId);
         const session = childToolSessions.get(toolId);
+
         if (!session || (payload.streamId && session.streamId !== payload.streamId)) {
             if (payload.streamId) pendingChildToolProcessMessages.delete(payload.streamId);
+
             return { success: false, reason: 'not-found' };
         }
 
@@ -2199,6 +2608,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
         pendingChildToolProcessMessages.delete(session.streamId);
         childToolSessions.delete(toolId);
         notifyChildToolSessionStateChanged();
+
         return { success: true };
     });
 
@@ -2209,41 +2619,76 @@ function registerWindowHandlers(mainWindow, options = {}) {
     ipcMain.handle("child-tool-session-stop", async (_event, toolId) => {
         const normalizedToolId = sanitizeChildToolId(toolId);
         const session = childToolSessions.get(normalizedToolId);
+
         if (!session) {
             return { success: false, reason: 'not-found' };
         }
+
         cancelChildToolRelease(session);
+
         const stopped = await stopChildToolSessionProcess(session);
+
         if (!stopped) {
             return { success: false, reason: 'process-still-running' };
         }
+
         pendingChildToolProcessMessages.delete(session.streamId);
+
         if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
+
         notifyChildToolSessionStateChanged();
+
         return { success: true };
     });
 
     ipcMain.on("window-minimize", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         if (senderWindow) {
             senderWindow.minimize();
         }
     });
 
     ipcMain.on("window-maximize", (event) => {
-        const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        if (senderWindow && !senderWindow.isMaximized()) {
-            senderWindow.maximize();
-        }
+        const win = BrowserWindow.fromWebContents(event.sender);
+
+        if (win) void stateController.change(win, 'maximize');
+    });
+
+    ipcMain.handle('window-toggle-maximize', (event) => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+
+        return win ? stateController.change(win) : { success: false, error: 'window-not-found' };
+    });
+
+    ipcMain.on('window-get-state', event => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+
+        if (win) stateController.attach(win);
+
+        event.returnValue = win ? stateController.snapshot(win) : null;
+    });
+
+    ipcMain.handle('window-get-diagnostics', event => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+
+        return {
+            ...stateController.diagnostics(mainWindow),
+            currentWindow: win ? (stateController.attach(win), stateController.snapshot(win)) : null,
+            system: { platform: process.platform, osRelease: require('os').release(), osVersion: require('os').version(),
+                electron: process.versions.electron, chromium: process.versions.chrome },
+        };
     });
 
     ipcMain.handle("window-set-size", (event, data = {}) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         return setCurrentWindowSize(senderWindow, data.width, data.height);
     });
 
     ipcMain.on("window-close", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         // 检查是否是主窗口，如果是主窗口，关闭整个应用程�?
         if (senderWindow === mainWindow) {
             app.quit();
@@ -2256,6 +2701,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     // Keep the renderer available until main has drained its AppData leases.
     mainWindow.on('close', (event) => {
         if (options.canCloseMainWindow?.()) return;
+
         event.preventDefault();
         app.quit();
     });
@@ -2264,20 +2710,21 @@ function registerWindowHandlers(mainWindow, options = {}) {
     ipcMain.on("window-is-maximized", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         const isMaximized = senderWindow ? senderWindow.isMaximized() : false;
+
         event.returnValue = isMaximized;
     });
 
     // 添加 unmaximize 处理程序
     ipcMain.on("window-unmaximize", (event) => {
-        const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        if (senderWindow && senderWindow.isMaximized()) {
-            senderWindow.unmaximize();
-        }
+        const win = BrowserWindow.fromWebContents(event.sender);
+
+        if (win) void stateController.change(win, 'restore');
     });
 
     // 监听获取全屏状态的请求
     ipcMain.handle('window-is-full-screen', (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         return senderWindow.isFullScreen();
     });
 
@@ -2294,6 +2741,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
      */
     ipcMain.handle('window-request-attention', (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         return requestWindowAttention(senderWindow);
     });
 
@@ -2306,6 +2754,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     ipcMain.on("window-go-main", (event, data) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         mainWindow.webContents.send("window-go-main", normalizeSubWindowUrl(data));
         senderWindow.close();
     });
@@ -2313,33 +2762,43 @@ function registerWindowHandlers(mainWindow, options = {}) {
     ipcMain.handle("window-return-main", (event, data) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         const normalizedPath = normalizeSubWindowUrl(data);
+
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send("window-go-main", normalizedPath);
+
             if (mainWindow.isMinimized()) {
                 mainWindow.restore();
             }
+
             mainWindow.show();
+
             if (typeof mainWindow.moveTop === 'function') {
                 mainWindow.moveTop();
             }
+
             mainWindow.focus();
         }
+
         if (senderWindow && senderWindow !== mainWindow && !senderWindow.isDestroyed()) {
             senderWindow.hide();
         }
+
         return { success: true };
     });
 
     ipcMain.on("window-alwaysOnTop", (event, alwaysOnTop) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         senderWindow.setAlwaysOnTop(alwaysOnTop);
     });
 
     ipcMain.handle("window-send", (event, data) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
         if (data.to == 'main') {
             // 创建唯一消息ID
             const messageId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+
             // 创建Promise等待响应
             return new Promise((resolve) => {
                 // 设置一次性监听器接收响应
@@ -2351,26 +2810,34 @@ function registerWindowHandlers(mainWindow, options = {}) {
                         resolve(response.data || "success");
                     }
                 };
+
                 // 注册监听�?
                 ipcMain.on('main-window-response', responseListener);
+
                 // 发送消息到main窗口，带上messageId
                 mainWindow.webContents.send("window-receive", {
                     form: senderWindow.id,
                     data: data.data,
                     messageId: messageId
                 });
-                if (data?.data?.action === 'request-login'
+
+                if (data?.data?.action === 'open-project-in-coder'
+                    || data?.data?.action === 'request-login'
                     || data?.data?.action === 'switch-service-region'
                     || data?.data?.action === 'auth-token-invalid') {
                     if (mainWindow.isMinimized()) {
                         mainWindow.restore();
                     }
+
                     mainWindow.show();
+
                     if (typeof mainWindow.moveTop === 'function') {
                         mainWindow.moveTop();
                     }
+
                     mainWindow.focus();
                 }
+
                 // 自定义超时或默认9秒超�?
                 setTimeout(() => {
                     ipcMain.removeListener('main-window-response', responseListener);
@@ -2378,6 +2845,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 }, data?.timeout || 9000);
             });
         }
+
         return true;
     });
 
@@ -2387,6 +2855,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             ...data,
             updatedAt: Date.now(),
         };
+
         broadcastCodeViewerState();
     });
 
@@ -2399,13 +2868,22 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     scheduleReplenishSubWindowPool(loadSubWindowBasePage);
-}
 
+    return {
+        isSettingsWindowSender(sender) {
+            // 只有当前设置窗口本人且仍停留在设置路由，才能读取云部署信息和检测连接。
+            const win = settingsWarmWindow;
+
+            if (!win || win.isDestroyed() || win.webContents.isDestroyed()
+                || sender !== win.webContents || sender.isDestroyed()) return false;
+
+            return isAppSettingsWindowUrl(sender.getURL(), resolveSubWindowRouteUrl('settings'));
+        },
+    };
+}
 
 module.exports = {
     beginWindowShutdown,
-    notifyWindowShutdown,
-    shutdownSubappOwners,
     registerWindowHandlers,
     stopAllChildToolSessions,
     forceStopChildToolByCatalogId,
@@ -2415,6 +2893,7 @@ module.exports = {
         localSerialRequireController(ownerId, input) {
             const session = childToolSessions.get(input.toolId);
             const result = authorizeChildToolMessagePortSend(session, ownerId, input);
+
             if (!session?.providerMessageController || !result.success) throw new Error('Local serial controller binding has ended');
         },
         installLocalSerialHost(host) { localSerialHost = host; },
@@ -2425,22 +2904,32 @@ module.exports = {
         installGattHost(host) { localGattHost = host; },
         resolveOriginalOwnerNetworkControl({ authority, requireCurrentController }) {
             requireCurrentController();
+
             const original = browserProcessBroker.resolveNetworkOwner({ runtimeId: authority.streamId,
                 ownerId: authority.senderId, toolId: authority.toolId });
+
             if (!original) return null;
+
             const control = browserExecutionHost.createNetworkOwnerControl(original);
+
             requireCurrentController(); control.requireCurrent();
+
             return control;
         },
         resolveOriginalOwnerBluetoothControl({ authority, requireCurrentController }) {
             requireCurrentController();
+
             // Reuse the actual acknowledged process-owner lookup, never a
             // Renderer sessionId, chosen peer or retained Core snapshot.
             const original = browserProcessBroker.resolveNetworkOwner({ runtimeId: authority.streamId,
                 ownerId: authority.senderId, toolId: authority.toolId });
+
             if (!original) return null;
+
             const control = browserExecutionHost.createBluetoothOwnerControl(original);
+
             requireCurrentController(); control.requireCurrent();
+
             return control;
         },
         broker: browserProcessBroker,
@@ -2450,6 +2939,7 @@ module.exports = {
         supervisor: subappOwnerSupervisor,
         resolveRuntime: (toolId, ownerId) => {
             const runtime = childToolSessions.get(toolId);
+
             return runtime && !runtime.stopping && isChildToolSessionAlive(runtime)
                 && childToolHasOwnerId(runtime, ownerId) ? runtime : null;
         },
@@ -2457,22 +2947,34 @@ module.exports = {
     nativeSubappRegistry: {
         supervisor: subappOwnerSupervisor,
         register(sender, { toolId, streamId, publicInfo, stop, packageDependencies = [] }) {
+            if (applicationIsQuitting) {
+                throw Object.assign(new Error('Application is quitting.'), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+            }
+
             const processInfo = getActiveCmdProcesses().find(info => info.streamId === streamId);
+
             if (sender.isDestroyed() || !processInfo || processInfo.pid !== publicInfo.pid || typeof stop !== 'function') {
                 throw new Error('Native Runtime must belong to a live supervised process.');
             }
+
             const existing = childToolSessions.get(toolId);
+
             if (existing && isChildToolSessionAlive(existing)) throw new Error('Native Runtime is already registered.');
+
             cancelChildToolRelease(existing);
+
             // Native launch dependencies participate in the existing installer
             // holders/stop protocol without pretending to be a second UI runtime.
             const nativePackageDependencies = [...new Set(packageDependencies.map(sanitizeChildToolId).filter(Boolean))];
             const session = { streamId, hostInfo: publicInfo, nativeOwnerControl: true, nativeStop: stop, nativePackageDependencies,
                 owners: new Map(), releaseTimer: null };
+
             acquireChildToolOwner(session, trackChildToolSessionOwner(sender), 'native-runtime');
             childToolSessions.set(toolId, session); broadcastChildToolSessionStateChanged();
+
             return () => {
                 if (childToolSessions.get(toolId) !== session) return;
+
                 cancelChildToolRelease(session); childToolSessions.delete(toolId); broadcastChildToolSessionStateChanged();
             };
         },

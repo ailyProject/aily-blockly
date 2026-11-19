@@ -3,6 +3,12 @@
 ## 软件框架
 软件主体使用electron开发，渲染端使用angular开发  
 
+## 开发文档协作
+
+需求、架构、实现说明和接口协议维护在 [aily-blockly-docs](https://github.com/ailyProject/aily-blockly-docs)。开始修改功能前，从该仓库的 `docs/目录.md` 查找对应说明并核对当前源码；修改软件行为时，在同一任务中同步相关文档，两个仓库分别提交并记录关联源码 commit。
+
+文档仓库可按需单独克隆，普通运行和构建无需它。克隆、更新、检索及提交方式见 [文档仓库管理与使用](DOCUMENTATION.md)，不要在主软件中恢复原 `docs/`、`contracts/` 或 `.draft/` 目录。
+
 ## 开发&&打包  
 
 **依赖安装**
@@ -14,8 +20,8 @@ cd electron
 npm i
 ```  
 
-Blockly 核心从 npm 安装：[aily-project-blockly@1.0.3](https://www.npmjs.com/package/aily-project-blockly)，
-上游基线和运行时版本为 13.3.0。宿主使用 `blockly: npm:aily-project-blockly@1.0.3` 别名，
+Blockly 核心从 npm 安装：[aily-project-blockly@1.0.5](https://www.npmjs.com/package/aily-project-blockly)，
+上游基线和运行时版本为 13.3.0。宿主使用 `blockly: npm:aily-project-blockly@1.0.5` 别名，
 现有 `blockly` 导入保持不变；npm/pnpm override 让插件共用同一核心。
 本地 tarball、补丁快照和源码同步入口已移除，无需邻接核心源码仓库。
 复现锁定依赖可在宿主根目录执行 `npm ci` 或 `pnpm install --frozen-lockfile`。
@@ -43,6 +49,10 @@ npm run build
 
 所有打包入口共用 `afterPack` hook，按目标平台和架构从同一缓存准备资源到产物的 `resources/child`。下载或校验失败会终止打包，安装包继续内置工具。`npm run build:coder` 额外下载编辑器的 `.tgz` 和 `.json` 配对文件；Coder 开发与打包共用这套编辑器资源。
 
+Windows x64 打包还会在 `beforePack` 自动编译原生进程运行时。Windows 构建机需安装 Visual Studio Build Tools 的“使用 C++ 的桌面开发”组件；GitHub Windows runner 使用已有 MSVC。首次构建由锁定的 `node-gyp` 准备并校验 Node-API 头文件，也可用 `NODE_INCLUDE_DIR` 指定已有头文件。手动准备命令为 `npm run prepare:windows-process`。
+
+新产物生成到 `.aily/windows-process-runtime/x64`，打包只采用这些新文件，不覆盖或复用仓库里的开发预编译文件。`afterPack` 检查源码/构建配方指纹、SHA-256、PE 架构和 ASAR 解包标记；在 Windows 构建机还会使用打包后的 Electron 加载原生模块、启动并回收真实任务树。任一环节失败都会中止打包。macOS 打包跳过该编译，也不携带这些 Windows 原生文件。
+
 当前 macOS 仅支持 ARM64；打包可使用 `npm run build -- --mac --arm64`。现有 `build:mac`（同时包含 x64）及 `build:mac:universal` 在缺少对应资源时会失败。
 
 
@@ -60,8 +70,8 @@ npm run build
 该部分是安装/卸载程序的脚本。
 在安装应用时，安装程序会将`child\node-v22.19.0-win-x64.7z`解压到`child\node`。  
 
-### /src/app/blockly/plugins
+### /src/app/editors/blockly-editor/components/blockly/plugins
 blockly相关插件
 
-### /src/app/blockly/custom-field
+### /src/app/editors/blockly-editor/components/blockly/custom-field
 自定义的特殊block

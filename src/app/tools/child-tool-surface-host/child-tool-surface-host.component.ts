@@ -11,7 +11,7 @@ import {
   SimpleChanges,
 } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
-import { TranslateService } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Connection, WindowMessenger, connect } from 'penpal';
 import { merge, Subscription } from 'rxjs';
 
@@ -21,12 +21,15 @@ import {
 } from '../../configs/tool.config';
 import {
   ChildAppHostRegistryService,
+  resolveChildCloseDecision,
+  hasDockEmbeddedViewControl,
   type ChildAppWindowPlacement,
   ChildToolProcessService,
   type ChildToolHostInfo,
   type ChildToolRuntimeSnapshot,
   SubappActivityService,
   SubappWorkspaceHostProviderService,
+  DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
   type SubappActivitySummaryState,
 } from '@integration/subapps/public-api';
 import { ElectronService } from '@core/platform/public-api';
@@ -40,7 +43,7 @@ type CompactHostStatus = 'idle' | 'starting' | 'connecting' | 'ready' | 'stopped
 
 @Component({
   selector: 'app-child-tool-surface-host',
-  imports: [CommonModule],
+  imports: [CommonModule, TranslateModule],
   templateUrl: './child-tool-surface-host.component.html',
   styleUrl: './child-tool-surface-host.component.scss',
 })
@@ -65,6 +68,8 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
   private projectSubscription: Subscription | null = null;
+  private activitySubscription: Subscription | null = null;
+  private resourceSessionId: string | null = null;
   private unregisterHostController: (() => void) | null = null;
   private penpalConnection: Connection | null = null;
   private remoteApi: any = null;
@@ -73,6 +78,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
   private currentUrl = '';
   private hostInfo: ChildToolHostInfo | null = null;
   private contextVersion = 0;
+  private closeTask: Promise<Record<string, unknown>> | null = null;
   private readonly contextId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   constructor(
@@ -105,6 +111,14 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     ).subscribe(() => {
       if (this.initialized) this.syncHostContext(true);
     });
+    this.activitySubscription = this.activityService.activities$.subscribe(() => {
+      const target = this.toolId === 'mqtt-debugger'
+        ? this.activityService.getActivity(this.sessionId, this.toolId)?.resourceSessionId || null : null;
+      if (target !== this.resourceSessionId) {
+        this.resourceSessionId = target;
+        this.syncHostContext();
+      }
+    });
     this.bindTool();
   }
 
@@ -116,7 +130,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
       return;
     }
 
-    if (changes['hostWorkspace'] || ((changes['placement'] || changes['active']) && this.active)) {
+    if (changes['hostWorkspace'] || ((changes['sessionId'] || changes['placement'] || changes['active']) && this.active)) {
       this.syncHostContext(true);
     }
   }
@@ -131,6 +145,8 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     this.themeSubscription = null;
     this.projectSubscription?.unsubscribe();
     this.projectSubscription = null;
+    this.activitySubscription?.unsubscribe();
+    this.activitySubscription = null;
     this.unregisterHostController?.();
     this.unregisterHostController = null;
     this.destroyConnection();
@@ -179,10 +195,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
         instanceId,
         message: 'Compact surfaces observe the shared Runtime and cannot restart it.',
       }),
-      close: async () => {
-        this.closeRequested.emit();
-        return { ok: true, toolId, instanceId, action: 'close', surface: this.surface };
-      },
+      close: () => this.close(),
       detach: options => this.openFull('window', options),
       embed: () => this.openFull('embedded'),
     }, {
@@ -315,7 +328,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
               : {},
           ),
           requestClose: () => {
-            this.ngZone.run(() => this.closeRequested.emit());
+            this.ngZone.run(() => { void this.close(); });
             return { ok: true };
           },
           requestRestart: () => ({
@@ -364,13 +377,42 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
       placement: this.placement || 'chat-dock',
       density: 'compact',
       interactive: surfaceConfig?.interactive !== false,
+      ...(this.toolId === 'mqtt-debugger' && this.placement === 'chat-dock'
+        ? { mqttSessionId: this.activityService.getActivity(this.sessionId, this.toolId)?.resourceSessionId || null } : {}),
       capabilities: {
         snapshotRefresh: true,
         userInteractionNotifications: true,
         compactSurface: true,
+        dockOpenEmbedded: this.placement === 'chat-dock' && hasDockEmbeddedViewControl(this.toolId),
         runtimeControl: false,
       },
     };
+  }
+
+  private close(): Promise<Record<string, unknown>> {
+    if (this.closeTask) return this.closeTask;
+    const task = (async () => {
+      try {
+        if (this.toolId === 'ffs-manager-child' && this.remoteApi?.beforeClose) {
+          if (this.uiService.isMainWindow && this.uiService.openToolList.includes(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID)) {
+            this.uiService.openToolEmbedded(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID);
+          }
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const result = await Promise.race([
+            Promise.resolve(this.remoteApi.beforeClose({ reason: 'close', toolId: this.toolId, waitForDecision: true })),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Partition UI close handshake timed out')), 1500); }),
+          ]).finally(() => clearTimeout(timer));
+          if (!await resolveChildCloseDecision(this.remoteApi, result)) return { ok: false, toolId: this.toolId };
+        }
+        this.closeRequested.emit();
+        return { ok: true, toolId: this.toolId, action: 'close', surface: this.surface };
+      } catch (error) {
+        return { ok: false, toolId: this.toolId, message: this.errorText(error) };
+      }
+    })();
+    this.closeTask = task;
+    void task.then(() => { if (this.closeTask === task) this.closeTask = null; });
+    return task;
   }
 
   private partitionManagerRequest(request: unknown): unknown {

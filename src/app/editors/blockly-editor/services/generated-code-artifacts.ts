@@ -6,6 +6,16 @@ interface ArduinoGeneratedArtifactSource {
   getGeneratedArtifacts(): readonly ArduinoGeneratedArtifact[];
 }
 
+export interface GeneratedSourcePublicationOptions { readonly preserveSuperseded?: true; readonly publishPreview?: () => boolean }
+
+export interface GeneratedSourcePublicationReceipt {
+  changed: boolean;
+  target?: 'preview' | 'disk';
+  previewPublished?: boolean;
+  diskPublished?: boolean;
+  sourceArchive?: { version: 1; manifest: string; hash: string; fileCount: number; bytes: number };
+}
+
 function isArduinoGeneratedArtifactSource(
   generator: unknown,
 ): generator is ArduinoGeneratedArtifactSource {
@@ -15,11 +25,14 @@ function isArduinoGeneratedArtifactSource(
 /** Copy within workspaceToCode's synchronous phase; never retain a mutable runtime source. */
 export function captureArduinoGeneratedArtifacts(generator: unknown): readonly ArduinoGeneratedArtifact[] | null {
   if (!isArduinoGeneratedArtifactSource(generator)) return null;
+
   return Object.freeze(generator.getGeneratedArtifacts().map(artifact => {
     const { fileName, content, sourceTag } = artifact;
+
     if (!GENERATED_HEADER_PATTERN.test(fileName) || typeof content !== 'string' || typeof sourceTag !== 'string') {
       throw new Error('Invalid generated Arduino artifact.');
     }
+
     return Object.freeze({ fileName, content, sourceTag });
   }));
 }
@@ -36,20 +49,39 @@ export function captureArduinoGeneratedArtifacts(generator: unknown): readonly A
  */
 /** True when another host build/preprocess/publish still owns the project workspace. */
 export function isBuildWorkspaceBusyError(error: unknown): boolean {
+  return hasBuildWorkspaceErrorCode(error, 'BUILD_WORKSPACE_BUSY');
+}
+
+export function isBuildWorkspaceRecoveryRequiredError(error: unknown): boolean {
+  return hasBuildWorkspaceErrorCode(error, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
+}
+
+function hasBuildWorkspaceErrorCode(error: unknown, expected: string): boolean {
   const code = error && typeof error === 'object' && 'code' in error
     ? String((error as { code?: unknown }).code ?? '')
     : '';
+
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return code === 'BUILD_WORKSPACE_BUSY' || message.startsWith('BUILD_WORKSPACE_BUSY:');
+
+  return code === expected || message.startsWith(`${expected}:`);
 }
 
 export async function writePreparedArduinoGeneratedArtifacts(
   projectPath: string | null | undefined,
   artifacts: readonly ArduinoGeneratedArtifact[] | null,
   sketchCode?: string,
-): Promise<void> {
+  options: GeneratedSourcePublicationOptions = {},
+): Promise<GeneratedSourcePublicationReceipt | undefined> {
   if (!projectPath || (artifacts === null && sketchCode === undefined)) return;
+
   const publish = window['builder']?.publishArduinoGeneratedCode;
-  if (typeof publish !== 'function') throw new Error('Build publication bridge unavailable; restart the host to load matching scripts.');
-  publish(projectPath, { artifacts, ...(sketchCode !== undefined ? { sketchCode } : {}) });
+
+  if (typeof publish !== 'function') throw new Error('Build publication bridge unavailable; generated code publication is blocked by a host capability mismatch. Preserve the project and report the incomplete result.');
+
+  if (options.preserveSuperseded && window['builder']?.generatedSourceArchiveVersion !== 1) {
+    throw new Error('Generated source preservation bridge unavailable; publication cannot preserve superseded sources with this host. Preserve the project and report the incomplete result.');
+  }
+
+  return publish(projectPath, { artifacts, ...(sketchCode !== undefined ? { sketchCode } : {}),
+    ...(options.preserveSuperseded ? { preserveSuperseded: true } : {}) });
 }

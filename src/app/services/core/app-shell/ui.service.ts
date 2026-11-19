@@ -6,6 +6,7 @@ import { ElectronService, LogService } from '@core/platform/public-api';
 import { TerminalService } from '../../../tools/terminal/terminal.service';
 import { Router } from '@angular/router';
 import { FeedbackDialogComponent } from '../../../components/feedback-dialog/feedback-dialog.component';
+import { resolveAccountStatusCode } from '../../../components/feedback-dialog/feedback-diagnostics.utils';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { ProjectSettingDialogComponent } from '../../../components/project-setting-dialog/project-setting-dialog.component';
@@ -29,6 +30,7 @@ import {
 } from '@integration/subapps/public-api';
 import { closeConnectionGraphSubWindows } from './project-window-lifecycle';
 import { ProcessState, WorkflowService } from './workflow.service';
+import type { NoticeLogTarget } from '@shared/public-api';
 
 @Injectable({
   providedIn: 'root',
@@ -161,6 +163,8 @@ export class UiService {
         let data;
         if (String(message.data?.action || '').startsWith('partition-manager-')) {
           data = await this.partitionManagerRequest(message.data);
+        } else if (message.data?.action === 'get-feedback-context') {
+          data = await this.getFeedbackContext();
         } else if (message.data?.action === 'get-auth-state') {
           const initializationState = this.authService.getAuthInitializationState();
           if (initializationState === 'idle' || initializationState === 'checking') {
@@ -170,6 +174,7 @@ export class UiService {
             success: true,
             authenticated: this.authService.isLoggedIn,
             initializationState: this.authService.getAuthInitializationState(),
+            canUseCloudCompilation: this.configService.canUseCloudCompilation,
             openProtectedToolIds: this.getOpenAuthRequiredToolIds(),
           };
         } else if (message.data?.action === 'request-login') {
@@ -230,16 +235,8 @@ export class UiService {
             const regionKey = typeof message.data?.regionKey === 'string'
               ? message.data.regionKey.trim()
               : '';
-            if (!this.configService.getEnabledRegionList().some((region) => region.key === regionKey)) {
-              throw new Error('Unknown or disabled service region');
-            }
-            await switchServiceRegionAndRequestLogin(regionKey, {
-              closeProtectedTools: () => this.closeAuthRequiredTools(),
-              clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
-              stopProtectedRuntime: () => this.stopDefaultAilyChatRuntime(),
-              setRegion: (nextRegionKey) => this.configService.setRegion(nextRegionKey),
-              requestLogin: (reason) => this.authService.requestLogin(reason),
-            });
+
+            await this.switchHostServiceRegion(regionKey);
             data = { success: true };
           } catch (error) {
             console.error('切换服务区域失败:', error);
@@ -553,6 +550,20 @@ export class UiService {
     return collectOpenAuthRequiredToolIds(this.openToolList, this.openWindowPathList);
   }
 
+  async switchHostServiceRegion(regionKey: string): Promise<void> {
+    if (!this.configService.getEnabledRegionList().some(region => region.key === regionKey)) {
+      throw new Error('Unknown or disabled service region');
+    }
+
+    await switchServiceRegionAndRequestLogin(regionKey, {
+      closeProtectedTools: () => this.closeAuthRequiredTools(),
+      clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
+      stopProtectedRuntime: () => this.stopDefaultAilyChatRuntime(),
+      setRegion: nextRegionKey => this.configService.setRegion(nextRegionKey),
+      requestLogin: reason => this.authService.requestLogin(reason),
+    });
+  }
+
   async closeAuthRequiredTools(toolIds = this.getOpenAuthRequiredToolIds()): Promise<void> {
     const { MainUiAutomationService } = await import('@integration/automation/public-api');
     const mainUiAutomation = this.injector.get(MainUiAutomationService);
@@ -621,6 +632,23 @@ export class UiService {
     for (const name of [...this.openToolList].reverse()) {
       await this.closeToolAndWait(name);
     }
+  }
+
+  /** Settle every partition draft confirmation before application cleanup stops its Runtime. */
+  async closePartitionManagerBeforeQuit(): Promise<boolean> {
+    const toolId = 'ffs-manager-child';
+    const embedded = await this.childHostRegistry.closeAll(toolId);
+    if (embedded['ok'] !== true) return false;
+    for (const route of [...this.openWindowPathList]) {
+      if (this.resolveToolNameFromWindowPath(route) !== toolId) continue;
+      if (typeof window['subWindow']?.command !== 'function') return false;
+      await window['subWindow'].control?.(route, 'focus');
+      const result = await window['subWindow'].command(route, { toolId, action: 'closeAll' });
+      if (result?.ok !== true) return false;
+    }
+    // Let Angular destroy embedded/compact frames before main starts app.quit().
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    return true;
   }
 
   async closeConnectionGraphWindows(): Promise<boolean> {
@@ -789,6 +817,12 @@ export class UiService {
     }
   }
 
+  openLog(target?: NoticeLogTarget): void {
+    // openBottomSider 的 Promise 等待终端 PID，日志定位不能依赖终端就绪。
+    void this.openBottomSider('log');
+    this.actionSubject.next({ action: 'reveal', type: 'log', data: target });
+  }
+
   async openBottomSider(data = 'default'): Promise<{ pid: number }> {
     return new Promise(async (resolve, reject) => {
       this.currentBottomTab = data;
@@ -837,6 +871,14 @@ export class UiService {
 
 
   openFeedback(data?: any) {
+    // The existing independent-window host focuses/reuses the same route.
+    // Opening the form never submits feedback or uploads an attachment.
+    if (typeof window['subWindow']?.open === 'function') {
+      this.openWindow({ path: 'feedback', type: 'feedback-open', title: 'aily Feedback',
+        data, width: 620, height: 740, minWidth: 520, minHeight: 520, alwaysOnTop: false, windowClass: 'builtin' });
+      void this.reportOpenChatIssue().catch(() => undefined);
+      return;
+    }
     const modalRef = this.modal.create({
       nzTitle: null,
       nzFooter: null,
@@ -851,12 +893,54 @@ export class UiService {
       nzData: data,
     });
 
+    // Start independently of the dialog and its submit/cancel lifecycle.
+    void this.reportOpenChatIssue().catch(() => undefined);
+
     // 处理反馈结果
     modalRef.afterClose.subscribe(result => {
       if (result?.result === 'success') {
         console.log('反馈已提交:', result.data);
       }
     });
+  }
+
+  private async reportOpenChatIssue(): Promise<void> {
+    const toolId = DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID;
+    if (this.childHostRegistry.has(toolId)) {
+      await this.childHostRegistry.control(toolId, 'reportIssue');
+      return;
+    }
+    // The existing window command only reaches an already-open detached host.
+    const path = this.getToolWindowPath(toolId) || `/child-tool/${toolId}`;
+    await window['subWindow']?.command?.(path, { toolId, action: 'reportIssue' });
+  }
+
+  private async getFeedbackContext(): Promise<Record<string, unknown>> {
+    try {
+      const { ProjectService } = await import('@domain/project/public-api');
+      const { SerialService } = await import('@domain/device/public-api');
+      const project = this.injector.get(ProjectService);
+      const unchanged = project.captureCurrentProjectGuard();
+      const path = project.currentProjectPath || null;
+      const [projectPackage, boardPackageName, boardPackage, logPage] = await Promise.all([
+        path ? project.getPackageJson().catch(() => null) : null,
+        path ? project.getBoardModule().catch(() => null) : null,
+        path ? project.getBoardPackageJson().catch(() => null) : null,
+        this.logService.readPage({ mode: 'tail', limit: 500, maxBytes: 128 * 1024 }).catch(() => ({ entries: this.logService.list })),
+      ]);
+      if (!unchanged()) return { success: false, error: 'Project changed while collecting feedback context' };
+      const authState = this.authService.getAuthInitializationState();
+      return { success: true, context: {
+        projectPath: path, projectPackage, boardPackageName, boardPackage,
+        boardName: project.currentBoardConfig?.name || null,
+        serialPort: this.injector.get(SerialService).currentPort || null,
+        logs: logPage.entries.slice(-500), email: this.authService.currentUser?.email || '',
+        accountStatusCode: resolveAccountStatusCode(authState, this.authService.isAuthenticated,
+          authState === 'authenticated' ? this.authService.getAuthSnapshot()?.plan : null),
+      } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   openProjectSettings() {
@@ -881,7 +965,7 @@ export class UiService {
   }
 
   /** 打开切换开发板弹窗（Header 菜单与 Aily View MCU 节点共用） */
-  async openBoardSelector(): Promise<void> {
+  async openBoardSelector(projectPath?: string): Promise<void> {
     const { ProjectService } = await import('@domain/project/public-api');
     const projectService = this.injector.get(ProjectService);
     const isAilyCode = projectService.isAilyCodeProject();
@@ -892,6 +976,8 @@ export class UiService {
       boardList = await this.configService.loadBoardList();
     }
 
+    if (projectPath && projectService.currentProjectPath !== projectPath) return;
+    if (isAilyCode && this.modal.openModals.some(modal => modal.getContentComponent() instanceof BoardSelectorDialogComponent)) return;
     this.modal.create({
       nzTitle: null,
       nzFooter: null,
@@ -940,6 +1026,8 @@ export interface ToolOpts {
 }
 
 export interface ActionState {
+  /** Scoped clears cannot dismiss another operation's footer status. */
+  owner?: string;
   text: string;
   desc?: string;
   state?: 'done' | 'doing' | 'error' | 'warn' | 'loading' | string,

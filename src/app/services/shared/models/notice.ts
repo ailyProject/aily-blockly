@@ -4,6 +4,13 @@
  * 这里只描述数据，不包含展示、日志或 Angular 生命周期；具体渲染仍由
  * core/app-shell 的 NoticeService 负责。
  */
+export interface NoticeLogTarget {
+  timestamp?: number;
+  title?: string;
+  detail?: string;
+  mergeKey?: string;
+}
+
 export interface NoticeOptions {
   title?: string;
   text?: string;
@@ -16,9 +23,18 @@ export interface NoticeOptions {
   showDetail?: boolean;
   timestamp?: number;
   sendToLog?: boolean;
+  /** 底部日志中的原始记录；转发通知时保留，避免定位到后续无关输出。 */
+  logTarget?: NoticeLogTarget;
   closable?: boolean;
+  /** Optional owner callback for dismissing a persistent informational notice. */
+  onClose?: () => void;
   icon?: string;
   isCancellationNotice?: boolean;
   /** 错误通知上的“重试”动作，例如 Aily Code npm install 失败后再执行一次。 */
   onRetry?: () => void;
+  /** 当前云编译任务切换为本地编译，继续原调用。 */
+  onSwitchToLocal?: () => void;
+  /** 云编译失败后由用户发起一次本地重试，不修改全局偏好。 */
+  onRetryLocally?: () => void;
+  onSwitchToCloud?: () => void;
 }

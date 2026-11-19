@@ -3,6 +3,7 @@ import { BehaviorSubject, Subject } from 'rxjs';
 
 export const PROJECT_DEBUG_CONFIGURATION_FILE = 'aily-debug.json';
 export const PROJECT_DEBUG_CONFIGURATION_SCHEMA_VERSION = 1 as const;
+
 export const PROJECT_ARTIFACT_MANIFEST_PATH =
   '.build/aily-artifact-manifest.json';
 
@@ -20,6 +21,7 @@ export interface ProjectBlockBreakpointIntent {
 export interface ProjectDebugConfiguration {
   schemaVersion: typeof PROJECT_DEBUG_CONFIGURATION_SCHEMA_VERSION;
   kind: 'aily-project-debug-configuration';
+
   breakpoints: ProjectBlockBreakpointIntent[];
 }
 
@@ -63,18 +65,22 @@ export interface ProjectSelectedDebugTarget {
 @Injectable({
   providedIn: 'root',
 })
+
 export class ProjectDebugConfigurationService {
   private workspaceHashGeneration = 0;
   private readonly selectedDebugTargetByProject = new Map<string, string>();
   private debugTargetCaptureSuppressionDepth = 0;
+
   private readonly stateSubject =
     new BehaviorSubject<ProjectDebugConfigurationState>(
       createEmptyProjectDebugConfigurationState(),
     );
+
   private readonly selectedDebugTargetSubject =
     new Subject<ProjectSelectedDebugTarget>();
 
   readonly state$ = this.stateSubject.asObservable();
+
   readonly selectedDebugTarget$ =
     this.selectedDebugTargetSubject.asObservable();
 
@@ -90,12 +96,14 @@ export class ProjectDebugConfigurationService {
     ) {
       return;
     }
+
     if (
       blockId.length > 256
       || /[\u0000-\u001f\u007f]/.test(blockId)
     ) {
       throw new Error('Blockly 调试目标 blockId 无效。');
     }
+
     this.selectedDebugTargetByProject.set(projectPath, blockId);
     this.selectedDebugTargetSubject.next({ projectPath, blockId });
   }
@@ -108,6 +116,7 @@ export class ProjectDebugConfigurationService {
 
   withoutSelectedDebugTargetCapture<T>(operation: () => T): T {
     this.debugTargetCaptureSuppressionDepth += 1;
+
     try {
       return operation();
     } finally {
@@ -118,12 +127,15 @@ export class ProjectDebugConfigurationService {
   refresh(projectPath: string): ProjectDebugConfigurationState {
     if (!projectPath) {
       const empty = createEmptyProjectDebugConfigurationState();
+
       this.stateSubject.next(empty);
+
       return cloneProjectDebugConfigurationState(empty);
     }
 
     let configuration = createEmptyProjectDebugConfiguration();
     let configurationError = '';
+
     try {
       configuration = this.readConfigurationFile(projectPath);
     } catch (error) {
@@ -131,10 +143,13 @@ export class ProjectDebugConfigurationService {
     }
 
     const artifact = this.readArtifactState(projectPath);
+
     const previous = this.stateSubject.value.projectPath === projectPath
       ? this.stateSubject.value
       : null;
+
     const workspaceSourceSha256 = previous?.workspaceSourceSha256 || '';
+
     const buildConsistency = (
       previous?.buildConsistency === 'dirty'
       && !workspaceSourceSha256
@@ -147,6 +162,7 @@ export class ProjectDebugConfigurationService {
           artifact.sourceSha256,
           workspaceSourceSha256,
         );
+
     const state: ProjectDebugConfigurationState = {
       projectPath,
       configuration,
@@ -159,22 +175,28 @@ export class ProjectDebugConfigurationService {
       configurationError,
       sourceMapError: artifact.error,
     };
+
     this.stateSubject.next(cloneProjectDebugConfigurationState(state));
+
     return cloneProjectDebugConfigurationState(state);
   }
 
   read(projectPath: string): ProjectDebugConfiguration {
     const state = this.refresh(projectPath);
+
     if (state.configurationError) {
       throw new Error(state.configurationError);
     }
+
     return cloneProjectDebugConfiguration(state.configuration);
   }
 
   requireCurrentSourceMapRevision(projectPath: string): string {
     const state = this.refresh(projectPath);
+
     if (state.sourceMapRevision) return state.sourceMapRevision;
     if (state.sourceMapError) throw new Error(state.sourceMapError);
+
     throw new Error(
       `未找到 ${PROJECT_ARTIFACT_MANIFEST_PATH} 中的 Blockly source-map，`
       + '请先使用最新 aily-builder 编译项目。',
@@ -183,21 +205,26 @@ export class ProjectDebugConfigurationService {
 
   requireBindableSourceMapRevision(projectPath: string): string {
     const state = this.refresh(projectPath);
+
     if (
       state.sourceMapRevision
       && state.buildConsistency === 'current'
     ) {
       return state.sourceMapRevision;
     }
+
     if (state.sourceMapError) throw new Error(state.sourceMapError);
+
     if (state.buildConsistencyError) {
       throw new Error(state.buildConsistencyError);
     }
+
     if (state.buildConsistency === 'dirty') {
       throw new Error(
         '当前 Blockly 工作区尚未进入最近 Artifact，请重新编译后再绑定断点。',
       );
     }
+
     if (
       state.buildConsistency === 'checking'
       || state.buildConsistency === 'workspace-unknown'
@@ -206,19 +233,25 @@ export class ProjectDebugConfigurationService {
         '正在核对当前 Blockly 工作区与最近 Artifact，请稍后重试。',
       );
     }
+
     return this.requireCurrentSourceMapRevision(projectPath);
   }
 
   markWorkspaceDirty(projectPath: string): ProjectDebugConfigurationState {
     this.workspaceHashGeneration += 1;
+
     if (!projectPath) {
       const empty = createEmptyProjectDebugConfigurationState();
+
       this.stateSubject.next(empty);
+
       return cloneProjectDebugConfigurationState(empty);
     }
+
     const current = this.stateSubject.value.projectPath === projectPath
       ? this.stateSubject.value
       : this.refresh(projectPath);
+
     const state: ProjectDebugConfigurationState = {
       ...current,
       workspaceSourceSha256: '',
@@ -229,7 +262,9 @@ export class ProjectDebugConfigurationService {
         ? 'dirty'
         : 'artifact-unavailable',
     };
+
     this.stateSubject.next(cloneProjectDebugConfigurationState(state));
+
     return cloneProjectDebugConfigurationState(state);
   }
 
@@ -239,10 +274,14 @@ export class ProjectDebugConfigurationService {
     options: { refreshArtifact?: boolean; isCurrent?: () => boolean } = {},
   ): Promise<ProjectDebugConfigurationState> {
     if (options.isCurrent?.() === false) return this.snapshot;
+
     const generation = ++this.workspaceHashGeneration;
+
     if (!projectPath) {
       const empty = createEmptyProjectDebugConfigurationState();
+
       this.stateSubject.next(empty);
+
       return cloneProjectDebugConfigurationState(empty);
     }
 
@@ -252,6 +291,7 @@ export class ProjectDebugConfigurationService {
     )
       ? this.stateSubject.value
       : this.refresh(projectPath);
+
     current = {
       ...current,
       buildConsistency: (
@@ -262,10 +302,12 @@ export class ProjectDebugConfigurationService {
         : 'artifact-unavailable',
       buildConsistencyError: current.buildConsistencyError,
     };
+
     this.stateSubject.next(cloneProjectDebugConfigurationState(current));
 
     try {
       const workspaceSourceSha256 = await sha256ProjectSource(code);
+
       if (
         generation !== this.workspaceHashGeneration
         || this.stateSubject.value.projectPath !== projectPath
@@ -273,7 +315,9 @@ export class ProjectDebugConfigurationService {
       ) {
         return this.snapshot;
       }
+
       const latest = this.stateSubject.value;
+
       const state: ProjectDebugConfigurationState = {
         ...latest,
         workspaceSourceSha256,
@@ -283,7 +327,9 @@ export class ProjectDebugConfigurationService {
           workspaceSourceSha256,
         ),
       };
+
       this.stateSubject.next(cloneProjectDebugConfigurationState(state));
+
       return cloneProjectDebugConfigurationState(state);
     } catch (error) {
       if (
@@ -293,6 +339,7 @@ export class ProjectDebugConfigurationService {
       ) {
         return this.snapshot;
       }
+
       const state: ProjectDebugConfigurationState = {
         ...this.stateSubject.value,
         workspaceSourceSha256: '',
@@ -300,7 +347,9 @@ export class ProjectDebugConfigurationService {
         buildConsistencyError:
           `无法计算当前 Blockly 源码 SHA-256：${normalizeError(error)}`,
       };
+
       this.stateSubject.next(cloneProjectDebugConfigurationState(state));
+
       return cloneProjectDebugConfigurationState(state);
     }
   }
@@ -310,12 +359,15 @@ export class ProjectDebugConfigurationService {
     sourceMapRevision: string,
   ): ProjectDebugConfigurationState {
     const normalizedRevision = sourceMapRevision.toLowerCase();
+
     if (!SOURCE_MAP_REVISION_PATTERN.test(normalizedRevision)) {
       throw new Error('Blockly source-map revision 必须是 64 位 SHA-256。');
     }
+
     const current = this.stateSubject.value.projectPath === projectPath
       ? this.stateSubject.value
       : this.refresh(projectPath);
+
     const state: ProjectDebugConfigurationState = {
       ...current,
       projectPath,
@@ -327,7 +379,9 @@ export class ProjectDebugConfigurationService {
       ),
       sourceMapError: '',
     };
+
     this.stateSubject.next(cloneProjectDebugConfigurationState(state));
+
     return cloneProjectDebugConfigurationState(state);
   }
 
@@ -343,6 +397,7 @@ export class ProjectDebugConfigurationService {
     projectPath: string,
   ): ProjectDebugConfigurationState {
     const current = this.refresh(projectPath);
+
     if (
       !current.sourceMapRevision
       || current.configurationError
@@ -351,11 +406,14 @@ export class ProjectDebugConfigurationService {
     ) {
       return current;
     }
+
     const executableBlockIds = this.readExecutableArtifactBlockIds(
       projectPath,
       current.sourceMapRevision,
     );
+
     let changed = false;
+
     const breakpoints = current.configuration.breakpoints.map((breakpoint) => {
       if (
         !executableBlockIds.has(breakpoint.blockId)
@@ -363,17 +421,22 @@ export class ProjectDebugConfigurationService {
       ) {
         return { ...breakpoint };
       }
+
       changed = true;
+
       return {
         ...breakpoint,
         sourceMapRevision: current.sourceMapRevision,
       };
     });
+
     if (!changed) return current;
+
     this.write(projectPath, {
       ...current.configuration,
       breakpoints,
     });
+
     return this.snapshot;
   }
 
@@ -389,16 +452,20 @@ export class ProjectDebugConfigurationService {
     breakpoints: ProjectBlockBreakpointIntent[],
   ): ProjectDebugConfiguration {
     const configuration = this.readConfigurationForMutation(projectPath);
+
     const byBlockId = new Map(
       configuration.breakpoints.map((breakpoint) => [
         breakpoint.blockId,
         breakpoint,
       ]),
     );
+
     for (const breakpoint of breakpoints) {
       byBlockId.set(breakpoint.blockId, { ...breakpoint });
     }
+
     configuration.breakpoints = [...byBlockId.values()];
+
     return this.write(projectPath, configuration);
   }
 
@@ -408,13 +475,17 @@ export class ProjectDebugConfigurationService {
     enabled: boolean,
   ): ProjectDebugConfiguration {
     const configuration = this.readConfigurationForMutation(projectPath);
+
     const breakpoint = configuration.breakpoints.find(
       (item) => item.blockId === blockId,
     );
+
     if (!breakpoint) {
       throw new Error(`项目断点 ${blockId} 不存在。`);
     }
+
     breakpoint.enabled = enabled;
+
     return this.write(projectPath, configuration);
   }
 
@@ -431,9 +502,11 @@ export class ProjectDebugConfigurationService {
   ): ProjectDebugConfiguration {
     const configuration = this.readConfigurationForMutation(projectPath);
     const removedIds = new Set(blockIds);
+
     configuration.breakpoints = configuration.breakpoints.filter(
       (item) => !removedIds.has(item.blockId),
     );
+
     return this.write(projectPath, configuration);
   }
 
@@ -443,9 +516,11 @@ export class ProjectDebugConfigurationService {
     if (!projectPath) {
       throw new Error('请先打开一个 Blockly 项目。');
     }
+
     if (!this.hasLocalProjectFileSystem()) {
-      throw new Error('项目断点编辑仅支持 Aily Blockly 桌面版。');
+      throw new Error('项目断点编辑仅支持 aily Blockly 桌面版。');
     }
+
     return this.readConfigurationFile(projectPath);
   }
 
@@ -453,15 +528,21 @@ export class ProjectDebugConfigurationService {
     projectPath: string,
   ): ProjectDebugConfiguration {
     const empty = createEmptyProjectDebugConfiguration();
+
     if (!projectPath || !this.hasLocalProjectFileSystem()) return empty;
+
     const filePath = this.configurationFilePath(projectPath);
+
     if (!window['fs'].existsSync(filePath)) return empty;
+
     const raw = window['fs'].readFileSync(filePath, 'utf8');
+
     if (typeof raw !== 'string' || raw.length > MAX_CONFIGURATION_BYTES) {
       throw new Error(
         `${PROJECT_DEBUG_CONFIGURATION_FILE} 超出大小限制。`,
       );
     }
+
     return normalizeProjectDebugConfiguration(JSON.parse(raw));
   }
 
@@ -472,10 +553,13 @@ export class ProjectDebugConfigurationService {
     if (!projectPath) {
       throw new Error('请先打开一个 Blockly 项目。');
     }
+
     const normalized = normalizeProjectDebugConfiguration(configuration);
+
     normalized.breakpoints.sort(
       (left, right) => left.blockId.localeCompare(right.blockId),
     );
+
     window['fs'].writeFileSync(
       this.configurationFilePath(projectPath),
       `${JSON.stringify(normalized, null, 2)}\n`,
@@ -483,10 +567,13 @@ export class ProjectDebugConfigurationService {
     );
 
     const artifact = this.readArtifactState(projectPath);
+
     const previous = this.stateSubject.value.projectPath === projectPath
       ? this.stateSubject.value
       : null;
+
     const workspaceSourceSha256 = previous?.workspaceSourceSha256 || '';
+
     const buildConsistency = (
       previous?.buildConsistency === 'dirty'
       && !workspaceSourceSha256
@@ -499,6 +586,7 @@ export class ProjectDebugConfigurationService {
           artifact.sourceSha256,
           workspaceSourceSha256,
         );
+
     this.stateSubject.next({
       projectPath,
       configuration: cloneProjectDebugConfiguration(normalized),
@@ -511,6 +599,7 @@ export class ProjectDebugConfigurationService {
       configurationError: '',
       sourceMapError: artifact.error,
     });
+
     return cloneProjectDebugConfiguration(normalized);
   }
 
@@ -532,10 +621,17 @@ export class ProjectDebugConfigurationService {
         consistencyError: '',
       };
     }
+
+    const isolated = window['builder']?.isolatedBuildExecutionVersion === 1;
+    const artifactRoot = isolated ? window['builder'].resolveBuildProjectPath(projectPath) : projectPath;
+
+    if (!artifactRoot) return { revision: '', sourcePath: '', sourceSha256: '', error: '', consistencyError: '' };
+
     const manifestPath = window['path'].join(
-      projectPath,
+      artifactRoot,
       ...PROJECT_ARTIFACT_MANIFEST_PATH.split('/'),
     );
+
     if (!window['fs'].existsSync(manifestPath)) {
       return {
         revision: '',
@@ -548,23 +644,30 @@ export class ProjectDebugConfigurationService {
 
     try {
       const raw = window['fs'].readFileSync(manifestPath, 'utf8');
+
       if (typeof raw !== 'string' || raw.length > MAX_ARTIFACT_MANIFEST_BYTES) {
         throw new Error('Artifact manifest 超出大小限制。');
       }
+
       const artifact = JSON.parse(raw) as unknown;
+
       if (!isRecord(artifact) || !Array.isArray(artifact['files'])) {
         throw new Error('Artifact manifest 缺少 files。');
       }
+
       const build = isRecord(artifact['build']) ? artifact['build'] : null;
       const source = isRecord(build?.['source']) ? build['source'] : null;
       const sourcePath = normalizePortableArtifactPath(source?.['path']);
       const rawSourceSha256 = source?.['sha256'];
       let sourceSha256 = '';
       let consistencyError = '';
+
       if (typeof rawSourceSha256 === 'string') {
         sourceSha256 = rawSourceSha256.toLowerCase();
+
         if (!SOURCE_MAP_REVISION_PATTERN.test(sourceSha256)) {
           sourceSha256 = '';
+
           consistencyError =
             'Artifact build.source.sha256 无效，无法确认当前工作区是否已编译。';
         }
@@ -572,18 +675,23 @@ export class ProjectDebugConfigurationService {
         consistencyError =
           'Artifact 缺少 build.source.sha256，无法确认当前工作区是否已编译。';
       }
+
       const debug = isRecord(artifact['debug']) ? artifact['debug'] : null;
+
       const sourceMapPath = typeof debug?.['sourceMapPath'] === 'string'
         ? normalizeArtifactPath(debug['sourceMapPath'])
         : '';
+
       const descriptor = artifact['files'].find((file) => {
         if (!isRecord(file) || file['role'] !== 'source-map') return false;
+
         return !sourceMapPath
           || (
             typeof file['path'] === 'string'
             && normalizeArtifactPath(file['path']) === sourceMapPath
           );
       });
+
       if (!isRecord(descriptor) || typeof descriptor['sha256'] !== 'string') {
         return {
           revision: '',
@@ -593,10 +701,13 @@ export class ProjectDebugConfigurationService {
           consistencyError,
         };
       }
+
       const revision = descriptor['sha256'].toLowerCase();
+
       if (!SOURCE_MAP_REVISION_PATTERN.test(revision)) {
         throw new Error('Artifact source-map sha256 无效。');
       }
+
       return {
         revision,
         sourcePath,
@@ -623,33 +734,46 @@ export class ProjectDebugConfigurationService {
       projectPath,
       ...PROJECT_ARTIFACT_MANIFEST_PATH.split('/'),
     );
+
     const manifestRaw = window['fs'].readFileSync(manifestPath, 'utf8');
+
     if (
       typeof manifestRaw !== 'string'
       || manifestRaw.length > MAX_ARTIFACT_MANIFEST_BYTES
     ) {
       throw new Error('Artifact manifest exceeds the debug binding limit.');
     }
+
     const manifest = JSON.parse(manifestRaw) as unknown;
+
     if (!isRecord(manifest) || !Array.isArray(manifest['files'])) {
       throw new Error('Artifact manifest does not describe a source map.');
     }
+
     const debug = isRecord(manifest['debug']) ? manifest['debug'] : null;
+
     const requestedPath = normalizePortableArtifactPath(
       debug?.['sourceMapPath'],
     );
+
     const descriptor = manifest['files'].find((file) => {
       if (!isRecord(file) || file['role'] !== 'source-map') return false;
+
       const candidatePath = normalizePortableArtifactPath(file['path']);
+
       return !!candidatePath && (!requestedPath || candidatePath === requestedPath);
     });
+
     if (!isRecord(descriptor)) {
       throw new Error('Artifact source-map descriptor is unavailable.');
     }
+
     const sourceMapPath = normalizePortableArtifactPath(descriptor['path']);
+
     const sourceMapRevision = typeof descriptor['sha256'] === 'string'
       ? descriptor['sha256'].toLowerCase()
       : '';
+
     if (
       !sourceMapPath
       || sourceMapRevision !== expectedRevision
@@ -657,19 +781,24 @@ export class ProjectDebugConfigurationService {
     ) {
       throw new Error('Artifact source-map identity changed during binding.');
     }
+
     const sourceMapFilePath = window['path'].join(
       projectPath,
       '.build',
       ...sourceMapPath.split('/'),
     );
+
     const sourceMapRaw = window['fs'].readFileSync(sourceMapFilePath, 'utf8');
+
     if (
       typeof sourceMapRaw !== 'string'
       || sourceMapRaw.length > MAX_SOURCE_MAP_BYTES
     ) {
       throw new Error('Artifact source map exceeds the debug binding limit.');
     }
+
     const sourceMap = JSON.parse(sourceMapRaw) as unknown;
+
     if (
       !isRecord(sourceMap)
       || sourceMap['schemaVersion'] !== 1
@@ -678,11 +807,15 @@ export class ProjectDebugConfigurationService {
     ) {
       throw new Error('Artifact source map is invalid.');
     }
+
     const executableBlockIds = new Set<string>();
+
     for (const mapping of sourceMap['mappings']) {
       if (!isRecord(mapping)) continue;
+
       const blockId = mapping['blockId'];
       const ranges = mapping['executableRanges'];
+
       if (
         typeof blockId !== 'string'
         || !blockId
@@ -693,8 +826,10 @@ export class ProjectDebugConfigurationService {
       ) {
         continue;
       }
+
       executableBlockIds.add(blockId);
     }
+
     return executableBlockIds;
   }
 
@@ -748,19 +883,23 @@ export function getProjectBreakpointMarkerState(
       ? 'revision-unknown-enabled'
       : 'revision-unknown-disabled';
   }
+
   if (breakpoint.sourceMapRevision !== currentSourceMapRevision) {
     return breakpoint.enabled ? 'stale-enabled' : 'stale-disabled';
   }
+
   if (buildConsistency === 'dirty') {
     return breakpoint.enabled
       ? 'workspace-dirty-enabled'
       : 'workspace-dirty-disabled';
   }
+
   if (buildConsistency !== 'current') {
     return breakpoint.enabled
       ? 'workspace-unknown-enabled'
       : 'workspace-unknown-disabled';
   }
+
   return breakpoint.enabled ? 'enabled' : 'disabled';
 }
 
@@ -772,9 +911,11 @@ export function deriveProjectBuildConsistency(
   if (!sourceMapRevision || !artifactSourceSha256) {
     return 'artifact-unavailable';
   }
+
   if (!workspaceSourceSha256) {
     return 'workspace-unknown';
   }
+
   return artifactSourceSha256 === workspaceSourceSha256
     ? 'current'
     : 'dirty';
@@ -782,11 +923,14 @@ export function deriveProjectBuildConsistency(
 
 export async function sha256ProjectSource(source: string): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
+
   if (!subtle) {
     throw new Error('当前运行环境不支持 Web Crypto。');
   }
+
   const bytes = new TextEncoder().encode(source);
   const digest = await subtle.digest('SHA-256', bytes);
+
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
@@ -800,6 +944,7 @@ export function normalizeProjectDebugConfiguration(
       `${PROJECT_DEBUG_CONFIGURATION_FILE} 必须是 JSON 对象。`,
     );
   }
+
   if (
     value['schemaVersion'] !== PROJECT_DEBUG_CONFIGURATION_SCHEMA_VERSION
     || value['kind'] !== 'aily-project-debug-configuration'
@@ -810,14 +955,18 @@ export function normalizeProjectDebugConfiguration(
       `${PROJECT_DEBUG_CONFIGURATION_FILE} 协议版本或结构无效。`,
     );
   }
+
   const blockIds = new Set<string>();
+
   const breakpoints = value['breakpoints'].map((raw, index) => {
     if (!isRecord(raw)) {
       throw new Error(`项目断点 ${index + 1} 不是对象。`);
     }
+
     const blockId = raw['blockId'];
     const sourceMapRevision = raw['sourceMapRevision'];
     const enabled = raw['enabled'];
+
     if (
       typeof blockId !== 'string'
       || blockId.length === 0
@@ -829,6 +978,7 @@ export function normalizeProjectDebugConfiguration(
         `项目断点 ${index + 1} 的 blockId 无效或重复。`,
       );
     }
+
     if (
       typeof sourceMapRevision !== 'string'
       || !SOURCE_MAP_REVISION_PATTERN.test(sourceMapRevision)
@@ -837,12 +987,16 @@ export function normalizeProjectDebugConfiguration(
         `项目断点 ${blockId} 的 source-map revision 无效。`,
       );
     }
+
     if (typeof enabled !== 'boolean') {
       throw new Error(`项目断点 ${blockId} 的 enabled 必须是布尔值。`);
     }
+
     blockIds.add(blockId);
+
     return { blockId, sourceMapRevision, enabled };
   });
+
   return {
     schemaVersion: PROJECT_DEBUG_CONFIGURATION_SCHEMA_VERSION,
     kind: 'aily-project-debug-configuration',
@@ -876,7 +1030,9 @@ function normalizeArtifactPath(filePath: string): string {
 
 function normalizePortableArtifactPath(value: unknown): string {
   if (typeof value !== 'string') return '';
+
   const normalized = normalizeArtifactPath(value.trim()).replace(/^\.\//u, '');
+
   if (
     !normalized
     || normalized.length > 512
@@ -887,6 +1043,7 @@ function normalizePortableArtifactPath(value: unknown): string {
   ) {
     return '';
   }
+
   return normalized;
 }
 
@@ -896,8 +1053,10 @@ function normalizeError(error: unknown): string {
 
 function isExecutableSourceRange(value: unknown): boolean {
   if (!isRecord(value)) return false;
+
   const startLine = value['startLine'];
   const endLine = value['endLine'];
+
   return Number.isSafeInteger(startLine)
     && Number.isSafeInteger(endLine)
     && Number(startLine) >= 1

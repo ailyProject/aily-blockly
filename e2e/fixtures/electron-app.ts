@@ -40,6 +40,8 @@ export async function launchAilyElectron(options: {
   appDataPath?: string;
   logConsole?: boolean;
   config?: Readonly<Record<string, unknown>>;
+  /** Serve a frozen build through the real production renderer server. */
+  rendererDirectory?: string;
 } = {}): Promise<LaunchedAilyElectron> {
   assertElectronCanLaunch();
 
@@ -72,11 +74,34 @@ export async function launchAilyElectron(options: {
         await cp(source, destination, {recursive: true, mode: constants.COPYFILE_FICLONE});
       }
     }
+    // Seed before Electron starts: copying over an active subapp installation
+    // races its startup/update publication and can invalidate both versions.
+    const coderStoreSeed = options.environment?.['AILY_E2E_CODER_STORE_SEED'];
+    if (coderStoreSeed) {
+      await cp(coderStoreSeed, path.join(userDataDir, 'npm-global/app/store/subapp-aily-coder-editor'),
+        {recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE});
+    }
     if (options.config) {
       await writeFile(path.join(userDataDir, 'config.json'), JSON.stringify(options.config), 'utf8');
     }
+    let entry = '.', serve = Boolean(process.env['AILY_E2E_DEV_URL']);
+    if (options.rendererDirectory) {
+      entry = path.join(userDataDir, 'renderer-bootstrap.cjs'); serve = false;
+      await writeFile(entry, `
+const path = require('node:path');
+const root = ${JSON.stringify(ROOT)}, directory = ${JSON.stringify(path.resolve(options.rendererDirectory))};
+process.env.AILY_APP_VERSION = require(path.join(root, 'package.json')).version;
+const renderer = require(path.join(root, 'electron/packaged-renderer-server'));
+const create = renderer.createPackagedRendererServer;
+renderer.createPackagedRendererServer = options => {
+  const server = create(options);
+  return { ...server, start: options => server.start({ ...options, rootDirectory: directory }) };
+};
+require(path.join(root, 'electron/main.js'));
+`);
+    }
     app = await _electron.launch({
-      args: ['.', ...(process.env['AILY_E2E_DEV_URL'] ? ['--serve'] : []), `--user-data-dir=${userDataDir}`],
+      args: [entry, ...(serve ? ['--serve'] : []), `--user-data-dir=${userDataDir}`],
       cwd: ROOT,
       timeout: 60_000,
       env: {
@@ -87,7 +112,9 @@ export async function launchAilyElectron(options: {
         AILY_APPDATA_PATH: options.appDataPath || userDataDir,
       },
     });
-    if (process.env['AILY_E2E_DEV_URL']) {
+    // The normal dev URL already matches main-process window ownership checks.
+    // Redirecting it to itself would loop and prevent any renderer from loading.
+    if (!options.rendererDirectory && process.env['AILY_E2E_DEV_URL'] && !/^http:\/\/localhost:4200\/?$/.test(process.env['AILY_E2E_DEV_URL'])) {
       await app.context().route('http://localhost:4200/**', route => route.fulfill({
         status: 302, headers: { location: process.env['AILY_E2E_DEV_URL']! },
       }));
@@ -315,6 +342,32 @@ export async function navigate(win: Page, route: string): Promise<void> {
 export async function openBlocklyProject(win: Page, projectPath: string): Promise<void> {
   const encoded = encodeURIComponent(projectPath);
   await navigate(win, `/main/blockly-editor?path=${encoded}`);
+}
+
+export async function readAilyHostOperation(
+  app: ElectronApplication,
+  operation: string,
+  projectPath: string,
+  params: Record<string, unknown> = {},
+  timeoutMs = 12_000,
+): Promise<Record<string, any>> {
+  const discoveryPath = path.join(os.homedir(), '.aily-blockly', 'cli-bridge', `${app.process().pid}.json`);
+  const connection = JSON.parse(await readFile(discoveryPath, 'utf8'));
+  const response = await app.context().request.post(`http://127.0.0.1:${connection.port}/command`, {
+    data: {
+      token: connection.token,
+      action: 'blockly-live-operation',
+      operation,
+      path: projectPath,
+      params,
+    },
+    timeout: timeoutMs,
+  });
+  const status = await response.json();
+  if (!response.ok() || status.ok !== true) {
+    throw new Error(`[e2e] ${operation} 失败：${status.message || `HTTP ${response.status()}`}`);
+  }
+  return status;
 }
 
 export const test = base.extend<AilyFixtures>({

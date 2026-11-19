@@ -1,12 +1,26 @@
 import { canonicalProjectJsonStringify, cloneProjectJson } from '@domain/project/project-document/public-api';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { assertAbsReadback } from '../../../integrations/blockly/abs/abs-readback';
+import { sameAbsProgram } from '../../../integrations/blockly/abs/abs-program-state';
 import type { AbsAbiBlock, AbsAbiWorkspace } from '../../../integrations/blockly/abs/abs-state';
 import { BlocklyProjectDocument, composeBlocklyPage } from './blockly-project-model';
+import { projectBuildDocument } from './blockly-project-revision';
 
 const same = (a: unknown, b: unknown) => a === undefined || b === undefined
   ? a === b : canonicalProjectJsonStringify(a) === canonicalProjectJsonStringify(b);
 type RuntimeView = (workspace: AbsAbiWorkspace) => AbsAbiWorkspace;
+
+/** Read-only disk admission. A presentation-only rewrite must not remove the
+ * Save choice on exit, but it is never a new clean checkpoint. No normalizer,
+ * resource resolution or current-canvas equality can excuse external code. */
+function sameSavedDiskProgram(before: string, after: string): boolean {
+  try {
+    const baseline = JSON.parse(before), disk = JSON.parse(after);
+    return baseline?.schemaVersion === 3 && disk?.schemaVersion === 3
+      && Array.isArray(baseline.pages) && Array.isArray(disk.pages)
+      ? sameAbsProgram(baseline, disk) : same(baseline, disk);
+  } catch { return false; }
+}
 
 /** A newly introduced variable field may create its default model when an old
  * archive omitted that field. Accept only models referenced by those omitted
@@ -78,16 +92,38 @@ export function assertProjectLoadPreserved(before: BlocklyProjectDocument, after
 
 /** An editor-session record, not an ABS projection or a new persistent format. */
 export class BlocklyProjectCleanState {
-  private accepted?: { scope: readonly unknown[]; disk: string; document: BlocklyProjectDocument };
+  private accepted?: { scope: readonly unknown[]; disk: string; document: BlocklyProjectDocument; buildDocumentText?: string };
   private failure?: Error;
 
   constructor(private readonly runtimeView?: RuntimeView) {}
 
   clear(): void { this.accepted = undefined; this.failure = undefined; }
 
+  /** Retain the saved checkpoint, not the unsaved pre-rebuild canvas. This
+   * private closure is usable only by the persistence coordinator after readback. */
+  captureCheckpoint(): () => void {
+    const accepted = this.accepted && { ...this.accepted, scope: [...this.accepted.scope],
+      document: cloneProjectJson(this.accepted.document) };
+    const failure = this.failure;
+    return () => { this.accepted = accepted; this.failure = failure; };
+  }
+
   remember(scope: readonly unknown[], disk: string, document: BlocklyProjectDocument): void {
     this.accepted = { scope: [...scope], disk, document: cloneProjectJson(document) };
     this.failure = undefined;
+  }
+
+  /** Original acknowledged load/save bytes; current disk or canvas never grants this record. */
+  readSavedAbiRecipe(scope: readonly unknown[]): string | undefined {
+    if (this.failure || !this.accepted || !this.matches(scope)) return undefined;
+    return this.accepted.disk;
+  }
+
+  compareBuildDocument(scope: readonly unknown[], documentText: string) {
+    if (this.failure || !this.accepted || !this.matches(scope)) return undefined;
+    const accepted = this.accepted;
+    accepted.buildDocumentText ??= canonicalProjectJsonStringify(projectBuildDocument(accepted.document));
+    return { abiText: accepted.disk, savedMatch: accepted.buildDocumentText === documentText ? 'matched' as const : 'different' as const };
   }
 
   reject(error: unknown): void {
@@ -99,13 +135,16 @@ export class BlocklyProjectCleanState {
     if (this.failure) throw this.failure;
     if (!this.accepted) return undefined;
     if (!this.matches(scope)) throw new Error('Project runtime changed; save or reload before checking unsaved state.');
-    if (disk !== this.accepted.disk) throw new Error('project.abi changed outside this editor; review or reload the project before closing.');
+    if (disk !== this.accepted.disk && !sameSavedDiskProgram(this.accepted.disk, disk)) {
+      throw Object.assign(new Error('project.abi changed outside this editor; review or reload the project before closing.'),
+        { code: 'ABS_SAVED_ABI_CHANGED' });
+    }
     return !same(document, this.accepted.document);
   }
 
   /** Visiting an untouched page may add serialization defaults, but must never
    * acknowledge edits to that page, another page, shared models, titles or tabs. */
-  acceptHydration(scope: readonly unknown[], before: BlocklyProjectDocument, after: BlocklyProjectDocument): void {
+  acceptHydration(scope: readonly unknown[], before: BlocklyProjectDocument, after: BlocklyProjectDocument): BlocklyProjectDocument | undefined {
     if (!this.accepted || !this.matches(scope)) return;
     try { assertProjectLoadPreserved(before, after, this.runtimeView); } catch { return; }
     const baseline = this.accepted.document;
@@ -123,6 +162,8 @@ export class BlocklyProjectCleanState {
       else delete original.viewState;
     }
     baseline.sharedModel = cloneProjectJson(after.sharedModel);
+    this.accepted.buildDocumentText = undefined;
+    return baseline;
   }
 
   private matches(scope: readonly unknown[]): boolean {

@@ -1,12 +1,28 @@
 import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
 import { serializeAbsFailure } from './abs-diagnostics';
 import { AbsSyncError } from './abs-state';
+import { readAbsBlockStateRequest } from './abs-block-state';
+import { assertProgramDriftShape } from './abs-program-drift';
 
 // Only obsolete remote writes are retired. Native UI editing is unrelated to this boundary.
 const retiredWrites = new Set(['abi_add', 'abi_delete', 'abi_connect', 'abi_set_field', 'abi_move']);
 const generationOperations = new Set(['abs_projection', 'abs_validate', 'abs_apply', 'abs_recovery']);
 
-export const ABS_LIVE_PROTOCOL = Object.freeze({ generation: 2, absSchema: 2, legacyAbiWrites: false });
+export const ABS_LIVE_PROTOCOL = Object.freeze({ generation: 2, absSchema: 2, legacyAbiWrites: false, workingCandidateVersion: 1 });
+
+/** Protocol support is static; it grants no workspace, candidate or write authority. */
+export function absProtocolReply(project: string, input: Record<string, unknown>) {
+  if (input['version'] !== 1 || Object.keys(input).some(key => key !== 'version'))
+    return { ok: false, operation: 'abs_protocol', project, code: 'ABS_REQUEST_INVALID',
+      message: 'Protocol discovery requires version 1 and no runtime query fields.' };
+  return { ok: true, operation: 'abs_protocol', project, protocol: { version: 1, ...ABS_LIVE_PROTOCOL } };
+}
+
+function requireCurrentWriter(value: unknown) {
+  if (value === undefined) throw new AbsSyncError('ABS_PROTOCOL_REQUIRED',
+    'This writer requires an immutable WorkingCandidate. The system retains the original draft for automatic migration.',
+    undefined, [], { reason: 'legacy-baseline-writer-retired' });
+}
 
 /** Pure admission before file reads, runtime loading, lifecycle ownership or workspace mutation. */
 export function rejectAbsLiveRequest(operation: string, input: Record<string, any>) {
@@ -16,10 +32,20 @@ export function rejectAbsLiveRequest(operation: string, input: Record<string, an
         reason: 'legacy-abi-write', hint: 'Update/reconnect Chat or the MCP client. Do not fall back to offline ABI writes after an ABS failure.',
       });
     }
+    if (operation === 'blocks_set_state') { readAbsBlockStateRequest(input); return null; }
     if (!generationOperations.has(operation)) return null;
     assertGenerationRequest(input);
-    if (operation === 'abs_projection') assertGenerationProjectionRequest(input);
-    if (operation === 'abs_validate') assertGenerationCandidate(input);
+    if (operation === 'abs_recovery' && input['action'] === 'reconcile_program') {
+      if (Object.keys(input).some(key => !['version', 'requestId', 'action', 'observation'].includes(key)))
+        throw new AbsSyncError('ABS_REQUEST_INVALID', 'Program reconciliation accepts only its exact observation.');
+      assertProgramDriftShape(input['observation']);
+    }
+    if (operation === 'abs_projection') {
+      assertGenerationProjectionRequest(input);
+      throw new AbsSyncError('ABS_PROTOCOL_REQUIRED', 'Legacy projection is retired; capture the current Working view using the current tools.',
+        undefined, [], { reason: 'legacy-projection-retired' });
+    }
+    if (operation === 'abs_validate') { assertGenerationCandidate(input); requireCurrentWriter(input['workingCandidate']); }
     if (operation === 'abs_apply') {
       const receipt = readGenerationApplyValidation(input);
       if (typeof receipt['libraryRuntimeFingerprint'] !== 'string' || !/^[a-f0-9]{64}$/.test(receipt['libraryRuntimeFingerprint'])) {
@@ -27,7 +53,12 @@ export function rejectAbsLiveRequest(operation: string, input: Record<string, an
           reason: 'invalid-runtime-fingerprint', hint: 'Update/reconnect the Agent and prepare the candidate again. Do not fabricate a runtime fingerprint.',
         });
       }
+      requireCurrentWriter(receipt['workingCandidate']);
     }
+    if (operation === 'abs_recovery' && ['preserve_candidate', 'repair', 'refresh', 'resolve', 'reopen', 'prepare_native', 'abandon'].includes(input['action'])
+      && !(input['observe'] === true && ['resolve', 'prepare_native'].includes(input['action'])))
+      throw new AbsSyncError('ABS_PROTOCOL_REQUIRED', 'Legacy baseline mutations are retired. Retained records remain readable for automatic recovery.',
+        undefined, [], { reason: 'legacy-baseline-writer-retired' });
     if (operation === 'abs_validate' || operation === 'abs_apply') {
       const text = typeof input['abs'] === 'string', file = typeof input['absPath'] === 'string';
       if (text === file || !(text ? input['abs'] : input['absPath']).trim()) {
@@ -55,6 +86,7 @@ export function rejectAbsRuntime(operation: 'abs_validate' | 'abs_apply', curren
   const unavailable = !current;
   return {
     ok: false, operation, code: unavailable ? 'ABS_RUNTIME_NOT_READY' : 'ABS_RUNTIME_CONTRACT_STALE',
+    application: { status: 'NOT_STARTED' },
     publication: { status: 'NOT_COMMITTED' },
     diagnostic: { reason: unavailable ? 'library-runtime-unavailable' : 'library-runtime-changed' },
     message: unavailable ? 'The current library runtime is not ready; ABS was not applied.'

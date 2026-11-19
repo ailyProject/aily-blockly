@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/services/domains/build/builder-notification.spec.ts",
+    "../src/app/services/domains/build/builder.service.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

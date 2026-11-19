@@ -1,9 +1,15 @@
 const fs = require('fs');
 const path = require('path');
+const { resolvePlatformResourceRoots, resolveBoardResourceDirectory } = require('./platform-resource-roots');
 const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
+const { selectFirmwareFile } = require('./firmware-selection');
+const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
+const { canReuseCoderUpload } = require('./coder-upload-state');
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
+const { resolveBuiltinUploader } = require('./builtin-uploaders');
+const { findUploadToolDependency, findPinnedUploadToolDirectories, resolveToolExecutableInDirectory } = require('./upload-tool-version');
 const { verifyUploadArtifact, resolveVerifiedFirmware, assertVerifiedFirmwareArguments } = require('./verified-upload');
 
 // 简单的日志工具
@@ -17,6 +23,9 @@ const logger = {
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // 动态加载 serialport 模块
 let SerialPort = null;
+let fixedUploadInventory = null;
+let restrictToolSearch = false;
+let builtinToolsPath = null;
 
 function formatFatalError(error) {
     if (!error) return 'Unknown error';
@@ -31,6 +40,72 @@ function formatFatalError(error) {
 function exitWithFatalError(error) {
     logger.error(`[ERROR] ${formatFatalError(error)}`);
     process.exit(1);
+}
+
+// These SDK wrappers launch vendor CLIs that are not bundled with the core.
+// Check before touching a port: jlink_upload.bat ends with del, which can hide
+// the missing JLink.exe failure by returning zero. Keep the selected recipe.
+function assertUploadPrerequisites(command, args = [], { platform = os.platform(), cwd = process.cwd(), env = process.env } = {}) {
+    if (platform !== 'win32') return [];
+
+    const unquote = value => String(value || '').replace(/^"|"$/g, '');
+    const basename = value => path.win32.basename(unquote(value)).toLowerCase();
+    const executable = basename(command);
+    const jlink = executable === 'jlink_upload.bat';
+
+    const cube = executable === 'stm32cubeprog.sh' || (
+        ['busybox.exe', 'busybox', 'sh.exe', 'bash.exe'].includes(executable)
+        && args.some(value => basename(value) === 'stm32cubeprog.sh')
+    );
+
+    if (!jlink && !cube) return [];
+
+    const environment = name => {
+        const key = Object.keys(env).find(key => key.toLowerCase() === name.toLowerCase());
+
+        return key === undefined ? '' : String(env[key] || '');
+    };
+
+    const pathDirectories = environment('PATH').split(';').filter(Boolean).map(unquote);
+
+    const find = (name, directories) => {
+        for (const directory of directories) {
+            const filename = path.resolve(cwd, directory, name);
+
+            try { if (fs.statSync(filename).isFile()) return filename; } catch {}
+        }
+
+        return null;
+    };
+
+    const name = jlink ? 'JLink.exe' : 'STM32_Programmer_CLI.exe';
+    // cmd.exe searches its working directory before PATH. The busybox shell
+    // helper uses PATH and, if missing there, these two exact install locations.
+    let filename = find(name, jlink ? [cwd, ...pathDirectories] : pathDirectories);
+
+    if (!filename && cube) {
+        // busybox normalizes Path to PATH, but preserves the casing of these
+        // other variables. The SDK shell script reads only their uppercase names.
+        const directories = ['PROGRAMW6432', 'PROGRAMFILES'].map(name => env[name]).filter(Boolean)
+            .map(directory => path.join(directory, 'STMicroelectronics', 'STM32Cube', 'STM32CubeProgrammer', 'bin'));
+
+        filename = find(name, directories);
+    }
+
+    if (!filename) {
+        const installation = jlink
+            ? 'SEGGER J-Link Software and Documentation Pack，并将 JLink.exe 所在目录加入 PATH（https://www.segger.com/downloads/jlink/）'
+            : 'STM32CubeProgrammer，或将 STM32_Programmer_CLI.exe 所在目录加入 PATH（https://www.st.com/en/development-tools/stm32cubeprog.html）';
+
+        const error = new Error(`UPLOADER_PREREQUISITE_MISSING: 未找到 ${name}。请安装 ${installation}；也可在设备菜单中选择已连接且受支持的调试器。`);
+
+        error.code = 'UPLOADER_PREREQUISITE_MISSING';
+        error.executable = name;
+
+        throw error;
+    }
+
+    return [{ executable: name, path: filename }];
 }
 
 const UPLOAD_OUTPUT_TAIL_LIMIT = 64 * 1024;
@@ -189,10 +264,10 @@ function normalizeUploadParam(value) {
     return value.trim().replace(/;+$/, '').trim();
 }
 
-function readUploadCommandFromPreprocess(currentProjectPath) {
-    const preprocessPath = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath)
+function readUploadCommandFromPreprocess(currentProjectPath, localPreprocessPath) {
+    const preprocessPath = localPreprocessPath || (ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath)
         ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
-        : path.join(currentProjectPath, '.temp', 'preprocess.json');
+        : path.join(currentProjectPath, '.temp', 'preprocess.json'));
 
     if (!fs.existsSync(preprocessPath)) {
         return { success: false, reason: 'preprocess.json 不存在' };
@@ -227,7 +302,7 @@ function readUploadCommandFromPreprocess(currentProjectPath) {
     };
 }
 
-function selectUploadParam(currentProjectPath, configuredUploadParam) {
+function selectUploadParam(currentProjectPath, configuredUploadParam, localPreprocessPath) {
     const normalizedConfigured = normalizeUploadParam(configuredUploadParam);
 
     if (normalizedConfigured) {
@@ -238,7 +313,7 @@ function selectUploadParam(currentProjectPath, configuredUploadParam) {
         };
     }
 
-    const preprocessResult = readUploadCommandFromPreprocess(currentProjectPath);
+    const preprocessResult = readUploadCommandFromPreprocess(currentProjectPath, localPreprocessPath);
 
     if (preprocessResult.success) {
         return {
@@ -256,7 +331,7 @@ function selectUploadParam(currentProjectPath, configuredUploadParam) {
     };
 }
 
-function selectUploadParamForPort(currentProjectPath, portType, boardJson, configUploadParam) {
+function selectUploadParamForPort(currentProjectPath, portType, boardJson, configUploadParam, localPreprocessPath) {
     if (portType === 'debugger') {
         const debuggerUploadParam = normalizeUploadParam(boardJson?.linkUploadParam);
 
@@ -276,7 +351,7 @@ function selectUploadParamForPort(currentProjectPath, portType, boardJson, confi
 
     const configuredUploadParam = normalizeUploadParam(configUploadParam || boardJson?.uploadParam);
 
-    return selectUploadParam(currentProjectPath, configuredUploadParam);
+    return selectUploadParam(currentProjectPath, configuredUploadParam, localPreprocessPath);
 }
 
 function parseUploadBoolean(value, fallback = false) {
@@ -355,6 +430,7 @@ async function main() {
     //     uploadParam: configUploadParam
     // });
 
+    let coderWorkspace;
     let uploadWorkspace;
     let verifiedArtifact;
 
@@ -378,11 +454,33 @@ async function main() {
         }
 
         // 1. 路径准备
+        if (config.verifyCoderBuild === true) {
+            coderWorkspace = acquireBuildWorkspace(currentProjectPath, 'verify');
+
+            const expectedBuildPath = path.join(coderWorkspace.projectRoot, '.build');
+
+            if (fs.realpathSync(buildPath) !== expectedBuildPath || !canReuseCoderUpload(config)) {
+                throw new Error('BUILD_ARTIFACT_STALE: Coder firmware or inputs changed; build again.');
+            }
+        }
+
+        if (config.buildExecution) {
+            const selected = require('./build-execution-workspace').resolveBuildExecution(config.buildExecution.logicalProjectPath);
+
+            if (!selected || selected.currentProjectPath !== currentProjectPath || selected.buildPath !== buildPath
+                || selected.buildRequestId !== config.buildExecution.buildRequestId || selected.inputDigest !== config.buildExecution.inputDigest) {
+                throw new Error('BUILD_ARTIFACT_STALE: Upload does not belong to the current completed build execution.');
+            }
+        }
+
         const tempPath = path.join(currentProjectPath, '.temp');
         // const buildPath = path.join(tempPath, 'build');
-        const compilerPath = path.join(appDataPath, 'compiler');
-        const sdkPath = path.join(appDataPath, 'sdk');
-        const toolsPath = path.join(appDataPath, 'tools');
+        const resources = resolvePlatformResourceRoots(appDataPath);
+        const { compilerPath, sdkPath } = resources;
+        const toolsPath = config.toolsPath || resources.toolsPath;
+        fixedUploadInventory = config.uploadArtifactInventory || null;
+        restrictToolSearch = config.restrictToolSearch === true;
+        builtinToolsPath = resources.toolsPath;
         // 2. 读取项目信息
         const projectPackageJsonPath = path.join(currentProjectPath, 'package.json');
 
@@ -455,11 +553,13 @@ async function main() {
 
         Object.entries(boardDependencies || {}).forEach(([key, version]) => {
             if (key.startsWith('@aily-project/sdk-')) {
-                const sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
+                const name = key.replace(/^@aily-project\/sdk-/, '');
 
-                fullSdkPath = path.join(sdkPath, sdk);
+                fullSdkPath = resolveBoardResourceDirectory(sdkPath, 'sdk', name, version);
             }
         });
+
+        if (config.sdkDirectory) fullSdkPath = config.sdkDirectory;
 
         const platform = os.platform() === 'win32' ? 'win32' : (os.platform() === 'darwin' ? 'darwin' : 'linux');
 
@@ -468,6 +568,7 @@ async function main() {
             portType,
             boardJson,
             configUploadParam,
+            config.preprocessPath,
         );
 
         if (!uploadSelection.success) {
@@ -524,7 +625,7 @@ async function main() {
 
                     const { command: cmdPath, args: cmdArgs } = await processUploadParams(
                         cmd, buildPath, toolsPath, fullSdkPath, baudRate,
-                        toolDependencies, '', platform, chipName, skipToolResolve, verifiedArtifact
+                        toolDependencies, '', platform, chipName, skipToolResolve, config.cloudRecipeSdkIdentity, verifiedArtifact
                     );
 
                     if (!validateCommandResult(cmdPath, cmdArgs)) {
@@ -546,6 +647,9 @@ async function main() {
                     verifyCurrentArtifact();
 
                     const exitCode = await new Promise((resolveCmd, rejectCmd) => {
+                        coderWorkspace?.markDelegated();
+                        uploadWorkspace?.markDelegated();
+
                         const child = spawn(shellCmd, cmdArgs, {
                             cwd: buildPath,
                             shell: true,
@@ -584,15 +688,16 @@ async function main() {
                     if (exitCode !== 0) {
                         logger.error(`命令 [${i + 1}] 执行失败，退出码: ${exitCode}`);
 
-                        throw Object.assign(new Error(`Upload command failed: ${exitCode}`), { exitCode });
+                        return exitCode || 1;
                     }
                 }
+
+                return 0;
             };
 
-            await runDebuggerUpload(uploadParam, uploadParamSource);
-            logger.log('所有上传命令执行完成');
+            process.exitCode = await runDebuggerUpload(uploadParam, uploadParamSource);
 
-            process.exitCode = 0;
+            if (process.exitCode === 0) logger.log('所有上传命令执行完成');
 
             return;
         }
@@ -616,12 +721,15 @@ async function main() {
                 platform,
                 pnum,
                 skipToolResolve,
+                config.cloudRecipeSdkIdentity,
                 verifiedArtifact
             );
 
             if (!validateCommandResult(parsed.command, parsed.args)) {
                 throw new Error('上传命令解析后为空');
             }
+
+            assertUploadPrerequisites(parsed.command, parsed.args, { platform, cwd: buildPath });
 
             return parsed;
         };
@@ -684,6 +792,9 @@ async function main() {
         // 12. 执行上传命令。部分旧版 SDK 包装脚本会吞掉底层工具的异常并返回 0，
         // 因此在透传输出的同时保留末尾内容，用致命错误文本兜底校正退出码。
         const result = await new Promise((resolve, reject) => {
+            coderWorkspace?.markDelegated();
+            uploadWorkspace?.markDelegated();
+
             const child = spawn(shellCommand, args, {
                 cwd: buildPath,
                 shell: true,
@@ -738,10 +849,11 @@ async function main() {
         process.exitCode = error.exitCode || 1;
     } finally {
         uploadWorkspace?.release();
+        coderWorkspace?.release();
     }
 }
 
-async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate, toolDependencies, serialPort, platform, pnum, skipToolResolve = false, verifiedArtifact) {
+async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate, toolDependencies, serialPort, platform, pnum, skipToolResolve = false, sdkIdentity, verifiedArtifact) {
     // 1. 基础变量替换
     let paramString = uploadParam;
 
@@ -779,7 +891,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
     // 替换 ${bootloader}
     if (paramString.includes('${bootloader}')) {
         const bootLoaderFile = verifiedArtifact ? resolveVerifiedFirmware(verifiedArtifact, buildPath, '*.bootloader.bin')
-            : await findFile(buildPath, '*.bootloader.bin');
+            : findFirmwareFile(buildPath, '*.bootloader.bin');
 
         paramString = paramString.replace(/\$\{bootloader\}/g, `"${bootLoaderFile}"`);
     }
@@ -787,7 +899,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
     // 替换 ${partitions}
     if (paramString.includes('${partitions}')) {
         const partitionsFile = verifiedArtifact ? resolveVerifiedFirmware(verifiedArtifact, buildPath, '*.partitions.bin')
-            : await findFile(buildPath, '*.partitions.bin');
+            : findFirmwareFile(buildPath, '*.partitions.bin');
 
         paramString = paramString.replace(/\$\{partitions\}/g, `"${partitionsFile}"`);
     }
@@ -796,30 +908,44 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
     let paramList = parseArgs(paramString);
     // 2. 查找工具可执行文件
     const toolName = paramList[0];
+    const toolExecutable = toolName.replace(/^"|"$/g, '');
     let commandPath = toolName;
+    let pinnedToolDirectory;
 
-    if (!skipToolResolve) {
-        let toolVersion = toolDependencies[toolName];
-        
-        if (!toolVersion) {
-            // 模糊匹配
-            const matchedTool = Object.keys(toolDependencies).find(key => {
-                return key.toLowerCase().includes(toolName.toLowerCase());
-            });
+    const builtinUploader = restrictToolSearch
+        ? await resolveBuiltinUploader(toolName, builtinToolsPath || toolsPath, { platform, sdkIdentity })
+        : null;
 
-            if (matchedTool) {
-                toolVersion = toolDependencies[matchedTool];
+    if (builtinUploader) commandPath = builtinUploader;
+
+    const pinnedTool = builtinUploader ? null : findUploadToolDependency(toolExecutable, toolDependencies);
+    const toolFileName = path.basename(toolExecutable) + (platform === 'win32' && !/\.exe$/i.test(toolExecutable) ? '.exe' : '');
+
+    if (pinnedTool) {
+        const directories = findPinnedUploadToolDirectories(toolsPath, pinnedTool.tool, pinnedTool.version);
+        const usePreparedPath = skipToolResolve && path.isAbsolute(toolExecutable);
+
+        for (const directory of directories) {
+            const executable = usePreparedPath
+                ? resolveToolExecutableInDirectory(toolExecutable, directory, platform)
+                : await findFile(directory, toolFileName);
+
+            if (executable) {
+                pinnedToolDirectory = directory;
+                commandPath = usePreparedPath ? toolName.replace(toolExecutable, () => executable) : executable;
+
+                break;
             }
         }
 
-        const isWindows = platform === 'win32';
-        const toolFileName = toolName + (isWindows ? '.exe' : '');
-        commandPath = await findFile(toolsPath, toolFileName, toolVersion);
+        if (!pinnedToolDirectory) {
+            throw new Error(`无法使用烧录工具 ${pinnedTool.tool}@${pinnedTool.version}: ${toolName}`);
+        }
+    } else if (!skipToolResolve && !builtinUploader) {
+        commandPath = await findFile(toolsPath, toolFileName);
 
-        // console.log("Command Path: ", commandPath);
-        
         // 如果在 toolsPath 中未找到，尝试从 PATH 环境变量中查找
-        if (!commandPath && process.env.PATH) {
+        if (!commandPath && !restrictToolSearch && process.env.PATH) {
             const pathDirs = process.env.PATH.split(path.delimiter);
 
             for (const dir of pathDirs) {
@@ -838,6 +964,29 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
         }
     }
 
+    // SDK uploaders can delegate to another tool by passing its full path.
+    if (skipToolResolve) {
+        for (let i = 1; i < paramList.length; i++) {
+            const argument = paramList[i];
+            const executable = argument.replace(/^--[^=]+=/, '').replace(/^"|"$/g, '');
+
+            if (!path.isAbsolute(executable)) continue;
+
+            const dependency = findUploadToolDependency(executable, toolDependencies);
+
+            if (!dependency) continue;
+
+            const directories = findPinnedUploadToolDirectories(toolsPath, dependency.tool, dependency.version);
+            const resolved = directories.map(directory => resolveToolExecutableInDirectory(executable, directory, platform)).find(Boolean);
+
+            if (!resolved) {
+                throw new Error(`无法使用烧录工具 ${dependency.tool}@${dependency.version}: ${executable}`);
+            }
+
+            paramList[i] = argument.replace(executable, () => resolved);
+        }
+    }
+
     // 3. 处理 ${'filename'} 格式的文件路径参数
     for (let i = 1; i < paramList.length; i++) {
         const param = paramList[i];
@@ -849,7 +998,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
             let findRes = '';
             
             if (!['bin', 'elf', 'hex', 'eep', 'img', 'uf2'].includes(ext)) {
-                findRes = await findFile(toolsPath, fileName);
+                findRes = await findFile(pinnedToolDirectory || toolsPath, fileName);
 
                 if (!findRes) {
                     findRes = await findFile(path.join(sdkPath, 'tools'), fileName);
@@ -857,7 +1006,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
             } else {
                 // console.log('Searching build path for file:', buildPath, fileName);
                 findRes = verifiedArtifact ? resolveVerifiedFirmware(verifiedArtifact, buildPath, fileName)
-                    : await findFile(buildPath, fileName);
+                    : findFirmwareFile(buildPath, fileName);
             }
 
             if (findRes) {
@@ -912,8 +1061,53 @@ function wrapInQuotesIfNeeded(value) {
     return `"${value}"`;
 }
 
+function findFirmwareFile(buildPath, pattern) {
+    const files = [];
+
+    const visit = (directory) => {
+        // Firmware discovery must not follow backup links outside this build or
+        // symlink loops. Tool discovery below retains its separate legacy rules.
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const filename = path.join(directory, entry.name);
+
+            if (entry.isDirectory()) visit(filename);
+            else if (entry.isFile()) files.push(filename);
+        }
+    };
+
+    if (fs.existsSync(buildPath)) visit(buildPath);
+
+    const selected = selectUploadFirmwareFile(files, pattern, fixedUploadInventory, buildPath);
+
+    if (!selected) throw new Error(`FIRMWARE_NOT_FOUND: 未找到可用于上传的固件 ${pattern}，请重新编译。构建目录：${buildPath}`);
+    if (!fs.statSync(selected).size) throw new Error(`FIRMWARE_EMPTY: 固件为空，已停止上传：${selected}`);
+
+    return selected;
+}
+
+function selectUploadFirmwareFile(files, pattern, inventory, buildPath) {
+    if (!inventory) return selectFirmwareFile(files, pattern, readBlocklyUploadArtifacts(buildPath));
+
+    if (!Array.isArray(inventory.files) || typeof inventory.primary !== 'string'
+        || !inventory.files.includes(inventory.primary)) throw new Error('ARTIFACT_INVALID: Invalid fixed cloud upload inventory.');
+
+    const approved = inventory.files.map(relative => {
+        if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.split(/[\\/]/).some(part => !part || part === '..' || part === '.')) throw new Error('ARTIFACT_INVALID: Unsafe cloud firmware reference.');
+
+        const filename = path.resolve(buildPath, relative);
+
+        if (!files.includes(filename)) throw new Error(`ARTIFACT_MISSING: Signed cloud firmware is absent: ${relative}`);
+
+        return filename;
+    });
+
+    const primary = path.resolve(buildPath, inventory.primary);
+
+    return selectFirmwareFile(approved, pattern, [primary]);
+}
+
 // 递归查找文件
-async function findFile(basePath, pattern, version = '') {
+async function findFile(basePath, pattern) {
     if (!fs.existsSync(basePath)) return '';
 
     const files = await findFilesRecursive(basePath);
@@ -928,12 +1122,6 @@ async function findFile(basePath, pattern, version = '') {
     }
 
     if (matchedFiles.length === 0) return '';
-
-    if (version && matchedFiles.length > 1) {
-        const versionMatched = matchedFiles.find(f => f.includes(version));
-
-        if (versionMatched) return versionMatched;
-    }
 
     // 优先返回路径最短的，或者按某种规则排序
     return matchedFiles[0];
@@ -965,8 +1153,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+    assertUploadPrerequisites,
     hasFatalUploadOutput,
     normalizeUploadExitCode,
     selectUploadParamForPort,
     processUploadParams,
+    selectUploadFirmwareFile,
 };

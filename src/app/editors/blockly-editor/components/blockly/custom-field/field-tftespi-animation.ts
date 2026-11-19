@@ -1,5 +1,7 @@
+import { MediaFieldFilePicker } from './field-media-file-picker';
 import * as Blockly from 'blockly/core';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef, DEFAULT_TFT_MEDIA_SIZE, MAX_TFT_MEDIA_DIMENSION,
+  tftMediaSize } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 type AnimationMessageParams = Record<string, string | number>;
@@ -212,13 +214,12 @@ export interface FieldTftEsPiAnimationFromJsonConfig extends Blockly.FieldConfig
   imageMode?: boolean;
 }
 
-const DEFAULT_WIDTH = 160;
-const DEFAULT_HEIGHT = 120;
+const { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT } = DEFAULT_TFT_MEDIA_SIZE;
 const DEFAULT_FPS = 10;
 const DEFAULT_MAX_FRAMES = 10;
 const DEFAULT_FORMAT: TftEsPiAnimationFormat = 'rgb565';
-const MAX_WIDTH = 480;
-const MAX_HEIGHT = 480;
+const MAX_WIDTH = MAX_TFT_MEDIA_DIMENSION;
+const MAX_HEIGHT = MAX_TFT_MEDIA_DIMENSION;
 const MAX_FPS = 30;
 const MAX_FRAMES = 300;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -271,8 +272,8 @@ function getMaxFramesForDimensions(width: number, height: number, format: TftEsP
 
 export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> {
   private initialValue: TftEsPiAnimationValue | null = null;
-  private imgWidth = DEFAULT_WIDTH;
-  private imgHeight = DEFAULT_HEIGHT;
+  private imgWidth: number = DEFAULT_WIDTH;
+  private imgHeight: number = DEFAULT_HEIGHT;
   private fps = DEFAULT_FPS;
   private maxFrames = DEFAULT_MAX_FRAMES;
   private pixelFormat = DEFAULT_FORMAT;
@@ -286,6 +287,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
   private frameIndexElement: HTMLElement | null = null;
   private playButton: HTMLButtonElement | null = null;
   private fileInput: HTMLInputElement | null = null;
+  private filePicker: MediaFieldFilePicker | null = null;
   private widthInput: HTMLInputElement | null = null;
   private heightInput: HTMLInputElement | null = null;
   private fpsInput: HTMLInputElement | null = null;
@@ -433,6 +435,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
   }
 
   override dispose() {
+    this.filePicker?.dispose();
     this.isDisposed = true;
     this.uploadRequestId += 1;
     this.clearSettingsTimer();
@@ -486,12 +489,13 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
       ? 'image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif'
       : 'video/mp4,image/gif,.mp4,.gif';
     this.fileInput.hidden = true;
+    this.filePicker = new MediaFieldFilePicker(editor, this.fileInput);
     this.fileInput.addEventListener('change', () => void this.onFileSelected());
     actions.appendChild(this.fileInput);
     actions.append(
       this.createButton(
         Blockly.Msg['TFTESPI_ANIMATION_BUTTON_UPLOAD'],
-        () => this.fileInput?.click(),
+        () => this.filePicker?.open(),
         this.imageMode
           ? this.getMessage('UPLOAD_TOOLTIP')
           : Blockly.Msg['TFTESPI_ANIMATION_UPLOAD_TOOLTIP'],
@@ -1244,8 +1248,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
   }
 
   private createEmptyValue(config?: FieldTftEsPiAnimationFromJsonConfig): TftEsPiAnimationValue {
-    const width = this.normalizeNumber(config?.width, DEFAULT_WIDTH, 1, MAX_WIDTH);
-    const height = this.normalizeNumber(config?.height, DEFAULT_HEIGHT, 1, MAX_HEIGHT);
+    const { width, height } = tftMediaSize(config);
     const fps = this.normalizeNumber(config?.fps, DEFAULT_FPS, 1, MAX_FPS);
     const format = normalizeAnimationFormat(config?.format);
     const maxFrames = this.normalizeNumber(
@@ -1280,8 +1283,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
     if (value.encoding !== getAnimationEncoding(format)) {
       return fallback;
     }
-    const width = this.normalizeNumber(value.width, fallback.width, 1, MAX_WIDTH);
-    const height = this.normalizeNumber(value.height, fallback.height, 1, MAX_HEIGHT);
+    const { width, height } = tftMediaSize(value, fallback);
     const fps = this.normalizeNumber(value.fps, fallback.fps, 1, MAX_FPS);
     const maxFrames = this.normalizeNumber(
       value.maxFrames,
@@ -1374,6 +1376,8 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
   }
 
   private disposeDropdown() {
+    this.filePicker?.dispose();
+    this.filePicker = null;
     this.clearSettingsTimer();
     this.commitSettings();
     this.stopPreview(false);

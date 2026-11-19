@@ -10,22 +10,24 @@ import { provideAnimations } from '@angular/platform-browser/animations';
 import { NzModalModule } from 'ng-zorro-antd/modal';
 import { authInterceptor } from './interceptors/auth.interceptor';
 import { retryInterceptor } from './interceptors/retry.interceptor';
+
 import {
   BLOCKLY_GENERATED_CODE_PORT,
   BLOCKLY_LIVE_EDITOR_PORT,
   AUTOMATION_UI_PORT,
   BlocklyLiveOperationBridgeService,
 } from '@integration/automation/public-api';
+
 import { BlocklyEditorAutomationAdapter } from './integrations/blockly/blockly-editor-automation.adapter';
-import { BLOCKLY_PORTABLE_PROJECT_SAVE } from './editors/blockly-editor/services/blockly-portable-project-save';
 import { AbsWorkspaceSyncService } from './integrations/blockly/abs/abs-workspace-sync.service';
 import { AutomationUiAdapter } from './integrations/automation/automation-ui.adapter';
 import { ActionService } from '@core/app-shell/public-api';
-import { BUILD_ACTION_PORT, BUILD_APPLICATION_PORT } from '@domain/build/public-api';
+import { BUILD_ACTION_PORT, BUILD_APPLICATION_PORT, BLOCKLY_BUILD_PORT } from '@domain/build/public-api';
 import { DEPENDENCY_APPLICATION_PORT } from '@domain/dependencies/public-api';
 import { DEVICE_APPLICATION_PORT } from '@domain/device/public-api';
 import { PROJECT_APPLICATION_PORT } from '@domain/project/public-api';
 import { BuildApplicationAdapter } from './integrations/build/build-application.adapter';
+import { BlocklyBuildAdapter } from './integrations/build/blockly-build.adapter';
 import { DependencyApplicationAdapter } from './integrations/dependencies/dependency-application.adapter';
 import { DeviceApplicationAdapter } from './integrations/device/device-application.adapter';
 import { ProjectApplicationAdapter } from './integrations/project/project-application.adapter';
@@ -36,6 +38,7 @@ import { ElectronService } from '@core/platform/public-api';
 import { provideSimulatorWebApplication } from './integrations/simulator/simulator-web-app.providers';
 import { BLOCKLY_SIMULATOR_WEB_DEPLOYMENT, BLOCKLY_SIMULATOR_WEB_PREWARM, provideBlocklySimulatorWebProject } from './integrations/simulator/blockly-simulator-web.providers';
 import { provideBrowserProjectInput } from './integrations/project/browser-project-input.providers';
+
 import {
   CHILD_TOOL_NATIVE_PRESENTATION, CHILD_TOOL_PRESENTATION_PLATFORM, CHILD_TOOL_PRESENTATION_OVERRIDES, CHILD_TOOL_WEB_PRESENTATIONS,
 } from './tools/child-tool-presentation/child-tool-presentation.providers';
@@ -45,12 +48,6 @@ export const appConfig: ApplicationConfig = {
     provideSimulatorWebApplication(),
     provideBlocklySimulatorWebProject(),
     provideBrowserProjectInput(),
-    { provide: BLOCKLY_PORTABLE_PROJECT_SAVE,
-      // Capture only the injector here: constructing the coordinator while the
-      // editor ProjectService is being injected would form a dependency cycle.
-      useFactory: (injector: EnvironmentInjector) => ({
-        save: (path: string) => injector.get(AbsWorkspaceSyncService).saveProjectGeneration(path),
-      }), deps: [EnvironmentInjector] },
     { provide: CHILD_TOOL_PRESENTATION_PLATFORM,
       useFactory: (electron: ElectronService) => electron.isElectron ? 'native' : 'web', deps: [ElectronService] },
     { provide: CHILD_TOOL_PRESENTATION_OVERRIDES,
@@ -95,6 +92,10 @@ export const appConfig: ApplicationConfig = {
       useExisting: ActionService,
     },
     {
+      provide: BLOCKLY_BUILD_PORT,
+      useExisting: BlocklyBuildAdapter,
+    },
+    {
       provide: BUILD_APPLICATION_PORT,
       useExisting: BuildApplicationAdapter,
     },
@@ -116,7 +117,9 @@ export const appConfig: ApplicationConfig = {
     },
     provideAppInitializer(() => {
       const injector = inject(EnvironmentInjector);
+
       return inject(ElectronService).init().then(() => {
+        injector.get(AbsWorkspaceSyncService);
         injector.get(BlocklyLiveOperationBridgeService).ensureInitialized();
         injector.get(SimulatorHostProviderProductService).ensureRegistered();
         injector.get(BLOCKLY_SIMULATOR_WEB_PREWARM);

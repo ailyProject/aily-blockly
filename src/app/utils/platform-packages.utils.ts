@@ -1,4 +1,5 @@
 import { coerce, satisfies } from 'semver';
+import { platformResourcePaths } from '../../../child/scripts/platform-resource-layout.cjs';
 
 /**
  * 将主板 package.json 的 boardDependencies 解析为全局 aily-project（appdata）下的磁盘目录。
@@ -146,6 +147,15 @@ export function resolvePlatformPackageDirOnDisk(
   const version = String(declaredVersion ?? '').trim();
   if (!version) {
     return undefined;
+  }
+
+  const sdkPrefix = '@aily-project/sdk-';
+  if (packageName.startsWith(sdkPrefix) && paths.sdkBase) {
+    const installed = platformResourcePaths('sdk', packageName.slice(sdkPrefix.length), version)
+      .map(relative => joinPath(paths.sdkBase, relative))
+      .filter(directory => window['path'].isExists(directory));
+    return installed.find(directory => ['boards.txt', 'platform.txt'].every(file =>
+      window['path'].isExists(joinPath(directory, file)))) || installed[0];
   }
 
   const canonical = canonicalPlatformPath(packageName, version, paths);

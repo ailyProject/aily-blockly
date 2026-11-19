@@ -11,8 +11,10 @@ import { normalizeAbsSerializedWorkspace } from '../../../integrations/blockly/a
 import { indexAbsAbi } from '../../../integrations/blockly/abs/abs-abi-index';
 import { AbsSyncError, type AbsAbiBlock } from '../../../integrations/blockly/abs/abs-state';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
+import { declaredMediaImportFieldType } from '../../../integrations/blockly/project-media-target';
 import { initializeNativeCandidateBlock } from './blockly-native-graphics';
 import { assertNativeBudget } from './blockly-native-budget';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 
 const sameJsonValue = (actual: unknown, expected: unknown): boolean =>
   actual !== undefined && expected !== undefined && absJson(actual) === absJson(expected);
@@ -22,13 +24,15 @@ export class NativeCandidateWorkspace {
   private readonly requested = new Map<string, NativeCandidateBlock>();
   private readonly connections = new Map<Blockly.Block, Map<string, string | null>>();
   private readonly createdBy = new Map<Blockly.Block, string | undefined>();
+  private readonly writtenFields = new Map<Blockly.Block, Map<string, Blockly.Field>>();
   readonly creations: NativeDefaultCreations;
   readonly shadows: NativeShadowEvidence;
   private creationScope: NativeOwnedOperation | undefined;
 
   constructor(readonly native: typeof Blockly, readonly workspace: Blockly.Workspace,
     readonly observer: ReturnType<typeof createNativeStructureObserver>, readonly assertClean: () => void,
-    readonly models = new NativeCandidateModels(workspace), replay?: AbsNativeCreation[], declarations = new Map<string, Record<string, any>>()) {
+    readonly models = new NativeCandidateModels(workspace), replay?: AbsNativeCreation[],
+    private readonly declarations = new Map<string, Record<string, any>>()) {
     this.creations = new NativeDefaultCreations(native, replay);
     this.shadows = new NativeShadowEvidence(native, workspace, block => this.createdBy.get(block), id => this.requested.has(id),
       (block, state) => captureNativeBlock(this, declarations, block, state),
@@ -64,8 +68,19 @@ export class NativeCandidateWorkspace {
     const block = this.owned(operation.id, () => this.workspace.newBlock(operation.type, operation.id));
     this.assertClean();
     if (Object.hasOwn(operation, 'extraState')) {
-      if (typeof block.loadExtraState !== 'function') throw new Error('Block does not support extraState.');
-      this.owned(block.id, () => block.loadExtraState!(structuredClone(request.extraState))); this.assertClean();
+      this.owned(block.id, () => {
+        if (typeof block.loadExtraState === 'function') {
+          block.loadExtraState(structuredClone(request.extraState));
+        } else if (typeof block.domToMutation === 'function') {
+          // Blockly serializes legacy mutators as XML strings in extraState.
+          // Use the same native loader; never discard state or guess JSON-to-XML mappings.
+          if (typeof request.extraState !== 'string') throw new Error(`Block ${operation.type} requires XML mutation state.`);
+          block.domToMutation(this.native.utils.xml.textToDom(request.extraState));
+        } else {
+          throw new Error(`Block ${operation.type} does not support extraState.`);
+        }
+      });
+      this.assertClean();
     }
     for (const field of operation.fields) this.field(block, field.name, field.value);
     return block;
@@ -108,15 +123,29 @@ export class NativeCandidateWorkspace {
     return defaults;
   }
 
-  field(block: Blockly.Block, name: string, value: unknown): void {
+  field(block: Blockly.Block, name: string, value: unknown, restoreReplaced = false): void {
     const request = this.requested.get(block.id)!;
-    if (request.fields.some(field => field.name === name)) throw new Error(`Duplicate native field ${name}.`);
+    const previous = request.fields.find(field => field.name === name);
     const field = block.getField(name);
     if (!field || field.SERIALIZABLE === false) throw new Error(`Native field is unavailable: ${name}.`);
+    const written = this.writtenFields.get(block) ?? new Map<string, Blockly.Field>();
+    if ((previous && (!restoreReplaced || written.get(name) === field))
+      || (restoreReplaced && (!previous || !written.has(name)))) throw new Error(`Duplicate native field ${name}.`);
     const requestedValue = structuredClone(value);
     this.owned(block.id, () => field.loadState(structuredClone(requestedValue))); this.assertClean();
-    if (!sameJsonValue(field.saveState(), requestedValue)) throw new Error(`Native field did not retain requested value: ${name}.`);
-    request.fields.push({ name, value: requestedValue });
+    if (!sameJsonValue(field.saveState(), requestedValue)) {
+      const mediaType = declaredMediaImportFieldType(this.declarations.get(block.type), name);
+      const registry = this.native.registry;
+      const mediaClass = mediaType && registry.hasItem(registry.Type.FIELD, mediaType)
+        ? registry.getClass(registry.Type.FIELD, mediaType, false) : undefined;
+      const target = mediaClass && field instanceof mediaClass ? JSON.stringify({ blockType: block.type, fieldName: name }) : undefined;
+      throw new Error(`Native field did not retain requested value: ${name}.` + (target
+        ? ` Use project_media_import with the original media as source and target ${target}, then use the returned absExpression or absArgument unchanged.`
+        : ''));
+    }
+    if (previous) previous.value = requestedValue;
+    else request.fields.push({ name, value: requestedValue });
+    written.set(name, field); this.writtenFields.set(block, written);
   }
 
   connect(block: Blockly.Block, name: string, child: Blockly.Block | null, retainShadow?: (snapshot: NativeShadowSnapshot) => void): void {
@@ -184,6 +213,7 @@ export class NativeCandidateWorkspace {
       this.assertClean();
     };
     assertOwnership(); assertValues();
+    captureCustomFunctionRegistration(this.native.Blocks)?.prepareSerialization(this.workspace);
     const state = this.native.serialization.workspaces.save(this.workspace);
     assertOwnership();
     if (Object.keys(state).some(key => !['blocks', 'variables'].includes(key))) throw new Error('Native serialization created unrequested models.');

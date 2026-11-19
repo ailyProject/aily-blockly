@@ -88,12 +88,15 @@ export interface SimulatorProjectArtifactCallbackAuthorityOptions {
 
   createArtifactReference?: () => string;
   createSceneCommitId?: () => string;
+  /** Trusted Host selection; null means there is no current verified build. */
+  resolveBuildRoot?: () => string | null;
 
   readWorkspaceSource?: (signal: AbortSignal) => Promise<{
     sha256: string;
 
     isCurrent(): boolean;
   } | null>;
+
   /** Optional editor-owned freshness veto. It does not authorize an Artifact. */
   isArtifactCurrent?: (artifact: SimulationArtifact, signal: AbortSignal) => Promise<boolean>;
 }
@@ -138,7 +141,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private readonly projectRoot: string;
   private readonly sceneFilePath: string;
   private readonly buildRoot: string;
-  private readonly manifestFilePath: string;
+  private readonly resolveBuildRoot: () => string | null;
   private readonly files: SimulatorProjectArtifactFilePort;
 
   private readonly now: () => number;
@@ -181,10 +184,15 @@ export class SimulatorProjectArtifactCallbackAuthority {
 
     this.buildRoot = this.files.join(this.projectRoot, '.build');
 
-    this.manifestFilePath = this.files.join(
-      this.buildRoot,
-      'aily-artifact-manifest.json',
-    );
+    this.resolveBuildRoot = options.resolveBuildRoot ?? (() => {
+      const bridge = typeof window === 'undefined' ? undefined : window['builder'];
+
+      if (bridge?.isolatedBuildExecutionVersion !== 1) return this.buildRoot;
+
+      const selected = bridge.resolveBuildProjectPath(this.projectRoot);
+
+      return selected ? this.files.join(selected, '.build') : null;
+    });
 
     this.now = options.now ?? Date.now;
 
@@ -210,6 +218,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
 
     this.readWorkspaceSource = options.readWorkspaceSource
       ?? (async () => null);
+
     this.isArtifactCurrent = options.isArtifactCurrent ?? (async () => true);
 
     this.callbacks = Object.freeze({
@@ -428,18 +437,22 @@ export class SimulatorProjectArtifactCallbackAuthority {
     signal: AbortSignal,
   ): Promise<SimulatorSubappHostArtifactDescriptorV1> {
     this.requireProject(request.projectIdentity);
-    const artifact = await this.readCurrentArtifact(request.artifactRevision, signal);
-    const reference = await this.createReference(artifact, signal);
+
+    const buildRoot = this.resolveBuildRoot();
+    const artifact = await this.readCurrentArtifact(request.artifactRevision, signal, buildRoot);
+    const reference = await this.createReference(artifact, signal, buildRoot!);
+
     return descriptorFromReference(reference);
   }
 
   async readCurrentArtifact(
     artifactRevision: string | null,
     signal: AbortSignal,
+    buildRoot = this.resolveBuildRoot(),
   ): Promise<SimulationArtifact> {
     this.requireActive(signal);
 
-    const artifact = await this.readManifest(signal, false);
+    const artifact = await this.readManifest(signal, false, buildRoot);
 
     if (!artifact) {
       throw new SimulatorHostProviderOperationError(
@@ -449,11 +462,13 @@ export class SimulatorProjectArtifactCallbackAuthority {
     }
 
     if (!await this.isArtifactCurrent(artifact, signal)) throw new SimulatorHostProviderOperationError('conflict');
+
     this.requireActive(signal);
 
     if (artifactRevision !== null && artifactRevision !== artifact.artifactId) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
+
     return artifact;
   }
 
@@ -472,6 +487,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
     }
 
     if (!await this.isArtifactCurrent(reference.artifact, signal)) throw new SimulatorHostProviderOperationError('conflict');
+
     this.requireActive(signal);
 
     if (reference.expiresAtUnixMs <= this.requireNow()) {
@@ -599,9 +615,12 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private async readManifest(
     signal: AbortSignal,
     allowMissing: boolean,
+    buildRoot: string | null = this.resolveBuildRoot(),
   ): Promise<SimulationArtifact | null> {
+    if (!buildRoot) return null;
+
     const bytes = await this.readRegularFile(
-      this.manifestFilePath,
+      this.files.join(buildRoot, 'aily-artifact-manifest.json'),
       MAX_MANIFEST_BYTES,
       signal,
       allowMissing,
@@ -623,15 +642,16 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private async createReference(
     artifact: SimulationArtifact,
     signal: AbortSignal,
+    buildRoot: string,
   ): Promise<ArtifactReference> {
-    const buildRootRealPath = await this.files.realpath(this.buildRoot, signal);
+    const buildRootRealPath = await this.files.realpath(buildRoot, signal);
     const fileEntries = new Map<string, ArtifactReferenceFile>();
 
     for (const file of artifact.files) {
       const relativePath = requirePortableArtifactPath(file.path);
 
       const filePath = this.files.resolve(
-        this.buildRoot,
+        buildRoot,
         ...relativePath.split('/'),
       );
 

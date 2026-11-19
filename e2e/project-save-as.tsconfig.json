@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["project-save-as.config.ts", "fixtures/project-save-as.ts", "tests/project-save-as.spec.ts"],
+  "exclude": [".artifacts", "test-results", "out-tsc"]
+}

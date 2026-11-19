@@ -42,13 +42,15 @@ function cancelProjectTaskScope(owner, options) {
   return scope;
 }
 
+function isProjectTaskScopeCancelled(owner, scope) {
+  return cancelledScopes.get(owner)?.has(scopeKey(scope)) === true;
+}
+
 function matchesProjectTask(entry, owner, projectPath, projectSessionId) {
   if (entry.ownerWebContents !== owner) return false;
   const scope = readProjectTaskScope(entry);
-  if (scope) return scope.projectPath === normalizeProjectPath(projectPath)
+  return !!scope && scope.projectPath === normalizeProjectPath(projectPath)
     && scope.projectSessionId === projectSessionId;
-  const legacyProject = entry.buildWorkspacePath || entry.cwd;
-  return !!legacyProject && normalizeProjectPath(legacyProject) === normalizeProjectPath(projectPath);
 }
 
-module.exports = { assertProjectTaskActive, cancelProjectTaskScope, matchesProjectTask };
+module.exports = { assertProjectTaskActive, cancelProjectTaskScope, isProjectTaskScopeCancelled, matchesProjectTask, readProjectTaskScope };

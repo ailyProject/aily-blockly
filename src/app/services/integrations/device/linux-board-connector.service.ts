@@ -885,8 +885,8 @@ export class LinuxBoardConnectorService implements OnDestroy {
       'aily-connector daemon protocol is incompatible': 'PROTOCOL_INCOMPATIBLE',
       'aily-connector is unavailable': 'CONNECTOR_UNAVAILABLE',
       'Invalid aily-connector IPC response': 'INVALID_IPC_RESPONSE',
-      'Aily Connector request failed': 'REQUEST_FAILED',
-      'Aily Connector stopped unexpectedly': 'PROCESS_EXITED',
+      'aily Connector request failed': 'REQUEST_FAILED',
+      'aily Connector stopped unexpectedly': 'PROCESS_EXITED',
     };
     const key = knownMessages[message];
     if (key) return this.t(key);

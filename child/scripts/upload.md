@@ -2,7 +2,7 @@
 
 > Coder 路径更新（2026-08-21）：下文的 `.temp/*.json` 表示 Blockly 路径；Coder 对应文件位于持久化 `sketch/*.json`。`upload.js` 会按根 `package.json` 的 `type: "coder"` 自动选择 `sketch/preprocess.json`，应用层也会把 Coder 的 upload/network OTA 配置写入 `sketch/`。
 
-本文描述 Aily Blockly 当前的固件上传参数选择逻辑。最终使用哪类上传命令，由用户选择的设备类型决定；`linkUploadParam` 是否存在不会自动把上传方式切换为调试器。
+本文描述 aily Blockly 当前的固件上传参数选择逻辑。最终使用哪类上传命令，由用户选择的设备类型决定；`linkUploadParam` 是否存在不会自动把上传方式切换为调试器。
 
 ## 结论
 
@@ -73,6 +73,12 @@
 
 `.temp/preprocess.json.upload.command` 是 aily-builder 根据 Arduino SDK 的 `boards.txt`、`platform.txt` 和当前菜单选项解析出的完整上传命令。`upload.js` 不再自行重新拼装 Arduino `upload.pattern`。
 
+## 固件文件选择
+
+`upload.js` 和 BLE/WiFi OTA 共用 `firmware-selection.js`。旧板包的 `${'*.bin'}` 排除引导、分区、OTA 初始化、文件系统和 merged/with_bootloader 镜像；`${'*.hex'}` 排除 with_bootloader 变体。其余固件模式及 `${bootloader}`、`${partitions}` 也必须只匹配一个文件，禁止按目录顺序、修改时间或 `.ino.bin` 后缀猜测。缺失、空文件或多个候选在执行烧录命令前报错，明确指定的辅助文件仍可使用。固件遍历不跟随符号链接。
+
+详细需求、兼容范围与验证边界见 `aily-blockly-docs` 的 `docs/2026-10-23/上传固件选择.md`。
+
 ## 串口切换标志
 
 串口上传可能需要以下生命周期标志：
@@ -88,7 +94,7 @@
 
 OTA 不能替代开发板的首次烧录。目标设备必须已经运行包含相应 OTA 功能的固件，并且正在提供 BLE OTA GATT 服务或 WiFi OTA HTTP(S) 服务。通常需要先通过串口或调试器烧录一版启用 OTA 的固件，之后才能使用 OTA 更新。
 
-项目中存在 OTA 库依赖只决定 Aily Blockly 是否显示对应入口；目标设备没有启动匹配的 OTA 服务时，搜索、连接或上传仍会失败。
+项目中存在 OTA 库依赖只决定 aily Blockly 是否显示对应入口；目标设备没有启动匹配的 OTA 服务时，搜索、连接或上传仍会失败。
 
 ## BLE OTA
 
@@ -114,8 +120,9 @@ BLE OTA 仍然会先执行正常的项目编译，但不会使用 `uploadParam`�
 - `boot_app0`
 - `ota_data`
 - `spiffs`、`littlefs`、`filesystem`、`fatfs`
+- `merged`、`with_bootloader`
 
-优先选择文件名以 `.ino.bin` 结尾的应用固件；没有时使用第一个符合条件的应用 `.bin`。找不到应用固件时终止上传。
+仅允许唯一应用固件；多个候选会列出冲突路径并终止上传，不再优先 `.ino.bin` 或取第一个文件。找不到应用固件或文件为空时也终止上传。
 
 ### 传输流程
 

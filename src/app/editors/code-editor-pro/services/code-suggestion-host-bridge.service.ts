@@ -17,15 +17,19 @@ export class CodeSuggestionHostBridgeService {
   private feedbackControllers = new Set<AbortController>();
   private declarationRoots: Array<{ id: string; version: string; absolutePath: string }> = [];
   private readonly authSubscription: { unsubscribe(): void };
+  private readonly loginSubscription: { unsubscribe(): void };
   constructor(private readonly auth: AuthService) {
     let identity: string | undefined;
     this.authSubscription = auth.userInfo$.subscribe(user => {
       const next = String(user?.id ?? user?.email ?? user?.login ?? user?.phone ?? '');
       if (identity !== undefined && identity !== next) {
         this.abortAll();
-        if (this.frame) this.post(this.frame, 'auth-session', 'session-changed', {});
+        if (this.frame) this.post(this.frame, 'auth-session', 'session-changed', { authenticated: this.auth.isLoggedIn });
       }
       identity = next;
+    });
+    this.loginSubscription = auth.isLoggedIn$.subscribe(authenticated => {
+      if (this.frame) this.post(this.frame, 'auth-session', 'session-state', { authenticated });
     });
   }
 
@@ -38,7 +42,7 @@ export class CodeSuggestionHostBridgeService {
   registerDeclarationRoots(roots: Array<{ id: string; version: string; absolutePath: string; kind: string }>): void {
     this.declarationRoots = roots.filter(root => root.kind === 'sdk').slice(0, 32).map(({ id, version, absolutePath }) => ({ id, version, absolutePath }));
   }
-  dispose(): void { this.authSubscription.unsubscribe(); this.abortAll(); this.frame = null; this.disposed = true; }
+  dispose(): void { this.authSubscription.unsubscribe(); this.loginSubscription.unsubscribe(); this.abortAll(); this.frame = null; this.disposed = true; }
   handleMessage(event: MessageEvent): boolean {
     const message = event.data;
     if (message?.channel !== SUGGESTION_REQUEST_CHANNEL) return false;
@@ -47,6 +51,8 @@ export class CodeSuggestionHostBridgeService {
     const id = message.requestId;
     if (typeof id !== 'string' || !/^[\w-]{8,128}$/.test(id)) return true;
     this.post(frame, id, 'ack', {});
+    // The iframe may miss startup messages; publish current login state with its handshake.
+    if (message.operation === 'capabilities') this.post(frame, id, 'session-state', { authenticated: this.auth.isLoggedIn });
     if (message.operation === 'cancel') { this.pending.get(id)?.abort(); return true; }
     if (message.operation === 'feedback') { this.sendFeedback(frame, message); return true; }
     if (message.operation === 'declaration') {

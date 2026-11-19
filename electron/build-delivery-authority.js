@@ -22,7 +22,6 @@ function readJson(filename, limit) {
  * Agent authorization, a sandbox against local code, or physical correctness.
  */
 function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captureCompilationBinding }) {
-    const { readBuildInputRecordBinding } = require(path.join(childRoot, 'scripts/build-input-record.js'));
     const captures = require(path.join(childRoot, 'scripts/build-source-capture.js'));
     const sources = require(path.join(childRoot, 'scripts/compile-delivery.js'));
     const records = new Map();
@@ -32,6 +31,7 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
 
     function compilationReply(entry, message) {
         assertOwner(entry);
+
         if (entry.state !== 'running' || entry.receipt
             || Object.keys(message).sort().join(',') !== 'phase,requestDigest,type'
             || message.requestDigest !== entry.requestDigest
@@ -41,8 +41,10 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
             || entry.config.simulationDebug !== true && entry.config.graphSemanticRevision === undefined) {
             throw fault('Unexpected compilation profile query.');
         }
+
         entry.compilationBinding?.assertCurrent();
         entry.profilePhases.add(message.phase);
+
         return { type: profileResult, requestDigest: entry.requestDigest, phase: message.phase, ok: true,
             profile: entry.compilationBinding?.profile || null };
     }
@@ -64,7 +66,7 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
     async function live(entry) {
         assertOwner(entry);
 
-        const result = await querySource(entry.root);
+        const result = await querySource(entry.logicalRoot);
 
         assertOwner(entry);
 
@@ -104,8 +106,10 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
 
         const { receipt, artifact } = files(entry), value = receipt.value;
         const providers = artifact.value.build?.simulationProviders || [];
+
         if (providers.includes(PROVIDER) || entry.compilationBinding && entry.profilePhases.has('before-compile')) {
             entry.compilationBinding?.assertCurrent();
+
             if (!entry.compilationBinding || !entry.profilePhases.has('before-delivery')
                 || providers.length !== 1 || providers[0] !== PROVIDER) throw fault('Artifact compilation profile was not authorized by its original execution.');
         }
@@ -114,7 +118,7 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
             || value.buildId !== message.buildId || value.currentProjectAcceptance !== false
             || value.manifestSha256 !== artifact.digest || value.artifactId !== artifact.value.artifactId
             || artifact.value.kind !== 'aily-build-artifact' || artifact.value.schemaVersion !== 1
-            || value.buildInputsDigest !== artifact.value.build?.inputs?.digest
+            || (value.buildInputsDigest ?? value.preparedInputsDigest) !== artifact.value.build?.inputs?.digest
             || value.project?.digest !== sources.captureProjectSources(entry.config).digest
             || value.project?.sourceSha256 !== entry.config.sourceCapture.sourceSha256
             || value.project?.fqbn !== artifact.value.target?.fqbn
@@ -122,10 +126,14 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
 
         captures.confirmBuildSource(entry.config);
 
-        if (typeof message.inputRecordSha256 !== 'string'
-            || readBuildInputRecordBinding(entry.root, artifact.value.build.inputs) !== message.inputRecordSha256) throw fault('Input record does not match the actual build report.');
+        const inputBinding = sources.readBuildDeliveryInputBinding(entry.root, artifact.value.build.inputs,
+            entry.config.sourceCapture?.sketchInputs);
 
-        entry.inputRecordSha256 = message.inputRecordSha256;
+        if (!Object.entries(inputBinding).every(([name, digest]) => message[name] === digest)) {
+            throw fault('Input evidence does not match the actual build report.');
+        }
+
+        entry.inputBinding = inputBinding;
         entry.receipt = receipt; entry.manifestDigest = artifact.digest;
     }
 
@@ -148,12 +156,16 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
                 || key(fs.realpathSync(path.dirname(requestPath))) !== key(path.join(root, '.temp'))) throw fault('Not a supervised host compile request.');
 
             const config = readJson(requestPath, 160 * 1024 * 1024).value;
+
             if (config.simulationTransportProfile !== undefined && config.simulationTransportProfile !== PROFILE) throw fault('Unsupported compilation profile request.');
 
             if (key(fs.realpathSync(config.currentProjectPath)) !== key(root) || config.recordProjectDelivery !== true
                 || !config.sourceCapture) throw fault('Full delivery recording/source capture is required.');
 
             captures.confirmBuildSource(config);
+
+            const logicalRoot = config.execution
+                ? require(path.join(childRoot, 'scripts/build-execution-workspace.js')).recordFor(config).store.root : root;
 
             if (config.sourceCapture.mode === 'blockly' && !config.sourceCapture.workspace) throw fault('Blockly source capture is missing.');
 
@@ -165,13 +177,16 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
                 records.delete(older.key);
             }
 
-            const entry = { key: key(root), root, sender, generation: owner.generation, config,
+            const entry = { key: key(logicalRoot), root, logicalRoot, sender, generation: owner.generation, config,
                 requestDigest: hash(JSON.stringify(config)), requestPath, requestFileDigest: readJson(requestPath, 160 * 1024 * 1024).digest,
                 handle: `${epoch}:${randomUUID()}`, state: 'running' };
+
             entry.profilePhases = new Set();
+
             if (config.simulationDebug === true || config.graphSemanticRevision !== undefined) {
                 entry.compilationBinding = captureCompilationBinding?.(sender) || null;
             }
+
             if (config.simulationTransportProfile !== undefined && !entry.compilationBinding) throw fault('Requested compilation profile has no current execution binding.');
 
             records.set(entry.key, entry);
@@ -184,9 +199,11 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
                 onMessage(message) {
                     try {
                         if (message?.type === profileQuery) return compilationReply(entry, message);
+
                         bindReceipt(entry, message);
                     } catch (error) {
                         entry.state = 'failed'; entry.error = error.message;
+
                         if (message?.type === profileQuery) return { type: profileResult, requestDigest: entry.requestDigest,
                             phase: message.phase, ok: false, profile: null };
                     }
@@ -215,19 +232,26 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
 
             try {
                 if (entry.profilePhases.has('before-compile')) entry.compilationBinding?.assertCurrent();
+
                 const before = sources.captureProjectSources(entry.config);
 
                 if (before.digest !== entry.receipt.value.project.digest) throw fault('Project source/configuration changed.');
 
                 await live(entry);
+
                 if (entry.profilePhases.has('before-compile')) entry.compilationBinding?.assertCurrent();
+
+                if (entry.config.execution && !require(path.join(childRoot, 'scripts/build-execution-workspace.js'))
+                    .canReuseBuildExecution({ ...entry.config, currentProjectPath: entry.logicalRoot })) throw fault('Logical project inputs or selected execution changed.');
+
                 captures.confirmBuildSource(entry.config);
                 sources.confirmProjectSources(before, entry.config);
 
                 const current = files(entry);
 
                 if (current.receipt.digest !== entry.receipt.digest || current.artifact.digest !== entry.manifestDigest) throw fault('Delivery files changed.');
-                if (readBuildInputRecordBinding(entry.root, current.artifact.value.build.inputs) !== entry.inputRecordSha256) throw fault('Input record changed.');
+                if (JSON.stringify(sources.readBuildDeliveryInputBinding(entry.root, current.artifact.value.build.inputs,
+                    entry.config.sourceCapture?.sketchInputs)) !== JSON.stringify(entry.inputBinding)) throw fault('Input evidence changed.');
 
                 const verifiedBuild = expectedArtifactId === undefined ? undefined : {
                     artifactId: expectedArtifactId, manifestSha256: entry.manifestDigest,

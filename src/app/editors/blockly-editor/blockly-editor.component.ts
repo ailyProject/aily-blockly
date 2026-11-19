@@ -1,3 +1,10 @@
+import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
+import { recoverAbsProjectOperation } from '../../integrations/blockly/abs/abs-project-restart';
+import { AbsOperationJournal } from '../../integrations/blockly/abs/abs-operation-journal';
+import { sameAbsSavedState } from '../../integrations/blockly/abs/abs-save-semantics';
+import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback,
+  type AbsLoadNormalizationInput, type AbsLoadNormalizationDeferred } from '../../integrations/blockly/abs/abs-load-normalization';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
 import { NotificationComponent } from '../../components/notification/notification.component';
@@ -21,7 +28,8 @@ import { _ProjectService } from './services/project.service';
 import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
-import { ProjectService, projectDataRuntime, ProjectDataError } from '@domain/project/public-api';
+import { ProjectService, projectDataRuntime, ProjectDataError, type AilyDataRef, type DeferredProjectDataNormalization } from '@domain/project/public-api';
+import type { BlocklyWorkspaceEditLease } from './services/blockly-workspace-edit-lease';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { CodeViewerIpcService } from './services/code-viewer-ipc.service';
@@ -33,6 +41,8 @@ import { isBuildWorkspaceBusyError } from './services/generated-code-artifacts';
 import { AuthService } from '@core/auth/public-api';
 import { boardRequiresCloudAuth } from './board-auth-gate';
 import { canTransferProjectAbi } from './utils/project-abi-transfer';
+import { assertKnownMissingLibraryRecoverySources, installMissingLibrariesManaged, type MissingLibraryInstall } from './services/missing-project-libraries';
+import { readManagedLibraryEnvironment } from '../../services/domains/project/project-managed-library-environment';
 import {
   normalizeProjectMode,
 } from '@shared/public-api';
@@ -56,6 +66,7 @@ type ProjectDependencySession = ReturnType<ProjectService['getProjectDependencyS
 })
 export class BlocklyEditorComponent implements OnInit, OnDestroy {
   showLibraryManager = false;
+  private releasePreprocessSaveGuard?: () => void;
 
   private readonly packageJsonWatchDebounceMs = 300;
   /** 会话/检查点恢复会短暂改写 package.json，移除告警需等依赖集合稳定后再确认。 */
@@ -169,7 +180,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           // An old normalization/publication may finish after navigation. It must
           // neither load into nor tear down the new project's workspace/Realm.
           if (!isCurrent() || (dataSession !== null && this.projectService.currentProjectPath !== requestedProjectPath)) return;
-          if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
+          const cancellation = error as { code?: string; reason?: string };
+          if (cancellation?.code === 'PROJECT_DEPENDENCY_CANCELLED'
+            && cancellation.reason !== 'compile-settings-changed') return;
           console.error('加载项目失败', error);
           const detail = this.formatProjectLoadError(error);
           if (error instanceof ProjectToolboxOnlyLoadError || this.toolboxReadyProjectPath === requestedProjectPath) {
@@ -192,6 +205,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     this._projectService.init();
     this._builderService.init();
+    this.releasePreprocessSaveGuard = this._projectService.bindPreprocessSaveGuard(
+      path => this._builderService.pauseBackgroundPreprocessForSave(path),
+    );
     this._uploadService.init();
     this.boardConfigUpdatedSubscription = this.projectService.boardConfigUpdatedSubject.subscribe((boardConfig) => {
       this.applyRuntimeBoardConfig(boardConfig);
@@ -244,6 +260,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.releasePreprocessSaveGuard?.();
+    this.releasePreprocessSaveGuard = undefined;
     ++this.projectLoadSequence;
     this.projectRouteSubscription?.unsubscribe();
     this.projectRouteSubscription = null;
@@ -265,6 +283,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   async loadProject(projectPath, assertCurrent: () => void = () => {}) {
+    // Ctrl/Cmd+R enters this route directly, before AppComponent's async init
+    // completes. Capture dependency settings only after the shared local config
+    // is loaded; warm project opens reuse the same resolved promise.
+    await this.configService.init();
+    assertCurrent();
     const session = this.projectService.getProjectDependencySession(projectPath);
     const assertSession = () => {
       assertCurrent();
@@ -281,8 +304,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     assertCurrent();
     this.stopPackageJsonDependencyWatch();
     this.clearProjectLoadedCodeRefreshTimer();
-    // 根清单是依赖事实源；.temp 仅更新镜像，不能恢复旧依赖覆盖当前项目。
-    await this.projectService.syncPackageJsonWithTemp(projectPath);
+    // 打开时按已保存的根清单恢复未保存的库安装状态。
+    await this.projectService.discardLibraryChanges(projectPath);
     assertCurrent();
     // 加载项目package.json
     let packageJson = JSON.parse(
@@ -308,7 +331,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       .some(([name, version]) => version.startsWith('file:')
         && !this.isBlocklyLibraryPackageReady(projectPath, name));
     const dependenciesInstalled = hasMissingLocalLibrary
-      ? false : await this.npmService.ensureProjectDependenciesInstalled(projectPath, undefined, session);
+      ? false : await this.npmService.ensureProjectDependenciesInstalled(projectPath, { deferSuccessNotice: true }, session);
     assertCurrent();
     if (!dependenciesInstalled && !hasMissingLocalLibrary) {
       throw new Error('项目依赖安装未完成，无法继续加载 Blockly 项目。');
@@ -333,13 +356,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       }, 0);
       try {
         // 项目依赖安装随 devmode 选择 Linux 仓库；Arduino 项目不附加专用 registry。
-        await this.cmdService.runAsyncChecked(
-          this.configService.withProjectNpmRegistry('npm install', packageJson),
-          projectPath,
-          true,
-          false,
-          session,
-        );
+        const host = window['libraryDependencies'];
+        if (host?.environmentVersion !== 2 || typeof host.reconcile !== 'function') throw new Error('The matching dependency environment publisher is unavailable.');
+        const registry = this.configService.getNpmRegistryForProject(packageJson);
+        await host.reconcile(projectPath, { options: registry ? { '@aily-project:registry': registry } : {} });
       } catch (error) {
         assertCurrent();
         dependencyInstallError = (error as Error)?.message || String(error);
@@ -377,17 +397,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
         missingDeclaredLibraries.push(...missingLibraries);
         console.error('[ProjectLoad] continuing with missing Blockly libraries:', missingLibraries);
-      } else {
-        setTimeout(() => {
-          try { assertCurrent(); } catch { return; }
-          this.noticeService.update({
-            title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
-            text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
-            state: 'done',
-            showProgress: false,
-            setTimeout: 3000,
-          });
-        }, 100);
       }
     }
     // 3. 加载开发板module中的board.json
@@ -395,14 +404,23 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       state: 'doing',
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BOARD_CONFIG'),
     });
-    const boardJson = await this.projectService.resolveBoardConfigForRuntime();
+    await this.projectService.loadBoardMenuConfig();
+    assertCurrent();
+    let boardJson = await this.projectService.resolveBoardConfigForRuntime();
     assertCurrent();
 
     this.projectService.currentBoardConfig = boardJson;
     this.blocklyService.boardConfig = boardJson;
     window['boardConfig'] = boardJson;
-    await this.projectService.loadBoardMenuConfig();
-    assertCurrent();
+    if (this.projectService.isCloudBuild()) {
+      // Restore the saved/effective pin selection before generators or source
+      // captures observe this board. Opening Upload later must not change it.
+      await this.projectService.getBoardConfigMenu();
+      assertCurrent();
+      boardJson = this.projectService.currentBoardConfig || boardJson;
+      this.blocklyService.boardConfig = boardJson;
+      window['boardConfig'] = boardJson;
+    }
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
@@ -424,17 +442,19 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       projectService: this.projectService,
     });
 
-    for (let index = 0; index < libraryModuleList.length; index++) {
-      const libPackageName = libraryModuleList[index];
-      this.uiService.updateFooterState({
-        state: 'doing',
-        text: this.translate.instant('BLOCKLY_EDITOR.LOADING_LIB', {
-          name: libPackageName,
-        }),
-      });
-      await this.blocklyService.loadLibrary(libPackageName, projectPath);
-      assertCurrent();
-    }
+    await this.blocklyService.withToolboxRefreshBatch(async () => {
+      for (let index = 0; index < libraryModuleList.length; index++) {
+        const libPackageName = libraryModuleList[index];
+        this.uiService.updateFooterState({
+          state: 'doing',
+          text: this.translate.instant('BLOCKLY_EDITOR.LOADING_LIB', {
+            name: libPackageName,
+          }),
+        });
+        await this.blocklyService.loadLibrary(libPackageName, projectPath);
+        assertCurrent();
+      }
+    });
     this.toolboxReadyProjectPath = projectPath;
     // 5. 加载project.abi数据
     this.uiService.updateFooterState({
@@ -444,7 +464,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const {
       document: projectDocument,
       usedBoardTemplate: usedBoardTemplateAbi,
-      diskText,
+      diskText, completeAbs, loadNormalization, deferredNormalization, recoveredOperation,
     } = await this.loadProjectAbiDocument(projectPath, assertCurrent, session.signal);
     assertCurrent();
 
@@ -480,11 +500,32 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       await this.waitForNextFrame(session.signal);
       assertCurrent();
       loadLease.assertCurrent();
-      this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument, loadLease);
+      if (recoveredOperation) {
+        await this._projectService.rememberRecoveredProject(projectPath, diskText, projectDocument, loadLease);
+        await recoveredOperation(loadLease);
+      } else this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument, loadLease);
+      if (loadNormalization && !bindAbsLoadNormalizationReadback(loadNormalization,
+        this.blocklyService.captureProjectSnapshot(loadLease))) {
+        throw new Error('The normalized native load acknowledgement could not be bound to its original snapshot.');
+      }
     } finally {
       loadLease.release();
     }
-    if (!usedBoardTemplateAbi) {
+    if (loadNormalization) {
+      const outcome = await this._projectService.publishLoadedNormalization(loadNormalization);
+      assertCurrent();
+      if (outcome.status === 'DEFERRED') {
+        console.warn('[ProjectAbi] Normalization was loaded without replacing the original ABS generation.', outcome);
+      }
+      // A successful handler acknowledges its new ABI under its own FIFO lease.
+      // Never remember the old diskText again after that journal has committed.
+    } else if (deferredNormalization) {
+      console.warn('[ProjectAbi] Original ABS/draft retained; normalization publication needs inspected recovery.', deferredNormalization);
+    }
+    // Even an older plain-ABS generation, or a deferred load, can retain resource
+    // roots absent from the current canvas. A successful normalization also just
+    // published complete history; never GC only the active document afterwards.
+    if (!usedBoardTemplateAbi && !completeAbs && !loadNormalization && !deferredNormalization && !recoveredOperation) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
         if (cleanup.deleted.length > 0) {
@@ -528,8 +569,17 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     // 7. 后台安装开发板依赖
     try {
-      await this.npmService.installBoardDeps(session);
+      await this.npmService.installBoardDeps(session, { showSuccessNotice: false });
+      assertCurrent();
+      if (missingDeclaredLibraries.length === 0) this.noticeService.update({
+        title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+        text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+        state: 'done', progress: 100, setTimeout: 3000,
+      });
     } catch (error) {
+      // 项目和生成器已经就绪。登录或切换编译设置仅使旧依赖任务失效，
+      // 不能把已打开的项目改成加载失败；下次编译会按新会话重新准备依赖。
+      if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
       assertCurrent();
       console.error('install board dependencies error', error);
     }
@@ -569,25 +619,39 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void, signal?: AbortSignal): Promise<{
     document: BlocklyProjectDocument;
     usedBoardTemplate: boolean;
+    completeAbs: boolean;
+    loadNormalization?: AbsLoadNormalizationInput;
+    deferredNormalization?: AbsLoadNormalizationDeferred;
     diskText: string;
+    recoveredOperation?: (lease: BlocklyWorkspaceEditLease) => Promise<void>;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
-    let abiContent = await this.electronService.readFileAsync(abiPath);
+    const absPort = await openAbsHostStorage(projectPath, assertCurrent);
+    const recovery = await recoverAbsProjectOperation(absPort, projectPath, assertCurrent);
+    const derivedAbi = recovery ? null : await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
+    let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
     let diskText = abiContent;
-    projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
+    let normalization: DeferredProjectDataNormalization | undefined;
+    // A recovered unsaved view must not first normalize/publish the older disk
+    // document. Its complete materialized snapshot needs no external-data migration.
+    projectAbi = recovery ? recovery.document : await this.projectService.ensureProjectDataSchemaForLoad(
       projectPath,
       projectAbi,
       abiContent,
       assertCurrent,
       text => { diskText = text; },
+      prepared => { normalization = prepared; },
     );
     assertCurrent();
     // Anchor the exact acknowledged publication, not a later external writer.
     abiContent = '';
+    const normalizationPreparation = normalization
+      ? await prepareAbsLoadNormalization(projectPath, normalization, absPort, assertCurrent) : undefined;
+    assertCurrent();
 
     let usedBoardTemplate = false;
     if (this.hasEmptyLegacyWorkspace(projectAbi)) {
@@ -607,9 +671,39 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
 
     return {
-      document: this.blocklyService.normalizeProjectAbiForLoad(projectAbi),
+      document: this.blocklyService.normalizeProjectAbiForLoad(recovery?.document ?? projectAbi),
       usedBoardTemplate,
-      diskText,
+      diskText, completeAbs: derivedAbi !== null,
+      ...(recovery ? { recoveredOperation: async (lease: BlocklyWorkspaceEditLease) => {
+        const current = await absPort.read('project.abi');
+        assertCurrent();
+        if (current !== diskText || await absPort.read('committed.json') !== recovery.committed) throw new Error('The saved document changed during recovered view loading.');
+        const journal = new AbsOperationJournal(absPort, projectPath);
+        await journal.restored(recovery.operationId, assertCurrent);
+        try {
+          await journal.recordRestoredApplication(recovery.operationId, assertCurrent, async document => {
+            lease.assertCurrent();
+            const view = this.blocklyService.captureProjectSnapshot(lease);
+            const guard = () => {
+              assertCurrent(); lease.assertCurrent();
+              if (this.blocklyService.captureProjectSnapshot(lease).revision !== view.revision) throw new Error('The recovered view changed during readback.');
+            };
+            if (!await sameAbsSavedState(view.document, document, {
+              normalize: value => this.blocklyService.normalizeProjectAbi(value),
+              resolve: <T>(ref: AilyDataRef) => projectDataRuntime.resolve<T>(ref),
+              assertCurrent: guard,
+            })) throw new Error('The recovered view differs from the retained complete document.');
+            guard();
+          });
+        } catch (error) {
+          assertCurrent(); lease.assertCurrent();
+          // Historical proof failure keeps that request unverified. The
+          // independently validated restored view can still open normally.
+          console.warn('[Blockly] Original application recovery could not be recorded:', error);
+        }
+      } }
+        : { ...(normalizationPreparation?.input ? { loadNormalization: normalizationPreparation.input } : {}),
+          ...(normalizationPreparation?.outcome ? { deferredNormalization: normalizationPreparation.outcome } : {}) }),
     };
   }
 
@@ -892,11 +986,20 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }, this.packageJsonWatchDebounceMs);
   }
 
+  private async libraryMutationBusy(projectPath: string): Promise<boolean> {
+    return this.blocklyService.isWorkspaceEditInProgress() || this.projectService.isLibraryMutationInProgress(projectPath)
+      || !!(await window['libraryDependencies']?.status(projectPath))?.busy;
+  }
+
   private async handlePackageJsonDependencyChange(projectPath: string): Promise<void> {
     if (this.watchedPackageJsonProjectPath !== projectPath) {
       return;
     }
 
+    if (await this.libraryMutationBusy(projectPath)) {
+      this.schedulePackageJsonDependencyCheck(projectPath);
+      return;
+    }
     // 监视 package.json 时按与首次加载相同的规则比较模式，缺失值仍视为 Arduino。
     const previousProjectMode = normalizeProjectMode(
       this.projectService.currentPackageData,
@@ -909,7 +1012,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         return;
       }
 
-      nextPackageJson = JSON.parse(nextContent);
+      nextPackageJson = await this.projectService.getPackageJson(projectPath);
       this.watchedPackageJsonSignature = nextContent;
     } catch (error) {
       console.warn('[PackageJsonWatch] package.json read failed:', error);
@@ -924,6 +1027,14 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const nextLibraryDependencies = this.getDeclaredBlocklyLibraryDependencies(nextPackageJson);
 
     if (this.projectService.isBoardSwitchInProgress) {
+      this.watchedBoardDependencies = nextBoardDependencies;
+      this.watchedLibraryDependencies = nextLibraryDependencies;
+      return;
+    }
+
+    if (await this.projectService.getBlocklyLibraryRuntimeFingerprint(projectPath)) {
+      // The existing publisher already rebuilt this exact installed runtime.
+      // Observing its manifest must not schedule another npm/save/reload path.
       this.watchedBoardDependencies = nextBoardDependencies;
       this.watchedLibraryDependencies = nextLibraryDependencies;
       return;
@@ -1010,6 +1121,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (await this.libraryMutationBusy(projectPath)) { this.scheduleRemovedLibrarySettle(projectPath); return; }
     const candidateNames = Array.from(this.pendingRemovedLibraryDependencies)
       .sort((a, b) => this.compareBlocklyLibraryNames(a, b));
     this.pendingRemovedLibraryDependencies.clear();
@@ -1166,7 +1278,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     this.stopPackageJsonDependencyWatch();
     try {
-      this.copyProjectPackageJsonToTemp(projectPath);
       const reopened = await this.projectService.projectOpen(projectPath, { reason: 'reload' });
       if (!reopened) {
         throw new Error('Project reload was not started');
@@ -1181,7 +1292,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** 在新开发板包就绪后，移除旧开发板、同步 temp/package.json，并重新打开项目。 */
+  /** 在新开发板包就绪后，移除旧开发板并重新打开项目。 */
   private async reloadProjectAfterBoardDependencyChange(projectPath: string): Promise<void> {
     const pending = this.pendingBoardDependencyReload;
     if (!pending || pending.projectPath !== projectPath || this.boardDependencyReloadInProgress) {
@@ -1211,43 +1322,16 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.boardDependencyReloadInProgress = true;
 
     try {
-      if (previousBoardNames.length > 0) {
-        this.uiService.updateFooterState({ state: 'doing', text: `正在移除旧开发板: ${previousBoardNames.join(', ')}` });
-        await this.cmdService.runAsyncChecked(`npm uninstall ${previousBoardNames.join(' ')}`, projectPath);
-      }
-
-      this.copyProjectPackageJsonToTemp(projectPath);
-      this.message.success(`开发板已切换为 ${addedBoardNames.join(', ')}，正在重新加载项目`, { nzDuration: 3000 });
-      await this.projectService.reloadAfterBoardSwitch(projectPath);
-      this.projectService.boardChangeSubject.next();
+      await this.projectService.reconcileBlocklyEnvironment(previousBoardNames.filter(name => !addedBoardNames.includes(name)));
       this.projectService.resolveBoardSwitchReload();
+      this.boardDependencyReloadInProgress = false;
+      this.startPackageJsonDependencyWatch(projectPath);
     } catch (error) {
       this.boardDependencyReloadInProgress = false;
       this.projectService.rejectBoardSwitchReload(error);
       console.error('[PackageJsonWatch] reload after board dependency change failed:', error);
       this.message.error(`切换开发板后重新加载项目失败: ${(error as Error)?.message || String(error)}`);
       this.startPackageJsonDependencyWatch(projectPath);
-    }
-  }
-
-  /** 将主项目 package.json 同步到 .temp，避免重载时被旧 temp 配置覆盖。 */
-  private copyProjectPackageJsonToTemp(projectPath: string): void {
-    const mainPackagePath = this.electronService.pathJoin(projectPath, 'package.json');
-    const tempDir = this.electronService.pathJoin(projectPath, '.temp');
-    const tempPackagePath = this.electronService.pathJoin(tempDir, 'package.json');
-
-    if (!this.electronService.exists(mainPackagePath)) {
-      return;
-    }
-
-    try {
-      if (!this.electronService.exists(tempDir)) {
-        window['fs'].mkdirSync(tempDir, { recursive: true });
-      }
-      const mainContent = this.electronService.readFile(mainPackagePath);
-      window['fs'].writeFileSync(tempPackagePath, mainContent);
-    } catch (error) {
-      console.warn('[PackageJsonWatch] failed to sync package.json to temp:', error);
     }
   }
 
@@ -1271,6 +1355,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (await this.libraryMutationBusy(projectPath)) { this.schedulePendingLibraryLoad(projectPath, this.pendingLibraryLoadRetryMs); return; }
     this.pendingLibraryLoadInProgress = true;
     let shouldLoadInstalledLibraries = false;
     try {
@@ -1496,6 +1581,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   private async restoreMissingProjectLibraries(projectPath: string, missingLibraries: MissingLibInfo[], session: ProjectDependencySession): Promise<boolean> {
+    this.projectService.assertProjectDependencySession(session);
+    // A same-project recovery continues this load using the saved exact specs
+    // and existing sources. It must not require a second human reload.
+    if (this.projectService.hasSavedRecoveryTarget(projectPath)) {
+      assertKnownMissingLibraryRecoverySources(missingLibraries, source => this.electronService.exists(source));
+      await this.installMissingBlocklyLibraries(projectPath, missingLibraries, session, true);
+      this.projectService.assertProjectDependencySession(session);
+      return true;
+    }
     try {
       this.projectService.assertProjectDependencySession(session);
       await new Promise<void>((resolve, reject) => {
@@ -1544,11 +1638,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
   }
 
-  private async installMissingBlocklyLibraries(projectPath: string, libraries: MissingLibInfo[], session: ProjectDependencySession): Promise<void> {
+  private async installMissingBlocklyLibraries(projectPath: string, libraries: MissingLibInfo[], session: ProjectDependencySession, savedSpecs = false): Promise<void> {
     this.projectService.assertProjectDependencySession(session);
     const localLibraries = libraries.filter((lib) => lib.localPath);
     const npmLibraries = libraries.filter((lib) => !lib.localPath);
-
+    const installs: MissingLibraryInstall[] = [];
     for (const lib of localLibraries) {
       if (!lib.localPath || !this.electronService.exists(lib.localPath)) {
         throw new Error(`${lib.name} 的本地库路径不存在: ${lib.localPath || 'unknown'}`);
@@ -1559,41 +1653,28 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         throw new Error(`所选目录不是 ${lib.name} 积木库: ${lib.localPath}`);
       }
 
-      const folderName = lib.localPath.split(/[/\\]/).pop();
-      if (!folderName) {
-        throw new Error(`${lib.name} 的本地库路径无效: ${lib.localPath}`);
-      }
-
-      const destPath = this.electronService.pathJoin(projectPath, folderName);
-      if (lib.localPath !== destPath) {
-        if (this.electronService.exists(destPath)) {
-          await this.crossPlatformCmdService.removeItem(destPath, true, true);
-          this.projectService.assertProjectDependencySession(session);
-        }
-        await this.crossPlatformCmdService.copyItem(lib.localPath, destPath, true, true);
-        this.projectService.assertProjectDependencySession(session);
-      }
-
-      await this.cmdService.runAsyncChecked(`npm install "${destPath}"`, projectPath, true, false, session);
-      this.projectService.assertProjectDependencySession(session);
+      installs.push({ packages: [`${lib.name}@file:./local-libraries/${lib.name}`],
+        localSource: { packageName: lib.name, source: lib.localPath, force: false } });
     }
-
     if (npmLibraries.length > 0) {
-      const packageSpecs = npmLibraries.map((lib) => this.getNpmInstallSpec(lib)).join(' ');
-      // 补装项目库时继续服从项目 devmode，避免 Python 库误从 Arduino 仓库查询。
-      await this.cmdService.runAsyncChecked(
-        this.configService.withProjectNpmRegistry(
-          `npm install ${packageSpecs}`,
-          this.projectService.currentPackageData,
-        ),
-        projectPath,
-        true,
-        false,
-        session,
-      );
-      this.projectService.assertProjectDependencySession(session);
+      installs.push({ packages: npmLibraries.map((lib) => savedSpecs ? `${lib.name}@${lib.version.trim()}` : this.getNpmInstallSpec(lib)) });
     }
-
+    if (!installs.length) return;
+    const current = () => this.projectService.assertProjectDependencySession(session);
+    const storage = await window['fs'].openProjectSyncStorage(projectPath, current);
+    current();
+    const executorPid = storage?.executor?.hostPid;
+    if (!Number.isSafeInteger(executorPid) || executorPid <= 0) throw new Error('Missing library recovery has no current physical Main owner.');
+    const registry = this.configService.getNpmRegistryForProject(this.projectService.currentPackageData);
+    await installMissingLibrariesManaged({ project: projectPath, installs, host: window['libraryDependencies'],
+      signal: session.signal, assertCurrent: current,
+      options: { installLinks: false, ...(registry ? { '@aily-project:registry': registry } : {}) },
+      cancel: requestId => window['ipcRenderer'].invoke('library-dependencies', {
+        operation: 'cancelEnvironment', projectPath, request: { requestId } }),
+      verify: (requestId, packages) => readManagedLibraryEnvironment(projectPath,
+        { requestId, originalTargetPid: executorPid }, { packages, removedPackages: [] }, current),
+    });
+    current();
     for (const lib of libraries) {
       await this.blocklyService.loadLibrary(lib.name, projectPath);
       this.projectService.assertProjectDependencySession(session);

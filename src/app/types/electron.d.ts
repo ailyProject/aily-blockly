@@ -63,6 +63,27 @@ interface AilyConnectorApi {
 
 declare global {
   interface Window {
+    notification: {
+      show(options: {
+        title: string;
+        body?: string;
+        icon?: string;
+        silent?: boolean;
+        timeoutType?: 'default' | 'never';
+        urgency?: 'normal' | 'critical' | 'low';
+      }): Promise<{
+        success: boolean;
+        result?: { event: 'click' | 'close'; notificationId: string; reason?: string };
+        error?: string;
+      }>;
+      isSupported(): Promise<boolean>;
+      onEvent(callback: (event: {
+        notificationId: string;
+        event: 'show' | 'close' | 'click' | 'failed';
+        reason?: string;
+        error?: string;
+      }) => void): () => void;
+    };
     electronAPI: {
       SerialPort: {
         list: () => Promise<any[]>;
@@ -107,6 +128,7 @@ declare global {
         }) => Promise<any>;
         install: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         reinstall: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+          repair: (options: { id: string }) => Promise<any>;
         update: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         downloadUpdate: (options: { id: string; locale?: string }) => Promise<any>;
         installUpdate: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;

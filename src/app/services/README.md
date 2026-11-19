@@ -21,6 +21,7 @@ services/
 │   ├── platform/                 # Electron、操作系统、命令和日志
 │   │   ├── observability/        # 性能和可观测能力
 │   │   └── public-api.ts
+│   ├── metrics/                  # 宿主启动、创建、编译尝试、上传的异步上报
 │   └── preferences/              # 配置、设置、主题、语言和区域
 │       ├── models/
 │       └── public-api.ts
@@ -68,6 +69,8 @@ services/
 ```
 
 `shared` 只接收已经被两个以上领域共同使用、且没有单一业务归属的纯契约或纯逻辑，例如通知数据结构。不要为了“可能复用”提前放入；能明确归属某个领域的类型、策略和工具函数，仍应留在其所属目录。
+
+`core/metrics` 在渲染层使用原生 `fetch` 异步上报，默认开启，以 `metricsEnabled: false` 停用。主窗口展示、创建成功、进入编译工作流和上传成功处调用；编译失败也计入尝试。有 Token 则携带，没有也发送。每个窗口仅在内存保存随机会话 ID，匿名数据按窗口会话统计；不新增 Electron IPC、统计持久化或重试，不采集项目内容、Chat 或日活。桌面实现说明位于 `aily-blockly-docs/docs/2026-10-22/运营埋点.md`，后端接口与实施范围位于 `aily-services/docs/initiatives/operations-analytics-minimal-implementation-plan.md`。
 
 ## 新服务放在哪里
 
@@ -132,15 +135,14 @@ import { SomeComponent } from '../../../components/some/some.component';
 7. 提交前运行架构检查和 TypeScript 检查。
 
 ```bash
-npm run architecture:services
+npm --prefix tests run architecture:services
 npx tsc -p tsconfig.app.json --noEmit
 ```
 
-涉及目录调整时，再生成并检查服务清单：
+涉及目录调整时，再查看服务结构（仅输出到终端）：
 
 ```bash
-npm run architecture:services:inventory
-node scripts/check-angular-service-architecture.mjs --write-inventory
+npm --prefix tests run architecture:services:inventory
 ```
 
 涉及 Angular 构建链路时，再运行：
@@ -151,17 +153,8 @@ npx ng build --configuration development
 
 ## 当前架构状态
 
-架构守卫当前记录为 0 条违规、0 个循环依赖组：
+2026-10-15 文档迁移时实际检查：203 个服务相关文件、0 个循环依赖组；`src/app/main-window/components/update-dialog/update-dialog.component.spec.ts` 仍有 1 处 `external-deep-import` 违规。该引用已存在于迁移前源码，本次未修改测试或放宽基线。之前“当前 0 违规”的说明已过时，后续以实际命令输出为准。
 
-| 类型 | 数量 | 含义 |
-| --- | ---: | --- |
-| `cross-domain-deep-import` | 0 | 跨领域引用均通过公开入口 |
-| `domain-ui-import` | 0 | 业务领域不再反向依赖 app-shell、页面或 editor |
-| `integration-ui-import` | 0 | 集成层通过 port 使用宿主 UI/editor 能力 |
-| 循环依赖组 | 0 | `services` 静态 import 图无强连通循环 |
+架构检查关注目录和静态依赖边界，不代表所有超大 facade 都已完成业务拆分；职责拆分仍需契约测试和 Electron 业务回归。
 
-初始基线为 123 条违规和 1 个循环依赖组，现已全部清零；基线文件因此保存为空数组，不再豁免历史问题。架构检查会直接阻止任何新增的深层跨域引用、UI 反向依赖、根目录散落服务或循环依赖。
-
-这里的“清零”特指目录和静态依赖边界，不代表所有超大 facade 都已经完成业务拆分。`ProjectService`、`AuthService` 等后续如继续按职责拆小，仍需独立契约测试和 Electron 业务回归。
-
-大服务拆分顺序、风险和验收要求见 [Angular services 目录重构方案](../../../docs/2026-08-24/Angular-services目录重构方案.md)。当前服务清单见 [angular-service-inventory.json](../../../docs/2026-08-24/angular-service-inventory.json)。
+现行架构说明统一维护在独立 `aily-blockly-docs` 仓库，入口见 [文档维护位置](../../../DOCUMENTATION.md)。文档仓库仅保存 Markdown，服务清单通过上述命令临时查看，不写入文档仓库。

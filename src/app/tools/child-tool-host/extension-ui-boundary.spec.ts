@@ -38,7 +38,7 @@ describe('Extension service UI boundary', () => {
     };
     const service = new MainUiAutomationService({} as any, registry as any, ui, {
       instant: (key: string) => key,
-    } as any) as any;
+    } as any, {} as any) as any;
     service.readWindowState = jasmine.createSpy('readWindowState').and.resolveTo({ open: false });
     service.readChildToolSessions = jasmine.createSpy('readChildToolSessions').and.resolveTo([
       { toolId: 'aily-coder-editor', running: true, pid: 123, refCount: 1 },

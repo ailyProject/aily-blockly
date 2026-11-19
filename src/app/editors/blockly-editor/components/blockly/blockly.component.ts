@@ -48,8 +48,10 @@ const BLOCKLY_LOCALES: Record<SupportedLanguageCode, any> = {
 // } from './plugins/continuous-toolbox/src/index.js';
 import './plugins/toolbox-search/src/index';
 import './blockly-native-registrations';
+import { installBlocklyWorkspaceDelete } from '../../utils/blockly-workspace-delete';
 import { registerProjectBlockPaster } from '../../services/blockly-copy-identities';
 import { batchBlocklyDragRenders } from '../../utils/blockly-drag-render-batch';
+import { bindBlocklyPointerBoundary } from '../../utils/blockly-pointer-boundary';
 import './plugins/stable-comment-icon';
 import { BlocklyService, WorkspaceBlockSearchState } from '../../services/blockly.service';
 import {
@@ -100,7 +102,9 @@ import { BlocklyWorkspacePagesComponent } from './components/blockly-workspace-p
 import { BlocklyConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
+import { _BuilderService } from '../../services/builder.service';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
+import { installPasteLibrariesManaged } from '../../services/paste-project-libraries';
 
 type BlocklyWorkspaceEvent = WorkspaceCodeEvent | null | undefined;
 
@@ -263,6 +267,8 @@ class ExternalToolboxDeleteArea extends Blockly.DeleteArea {
   }
 }
 
+installBlocklyWorkspaceDelete();
+
 @Component({
   selector: 'blockly-main',
   imports: [
@@ -279,6 +285,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   private releaseProjectBlockPaster?: () => void;
   private releaseDragRenderBatch?: () => void;
   private readonly hostContextMenuItems = new Map<string, Blockly.ContextMenuRegistry.RegistryItem>();
+  private releasePointerBoundary?: () => void;
   @ViewChild(BlocklyWorkspacePagesComponent, { static: true }) workspacePaneComponent!: BlocklyWorkspacePagesComponent;
   @ViewChild('workspaceSearchInput') private workspaceSearchInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('layoutElement', { static: true }) private layoutElementRef!: ElementRef<HTMLDivElement>;
@@ -387,6 +394,56 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.blocklyService.getPages();
   }
 
+  private restorePasteLibraries(missingLibraries: MissingLibInfo[]): Promise<void> {
+    const libraries = missingLibraries.filter(library => library.name);
+    if (!libraries.length) return Promise.resolve();
+    const project = this.projectService.currentProjectPath, workspace = this.workspace;
+    if (!project || !workspace) return Promise.reject(new Error('No original paste workspace is available.'));
+    const session = this.projectService.getProjectDependencySession(project);
+    const current = this.projectService.captureCurrentProjectGuard();
+    const assertCurrent = () => {
+      session.signal.throwIfAborted();
+      this.projectService.assertProjectDependencySession(session);
+      if (!current() || this.destroy$.isStopped || this.workspace !== workspace || this.projectService.currentProjectPath !== project) {
+        throw new Error('The original paste project or workspace changed.');
+      }
+    };
+    assertCurrent();
+    return new Promise<void>((resolve, reject) => {
+      const modalRef = this.modal.create({ nzTitle: null, nzFooter: null, nzClosable: false,
+        nzBodyStyle: { padding: '0' }, nzContent: PasteInstallDialogComponent,
+        nzData: { missingLibs: libraries,
+          installFn: async (selected: MissingLibInfo[]) => {
+            assertCurrent();
+            const registry = this.configService.getNpmRegistryForProject(this.projectService.currentPackageData);
+            await installPasteLibrariesManaged({ project, libraries: selected, signal: session.signal, assertCurrent,
+              domain: this.projectService, host: window['libraryDependencies'],
+              storage: () => window['fs'].openProjectSyncStorage(project, assertCurrent),
+              options: { installLinks: false, ...(registry ? { '@aily-project:registry': registry } : {}) },
+              readLocalPackage: source => {
+                const file = this.electronService.pathJoin(source, 'package.json');
+                if (!this.electronService.exists(file)) throw new Error('The original clipboard library source is missing.');
+                return JSON.parse(this.electronService.readFile(file));
+              },
+              cancel: requestId => window['ipcRenderer'].invoke('library-dependencies', {
+                operation: 'cancelEnvironment', projectPath: project, request: { requestId } }),
+            });
+            assertCurrent();
+          } }, nzWidth: '450px' });
+      const stop = () => {
+        reject(session.signal.reason ?? new Error('The original paste was cancelled.'));
+        modalRef.destroy();
+      };
+      session.signal.addEventListener('abort', stop, { once: true });
+      modalRef.afterClose.subscribe((result: any) => {
+        session.signal.removeEventListener('abort', stop);
+        if (result?.result !== 'installed') { reject(new Error('cancelled')); return; }
+        try { assertCurrent(); resolve(); } catch (error) { reject(error); }
+      });
+      if (session.signal.aborted) stop();
+    });
+  }
+
   get functionViewState() { return this.blocklyService.functionViewSubject.value; }
   get functionViewDisabled() { return this.aiWriting || this.blocklyService.isWorkspaceEditBlocked(); }
 
@@ -424,6 +481,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     theme: DarkTheme,
     renderer: 'thrasos',
     trashcan: true,
+    // 始终加载音效资源，运行时用 setMuted 切换，保证静音启动后仍能直接开启。
+    sounds: true,
     grid: {
       spacing: 20, // 网格间距为20像素
       length: 2, // 网格点的大小
@@ -478,6 +537,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     private generatorRuntime: BlocklyGeneratorRuntimeService,
     private projectDebugConfigurationService:
       ProjectDebugConfigurationService,
+    private builderService: _BuilderService,
   ) {
     // Initialize GlobalServiceManager with BitmapUploadService
     const globalServiceManager = GlobalServiceManager.getInstance();
@@ -491,10 +551,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         this.updateFlyoutPinButton();
       });
 
-    // 订阅配置重载，实时应用 flyoutAutoClose 等 blockly 配置
+    // 订阅配置重载，实时应用 Blockly 操作配置。
     this.configService.configReloaded$
       .pipe(takeUntil(this.destroy$))
-      .subscribe(() => this.applyFlyoutAutoClose());
+      .subscribe(() => {
+        this.applyFlyoutAutoClose();
+        this.applyBlocklySounds();
+      });
 
     // 监听主题变化，动态切换 Blockly 主题与网格颜色
     effect(() => {
@@ -557,6 +620,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.releasePointerBoundary?.();
     this.releaseDragRenderBatch?.();
     this.minimap?.dispose();
     this.minimap = null;
@@ -836,6 +900,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       applyWindowsBlocklyScrollbarThickness(this.platformService.isWindows());
       this.ngZone.runOutsideAngular(() => {
         this.workspace = Blockly.inject(this.workspacePaneComponent.blocklyHostElement, this.options);
+        this.applyBlocklySounds();
+        this.releasePointerBoundary = bindBlocklyPointerBoundary(this.workspace);
         this.releaseDragRenderBatch = batchBlocklyDragRenders(this.workspace);
         this.workspace.setViewportRendering(this.configData.blockly.viewportRendering !== false);
         this.workspacePaneComponent.blocklyHostElement.addEventListener('pointerdown', this.onWorkspacePointerDownBound, true);
@@ -865,74 +931,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         ),
       };
       // 注册跨实例粘贴时缺失库的安装回调
-      (window as any).__ailyBlockPasteNeedsInstall = (missingLibs: MissingLibInfo[]) => {
-        // Filter to only installable libs (those with a name)
-        const installableLibs = missingLibs.filter(l => l.name);
-        if (installableLibs.length === 0) {
-          // No installable libs info available, still resolve to attempt paste
-          return Promise.resolve();
-        }
-        return new Promise<void>((resolve, reject) => {
-          const modalRef = this.modal.create({
-            nzTitle: null,
-            nzFooter: null,
-            nzClosable: false,
-            nzBodyStyle: { padding: '0' },
-            nzContent: PasteInstallDialogComponent,
-            nzData: {
-              missingLibs: installableLibs,
-              installFn: async (libs: MissingLibInfo[]) => {
-                const projectPath = this.projectService.currentProjectPath;
-                if (!projectPath) throw new Error('No project path');
-                // Separate local libs from npm libs
-                const localLibs = libs.filter(l => l.localPath);
-                const npmLibs = libs.filter(l => !l.localPath);
-                // Handle local libs: copy source folder to current project then npm install from local path
-                for (const lib of localLibs) {
-                  // Extract the folder name from localPath (e.g. "lib-l298n" from "C:\...\lib-l298n")
-                  const folderName = lib.localPath!.split(/[/\\]/).pop()!;
-                  const destPath = this.electronService.pathJoin(projectPath, folderName);
-                  if (lib.localPath !== destPath) {
-                    if (this.electronService.exists(destPath)) {
-                      await this.crossPlatformCmdService.removeItem(destPath, true, true);
-                    }
-                    await this.crossPlatformCmdService.copyItem(lib.localPath!, destPath, true, true);
-                  }
-                  const { code, stderr } = await this.cmdService.runAsync(
-                    `npm install "${destPath}"`, projectPath
-                  );
-                  if (code !== 0) throw new Error(stderr || `Exit code: ${code}`);
-                }
-                // Handle npm libs: batch npm install
-                if (npmLibs.length > 0) {
-                  const pkgs = npmLibs.map(l => l.version ? `${l.name}@${l.version}` : l.name).join(' ');
-                  // 动态补装库时由项目 devmode 选择 Linux 或默认 Arduino npm 来源。
-                  const { code, stderr } = await this.cmdService.runAsync(
-                    this.configService.withProjectNpmRegistry(
-                      `npm install ${pkgs}`,
-                      this.projectService.currentPackageData,
-                    ),
-                    projectPath,
-                  );
-                  if (code !== 0) throw new Error(stderr || `Exit code: ${code}`);
-                }
-                // Load each newly installed library
-                for (const lib of libs) {
-                  await this.blocklyService.loadLibrary(lib.name, projectPath);
-                }
-              },
-            },
-            nzWidth: '450px',
-          });
-          modalRef.afterClose.subscribe((result: any) => {
-            if (result?.result === 'installed') {
-              resolve();
-            } else {
-              reject(new Error('cancelled'));
-            }
-          });
-        });
-      };
+      (window as any).__ailyBlockPasteNeedsInstall = (missingLibs: MissingLibInfo[]) => this.restorePasteLibraries(missingLibs);
 
       if (this.configData.blockly.minimap) {
         this.ngZone.runOutsideAngular(() => {
@@ -956,6 +955,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       // 设置全局工作区引用，供 editBlockTool 使用
       (window as any)['blocklyWorkspace'] = this.workspace;
       this.workspace.addChangeListener((event: any) => {
+        this.blocklyService.notifyProjectWorkspaceChange(event);
         this.handleProjectBreakpointWorkspaceEvent(event);
         this.requestCodeGeneration(event);
         // 工作区变更时同步 Minimap（含 AI 批量修改 blocks 的场景）
@@ -982,7 +982,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
               selectedBlockId,
             );
           }
-          this.blocklyService.selectedBlockSubject.next(selectedBlockId);
+          this.blocklyService.updateSelectedBlockFromEvent(event);
           queueMicrotask(() => {
             this.blocklyService.syncSelectedBlocksFromWorkspace();
             this.codeViewerIpcService.publishSelection(
@@ -1292,6 +1292,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private blocklyThemeForMode(mode: ThemeMode) {
     return mode === 'light' ? LightTheme : DarkTheme;
+  }
+
+  /** 操作音效不影响音频素材预览或工程中的声音。 */
+  private applyBlocklySounds(): void {
+    const muted = this.configData?.blockly?.sounds === false;
+    this.workspace?.getAudioManager().setMuted(muted);
+    this.workspace?.getFlyout()?.getWorkspace().getAudioManager().setMuted(muted);
   }
 
   /** 根据配置应用 flyout 自动关闭，支持初始化及配置重载时实时生效 */
@@ -2331,8 +2338,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           // Show the snapshot before disk publication. A live compile lease must not blank the viewer.
           this.blocklyService.publishPreparedCodeView(code, generated.blockCodeMapText);
           try {
-            await writePreparedArduinoGeneratedArtifacts(projectPath, generated.artifacts);
-            this.clearGeneratedArtifactRetry();
+            if (this.deferBackgroundArtifactPublication(projectPath)) {
+              this.scheduleGeneratedArtifactRetry(projectPath, generated.artifacts,
+                this.blocklyService.getWorkspaceContentRevision());
+            } else {
+              await writePreparedArduinoGeneratedArtifacts(projectPath, generated.artifacts);
+              this.clearGeneratedArtifactRetry();
+            }
           } catch (error) {
             if (!isBuildWorkspaceBusyError(error)) throw error;
             this.scheduleGeneratedArtifactRetry(
@@ -2389,6 +2401,15 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
+  private deferBackgroundArtifactPublication(projectPath: string): boolean {
+    // A terminated preprocess parent can exit before its supervisor confirms
+    // the entire tree stopped. Keep previews in memory through that handoff;
+    // do not misclassify its still-protected marker as abandoned recovery.
+    return this.builderService.isPreprocessing()
+      || this.projectService.isProjectTransitionInProgress(projectPath)
+      || this.projectService.stateSubject.value === 'saving';
+  }
+
   /** Retry only the disk write. The code view was already published from memory. */
   private scheduleGeneratedArtifactRetry(
     projectPath: string,
@@ -2406,7 +2427,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       if (projectPath !== this.projectService.currentProjectPath) return;
       // Revision capture serializes the full project. Even a disk-only retry
       // must defer that work while a small function is being dragged/edited.
-      if (this.workspace && isBlocklyWorkspaceInteracting(this.workspace)) {
+      if (this.deferBackgroundArtifactPublication(projectPath)
+        || (this.workspace && isBlocklyWorkspaceInteracting(this.workspace))) {
         this.generatedArtifactRetryTimer = setTimeout(() => void attempt(), 1000);
         return;
       }

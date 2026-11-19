@@ -59,7 +59,7 @@
         }
       </nz-content>
       @if (showRbox) {
-      <nz-sider [nzWidth]="siderWidth" nz-resizable [nzMinWidth]="400" [nzMaxWidth]="800"
+      <nz-sider [nzWidth]="rightSiderWidth" nz-resizable [nzMinWidth]="rightSiderMinWidth" [nzMaxWidth]="rightSiderMaxWidth"
         (nzResize)="onSideResize($event)">
         <nz-resize-handle class="layout-resize-handle" nzDirection="left" nzCursorType="grid">
           <div class="toolbox-pane__resize-handle toolbox-pane__resize-handle--left"></div>

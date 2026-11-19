@@ -2,10 +2,18 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const { sourceManifest } = require('./build-source-capture');
+const hash = (file, hashMode) => {
+    const bytes = fs.readFileSync(file);
+    if (!['file', 'project-manifest-v1'].includes(hashMode)) throw new Error('Unsupported build input hash mode');
+    return crypto.createHash('sha256').update(hashMode === 'project-manifest-v1' ? sourceManifest(bytes) : bytes).digest('hex');
+};
 
-function captureInputs(files) {
-    return [...new Set(files)].map(file => ({ path: path.resolve(file), sha256: hash(file) }));
+function captureInputs(files, { projectManifest } = {}) {
+    return [...new Set(files.map(file => path.resolve(file)))].map(file => {
+        const hashMode = projectManifest && file === path.resolve(projectManifest) ? 'project-manifest-v1' : 'file';
+        return { path: file, hashMode, sha256: hash(file, hashMode) };
+    });
 }
 
 // Arduino recipes quote paths on every platform. Preserve Windows separators;
@@ -78,10 +86,14 @@ function createTargetCompileContext(preprocessPath, project, inputs) {
             flags.push(arg);
         }
     }
-    for (const item of inputs) if (hash(item.path) !== item.sha256)
-        throw new Error('Build configuration changed during preprocessing: ' + item.path);
+    for (const item of inputs) {
+        if (item.hashMode === 'project-manifest-v1' && path.resolve(item.path) !== path.resolve(project, 'package.json'))
+            throw new Error('Only the project manifest may use semantic hashing');
+        if (hash(item.path, item.hashMode) !== item.sha256)
+            throw new Error('Build configuration changed during preprocessing: ' + item.path);
+    }
     return {
-        version: 1, status: 'ready', source: 'aily-builder-preprocess', project: path.resolve(project),
+        version: 2, status: 'ready', source: 'aily-builder-preprocess', project: path.resolve(project),
         compiler, flags, target: data.arduinoConfig?.fqbn ?? null,
         inputs: [...inputs, ...captureInputs([preprocessPath, compiler, ...responseFiles])],
     };
@@ -91,7 +103,7 @@ function publishTargetCompileContext(preprocessPath, project, inputs) {
     const destination = path.join(path.dirname(preprocessPath), 'target-compile.json');
     let context;
     try { context = createTargetCompileContext(preprocessPath, project, inputs); }
-    catch (error) { context = { version: 1, status: 'unavailable', reason: error.message }; }
+    catch (error) { context = { version: 2, status: 'unavailable', reason: error.message }; }
     // An unsupported test route must not prevent the normal firmware build.
     fs.writeFileSync(destination, JSON.stringify(context, null, 2));
     return context;

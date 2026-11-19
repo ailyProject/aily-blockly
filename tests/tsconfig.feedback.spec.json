@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/services/core/app-shell/ui-feedback.spec.ts",
+    "../src/app/components/feedback-dialog/*.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

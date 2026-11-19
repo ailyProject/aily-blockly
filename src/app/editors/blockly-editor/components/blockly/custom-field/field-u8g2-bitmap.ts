@@ -7,15 +7,16 @@
 import * as Blockly from 'blockly/core';
 import type { BitmapUploadRequest } from '../../../services/bitmap-upload.service';
 import { GlobalServiceManager } from '../../../services/bitmap-upload-bridge';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
+import { projectDataRuntime, isAilyDataRef, MAX_U8G2_BITMAP_DIMENSION, packXbmBitmap, U8g2BitmapValue,
+    DEFAULT_U8G2_BITMAP_SIZE, u8g2BitmapSize } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = 'Clear';
 Blockly.Msg['BUTTON_LABEL_UPLOAD'] = 'Upload';
 Blockly.Msg['BITMAP_U8G2_HINT_MOUSE'] = '鼠标左键绘制，右键擦除';
 
-export const DEFAULT_HEIGHT = 128;
-export const DEFAULT_WIDTH = 64;
+export const DEFAULT_HEIGHT = DEFAULT_U8G2_BITMAP_SIZE.height;
+export const DEFAULT_WIDTH = DEFAULT_U8G2_BITMAP_SIZE.width;
 const DEFAULT_PIXEL_SIZE = 2;
 const BLOCK_FIELD_HEIGHT = 50;
 const DEFAULT_PIXEL_COLOURS: PixelColours = {
@@ -47,13 +48,7 @@ function createSvgCursor(svg: string, hotX: number, hotY: number, fallback: stri
  * Field for inputting a small bitmap image.
  * Includes a grid of clickable pixels that's exported as a bitmap.
  */
-export interface U8g2BitmapValue {
-    readonly schemaVersion: 1;
-    readonly encoding: 'xbm-lsb-row-v1';
-    readonly width: number;
-    readonly height: number;
-    readonly bitmap: AilyDataRef | null;
-}
+export type { U8g2BitmapValue } from '@domain/project/project-data/public-api';
 
 export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
     private initialValue: number[][] | null = null;
@@ -461,8 +456,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
         const toolbar = this.createElementWithClassname('div', 'toolbar-u8g2 ailyMediaFieldToolbar');
 
         const dimensionGroup = this.createElementWithClassname('div', 'dimensionGroup-u8g2 ailyMediaFieldSettings');
-        this.widthInput = this.createDimensionInput('W', this.imgWidth, 1, 256);
-        this.heightInput = this.createDimensionInput('H', this.imgHeight, 1, 128);
+        this.widthInput = this.createDimensionInput('W', this.imgWidth, 1, MAX_U8G2_BITMAP_DIMENSION);
+        this.heightInput = this.createDimensionInput('H', this.imgHeight, 1, MAX_U8G2_BITMAP_DIMENSION);
         this.bindDimensionInputEvents(this.widthInput);
         this.bindDimensionInputEvents(this.heightInput);
         dimensionGroup.appendChild(this.createDimensionControl('W', this.widthInput));
@@ -1276,7 +1271,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
         this.renderCanvasEditor();
         this.updateControlsFromValue();
         const mutationVersion = ++this.bitmapMutationVersion;
-        const packed = packBitmap(nextBitmap, this.imgWidth, this.imgHeight);
+        const packed = packXbmBitmap(this.imgWidth, this.imgHeight, (x, y) => nextBitmap[y][x] === 1);
         const operation = (hasSetPixel(nextBitmap)
             ? projectDataRuntime.put({ codec: 'u8g2-xbm-v1', storage: 'raw-v1', value: packed })
             : Promise.resolve(null)
@@ -1355,20 +1350,13 @@ function normalizeU8g2BitmapValue(
     value: U8g2BitmapValue | undefined,
     config?: FieldBitmapFromJsonConfig,
 ): U8g2BitmapValue {
-    const width = clampBitmapDimension(value?.width ?? config?.width ?? DEFAULT_WIDTH, 1, 256);
-    const height = clampBitmapDimension(value?.height ?? config?.height ?? DEFAULT_HEIGHT, 1, 128);
+    const size = u8g2BitmapSize(value, config);
     return {
         schemaVersion: 1,
         encoding: 'xbm-lsb-row-v1',
-        width,
-        height,
+        ...size,
         bitmap: isAilyDataRef(value?.bitmap) ? value!.bitmap : null,
     };
-}
-
-function clampBitmapDimension(value: unknown, min: number, max: number): number {
-    const numeric = Number(value);
-    return Math.min(max, Math.max(min, Number.isFinite(numeric) ? Math.floor(numeric) : min));
 }
 
 function createEmptyBitmap(width: number, height: number): number[][] {
@@ -1383,17 +1371,6 @@ function normalizeBitmap(bitmap: number[][], width: number, height: number): num
 
 function hasSetPixel(bitmap: number[][]): boolean {
     return bitmap.some((row) => row.some((pixel) => pixel === 1));
-}
-
-function packBitmap(bitmap: number[][], width: number, height: number): Uint8Array {
-    const bytesPerRow = Math.ceil(width / 8);
-    const packed = new Uint8Array(bytesPerRow * height);
-    for (let row = 0; row < height; row++) {
-        for (let col = 0; col < width; col++) {
-            if (bitmap[row]?.[col] === 1) packed[row * bytesPerRow + (col >> 3)] |= 1 << (col & 7);
-        }
-    }
-    return packed;
 }
 
 function unpackBitmap(bytes: Uint8Array, width: number, height: number): number[][] {

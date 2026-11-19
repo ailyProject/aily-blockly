@@ -1,19 +1,59 @@
-const path = require('node:path');
+const { childScriptPath } = require('./child-script-path');
 
 function publisher() {
-  const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
-  return require(path.join(childRoot, 'scripts/build-workspace-publication.js'));
+  return require(childScriptPath('build-workspace-publication.js'));
+}
+
+function runExecutionWorker(request) {
+  return new Promise((resolve, reject) => {
+    // Source/library IO must not block the editor's renderer event loop.
+    // Electron preload cannot create Node worker_threads. Use the same managed
+    // Node distributed with the external build scripts, without a PATH lookup.
+    const entry = childScriptPath('build-execution-worker.js');
+    const path = require('node:path');
+    const executable = process.versions.electron
+      ? require('./tools/managed-npm-cli').getChildNodeExecutable(path.dirname(path.dirname(entry)))
+      : process.execPath;
+    if (!path.isAbsolute(executable)) throw new Error('The managed build Node runtime is unavailable.');
+    const env = { ...process.env };
+    for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
+    const worker = require('node:child_process').fork(entry, [], { execPath: executable, execArgv: [],
+      env, windowsHide: true, serialization: 'advanced', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    let settled = false;
+    worker.once('message', value => {
+      settled = true;
+      if (value.ok) resolve(value);
+      else reject(Object.assign(new Error(value.error), { code: value.code }));
+    });
+    worker.once('error', reject);
+    worker.once('exit', code => { if (!settled) reject(new Error(`Build execution worker exited before its receipt (${code}).`)); });
+    worker.send(request, error => { if (error) reject(error); });
+  });
 }
 
 module.exports = {
-  canReuseBlocklyUpload: config => {
-    const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
-    return require(path.join(childRoot, 'scripts/blockly-upload-state.js')).canReuseBlocklyUpload(config);
-  },
+  ISOLATED_BUILD_EXECUTION_VERSION: 1,
+  inspectBlocklyCompileProof: config => runExecutionWorker({ action: 'inspect-compile-proof', config }).then(value => value.proof),
+  prepareBuildExecution: (config, workspace, operation) => runExecutionWorker({ config, workspace, operation }).then(value => value.config),
+  abandonPreparedPreprocess: ({ currentProjectPath, execution, sourceCapture }) => runExecutionWorker({
+    action: 'abandon-preprocess', config: { currentProjectPath, execution, sourceCapture },
+  }).then(value => value.abandoned),
+  resolveBuildExecution: project => require(childScriptPath('build-execution-workspace.js')).resolveBuildExecution(project),
+  resolveBuildProjectPath: project => require(childScriptPath('build-execution-workspace.js')).resolveBuildProjectPath(project),
+  inspectBuildExecution: (project, requestId) => require(childScriptPath('build-execution-workspace.js')).inspectBuildExecution(project, requestId),
+  cancelBuildExecution: config => require(childScriptPath('build-execution-workspace.js')).cancelBuildExecution(config),
+  canReuseBlocklyUpload: config => require(childScriptPath('build-execution-workspace.js')).canReuseBuildExecution(config),
+  canReuseCoderUpload: config => runExecutionWorker({ action: 'check-coder-upload', config }).then(value => value.reusable),
   captureBuildSource: (config, workspace) => {
-    const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
-    return require(path.join(childRoot, 'scripts/build-source-capture.js')).captureBuildSource(config, workspace);
+    return require(childScriptPath('build-source-capture.js')).captureBuildSource(config, workspace);
   },
-  publishArduinoGeneratedCode: (projectPath, request) => publisher().publishArduinoGeneratedCode(projectPath, request),
+  GENERATED_SOURCE_ARCHIVE_VERSION: 1,
+  publishArduinoGeneratedCode: (projectPath, request) => {
+    const implementation = publisher();
+    if (request?.preserveSuperseded === true && implementation.generatedSourceArchiveVersion !== 1) {
+      throw new Error('Generated source preservation bridge unavailable; restart the host to load matching scripts.');
+    }
+    return implementation.publishArduinoGeneratedCode(projectPath, request);
+  },
   patchBuildMetadata: (projectPath, patch) => publisher().patchBuildMetadata(projectPath, patch),
 };

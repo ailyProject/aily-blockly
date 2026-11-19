@@ -4,6 +4,23 @@ import { readAbsSyntax } from '../../../integrations/blockly/abs/abs-syntax';
 import { walkAbsRawSyntax } from '../../../integrations/blockly/abs/abs-syntax-binding';
 import { indexAbsAbi } from '../../../integrations/blockly/abs/abs-abi-index';
 
+// Match the editor's chunked-load boundary. A complete graph at this scale
+// already needs multiple render slices and full snapshots per UI callback.
+const LARGE_WORKSPACE_BLOCKS = 1000;
+
+function largeWorkspace(request: NativeCandidateRequest): boolean {
+  if (request.abs !== undefined) {
+    let count = 0;
+    for (const _node of walkAbsRawSyntax(readAbsSyntax(request.abs))) {
+      if (++count >= LARGE_WORKSPACE_BLOCKS) return true;
+    }
+    return false;
+  }
+  return request.verify !== undefined
+    ? indexAbsAbi(request.verify.state).size >= LARGE_WORKSPACE_BLOCKS
+    : request.blocks.length >= LARGE_WORKSPACE_BLOCKS;
+}
+
 /** One recovery allowance for an entire preparation, shared by binding and
  * verification. Only disposable executions may use this; never wrap apply/save.
  * execute must finish disposing its realm before rejecting. */
@@ -18,9 +35,7 @@ export function createNativeCandidateRecovery(
     // Large complete workspaces need the existing recovery allowance up front.
     // Avoid discarding a healthy 10s run and repeating its full preparation.
     // A 30s timeout still ends preparation; it must not trigger another 30s run.
-    const large = snapshot.abs !== undefined
-      ? [...walkAbsRawSyntax(readAbsSyntax(snapshot.abs))].length >= 2000
-      : snapshot.verify !== undefined ? indexAbsAbi(snapshot.verify.state).size >= 2000 : false;
+    const large = largeWorkspace(snapshot);
     if (large) recovered = true;
     try {
       return await execute(cloneNativeCandidateRequest(snapshot), { assertCurrent, ...(large ? { timeoutMs: 30000 } : {}) });

@@ -245,7 +245,7 @@ export class AilyChatDemandSessionService {
         return result;
       }
       if (result.accepted !== true || result.state !== 'settled') {
-        throw new Error(result.error || 'Aily Chat 需求会话执行失败');
+        throw new Error(result.error || 'aily Chat 需求会话执行失败');
       }
       return result;
     } finally {

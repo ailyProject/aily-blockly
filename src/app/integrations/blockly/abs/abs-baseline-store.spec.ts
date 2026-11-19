@@ -1,5 +1,6 @@
 import { AbsBaselineStore, absBaselineKey, AbsGenerationInput, AbsSyncStoragePort, AbsSyncStorageAccess } from './abs-baseline-store';
-import { absJson, createAbsProjection, hashAbsText } from './abs-identity-map';
+import { encodeAbsState, splitAbsState } from './abs-full-state';
+import { absJson, createAbsProjection, hashAbsText, indexAbsAbi, reconstructAbsProjection } from './abs-identity-map';
 import { SerialOperationQueue } from '@shared/public-api';
 import { AbsAbiWorkspace } from './abs-state';
 
@@ -46,6 +47,54 @@ describe('ABS immutable baseline and commit recovery', () => {
     });
   });
 
+  it('reuses only exact verified generation bytes inside one background publisher', async () => {
+    const background = new AbsBaselineStore(host, scope, true);
+    await background.stage(input);
+    const loaded = await background.load('g1');
+    expect(Object.isFrozen(loaded.workspace.blocks.blocks[0])).toBeTrue();
+    expect(() => { loaded.workspace.blocks.blocks[0].id = 'changed'; }).toThrow();
+    expect((await background.load('g1')).workspace.blocks.blocks[0].id).toBe('protected');
+    const record = JSON.parse(host.files.get(absBaselineKey('g1'))!);
+    record.snapshot = record.snapshot.replace('edited', 'tampered');
+    host.files.set(absBaselineKey('g1'), JSON.stringify(record));
+    await expectAsync(background.load('g1')).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+  });
+  it('keeps live source CAS checks when the staged generation has already been verified', async () => {
+    const background = new AbsBaselineStore(host, scope, true);
+    await background.stage(input);
+    host.files.set('project.abi', '{"external":"newer"}');
+    expect((await background.commit('g1', assertCurrent, save)).status).toBe('CONFLICT');
+    expect(save).not.toHaveBeenCalled();
+    expect(host.files.get('project.abi')).toBe('{"external":"newer"}');
+    expect(host.files.has('prepared.json')).toBeFalse();
+  });
+  it('still rejects a different scope after verified record bytes change', async () => {
+    const background = new AbsBaselineStore(host, scope, true);
+    await background.stage(input);
+    const record = JSON.parse(host.files.get(absBaselineKey('g1'))!);
+    record.context.scope.projectKey = 'foreign';
+    host.files.set(absBaselineKey('g1'), absJson(record));
+    await expectAsync(background.load('g1')).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SCOPE_INVALID' }));
+  });
+  it('reads a legacy complete baseline and upgrades through the ordinary save transaction', async () => {
+    const current = input.projection, blocks = indexAbsAbi(current.workspace);
+    const legacyText = await encodeAbsState(splitAbsState(current.abs).program, current.document,
+      new Map(current.map.nodes.map(node => [node.astPath, blocks.get(node.blockId)!])), current.contracts, current.workspace, true);
+    const legacy = await reconstructAbsProjection(current.workspace, { ...current.map,
+      document: current.document, contracts: current.contracts }, legacyText);
+    await store.stage({ ...input, projection: legacy });
+    expect((await store.commit('g1', assertCurrent, save)).status).toBe('COMMITTED');
+    const retained = host.files.get(absBaselineKey('g1'));
+    expect((await store.loadCommitted())!.map.projectionVersion).toBe('abs-v2.preview.7');
+    expect(await store.readDerivedAbi('g1')).toBe(input.abi);
+    const next = await createAbsProjection(current.workspace, { ...current.map, generation: 'g2', baselineRef: absBaselineKey('g2'),
+      document: current.document, contracts: current.contracts });
+    await store.stage({ ...input, projection: next, expected: await store.captureDisk(), inputAbs: legacyText });
+    expect((await store.commit('g2', assertCurrent, save)).status).toBe('COMMITTED');
+    expect((await store.loadCommitted())!.map.projectionVersion).toBe('abs-v2.preview.8');
+    expect(host.files.get('project.abi')).toBe(input.abi);
+    expect(host.files.get(absBaselineKey('g1'))).toBe(retained);
+  });
   it('retains exact input, full unsaved model and original projection without publishing or saving', async () => {
     await store.stage(input);
     const loaded = await store.load('g1');
@@ -55,6 +104,17 @@ describe('ABS immutable baseline and commit recovery', () => {
     expect(JSON.parse(host.files.get(absBaselineKey('g1'))!).inputAbs).toBe(input.inputAbs);
     expect(await store.captureDisk()).toEqual(input.expected);
     expect(host.writes).toEqual([absBaselineKey('g1')]);
+  });
+
+  it('stores one complete ABS snapshot without an independent ABI or projection copy', async () => {
+    await store.stage(input);
+    const record = JSON.parse(host.files.get(absBaselineKey('g1'))!);
+    expect(record.schemaVersion).toBe(2);
+    expect(record.snapshot).toBe(input.projection.abs);
+    expect(record.abi).toBeUndefined();
+    expect(record.projection).toBeUndefined();
+    expect(JSON.stringify(record.abiRecipe)).not.toContain('edited');
+    expect(await store.load('g1')).toEqual(input.projection);
   });
 
   it('refuses generation overwrites and path traversal', async () => {
@@ -127,6 +187,30 @@ describe('ABS immutable baseline and commit recovery', () => {
     const pointer = JSON.parse(host.files.get('committed.json')!); pointer.hash = 'sha256:' + '0'.repeat(64);
     host.files.set('committed.json', JSON.stringify(pointer));
     await expectAsync(store.loadCommitted()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+  });
+  it('reports a competing commit during a missing-ancestor or failed-continuation observation as stale', async () => {
+    await store.stage(input); await store.commit('g1', assertCurrent, save);
+    const initial = host.files.get('committed.json')!;
+    const projection = await createAbsProjection(input.projection.workspace, { document: input.projection.document,
+      contracts: input.projection.contracts, generation: 'g2', baselineRef: absBaselineKey('g2'), scope,
+      savedAbiHash: input.projection.map.savedAbiHash });
+    await store.stage({ ...input, projection, expected: await store.captureDisk() });
+    await store.commit('g2', assertCurrent, save);
+    const successor = host.files.get('committed.json')!;
+    for (const mode of ['ancestor', 'metadata']) {
+      host.files.set('committed.json', initial);
+      const raced: AbsSyncStoragePort = { withLock: callback => host.withLock(callback), read: async key => {
+        const value = await host.read(key);
+        if (key === absBaselineKey('g1')) host.files.set('committed.json', successor);
+        return value;
+      } };
+      const reader = new AbsBaselineStore(raced, scope), before = [...host.writes];
+      const observation: Promise<unknown> = mode === 'ancestor' ? reader.inspectCommittedAncestor('not-committed')
+        : reader.isMetadataOnlyContinuation(null, input.abi!);
+      await expectAsync(observation)
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_STALE' }));
+      expect(host.files.get('committed.json')).toBe(successor); expect(host.writes).toEqual(before);
+    }
   });
 
   it('inspects pending state without saving, publishing, deleting, or repairing files', async () => {

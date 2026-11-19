@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
-const { fork } = require('node:child_process');
+const { fork, stopOwnedProcess } = require('../owned-process');
 const { randomUUID } = require('node:crypto');
 const { ipcMain, webContents } = require('electron');
 
@@ -192,7 +192,9 @@ class ConnectorDaemonClient extends EventEmitter {
       // The IPC channel may already be closing.
     }
     try {
-      if (child && child.exitCode === null && child.signalCode === null) child.kill();
+      if (child && child.exitCode === null && child.signalCode === null) {
+        void stopOwnedProcess(child).then(stopped => { if (stopped === null) child.kill(); });
+      }
     } catch {
       // Process cleanup is best effort after a daemon failure.
     }
@@ -518,7 +520,7 @@ function notifyDisconnectedOwners(error) {
       event: {
         type: 'device.disconnected',
         reason: 'DAEMON_EXITED',
-        message: error?.message || 'Aily Connector stopped unexpectedly',
+        message: error?.message || 'aily Connector stopped unexpectedly',
       },
     });
   }

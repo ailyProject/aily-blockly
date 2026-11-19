@@ -25,6 +25,15 @@ describe('native ABS position binding', () => {
   const run = (value: NativeCandidateRequest) => evaluateNativeCandidate(value, { assertCurrent: () => {} });
   afterEach(() => expect(document.querySelectorAll('[data-blockly-native-candidate]').length).toBe(0));
 
+  it('binds uppercase ABS boolean tokens to lowercase library values in the native realm', async () => {
+    const value = request('logic_boolean(TRUE)\nlogic_boolean(FALSE)');
+    value.steps = [{ kind: 'definitions', definitions: [{ type: 'logic_boolean', message0: '%1',
+      args0: [{ type: 'field_dropdown', name: 'BOOL', options: [['真', 'true'], ['假', 'false']] }], output: 'Boolean' }] }];
+    expect((await run(value)).state['blocks'].blocks.map(block => block.fields.BOOL)).toEqual(['true', 'false']);
+    value.abs = '# ABS Schema: 2\nlogic_boolean("FALSE")';
+    await expectAsync(run(value)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_FIELD_OPTION_INVALID' }));
+  });
+
   it('transports actionable field options and source locations out of the real isolated realm', async () => {
     const value = request('native_order(INVALID, 1, int)');
     await expectAsync(run(value)).toBeRejectedWith(jasmine.objectContaining({

@@ -33,6 +33,31 @@ describe('declaration-backed prepared ABS shapes', () => {
     expect(() => snapshot.withSynchronousRead!(() => Promise.resolve())).toThrowError(/must be synchronous/);
     expect(() => snapshot.assertCurrent()).not.toThrow();
   });
+  it('checks all used declarations at native fragment boundaries, including callbacks changing another type', () => {
+    const catalog = new BlocklyDeclarativeBlockCatalog(), first = definition();
+    const second = { ...definition(), type: 'abs_other' };
+    const registry = { abs_decl: { init() {} }, abs_other: { init() {} } };
+    catalog.record(first, registry.abs_decl); catalog.record(second, registry.abs_other);
+    const snapshot = catalog.capture(registry);
+    snapshot.get('abs_decl');
+    expect(() => snapshot.withSynchronousLoad!(() => {
+      snapshot.get('abs_other');
+      first.message0 = 'changed by native callback';
+      return 'must not publish';
+    })).toThrowError(/definitions changed/);
+    expect(() => snapshot.withSynchronousLoad!(() => 'next fragment')).toThrowError(/definitions changed/);
+  });
+
+  it('does not keep native loading validation suspended across a yield or a failed callback', () => {
+    const catalog = new BlocklyDeclarativeBlockCatalog(), source = definition();
+    const registry = { abs_decl: { init() {} } };
+    catalog.record(source, registry.abs_decl); const snapshot = catalog.capture(registry);
+    snapshot.get('abs_decl');
+    expect(() => snapshot.withSynchronousLoad!(() => Promise.resolve())).toThrowError(/must be synchronous/);
+    expect(() => snapshot.withSynchronousLoad!(() => { throw new Error('callback failed'); })).toThrowError('callback failed');
+    registry.abs_decl.init = () => {};
+    expect(() => snapshot.get('abs_decl')).toThrowError(/definitions changed/);
+  });
   const baseline = () => createAbsProjection(empty, { document: empty, generation: 'base', baselineRef: 'baselines/base.json',
     savedAbiHash: null, scope: { projectKey: 'p', pageId: 'main' } });
 

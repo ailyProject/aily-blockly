@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/services/integrations/automation/project-save-receipts.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-live-save.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-restart.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-operation-journal.spec.ts",
+    "./r1-project-save-routing.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

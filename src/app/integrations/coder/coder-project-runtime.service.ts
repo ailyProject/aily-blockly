@@ -3,7 +3,7 @@ import { Injectable, Injector } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { NoticeService, WorkflowService } from '@core/app-shell/public-api';
 import { CmdService, LogService } from '@core/platform/public-api';
-import { ProjectService, type CoderExecutionPort } from '@domain/project/public-api';
+import { ProjectService, CODER_BOARD_REQUIRED_MESSAGE, type CoderExecutionPort } from '@domain/project/public-api';
 import { BuilderService, CompileService, BUILD_APPLICATION_PORT } from '@domain/build/public-api';
 import { SerialService, UploaderService, DEVICE_APPLICATION_PORT, selectSerialPort } from '@domain/device/public-api';
 import { NpmService, DEPENDENCY_APPLICATION_PORT } from '@domain/dependencies/public-api';
@@ -114,6 +114,19 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     };
     this.sessions.set(key, session);
     session.notice.stateSubject.subscribe(notice => {
+      if (notice?.onRetryLocally) {
+        const retry = notice.onRetryLocally;
+        const current = this.projects.captureCurrentProjectGuard();
+        notice = { ...notice, onRetryLocally: () => {
+          if (!this.isActive(path) || !current() || session.busy) return;
+          // The explicit retry repairs dependencies and must still participate
+          // in per-project busy state, close protection and header status.
+          return this.run(path, 'build', async () => {
+            await retry();
+            return { state: session.state.notice?.state || 'error' };
+          }, true).catch(() => undefined);
+        } };
+      }
       session.state = { ...session.state, notice };
       session.noticePresented = false;
       this.publish();
@@ -137,9 +150,10 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     this.states$.next(new Map([...this.sessions].map(([path, session]) => [path, session.state])));
   }
 
-  private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>): Promise<any> {
+  private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>, repairLocalDependencies = false): Promise<any> {
+    if (this.projects.isProjectTransitionInProgress(path)) throw new Error('工程配置正在更新，请完成后再编译或上传。');
     const dependencyBlock = this.projects.getProjectDependencyBlockMessage(path);
-    if (dependencyBlock) throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
+    if (dependencyBlock && !repairLocalDependencies) throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
     const session = this.getSession(path);
     if (session.busy) throw new Error(`工程正在${session.busy === 'build' ? '编译' : '上传'}: ${path}`);
     session.busy = kind;
@@ -147,7 +161,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     const finish = this.projects.beginCoderOperation(kind, path);
     this.publish();
     try {
-      await session.project.syncCurrentBoardConfig();
+      if (!repairLocalDependencies) await session.project.syncCurrentBoardConfig();
       if (!session.builderObserved) {
         session.builderObserved = true;
         session.injector.get(BuilderService).buildFinishedSubject.subscribe(event => {
@@ -168,7 +182,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     }
   }
 
-  build(path: string, options: { preprocessOnly?: boolean; clearCache?: boolean } = {}): Promise<any> {
+  build(path: string, options: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string } = {}): Promise<any> {
     return this.run(path, 'build', async session => {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);
@@ -196,7 +210,10 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     return { session, ports, selection };
   }
 
-  upload(path: string, port?: string): Promise<any> {
+  async upload(path: string, port?: string): Promise<any> {
+    if (!await this.projects.ensureCoderBoardSelected(path)) {
+      return { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' };
+    }
     return this.run(path, 'upload', async session => {
       if (this.isActive(path)) this.capturePort(session);
       const uploader = session.injector.get(UploaderService);

@@ -1,0 +1,214 @@
+{
+  "$ailyProjectData": {
+    "schemaVersion": 1,
+    "mode": "external-only"
+  },
+  "schemaVersion": 3,
+  "activePageId": "page-1",
+  "openedPageIds": [
+    "page-1"
+  ],
+  "pages": [
+    {
+      "id": "page-1",
+      "title": "页面 1",
+      "content": {
+        "blocks": {
+          "languageVersion": 0,
+          "blocks": [
+            {
+              "type": "arduino_global",
+              "id": "arduino_global_id0",
+              "x": 30,
+              "y": 60,
+              "deletable": false,
+              "inputs": {}
+            },
+            {
+              "type": "arduino_setup",
+              "id": "arduino_setup_id0",
+              "x": 30,
+              "y": 180,
+              "deletable": false,
+              "inputs": {
+                "ARDUINO_SETUP": {
+                  "block": {
+                    "type": "io_pinmode",
+                    "id": "mode1",
+                    "inputs": {
+                      "PIN": {
+                        "shadow": {
+                          "type": "io_pin_digi",
+                          "id": "mode1_pin",
+                          "fields": {
+                            "PIN": "10"
+                          }
+                        }
+                      },
+                      "MODE": {
+                        "shadow": {
+                          "type": "io_mode",
+                          "id": "mode1_mode",
+                          "fields": {
+                            "MODE": "OUTPUT"
+                          }
+                        }
+                      }
+                    },
+                    "next": {
+                      "block": {
+                        "type": "io_pinmode",
+                        "id": "mode2",
+                        "inputs": {
+                          "PIN": {
+                            "shadow": {
+                              "type": "io_pin_digi",
+                              "id": "mode2_pin",
+                              "fields": {
+                                "PIN": "11"
+                              }
+                            }
+                          },
+                          "MODE": {
+                            "shadow": {
+                              "type": "io_mode",
+                              "id": "mode2_mode",
+                              "fields": {
+                                "MODE": "OUTPUT"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "arduino_loop",
+              "id": "arduino_loop_id0",
+              "x": 30,
+              "y": 300,
+              "deletable": false,
+              "inputs": {
+                "ARDUINO_LOOP": {
+                  "block": {
+                    "type": "io_digitalwrite",
+                    "id": "write1",
+                    "inputs": {
+                      "PIN": {
+                        "shadow": {
+                          "type": "io_pin_digi",
+                          "id": "write1_pin",
+                          "fields": {
+                            "PIN": "10"
+                          }
+                        }
+                      },
+                      "STATE": {
+                        "shadow": {
+                          "type": "io_state",
+                          "id": "write1_state",
+                          "fields": {
+                            "STATE": "HIGH"
+                          }
+                        }
+                      }
+                    },
+                    "next": {
+                      "block": {
+                        "type": "io_digitalwrite",
+                        "id": "write2",
+                        "inputs": {
+                          "PIN": {
+                            "shadow": {
+                              "type": "io_pin_digi",
+                              "id": "write2_pin",
+                              "fields": {
+                                "PIN": "11"
+                              }
+                            }
+                          },
+                          "STATE": {
+                            "shadow": {
+                              "type": "io_state",
+                              "id": "write2_state",
+                              "fields": {
+                                "STATE": "HIGH"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "io_digitalwrite",
+              "id": "write3",
+              "inputs": {
+                "PIN": {
+                  "shadow": {
+                    "type": "io_pin_digi",
+                    "id": "write3_pin",
+                    "fields": {
+                      "PIN": "10"
+                    }
+                  }
+                },
+                "STATE": {
+                  "shadow": {
+                    "type": "io_state",
+                    "id": "write3_state",
+                    "fields": {
+                      "STATE": "LOW"
+                    }
+                  }
+                }
+              },
+              "next": {
+                "block": {
+                  "type": "io_digitalwrite",
+                  "id": "write4",
+                  "inputs": {
+                    "PIN": {
+                      "shadow": {
+                        "type": "io_pin_digi",
+                        "id": "write4_pin",
+                        "fields": {
+                          "PIN": "11"
+                        }
+                      }
+                    },
+                    "STATE": {
+                      "shadow": {
+                        "type": "io_state",
+                        "id": "write4_state",
+                        "fields": {
+                          "STATE": "LOW"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "x": 70,
+              "y": 435
+            }
+          ]
+        }
+      },
+      "viewState": {
+        "scale": 1,
+        "scrollX": 0,
+        "scrollY": 0
+      }
+    }
+  ],
+  "sharedModel": {
+    "procedureBlocks": []
+  }
+}

@@ -1,15 +1,17 @@
+import { splitAbsState } from './abs-full-state';
 import { captureAbsCustomFunctions } from './abs-custom-functions';
 import { absJson, createAbsProjection, indexAbsAbi } from './abs-identity-map';
 import { reconcileAbsDraft } from './abs-reconciler';
 import { assertAbsRuntimeShapeSupported } from './abs-workspace-state';
 import { getAbsProcedureReferences } from './abs-procedures';
 import type { DeclarativeBlockSnapshot } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
+import { resolveBoardJsonBindings } from '../../../editors/blockly-editor/components/blockly/board-json-bindings';
 
 describe('pure typed custom-function preparation', () => {
-  const json = { type: 'custom_function_def', mutator: 'function_params_mutator', args0: [
+  const json = resolveBoardJsonBindings({ type: 'custom_function_def', mutator: 'function_params_mutator', args0: [
     { type: 'field_input', name: 'FUNC_NAME', text: 'myFunction' },
     { type: 'field_dropdown', name: 'RETURN_TYPE', options: [['void', 'void'], ['int', 'int'], ['float', 'float'], ['---', '---']] },
-    { type: 'input_statement', name: 'STACK' }] };
+    { type: 'input_statement', name: 'STACK' }] }, {});
   const kinds = { custom_function_def: 'definition', custom_function_call_advance: 'statement-call', custom_function_call_return_advance: 'value-call' } as const;
   const snapshot: DeclarativeBlockSnapshot = { types: Object.keys(kinds), registered: type => !!kinds[type], assertCurrent() {}, get: type => type === json.type ? json : undefined,
     customFunctions: { get: type => kinds[type] && { kind: kinds[type], parameterTypes: ['int', 'float'] }, assertCurrent() {}, synchronize() {}, prepareSerialization() {} } };
@@ -76,11 +78,11 @@ describe('pure typed custom-function preparation', () => {
   });
   it('preserves identities across repeated edits, type changes and parameter removal without deleting models', async () => {
     const first = await run(), before = await base(first.workspace, first.contracts);
-    const changed = await run(before.abs.replaceAll('"type":"int"', '"type":"float"'), before, undefined);
+    const changed = await run(splitAbsState(before.abs).program.replaceAll('"type":"int"', '"type":"float"'), before, undefined);
     expect([...indexAbsAbi(changed.workspace).keys()]).toEqual([...indexAbsAbi(first.workspace).keys()]);
     expect((changed.workspace.blocks.blocks[0].extraState as any).paramVarIds).toEqual((first.workspace.blocks.blocks[0].extraState as any).paramVarIds);
     const canonical = await base(changed.workspace, changed.contracts);
-    const removed = await run(canonical.abs.replaceAll('"params":[{"name":"amount","type":"float"}]', '"params":[]'), canonical, undefined);
+    const removed = await run(splitAbsState(canonical.abs).program.replaceAll('"params":[{"name":"amount","type":"float"}]', '"params":[]'), canonical, undefined);
     expect(removed.workspace['variables']).toEqual(first.workspace['variables']);
     expect(removed.workspace.blocks.blocks[0].fields!['PARAM_NAME0']).toBeUndefined();
   });

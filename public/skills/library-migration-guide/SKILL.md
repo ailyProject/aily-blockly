@@ -1,6 +1,6 @@
 ---
 name: library-migration-guide
-description: "Complete guide for converting Arduino/ESP32 hardware libraries into Aily Blockly compatible format. Covers the full workflow: source analysis, block.json design, generator.js implementation, toolbox.json configuration, bus initialization (Serial/I2C/SPI), board adaptation, and packaging."
+description: "Complete guide for converting Arduino/ESP32 hardware libraries into aily Blockly compatible format. Covers the full workflow: source analysis, block.json design, generator.js implementation, toolbox.json configuration, bus initialization (Serial/I2C/SPI), board adaptation, and packaging."
 metadata:
   version: "4.0.0"
   author: aily-team
@@ -12,7 +12,7 @@ metadata:
 
 # Blockly Library Conversion Guide
 
-A systematic guide for converting Arduino libraries into Aily Blockly libraries,
+A systematic guide for converting Arduino libraries into aily Blockly libraries,
 based on real conversion cases (ArduinoJson, OneButton, MQTT/PubSubClient, DHT, INA219, VL53L0X, etc.).
 
 ## Conversion Workflow

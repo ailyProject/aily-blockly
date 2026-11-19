@@ -4,6 +4,7 @@ import { indexAbsAbi } from './abs-identity-map';
 import { AbsProcedureStateContract, getAbsProcedureReferences } from './abs-procedures';
 import { captureAbsCustomFunctions } from './abs-custom-functions';
 import type { DeclarativeBlockSnapshot } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
+import { indexAbsBlockActivity } from './abs-block-activity';
 
 /** Capture only explicit native or source-attested custom procedure contracts.
  * Capability getters identify legacy roles; custom protocol paths come from its
@@ -12,11 +13,14 @@ import type { DeclarativeBlockSnapshot } from '../../../editors/blockly-editor/s
 export function captureAbsProcedureContracts(workspace: Blockly.Workspace, serialized: AbsAbiWorkspace, assertCurrent: () => void, definitions?: DeclarativeBlockSnapshot) {
   assertCurrent();
   const blocks = indexAbsAbi(serialized);
+  const activity = indexAbsBlockActivity(serialized);
   const contracts: Record<string, AbsProcedureStateContract> = Object.create(null);
   const custom = definitions && captureAbsCustomFunctions(definitions);
   for (const block of workspace.getAllBlocks(false) as any[]) {
     const state = blocks.get(block.id);
-    if (!state) continue;
+    // Inactive procedure state is retained by the complete serialized document.
+    // Do not execute its legacy capability getters or guess a live model/schema.
+    if (!state || !activity.get(block.id)) continue;
     const customShape = custom?.existing(state);
     if (customShape) { contracts[block.id] = customShape.procedure!; continue; }
     const fail = (): never => { throw new AbsSyncError('ABS_PROCEDURE_CONTRACT_UNSUPPORTED', 'Procedure serialization requires an explicit host adapter.', undefined, [block.id]); };

@@ -1,12 +1,13 @@
 import { Inject, Injectable, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService } from '@core/platform/public-api';
-import { BuilderService } from '@domain/build/public-api';
+import { BuilderService, type BuildInput } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import { SerialService } from './serial.service';
 import type { UploadRecoveryPolicy } from './policies/upload-recovery-policy';
-import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
+import { ProjectService, CODER_EXECUTION_PORT, CODER_BOARD_REQUIRED_MESSAGE, type CoderExecutionPort } from '@domain/project/public-api';
 import { resolveUploadDispatchMode } from './policies/upload-dispatch-policy';
 
 import {
@@ -21,6 +22,11 @@ import {
   resolveLinuxBoardConnectorSelection,
   resolveLinuxBoardExecutionRoute,
 } from '@shared/public-api';
+
+export type FirmwareUploadOptions =
+  | { preparedFirmware: BuildInput; reuseCloudFirmware?: never; expectedArtifactId?: never }
+  | { preparedFirmware?: never; reuseCloudFirmware: true; expectedArtifactId?: never }
+  | { preparedFirmware?: never; reuseCloudFirmware?: never; expectedArtifactId: string };
 
 @Injectable({
   providedIn: 'root'
@@ -41,6 +47,7 @@ export class UploaderService {
     @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution: CoderExecutionPort | null,
     private npmService: NpmService,
     private configService: ConfigService,
+    private metrics: MetricsService,
   ) { }
 
   requiresLocalPort(): boolean {
@@ -202,25 +209,46 @@ export class UploaderService {
     }
   }
 
-  async upload(projectPath = this.projectService.currentProjectPath, port?: string, expectedArtifactId?: string) {
-    if (expectedArtifactId !== undefined && (!/^[a-f0-9]{64}$/.test(expectedArtifactId)
-      || this.projectService.isAilyCodeProject(projectPath) || this.isPythonProject())) {
+  async upload(projectPath = this.projectService.currentProjectPath, port?: string, target?: FirmwareUploadOptions | string) {
+    if (this.configService.isCoderProduct() && !await this.projectService.ensureCoderBoardSelected(projectPath)) {
+      return { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' };
+    }
+
+    const firmware: FirmwareUploadOptions | undefined = typeof target === 'string' ? { expectedArtifactId: target } : target;
+
+    if (firmware?.expectedArtifactId !== undefined && !/^[a-f0-9]{64}$/.test(firmware.expectedArtifactId)) {
       throw new Error('SIMULATION_UPLOAD_UNSUPPORTED: A verified Blockly firmware Artifact is required.');
     }
+
+    const projectCurrent = firmware ? this.projectService.captureCurrentProjectGuard() : undefined;
+
+    const assertUploadCurrent = () => {
+      if (firmware && (this.projectService.isAilyCodeProject(projectPath) || this.isPythonProject()
+        || this.projectService.isCloudBuild() !== Boolean(firmware.reuseCloudFirmware)
+        || !projectCurrent?.() || this.projectService.currentProjectPath !== projectPath
+        || this.serialService.currentPort !== port)) {
+        throw Object.assign(new Error('Prepared firmware upload no longer owns the requested project and port.'),
+          { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
+      }
+    };
+
+    assertUploadCurrent();
 
     if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.upload(projectPath, port);
     if (this.configService.isCoderProduct()) await this.npmService.assertCoderDependenciesReady(projectPath);
 
+    assertUploadCurrent();
+
     const finish = this.projectService.beginCoderOperation('upload');
 
     try {
-      return await this.uploadCurrentProject(expectedArtifactId);
+      return await this.uploadCurrentProject(firmware, assertUploadCurrent);
     } finally {
       finish();
     }
   }
 
-  private async uploadCurrentProject(expectedArtifactId?: string) {
+  private async uploadCurrentProject(firmware: FirmwareUploadOptions | undefined, assertUploadCurrent: () => void) {
     // Python 将 main.py 交给 Linux connector 同步并运行；其余项目保留原 Arduino 固件上传流程。
     if (this.isPythonProject()) {
       const pythonRoute = this.currentLinuxBoardRoute();
@@ -229,11 +257,16 @@ export class UploaderService {
         throw new Error(this.t('INVALID_BOARD_CONFIG'));
       }
 
-      return this.uploadPythonProject(pythonRoute);
+      const result = await this.uploadPythonProject(pythonRoute);
+
+      if (result?.state === 'done') this.metrics.record('upload_succeeded');
+
+      return result;
     }
 
     const uploadPort = this.serialService.currentPort;
     const uploadPortType = this.serialService.currentPortInfo?.type;
+    const projectPath = this.projectService.currentProjectPath;
     const operationId = this.createUploadOperationId('firmware-upload', uploadPort);
     let uploadOutcome = 'failed';
     let resourceRecovery: UploadRecoveryPolicy | undefined;
@@ -249,6 +282,9 @@ export class UploaderService {
       const hasBlocklyUploader = this.application.hasActionListener('uploader-upload-begin');
       const isAilyCodeProject = this.projectService.isAilyCodeProject();
       const uploadDispatchMode = resolveUploadDispatchMode({ isAilyCodeProject, hasBlocklyUploader });
+
+      assertUploadCurrent();
+
       let uploadResult: any;
       let uploadFeedbackError = '';
       let uploadFeedbackSuccess = true;
@@ -268,7 +304,7 @@ export class UploaderService {
         const timeout = uploadPortType === 'ble' ? 900000 : 300000;
 
         const feedback = await this.application.dispatchActionWithFeedback('upload-begin',
-          expectedArtifactId === undefined ? {} : { expectedArtifactId }, timeout);
+          firmware ? { ...firmware, projectPath, port: uploadPort } : {}, timeout);
 
         uploadResult = feedback?.data?.result;
         uploadFeedbackError = feedback?.error || '';
@@ -287,10 +323,15 @@ export class UploaderService {
         const error: any = new Error(uploadResult?.text || uploadFeedbackError || '上传失败');
         error.state = uploadResult?.state || 'error';
         error.text = uploadResult?.text || uploadFeedbackError || '上传失败';
+
+        if (firmware && uploadResult?.code) error.code = uploadResult.code;
+
         error.result = uploadResult;
 
         throw error;
       }
+
+      if (uploadResult?.state === 'done') this.metrics.record('upload_succeeded');
 
       if (!this.electronService.isWindowFocused()) {
         this.electronService.notify('上传', uploadResult?.text || '');

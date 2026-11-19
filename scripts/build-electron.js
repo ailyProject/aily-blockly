@@ -1,13 +1,13 @@
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { getProductAuthConfig } = require('../electron/build-product');
+const { getProductAppId, getProductAuthConfig } = require('../electron/build-product');
 
 const BUILD_PRODUCTS = Object.freeze({
   blockly: Object.freeze({
     id: 'blockly',
-    appId: 'blockly.aily.pro',
+    appId: getProductAppId('blockly'),
     productName: 'aily blockly',
-    appUserModelId: 'pro.aily.blockly',
+    appUserModelId: getProductAppId('blockly'),
     outputDirectory: 'dist/aily-blockly/',
     artifactBase: 'aily-blockly',
     artifactBaseCn: 'aily-blockly-CN',
@@ -16,9 +16,9 @@ const BUILD_PRODUCTS = Object.freeze({
   }),
   coder: Object.freeze({
     id: 'coder',
-    appId: 'coder.aily.pro',
+    appId: getProductAppId('coder'),
     productName: 'aily coder',
-    appUserModelId: 'pro.aily.coder',
+    appUserModelId: getProductAppId('coder'),
     outputDirectory: 'dist/aily-coder/',
     artifactBase: 'aily-coder',
     artifactBaseCn: 'aily-coder-CN',
@@ -49,7 +49,7 @@ function createBuilderConfig(plan, baseConfig) {
   const product = plan.product;
   const coderAssociations = plan.buildProduct === 'coder' ? {
     fileAssociations: [
-      { ext: 'aci', name: 'Aily Coder Project', role: 'Editor', mimeType: 'application/x-aily-coder-project' },
+      { ext: 'aci', name: 'aily Coder Project', role: 'Editor', mimeType: 'application/x-aily-coder-project' },
       { ext: 'ino', name: 'Arduino Sketch', role: 'Editor', mimeType: 'text/x-arduino', rank: 'Alternate' },
     ],
   } : {};
@@ -82,9 +82,9 @@ function createBuilderConfig(plan, baseConfig) {
     }],
     protocols: (baseConfig.protocols || []).map((protocol) => ({
       ...protocol,
-      ...(protocol?.name === 'Aily Blockly OAuth'
+      ...(protocol?.name === 'aily Blockly OAuth'
         ? {
-          name: plan.buildProduct === 'coder' ? 'Aily Coder OAuth' : protocol.name,
+          name: plan.buildProduct === 'coder' ? 'aily Coder OAuth' : protocol.name,
           schemes: getProductAuthConfig(plan.buildProduct).protocols,
         }
         : {}),

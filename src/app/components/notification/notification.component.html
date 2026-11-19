@@ -11,7 +11,8 @@
             }
         </div>
         @if (data.showProgress) {
-        <div class="num-box ccenter">
+        <div class="num-box ccenter" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+            [attr.aria-valuenow]="data.progress" [attr.aria-label]="data.text || data.title">
             {{progressValue}}%
         </div>
         }
@@ -43,6 +44,15 @@
         <div class="title">{{data.title}}</div>
         <div class="text">{{data.text}}</div>
         <div class="btns">
+            @if (data.state=='error' && data.onRetryLocally) {
+            <button type="button" class="btn link retry-locally" (click)="data.onRetryLocally()">{{ 'CLOUD_BUILD.SWITCH_TO_LOCAL' | translate }}</button>
+            }
+            @if (data.state=='doing' && data.onSwitchToLocal) {
+            <button type="button" class="btn link switch-to-local" (click)="data.onSwitchToLocal()">{{ 'CLOUD_BUILD.SWITCH_TO_LOCAL' | translate }}</button>
+            }
+            @if (data.state=='doing' && data.onSwitchToCloud) {
+            <button type="button" class="btn link switch-to-cloud" (click)="data.onSwitchToCloud()">{{ 'CLOUD_BUILD.SWITCH_TO_CLOUD' | translate }}</button>
+            }
             @if (data.state=='doing'&& data.stop) {
             <div class="btn link red" (click)="stop()">{{ 'NOTIFICATION.STOP' | translate }}</div>
             }
@@ -55,7 +65,7 @@
             }
         </div>
     </div>
-    @if(data.state!='doing'){
+    @if(isClosable){
     <div class="close btn link ccenter" (click)="close()">
         <i class="fa-light fa-xmark"></i>
     </div>

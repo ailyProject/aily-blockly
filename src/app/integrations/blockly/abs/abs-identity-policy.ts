@@ -35,7 +35,11 @@ export function absIdentityPolicy(baseline: AbsProjection, ids: ReadonlyMap<AbsS
   for (const [node, id] of ids) {
     const block = blocks.get(id)!;
     const hidden = Object.entries(block).some(([key, value]) => {
-      if (['type', 'id', 'fields', 'inputs', 'next', 'extraState', 'x', 'y', 'collapsed', 'inline'].includes(key)) return false;
+      if (['type', 'id', 'fields', 'inputs', 'next', 'extraState', 'x', 'y'].includes(key)) return false;
+      if (key === 'collapsed') return value !== false;
+      // Inline defaults belong to each block definition; even explicit false
+      // cannot be reconstructed from a fresh ID's readable call alone.
+      if (key === 'inline') return true;
       if (['deletable', 'movable', 'editable', 'enabled'].includes(key)) return value !== true;
       if (key === 'disabled') return value !== false;
       if (key === 'disabledReasons') return !Array.isArray(value) || value.length !== 0;

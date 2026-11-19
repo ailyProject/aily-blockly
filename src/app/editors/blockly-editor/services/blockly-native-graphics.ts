@@ -18,7 +18,7 @@ export function createNativeCandidateGraphics(native: typeof Blockly, tasks: Nat
     return tasks.coreRender(() => queueRender.call(this));
   };
   Object.defineProperty(window, 'requestAnimationFrame', { configurable: false, writable: false,
-    value: (callback: FrameRequestCallback) => tasks.set(() => callback(performance.now()), 0) });
+    value: (callback: FrameRequestCallback) => tasks.frame(() => callback(performance.now())) });
   Object.defineProperty(window, 'cancelAnimationFrame', { configurable: false, writable: false,
     value: (id: number) => tasks.clear(id) });
   const container = document.createElement('div');

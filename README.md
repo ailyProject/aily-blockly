@@ -61,6 +61,8 @@ The current version is not recommended for real work because later adjustments m
 - [User Documentation](https://yiyu.pro/doc)
 - [Library Adaptation Documentation](https://github.com/ailyProject/aily-blockly-libraries/blob/main/%E5%BA%93%E8%A7%84%E8%8C%83.md)
 - [Software Development Documentation](./develop.md)
+- [Development Documentation Repository](https://github.com/ailyProject/aily-blockly-docs): requirements, architecture, implementation notes, and interface contracts.
+- [Documentation Management and Workflow](DOCUMENTATION.md): cloning, finding, updating, and coordinating documentation with source changes.
 
 ## Related Repositories
 - [Development Boards](https://github.com/ailyProject/aily-blockly-boards)
