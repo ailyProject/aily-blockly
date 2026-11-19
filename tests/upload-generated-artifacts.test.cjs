@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, readBlocklyUploadArtifacts } = require('../child/scripts/blockly-upload-state');
-const { processUploadParams } = require('../child/scripts/upload');
+const { processUploadParams, selectUploadParamForPort } = require('../child/scripts/upload');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-generated 产物-'));
@@ -69,4 +69,48 @@ test('an old receipt provides no generated-output authority', async t => {
     const f = fixture(t); f.put('.build/aily-upload-state.json', JSON.stringify({ schemaVersion: 1 }));
     assert.deepEqual(readBlocklyUploadArtifacts(f.build), []);
     await assert.rejects(f.upload(), /FIRMWARE_AMBIGUOUS/);
+});
+
+
+function espSrFixture(t) {
+    const f = fixture(t);
+    f.prepared.upload = {
+        toolName: 'esptool_py', command: f.prepared.upload.command + ` 0xC10000 ${f.build}/srmodels.bin`
+    };
+    f.prepared.arduinoConfig = { board: {
+        'build.mcu': 'esp32s3', 'build.partitions': 'esp_sr_16', 'upload.extra_flags': '0xC10000 {build.path}/srmodels.bin'
+    } };
+    return f;
+}
+
+test('ESP SR partition without the library omits only its optional model from the receipt and upload command', t => {
+    const f = espSrFixture(t);
+    const original = f.prepared.upload.command;
+    f.publish();
+    assert.deepEqual(readBlocklyUploadArtifacts(f.build), ['sketch.bin', 'sketch.bootloader.bin', 'sketch.partitions.bin']
+        .map(name => path.join(f.build, name)));
+    const upload = selectUploadParamForPort(f.root, 'serial', {});
+    assert.equal(upload.success, true);
+    assert.equal(upload.uploadParam, original.slice(0, original.indexOf(' 0xC10000 ')));
+});
+
+test('an ESP_SR build requires its model and records it when present', t => {
+    const f = espSrFixture(t);
+    f.put('.build/libraries/ESP_SR/esp_sr.cpp.o');
+    assert.throws(f.publish, /ESP_SR was built but srmodels.bin is missing/);
+    assert.throws(() => selectUploadParamForPort(f.root, 'serial', {}), /ESP_SR was built but srmodels.bin is missing/);
+    const model = f.put('.build/srmodels.bin');
+    f.publish();
+    assert.ok(readBlocklyUploadArtifacts(f.build).includes(model));
+    assert.equal(selectUploadParamForPort(f.root, 'serial', {}).uploadParam, f.prepared.upload.command);
+});
+
+test('an unrelated missing image or an invalid existing model still fails artifact validation', t => {
+    const f = espSrFixture(t);
+    fs.unlinkSync(path.join(f.build, 'sketch.bootloader.bin'));
+    assert.throws(f.publish, /Generated upload output is missing or invalid/);
+    f.put('.build/sketch.bootloader.bin');
+    f.put('.build/srmodels.bin', '');
+    assert.throws(f.publish, /Empty firmware output/);
+    assert.throws(() => selectUploadParamForPort(f.root, 'serial', {}), /Invalid ESP_SR model image/);
 });

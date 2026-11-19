@@ -5,7 +5,7 @@ const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const { selectFirmwareFile } = require('./firmware-selection');
-const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
+const { readBlocklyUploadArtifacts, resolveEspSrUploadCommand } = require('./blockly-upload-state');
 const { canReuseCoderUpload } = require('./coder-upload-state');
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { resolveBuiltinUploader } = require('./builtin-uploaders');
@@ -241,7 +241,7 @@ function readUploadCommandFromPreprocess(currentProjectPath, localPreprocessPath
     }
 
     const upload = preprocess?.upload;
-    const command = normalizeUploadParam(upload?.command);
+    const command = normalizeUploadParam(resolveEspSrUploadCommand(preprocess, path.join(currentProjectPath, '.build')));
     if (!command) {
         return {
             success: false,

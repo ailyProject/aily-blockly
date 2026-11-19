@@ -57,6 +57,40 @@ function invalidateBlocklyUploadState(root) {
     fs.rmSync(receiptPath(root), { force: true });
 }
 
+// Arduino ESP32 adds the model pair at preprocess time, but its post-build hook
+// copies the image only when libraries/ESP_SR was built. Share the exception
+// with the SDK upload command so the receipt and flasher expect the same files.
+function resolveEspSrUploadCommand(prepared, directory) {
+    const command = prepared?.upload?.command;
+    const board = prepared?.arduinoConfig?.board;
+    const pair = /^\s*(0x[\da-f]+) \{build\.path\}\/srmodels\.bin$/i.exec(board?.['upload.extra_flags'] || '');
+    if (typeof command !== 'string' || !pair || board?.['build.mcu'] !== 'esp32s3'
+        || !/^esp_sr_\w+$/.test(board?.['build.partitions'] || '')
+        || !['esptool_py', 'esptool_py_app_only'].includes(prepared.upload.toolName)
+        || !/\swrite[-_]flash\s/.test(command)
+        || typeof prepared.envVars?.BUILD_PATH !== 'string'
+        || path.resolve(prepared.envVars.BUILD_PATH) !== path.resolve(directory)) return command;
+
+    const model = path.join(directory, 'srmodels.bin');
+    try {
+        const stat = fs.lstatSync(model);
+        if (!stat.isFile() || !stat.size) {
+            throw new Error('BUILD_ARTIFACT_INVALID: Invalid ESP_SR model image; build again.');
+        }
+        return command;
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+    if (fs.existsSync(path.join(directory, 'libraries', 'ESP_SR'))) {
+        throw new Error('BUILD_ARTIFACT_INVALID: ESP_SR was built but srmodels.bin is missing; build again.');
+    }
+    // The SDK appends upload.extra_flags as an address/path pair. Match both
+    // path separators and preserve the exact quoting of the rest of the recipe.
+    const escapedModel = model.replace(/\\/g, '/').split('/')
+        .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]');
+    return command.replace(new RegExp(`\\s+${pair[1]}\\s+(?:"${escapedModel}"|${escapedModel})(?=\\s|$)`, 'i'), '');
+}
+
 function captureGeneratedUploadFiles(root) {
     const directory = path.join(root, '.build');
     const filename = path.join(root, '.temp', 'preprocess.json');
@@ -68,7 +102,8 @@ function captureGeneratedUploadFiles(root) {
     const prefix = `${preparedDirectory.replace(/\\/g, '/')}/`;
     const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`${escaped}[^"\\r\\n]*?\\.(?:bin|hex|elf|eep|img|uf2)(?=["\\s:]|$)`, 'gi');
-    const files = [...prepared.upload.command.replace(/\\/g, '/').matchAll(pattern)].map(match => {
+    const command = resolveEspSrUploadCommand(prepared, preparedDirectory);
+    const files = [...command.replace(/\\/g, '/').matchAll(pattern)].map(match => {
         const file = path.resolve(match[0]);
         if (!fs.existsSync(file)
             || !fs.lstatSync(file).isFile() || !fs.statSync(file).size) {
@@ -125,4 +160,4 @@ function canReuseBlocklyUpload(config) {
     } catch { return false; } // Missing/changed/unreadable inputs require compilation.
 }
 
-module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts, captureFirmware };
+module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts, captureFirmware, resolveEspSrUploadCommand };
