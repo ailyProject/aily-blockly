@@ -85,6 +85,9 @@ async function verifyRecovery(projectAuthor) {
       const state = await getState(targetPort);
       assert.ok(state['prepared.json']);
       assert.deepEqual(await getState(sourcePort), state);
+      const operation = JSON.parse(state['operation.json']);
+      const snapshotKey = `recoveries/operation-${operation.id}.json`;
+      const originalSnapshot = await sourcePort.read(snapshotKey);
       const ownerScope = { projectKey: source, pageId: 'main' };
       const diagnosis = await new kernel.AbsBaselineStore(targetPort, ownerScope).inspectJournalRecovery();
       assert.equal(diagnosis?.scope.projectKey, source);
@@ -114,8 +117,13 @@ async function verifyRecovery(projectAuthor) {
         assert.equal((await getState(port))['project.abi'], state['project.abi']);
         if (projectAuthor) assert.equal((await getState(port))['project.abs'], state['project.abs']);
         assert.equal(JSON.parse(await port.read('project.abs.map.json')).scope.projectKey, project);
-        assert.equal(output?.candidateApplied ?? false, false);
+        assert.equal(await port.read(snapshotKey), originalSnapshot);
+        if (cutoff === 'prepared.json') {
+          assert.deepEqual(output?.document, JSON.parse(originalSnapshot).document);
+          assert.equal(output.candidateApplied, false);
+        } else assert.equal(output, null);
       }
+      assert.deepEqual(await getState(sourcePort), state);
       const archivedDirectory = path.join(fullCopy, '.aily/abs-sync/recoveries');
       const archivedLock = fs.readdirSync(archivedDirectory).find(name => name.startsWith('copied-lock-'));
       assert.ok(archivedLock);
