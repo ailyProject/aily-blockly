@@ -30,8 +30,13 @@ describe('BuilderService Coder persistence', () => {
       currentProjectPath: options.coder ? '/workspace/coder' : '/workspace/blockly',
       boardChangeSubject: new Subject<void>(),
       isAilyCodeProject: () => options.coder,
+      isCloudBuild: () => false,
     };
     const compileService = {
+      canReuseLocalCoderBuildForUpload: async () => {
+        events.push('check-local-firmware');
+        return true;
+      },
       runCompileFromDisk: async (input: { projectPath: string }) => {
         events.push('compile-from-disk');
         compiledProjects.push(input.projectPath);
@@ -59,6 +64,21 @@ describe('BuilderService Coder persistence', () => {
     await service.build();
 
     expect(events).toEqual(['project-save', 'compile-from-disk']);
+  });
+
+  it('saves the Coder editor before checking the local firmware', async () => {
+    const originalBuilder = window['builder'];
+    window['builder'] = { canReuseCoderUpload: async () => true };
+    try {
+      const { service, events } = createHarness({ coder: true });
+      expect(await service.canReuseBuildForUpload('/workspace/coder')).toBeTrue();
+      expect(events).toEqual(['project-save', 'check-local-firmware']);
+      const failure = createHarness({ coder: true, saveSucceeds: false });
+      await expectAsync(failure.service.canReuseBuildForUpload('/workspace/coder')).toBeRejectedWithError('save failed');
+      expect(failure.events).toEqual(['project-save']);
+    } finally {
+      window['builder'] = originalBuilder;
+    }
   });
 
   it('does not add the Coder persistence step to Blockly builds', async () => {

@@ -122,7 +122,7 @@ function pruneTerminalPreprocessInputs(projectPath) {
 
 /** These are detached byte copies, including npm junctions. No hardlinks or live
  * library links may give an old compiler a path into the new execution. */
-function snapshot(config, target, copy, compilerInputsOnly = false) {
+function snapshot(config, target, copy, { compilerInputsOnly = false, retainedAbi } = {}) {
     const root = fs.realpathSync(config.currentProjectPath), manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     delete manifest.codeHash; delete manifest.buildInfo;
     if (compilerInputsOnly) mergeGeneratorInputs(manifest, config);
@@ -147,15 +147,15 @@ function snapshot(config, target, copy, compilerInputsOnly = false) {
             if (++count > 100000 || (bytes += before.size) > 2 * 1024 * 1024 * 1024) fail('Execution source exceeds capture budget.');
             const content = fs.readFileSync(source);
             if (state(before) !== state(fs.statSync(source))) fail('Execution source changed while copying.');
-            inputs.push([relative, hash(content)]);
+            inputs.push([relative, relative === 'project.abi' && retainedAbi
+                ? resolveCurrentAbiHash(content, retainedAbi) : hash(content)]);
             if (copy) { fs.mkdirSync(path.dirname(path.join(target, relative)), { recursive: true }); fs.writeFileSync(path.join(target, relative), content, { flag: 'wx', mode: before.mode & 0o777 }); }
         } else fail('Unsupported execution source entry.');
     };
     inputs.push(['package.json', hash(JSON.stringify(compilerInputsOnly ? canonical(manifest) : manifest))]);
     if (copy) fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify(manifest, null, 2), { flag: 'wx' });
-    // The compiler consumes the captured generation, not Blockly's document.
-    // View state, block positions and serialization may change without changing
-    // a compiler input. Upload reuse deliberately keeps its stricter ABI check.
+    // The retained ABI is part of the historical capture. Conversion evidence
+    // only needs compiler files, code, declarations and macros.
     for (const name of ['project.abi', 'src', 'components', 'partitions.csv']) {
         if (compilerInputsOnly && name === 'project.abi') continue;
         if (fs.existsSync(path.join(root, name))) visit(path.join(root, name), name);
@@ -177,6 +177,27 @@ function snapshot(config, target, copy, compilerInputsOnly = false) {
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+
+function buildDocumentHash(bytes) {
+    // Match the renderer's build document; preserve block fields, layout and
+    // project data while disregarding persistence formatting and page viewports.
+    const { pages, $ailyProjectData, ...document } = JSON.parse(bytes.toString('utf8'));
+    if (!Array.isArray(pages)) return null;
+    return hash(JSON.stringify(canonical({ ...document, pages: pages.map(({ viewState, ...page }) => page) })));
+}
+
+function resolveCurrentAbiHash(content, retained) {
+    const digest = hash(content);
+    if (digest === retained.digest) return digest;
+    try {
+        const documentHash = buildDocumentHash(content);
+        if (!documentHash) return digest;
+        if (documentHash === retained.compiledDocumentHash) return retained.digest;
+        const original = fs.readFileSync(retained.filename);
+        if (hash(original) === retained.digest && buildDocumentHash(original) === documentHash) return retained.digest;
+    } catch { /* Unrecognized or unavailable documents require a new build. */ }
+    return digest;
+}
 
 function mergeGeneratorInputs(pkg, config) {
     if (config.projectMacros !== undefined) {
@@ -369,9 +390,10 @@ function inspectBlocklyCompileProof(config) {
         const completed = completedExecution(config.currentProjectPath);
         if (!completed) return { version: 1, status: 'unverified', reason: 'no-completed-build' };
         const { store, pointer, record, root, config: compiled } = completed;
-        const actual = snapshot(config, '', false, true);
-        const expected = snapshot({ ...compiled, currentProjectPath: root }, '', false, true);
-        if (snapshot(config, '', false, true) !== actual || JSON.stringify(json(store.pointer)) !== JSON.stringify(pointer)) {
+        const options = { compilerInputsOnly: true };
+        const actual = snapshot(config, '', false, options);
+        const expected = snapshot({ ...compiled, currentProjectPath: root }, '', false, options);
+        if (snapshot(config, '', false, options) !== actual || JSON.stringify(json(store.pointer)) !== JSON.stringify(pointer)) {
             return { version: 1, status: 'unknown', reason: 'inputs-changed-during-check' };
         }
         return { version: 1, status: actual === expected ? 'verified' : 'unverified',
@@ -383,22 +405,25 @@ function inspectBlocklyCompileProof(config) {
     }
 }
 
-function resolveBuildExecution(projectPath) {
+function resolveBuildExecution(projectPath, liveConfig) {
     try {
         const completed = completedExecution(projectPath);
         if (!completed) return null;
-        const { store, record, root, config } = completed;
-        if (snapshot({ ...config, currentProjectPath: store.root }, '', false) !== record.inputDigest) return null;
+        const { store, pointer, record, root, config } = completed;
+        // Keep the original input digest and ABI receipt. A view-only save, or
+        // saving the actual compiled canvas, can stand in for the same ABI entry.
+        const retainedAbi = /^sha256:[a-f0-9]{64}$/.test(record.abiHash ?? '') ? {
+            filename: path.join(root, 'project.abi'), digest: record.abiHash.slice(7),
+            compiledDocumentHash: record.sourceCapture?.workspace?.documentSha256,
+        } : undefined;
+        if (snapshot({ ...(liveConfig ?? config), currentProjectPath: store.root }, '', false, { retainedAbi }) !== record.inputDigest
+            || JSON.stringify(json(store.pointer)) !== JSON.stringify(pointer)) return null;
         return { currentProjectPath: root, logicalProjectPath: store.root, buildPath: path.join(root, '.build'),
             preprocessPath: path.join(root, '.temp', 'preprocess.json'), buildRequestId: record.buildRequestId, inputDigest: record.inputDigest };
     } catch { return null; }
 }
 function canReuseBuildExecution(config) {
-    try {
-        const current = resolveBuildExecution(config.currentProjectPath);
-        if (!current) return false;
-        return snapshot(config, '', false) === current.inputDigest;
-    } catch { return false; }
+    return !!resolveBuildExecution(config?.currentProjectPath, config);
 }
 function resolveBuildProjectPath(projectPath) {
     try {

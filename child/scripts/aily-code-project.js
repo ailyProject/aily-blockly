@@ -52,6 +52,14 @@ function resolvePreprocessResultPath(projectRoot) {
     return path.join(resolveCompileWorkspacePath(projectRoot), 'preprocess.json');
 }
 
+function collectArduinoLibraryDirectories(projectRoot) {
+    return [
+        path.join(require('node:os').homedir(), 'Documents', 'Arduino', 'libraries'),
+        path.join(path.dirname(projectRoot), 'libraries'),
+        path.join(projectRoot, 'libraries'),
+    ].filter(directory => fs.existsSync(directory) && fs.statSync(directory).isDirectory());
+}
+
 /**
  * 固件输出目录：`.aily/build/<frameworkSegment>`，
  * framework 取自 package.json.framework，缺省为 devmode 再缺省 arduino。
@@ -76,5 +84,6 @@ module.exports = {
     resolveCompileSourcePath,
     resolveLibrariesPath,
     resolvePreprocessResultPath,
+    collectArduinoLibraryDirectories,
     resolveFrameworkBuildDir
 };

@@ -1133,7 +1133,13 @@ export class _BuilderService {
   async canReuseBuildForUpload(isCancelled: () => boolean): Promise<boolean> {
     const projectPath = this.projectService.currentProjectPath;
     const settingsKey = this.compileSettingsKey();
-    if (!this.passed || projectPath !== this.currentProjectPath) return false;
+    const cloud = this.isCloudBuild();
+    const isolatedLocal = !cloud && this.isolatedBuilds();
+    const verifyLocal = window['builder']?.canReuseBlocklyUpload;
+    // An isolated local receipt also covers successful builds from a prior
+    // editor instance. Always compare its inputs with the active canvas.
+    if (!isolatedLocal && (!this.passed || projectPath !== this.currentProjectPath)) return false;
+    if (!cloud && !verifyLocal) return false;
     const boardModule = await this.projectService.getBoardModule();
     if (isCancelled() || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
     return this.runWithInteractiveProjectCode(this.blocklyService.workspace, async (prepared, assertCurrent) => {
@@ -1141,24 +1147,23 @@ export class _BuilderService {
       // Pure read: do not publish headers/macros or acquire a build workspace
       // merely to decide whether to upload an existing firmware.
       // 云产物是否可复用由主进程按完整项目/库内容核对，不能只比较生成的 sketch 代码。
-      if (this.isCloudBuild()) {
+      const config = { currentProjectPath: projectPath, boardModule, code: prepared.code,
+        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
+      let reusable: boolean;
+      if (cloud) {
         if (prepared.code !== this.lastCode || !window['cloudBuild']?.reusable) return false;
         if (!prepared.sourceWorkspace) return false;
-        const config = { currentProjectPath: projectPath, boardModule, code: prepared.code,
-          projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
         // 与实际编译使用相同的工作区快照；遗漏该字段会让主进程始终判定固件已过期。
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
-        const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
-        assertCurrent();
-        if (isCancelled() || projectPath !== this.projectService.currentProjectPath || settingsKey !== this.compileSettingsKey()) {
-          throw new Error('Upload build configuration changed or was cancelled.');
-        }
-        return reusable === true;
+        reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+      } else {
+        reusable = (isolatedLocal || prepared.code === this.lastCode) && verifyLocal(config);
       }
-      return prepared.code === this.lastCode && window['builder']?.canReuseBlocklyUpload?.({
-        currentProjectPath: projectPath, boardModule, code: prepared.code,
-        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
-      }) === true;
+      assertCurrent();
+      if (settingsKey !== this.compileSettingsKey() || cloud !== this.isCloudBuild()) {
+        throw new Error('Upload build configuration changed.');
+      }
+      return reusable === true;
     }, false, isCancelled);
   }
 

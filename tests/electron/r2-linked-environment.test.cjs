@@ -11,6 +11,7 @@ const vm = require('node:vm');
 const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
 const { LibraryEnvironmentJournal } = require('../../electron/library-environment-journal');
 const { LibraryDependencies } = require('../../electron/library-dependencies');
+const { LibraryDependencySessions } = require('../../electron/library-dependency-sessions');
 const guard = () => {};
 let kernel, bundle, parent, inspectSuccessor;
 test.before(() => {
@@ -30,7 +31,7 @@ test.before(() => {
     { module, exports: module.exports, ...kernel });
   inspectSuccessor = module.exports.inspectEnvironmentSuccessor;
 });
-async function fixture(t, { authorDraft, exitedOwner = false, splitOwner = false, archive = false } = {}) {
+async function fixture(t, { authorDraft, exitedOwner = false, splitOwner = false, archive = false, otherExecutor = false } = {}) {
   const root = fs.mkdtempSync(path.join(parent, 'project-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const child = fork(path.resolve('tests/electron/fixtures/r0-publication-worker.cjs'), ['fixture', root, bundle],
@@ -44,7 +45,9 @@ async function fixture(t, { authorDraft, exitedOwner = false, splitOwner = false
     input.next.expected.abs = authorDraft;
     input.next.authorIntent = 'preserve';
   }
-  const io = await openProjectSyncStorage(root, guard), operations = new kernel.AbsOperationJournal(io, root);
+  const io = await openProjectSyncStorage(root, guard);
+  if (otherExecutor) io.executor = { ...io.executor, storagePid: 2 ** 30 - 1, instanceId: randomUUID(), processIdentity: null };
+  const operations = new kernel.AbsOperationJournal(io, root);
   const applications = new kernel.AbsApplicationJournal(io, root);
   const saveRequest = { version: 2, requestId: 'pub2-' + randomUUID(), operation: 'project_save',
     input: { kind: 'board-config', configKey: 'board', configValue: 'new' } };
@@ -88,6 +91,21 @@ async function fixture(t, { authorDraft, exitedOwner = false, splitOwner = false
   }
   return { root, input, io, operations, applications, request, saveRequest, ref, environments, environmentId, original, desired, exitOriginal };
 }
+
+test('the original renderer can read its completed environment while dependency writes remain blocked', async t => {
+  const ctx = await fixture(t, { otherExecutor: true });
+  const main = new LibraryDependencies(), sessions = new LibraryDependencySessions(main);
+  const publisher = ctx.ref.executor;
+  const blocked = { code: 'LIBRARY_ENVIRONMENT_PROGRAM_PENDING' };
+
+  await assert.rejects(sessions.run('status', ctx.root, { reader: publisher }), blocked);
+  await assert.rejects(sessions.readStatus(ctx.root, { ...publisher, instanceId: randomUUID() }), blocked);
+  const status = await sessions.readStatus(ctx.root, publisher);
+  assert.equal(status.manifest.projectConfig.board, 'new');
+  assert.equal((await main.pendingEnvironment(ctx.root)).length, 1);
+  await assert.rejects(sessions.run('save', ctx.root), blocked);
+});
+
 async function failNative(ctx) {
   await ctx.applications.completeNativeSave(ctx.ref, { projectSaved: false, generatedCodePublished: false, partial: false,
     publication: { status: 'NOT_COMMITTED' }, requiresReload: false, code: 'ABS_OPERATION_CANCELLED', cancelled: true }, guard);

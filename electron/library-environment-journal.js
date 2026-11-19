@@ -565,15 +565,16 @@ class LibraryEnvironmentJournal {
     this.latest.set(root, result);
     return { result, state: operation.record.state };
   }
-  settle(root, assertCurrent, { read = false } = {}) {
+  settle(root, assertCurrent, { read = false, reader } = {}) {
     if (this.owned.has(root)) return undefined;
     let state;
     for (const operation of this.pending(root)) {
       this.assertAttachment(root, operation.record);
       if (operation.record.request.programRef) {
         const result = path.join(operation.folder, 'result.json');
+        const publisher = operation.record.request.programRef.executor;
         if (read && fs.existsSync(result)
-          && observeStorageExecutor(operation.record.request.programRef.executor).state === 'active') {
+          && ((reader && same(reader, publisher)) || observeStorageExecutor(publisher).state === 'active')) {
           this.latest.set(root, readRecord(result));
           continue; // The active publisher may read its completed environment.
         }

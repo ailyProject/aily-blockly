@@ -6,6 +6,8 @@ const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const { selectFirmwareFile } = require('./firmware-selection');
 const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
+const { canReuseCoderUpload } = require('./coder-upload-state');
+const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { resolveBuiltinUploader } = require('./builtin-uploaders');
 const { findUploadToolDependency, findPinnedUploadToolDirectories, resolveToolExecutableInDirectory } = require('./upload-tool-version');
 
@@ -375,8 +377,16 @@ async function main() {
     //     uploadParam: configUploadParam
     // });
 
+    let coderWorkspace;
     try {
         // 1. 路径准备
+        if (config.verifyCoderBuild === true) {
+            coderWorkspace = acquireBuildWorkspace(currentProjectPath, 'verify');
+            const expectedBuildPath = path.join(coderWorkspace.projectRoot, '.build');
+            if (fs.realpathSync(buildPath) !== expectedBuildPath || !canReuseCoderUpload(config)) {
+                throw new Error('BUILD_ARTIFACT_STALE: Coder firmware or inputs changed; build again.');
+            }
+        }
         if (config.buildExecution) {
             const selected = require('./build-execution-workspace').resolveBuildExecution(config.buildExecution.logicalProjectPath);
             if (!selected || selected.currentProjectPath !== currentProjectPath || selected.buildPath !== buildPath
@@ -536,6 +546,7 @@ async function main() {
                     logger.log(`Executing: ${shellCmd} ${cmdArgs.join(' ')}`);
 
                     const exitCode = await new Promise((resolveCmd, rejectCmd) => {
+                        coderWorkspace?.markDelegated();
                         const child = spawn(shellCmd, cmdArgs, {
                             cwd: buildPath,
                             shell: true,
@@ -569,15 +580,15 @@ async function main() {
 
                     if (exitCode !== 0) {
                         logger.error(`命令 [${i + 1}] 执行失败，退出码: ${exitCode}`);
-                        process.exit(exitCode);
+                        return exitCode || 1;
                     }
                 }
+                return 0;
             };
 
-            await runDebuggerUpload(uploadParam, uploadParamSource);
-
-            logger.log('所有上传命令执行完成');
-            process.exit(0);
+            process.exitCode = await runDebuggerUpload(uploadParam, uploadParamSource);
+            if (process.exitCode === 0) logger.log('所有上传命令执行完成');
+            return;
         }
 
         // ========== 串口上传路径 ==========
@@ -657,6 +668,7 @@ async function main() {
         // 12. 执行上传命令。部分旧版 SDK 包装脚本会吞掉底层工具的异常并返回 0，
         // 因此在透传输出的同时保留末尾内容，用致命错误文本兜底校正退出码。
         const result = await new Promise((resolve, reject) => {
+            coderWorkspace?.markDelegated();
             const child = spawn(shellCommand, args, {
                 cwd: buildPath,
                 shell: true,
@@ -702,7 +714,9 @@ async function main() {
 
     } catch (error) {
         logger.error(`[ERROR] ${error.message}`);
-        process.exit(1);
+        process.exitCode = 1;
+    } finally {
+        coderWorkspace?.release();
     }
 }
 

@@ -919,13 +919,32 @@ export class ConfigService {
     const seenUrls = new Set<string>();
     const urls: string[] = [];
 
-    for (const source of this.getResourceSourceCandidates()) {
+    const sources = this.isAutoResourceSourceSelection()
+      ? this.getResourceSourceList()
+      : this.getResourceSourceCandidates();
+    for (const source of sources) {
       if (!source.url || seenUrls.has(source.url)) {
         continue;
       }
 
       seenUrls.add(source.url);
       urls.push(source.url);
+    }
+
+    const region = this.data?.region;
+    if (this.isAutoResourceSourceSelection() && (region === 'cn' || region === 'eu')) {
+      const configuredOrder = this.data.download_region_order?.[region];
+      const regionOrder = Array.isArray(configuredOrder) && configuredOrder.length > 0
+        && configuredOrder.every((key) => typeof key === 'string' && key.trim())
+        ? configuredOrder.map((key) => key.trim())
+        : (region === 'cn' ? ['cn', 'eu'] : ['eu', 'cn']);
+      const preferredUrls = regionOrder.map((key) => this.normalizeResourceSourceUrl(this.data.regions?.[key]?.resource || ''));
+      urls.sort((first, second) => {
+        const firstIndex = preferredUrls.indexOf(first);
+        const secondIndex = preferredUrls.indexOf(second);
+        return (firstIndex < 0 ? preferredUrls.length : firstIndex)
+          - (secondIndex < 0 ? preferredUrls.length : secondIndex);
+      });
     }
 
     return urls;
@@ -939,8 +958,9 @@ export class ConfigService {
   }
 
   private async syncResourceRuntimeEnv(): Promise<void> {
-    const currentUrl = this.getCurrentResourceUrl();
-    const zipUrls = JSON.stringify(this.buildZipUrlCandidates());
+    const candidates = this.buildZipUrlCandidates();
+    const currentUrl = candidates[0] || '';
+    const zipUrls = JSON.stringify(candidates);
 
     if (window['process']?.env) {
       window['process'].env['AILY_ZIP_URL'] = currentUrl;
@@ -973,7 +993,6 @@ export class ConfigService {
 
         if (this.activeResourceSourceKey !== source.key) {
           this.activeResourceSourceKey = source.key;
-          void this.syncResourceRuntimeEnv();
           this.configReloaded$.next();
         }
 
@@ -2120,6 +2139,9 @@ interface AppConfig {
   /** 资源源列表 */
   resource_sources?: ResourceSourceConfig[];
 
+  /** 更新安装包与资源压缩包按当前区域选择的下载顺序 */
+  download_region_order?: { [region: string]: string[] };
+
   /** Python-mode npm source. Catalogs continue to use the current resource base URL. */
   linux?: LinuxDevelopmentSources;
 
@@ -2143,7 +2165,6 @@ interface AppConfig {
   /** 更新包下载镜像策略 */
   update_download_strategy?: {
     enabled?: boolean;
-    mirror_region_order?: string[];
     fallback_on_error?: boolean;
     first_byte_timeout_ms?: number;
     stall_timeout_ms?: number;

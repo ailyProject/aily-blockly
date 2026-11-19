@@ -125,4 +125,4 @@ function canReuseBlocklyUpload(config) {
     } catch { return false; } // Missing/changed/unreadable inputs require compilation.
 }
 
-module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts };
+module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts, captureFirmware };

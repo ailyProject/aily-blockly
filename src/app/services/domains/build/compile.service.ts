@@ -631,6 +631,21 @@ export class CompileService {
     };
   }
 
+  async canReuseLocalCoderBuildForUpload(root: string, isCancelled: () => boolean): Promise<boolean> {
+    const verify = window['builder']?.canReuseCoderUpload;
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const settingsKey = this.configService.getCompileSettingsKey();
+    const isCurrent = () => !isCancelled() && projectCurrent() && this.projectService.currentProjectPath === root
+      && this.configService.getCompileSettingsKey() === settingsKey && !this.projectService.isCloudBuild(root);
+    try {
+      if (!verify || !isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
+      const boardModule = await this.resolveBoardModule(root);
+      if (!boardModule || !isCurrent()) return false;
+      const reusable = await verify({ currentProjectPath: root, boardModule, appDataPath: window['path'].getAppDataPath() });
+      return reusable === true && isCurrent();
+    } catch { return false; }
+  }
+
   /** 调用方先保存编辑器，主进程再核对整个项目和库内容；一致时直接复用已校验的云产物。 */
   async canReuseCloudBuildForUpload(root: string, isCancelled: () => boolean = () => false): Promise<boolean> {
     if (!this.projectService.isCloudBuild(root) || !window['cloudBuild']?.reusable) return false;

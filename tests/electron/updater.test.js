@@ -10,9 +10,12 @@ const { AppUpdater } = electronRequire('electron-updater/out/AppUpdater');
 const { CancellationToken } = electronRequire('builder-util-runtime');
 const { createBuildPlan, createBuilderConfig } = require('../../scripts/build-electron');
 
-function fixture({ platform = 'win32', flavor = 'global', product = 'coder' } = {}) {
+function fixture({ platform = 'win32', flavor = 'global', product = 'coder', region = flavor === 'cn' ? 'cn' : 'eu', userConfig } = {}) {
   const config = structuredClone(require('../../electron/config/config.json'));
   config.lang = 'en';
+  const userConfigPath = path.resolve(__dirname, 'fixtures/updater-user/config.json');
+  const env = { AILY_BUILD_PRODUCT: product, AILY_BUILD_FLAVOR: flavor, AILY_REGION: region };
+  if (userConfig) env.AILY_APPDATA_PATH = path.dirname(userConfigPath);
   const plan = createBuildPlan(['--product', product, '--flavor', flavor], config);
   const publish = createBuilderConfig(plan, {}).publish[0];
   const updater = new AppUpdater(null, {
@@ -26,7 +29,7 @@ function fixture({ platform = 'win32', flavor = 'global', product = 'coder' } = 
   const payload = Buffer.from('signed update fixture');
   const sha512 = createHash('sha512').update(payload).digest('base64');
   let offeredVersion = '0.1.7';
-  let failGlobalDownload = false;
+  const failingDownloadHosts = new Set();
   // Intercept the HTTP executor boundary: GenericProvider constructs and parses
   // the real request, while this transport never contacts production feeds.
   updater.httpExecutor = {
@@ -43,7 +46,7 @@ function fixture({ platform = 'win32', flavor = 'global', product = 'coder' } = 
           : `aily-${product}-${targetFlavor}Setup-${offeredVersion}.exe`;
         return JSON.stringify({ version: offeredVersion, files: [{ url: file, sha512, size: payload.length }] });
       }
-      if (failGlobalDownload && url.hostname === 'dl.aily.pro') throw new Error('mirror unavailable');
+      if (failingDownloadHosts.has(url.hostname)) throw new Error('mirror unavailable');
       return payload;
     },
   };
@@ -62,7 +65,7 @@ function fixture({ platform = 'win32', flavor = 'global', product = 'coder' } = 
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/updater.js'), 'utf8'), {
     module,
     __dirname: path.resolve(__dirname, '../../electron'),
-    process: { platform, arch: platform === 'darwin' ? 'arm64' : 'x64', env: { AILY_BUILD_PRODUCT: product, AILY_BUILD_FLAVOR: flavor } },
+    process: { platform, arch: platform === 'darwin' ? 'arm64' : 'x64', env },
     Intl: { DateTimeFormat: () => ({ resolvedOptions: () => ({ timeZone: 'Asia/Shanghai' }) }) },
     console: { log() {}, warn() {}, error() {} },
     setTimeout, clearTimeout,
@@ -75,19 +78,22 @@ function fixture({ platform = 'win32', flavor = 'global', product = 'coder' } = 
       if (id === 'electron-log') return logger;
       if (id === 'fs') return {
         ...fs,
+        existsSync: file => file === userConfigPath ? !!userConfig : fs.existsSync(file),
         readFileSync: (file, ...args) => file === path.join(__dirname, '../../electron/config/config.json')
-          ? JSON.stringify(config) : fs.readFileSync(file, ...args),
+          ? JSON.stringify(config) : file === userConfigPath ? JSON.stringify(userConfig) : fs.readFileSync(file, ...args),
       };
       return electronRequire(id);
     },
   }, { filename: path.join(__dirname, '../../electron/updater.js') });
   module.exports.registerUpdaterHandlers({ webContents: { send() {} } });
   return {
-    config, updater, requests, logs,
+    config, env, updater, requests, logs,
     check: () => handlers.get('check-for-updates')(),
     download: () => handlers.get('start-download')(),
+    cancel: () => handlers.get('cancel-download')(),
+    mirrors: () => Array.from(module.exports.__testing.getDownloadMirrorSources({ ailyBuildFlavor: 'cn' }), source => source.region),
     offerVersion: version => { offeredVersion = version; },
-    failGlobalDownload: () => { failGlobalDownload = true; },
+    failDownload: host => failingDownloadHosts.add(host),
   };
 }
 
@@ -157,19 +163,98 @@ test('Coder stops checking on restoration failure and retries after the packaged
   assert.equal(app.updater.allowDowngrade, false);
 });
 
-test('Coder mirror failure keeps the checked CN package and checksum without rechecking a manifest', async () => {
-  const app = fixture();
-  app.config.lang = 'zh_CN';
+for (const region of ['cn', 'eu']) {
+  test(`Coder ${region} mirror failure keeps the CN package and checksum without rechecking a manifest`, async () => {
+    const app = fixture({ region });
+    app.config.lang = 'zh_CN';
+    await app.check();
+    const hosts = region === 'cn' ? ['dl.yiyu.pro', 'dl.aily.pro'] : ['dl.aily.pro', 'dl.yiyu.pro'];
+    app.failDownload(hosts[0]);
+    const result = await app.download();
+    assert.deepEqual(app.requests, [
+      'https://dl.yiyu.pro/blockly/latest-coder.yml',
+      ...hosts.map(host => `https://${host}/blockly/aily-coder-CN-Setup-0.1.7.exe`),
+    ]);
+    assert.equal(result[0], app.requests[2]);
+    assert.equal(app.updater.allowDowngrade, false);
+  });
+}
+
+test('CN installer ordering follows the runtime region and inherits the new field for old users', () => {
+  for (const [region, persistedRegion, legacyOrder, expected] of [
+    ['cn', 'eu', ['eu', 'cn'], ['cn', 'eu']],
+    ['eu', 'cn', ['cn'], ['eu', 'cn']],
+    [undefined, 'cn', ['eu', 'cn'], ['cn', 'eu']],
+    [undefined, 'eu', ['cn'], ['eu', 'cn']],
+  ]) {
+    const app = fixture({
+      userConfig: { region: persistedRegion, update_download_strategy: { mirror_region_order: legacyOrder } },
+    });
+    if (region) app.env.AILY_REGION = region;
+    else delete app.env.AILY_REGION;
+    assert.deepEqual(app.mirrors(), expected);
+  }
+});
+
+test('CN installer ordering consumes the new region map and uses regional defaults for missing or invalid entries', () => {
+  for (const [region, order, expected] of [
+    ['cn', { cn: [' eu ', 'cn'] }, ['eu', 'cn']],
+    ['eu', { cn: ['cn', 'eu'] }, ['eu', 'cn']],
+    ['cn', undefined, ['cn', 'eu']],
+    ['cn', { cn: [] }, ['cn', 'eu']],
+    ['cn', { cn: ['cn', null] }, ['cn', 'eu']],
+    ['localhost', { localhost: ['cn', 'eu'] }, ['eu', 'cn']],
+  ]) {
+    const app = fixture({ region, userConfig: { download_region_order: order } });
+    if (!order) delete app.config.download_region_order;
+    assert.deepEqual(app.mirrors(), expected);
+  }
+  const disabled = fixture();
+  disabled.config.update_download_strategy.enabled = false;
+  assert.deepEqual(disabled.mirrors(), []);
+});
+
+test('CN first-source strategy timeout falls back to R2', { timeout: 3000 }, async () => {
+  const app = fixture({ flavor: 'cn' });
+  app.config.update_download_strategy.first_byte_timeout_ms = 20;
   await app.check();
-  app.failGlobalDownload();
+  const download = app.updater.doDownloadUpdate;
+  app.updater.doDownloadUpdate = options => {
+    const file = options.updateInfoAndProvider.provider.resolveFiles(options.updateInfoAndProvider.info)[0];
+    if (file.url.hostname === 'dl.yiyu.pro') {
+      app.requests.push(file.url.href);
+      return options.cancellationToken.createPromise(() => {});
+    }
+    return download(options);
+  };
   const result = await app.download();
   assert.deepEqual(app.requests, [
     'https://dl.yiyu.pro/blockly/latest-coder.yml',
-    'https://dl.aily.pro/blockly/aily-coder-CN-Setup-0.1.7.exe',
     'https://dl.yiyu.pro/blockly/aily-coder-CN-Setup-0.1.7.exe',
+    'https://dl.aily.pro/blockly/aily-coder-CN-Setup-0.1.7.exe',
   ]);
   assert.equal(result[0], app.requests[2]);
-  assert.equal(app.updater.allowDowngrade, false);
+  assert.ok(app.logs.some(log => log.includes('first-byte-timeout')));
+});
+
+test('user cancellation stops the CN download without trying R2', { timeout: 3000 }, async () => {
+  const app = fixture({ flavor: 'cn' });
+  await app.check();
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  app.updater.doDownloadUpdate = options => {
+    const file = options.updateInfoAndProvider.provider.resolveFiles(options.updateInfoAndProvider.info)[0];
+    app.requests.push(file.url.href);
+    return options.cancellationToken.createPromise(() => { started(); });
+  };
+  const downloading = app.download();
+  await ready;
+  await app.cancel();
+  assert.equal(await downloading, undefined);
+  assert.deepEqual(app.requests, [
+    'https://dl.yiyu.pro/blockly/latest-coder.yml',
+    'https://dl.yiyu.pro/blockly/aily-coder-CN-Setup-0.1.7.exe',
+  ]);
 });
 
 test('Coder Global download keeps its selected flavor without entering the CN mirror strategy', async () => {

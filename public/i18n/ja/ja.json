@@ -447,6 +447,7 @@
         },
         "BOARD": {
             "SEARCH": "ボードを検索",
+            "CLEAR_SEARCH": "検索をクリア",
             "READ_DOC": "ドキュメント",
             "ADD_BOARD": "ボードを追加",
             "DEV": "開発",

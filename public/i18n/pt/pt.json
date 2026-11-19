@@ -447,6 +447,7 @@
         },
         "BOARD": {
             "SEARCH": "Pesquisar placas",
+            "CLEAR_SEARCH": "Limpar pesquisa",
             "READ_DOC": "Ler documentação",
             "ADD_BOARD": "Adicionar placa",
             "DEV": "dev",

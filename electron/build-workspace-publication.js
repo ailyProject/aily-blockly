@@ -42,13 +42,8 @@ module.exports = {
   resolveBuildProjectPath: project => require(childScriptPath('build-execution-workspace.js')).resolveBuildProjectPath(project),
   inspectBuildExecution: (project, requestId) => require(childScriptPath('build-execution-workspace.js')).inspectBuildExecution(project, requestId),
   cancelBuildExecution: config => require(childScriptPath('build-execution-workspace.js')).cancelBuildExecution(config),
-  canReuseBlocklyUpload: config => {
-    const execution = require(childScriptPath('build-execution-workspace.js'));
-    if (execution.resolveBuildExecution(config.currentProjectPath)) return execution.canReuseBuildExecution(config);
-    // New hosts never certify old shared outputs, including after a failed or
-    // cancelled private build. Only the execution receipt grants upload reuse.
-    return false;
-  },
+  canReuseBlocklyUpload: config => require(childScriptPath('build-execution-workspace.js')).canReuseBuildExecution(config),
+  canReuseCoderUpload: config => runExecutionWorker({ action: 'check-coder-upload', config }).then(value => value.reusable),
   captureBuildSource: (config, workspace) => {
     return require(childScriptPath('build-source-capture.js')).captureBuildSource(config, workspace);
   },

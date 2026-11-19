@@ -232,11 +232,7 @@ async function preprocessProject(config, workspace) {
         );
         projectLibraryPaths = librarySearchPaths;
         if (projectPackageJson.arduinoSketch === true) {
-            const arduinoLibraries = [
-                path.join(require('node:os').homedir(), 'Documents', 'Arduino', 'libraries'),
-                path.join(path.dirname(currentProjectPath), 'libraries'),
-                path.join(currentProjectPath, 'libraries'),
-            ].filter(directory => fs.existsSync(directory) && fs.statSync(directory).isDirectory());
+            const arduinoLibraries = ailyCodeProject.collectArduinoLibraryDirectories(currentProjectPath);
             // Arduino sketchbooks may contain symlinked library folders. Record
             // each canonical library independently, rather than rejecting links
             // merely because they leave the sketchbook's parent directory.

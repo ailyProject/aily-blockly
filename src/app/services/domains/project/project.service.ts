@@ -606,13 +606,18 @@ export class ProjectService {
     this.libraryChangesChanged?.next();
   }
 
-  async discardLibraryChanges(projectPath = this.currentProjectPath, reconcile = false, historyRestored = false): Promise<void> {
+  async discardLibraryChanges(projectPath = this.currentProjectPath, reconcile = false, historyRestored = false,
+    allowInstallFailure = false): Promise<string | undefined> {
     if (!projectPath || !window['libraryDependencies']) return;
     const restoreCoderSources = !reconcile && this.hasCachedLibraryChanges(projectPath)
       && this.getProjectMode(projectPath) === 'coder';
-    this.acceptLibraryStatus(projectPath, await window['libraryDependencies'].discard(projectPath, { reconcile, historyRestored }));
+    const status = await window['libraryDependencies'].discard(projectPath, {
+      reconcile, historyRestored, ...(allowInstallFailure ? { allowInstallFailure } : {}),
+    });
+    this.acceptLibraryStatus(projectPath, status);
     if (restoreCoderSources) await this.application.materializeCoderProjectLibraries(projectPath);
     this.libraryChangesChanged?.next();
+    return status.installError;
   }
 
   /** Native quit has already been confirmed. It never rebuilds a departing editor. */

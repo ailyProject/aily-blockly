@@ -272,12 +272,15 @@ export class BuilderService {
     }
   }
 
-  /** 先保存 Coder 编辑器内容，再让主进程核对云产物是否仍匹配当前完整输入，避免重复编译。 */
+  /** 本地与云端复用都先把当前编辑器内容保存到磁盘。 */
   async canReuseBuildForUpload(projectPath: string, isCancelled: () => boolean = () => false): Promise<boolean> {
-    if (!this.projectService.isCloudBuild() || !this.projectService.isAilyCodeProject(projectPath)) return false;
+    if (!this.projectService.isAilyCodeProject(projectPath)) return false;
+    const cloud = this.projectService.isCloudBuild(projectPath);
+    if (!cloud && !window['builder']?.canReuseCoderUpload) return false;
     await this.persistActiveCoderProjectBeforeBuild(projectPath);
-    if (isCancelled()) return false;
-    return this.compileService.canReuseCloudBuildForUpload(projectPath, isCancelled);
+    if (isCancelled() || this.projectService.isCloudBuild(projectPath) !== cloud) return false;
+    return cloud ? this.compileService.canReuseCloudBuildForUpload(projectPath, isCancelled)
+      : this.compileService.canReuseLocalCoderBuildForUpload(projectPath, isCancelled);
   }
 
   /** 取消当前编译过程。 */

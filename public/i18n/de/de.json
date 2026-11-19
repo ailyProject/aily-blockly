@@ -447,6 +447,7 @@
         },
         "BOARD": {
             "SEARCH": "Board suchen",
+            "CLEAR_SEARCH": "Suche löschen",
             "READ_DOC": "Dokumentation lesen",
             "ADD_BOARD": "Board hinzufügen",
             "DEV": "Entwicklung",

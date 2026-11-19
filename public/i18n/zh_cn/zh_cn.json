@@ -512,6 +512,7 @@
         },
         "BOARD": {
             "SEARCH": "搜索开发板",
+            "CLEAR_SEARCH": "清空搜索",
             "READ_DOC": "文档",
             "ADD_BOARD": "添加开发板",
             "DEV": "dev",

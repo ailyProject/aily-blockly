@@ -47,7 +47,8 @@ describe('Blockly compile and upload handoff', () => {
       translate: { instant: (text: string) => text }, noticeService: { update() {} }, message: { warning() {} },
       cmdService: { kill() {} }, hostBuilderService: { build: jasmine.createSpy('coderBuild').and.resolveTo({}) } });
     window['fs'] = { existsSync: () => true };
-    window['builder'] = { canReuseBlocklyUpload: jasmine.createSpy('reuse').and.returnValue(true),
+    const compiledCode = prepared.code;
+    window['builder'] = { canReuseBlocklyUpload: jasmine.createSpy('reuse').and.callFake(config => config.code === compiledCode),
       publishArduinoGeneratedCode: jasmine.createSpy('publish').and.throwError('Upload checks must not publish files') };
     const run = () => uploader.upload().catch((error: any) => error);
     return { events, prepared, project, builder, uploader, run };
@@ -57,6 +58,16 @@ describe('Blockly compile and upload handoff', () => {
     const f = uploadFixture(); await f.run();
     expect(f.events).toEqual(['upload']);
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
+  });
+
+  it('uses a verified local execution after reopening the editor', async () => {
+    const f = uploadFixture();
+    Object.assign(f.builder, { passed: false, lastCode: '', currentProjectPath: '' });
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1,
+      resolveBuildExecution: () => ({ buildPath: '/private/.build' }) });
+    await f.run();
+    expect(f.events).toEqual(['upload']);
+    expect(window['builder'].canReuseBlocklyUpload).toHaveBeenCalledOnceWith(jasmine.objectContaining({ code: f.prepared.code }));
   });
 
   const firmware = {
@@ -239,6 +250,18 @@ describe('Blockly compile and upload handoff', () => {
     const f = uploadFixture(); f.project.isAilyCodeProject = () => true;
     await f.run(); expect(f.uploader.hostBuilderService.build).toHaveBeenCalledOnceWith('/project');
     expect(f.builder.build).not.toHaveBeenCalled(); expect(window['builder'].canReuseBlocklyUpload).not.toHaveBeenCalled();
+  });
+
+  for (const reusable of [true, false]) it(`uses the local Coder receipt before upload (reusable=${reusable})`, async () => {
+    const f = uploadFixture();
+    f.project.isAilyCodeProject = () => true;
+    window['builder'].canReuseCoderUpload = async () => true;
+    const check = jasmine.createSpy('checkCoderBuild').and.returnValues(Promise.resolve(reusable), Promise.resolve(true));
+    f.uploader.hostBuilderService.canReuseBuildForUpload = check;
+    await f.run();
+    expect(check).toHaveBeenCalledTimes(reusable ? 1 : 2);
+    expect(f.uploader.hostBuilderService.build).toHaveBeenCalledTimes(reusable ? 0 : 1);
+    expect(f.events).toEqual(['upload']);
   });
 
   for (const coder of [false, true]) it(`continues ${coder ? 'Coder' : 'Blockly'} upload with local firmware after a task-only switch`, async () => {
