@@ -139,6 +139,13 @@
   // height: calc(100% - 95px);
   padding-bottom: 150px;
 
+  .empty-list {
+    width: 100%;
+    padding: 24px 0;
+    text-align: center;
+    color: var(--aily-text-tertiary);
+  }
+
   .board {
     position: relative;
     width: 180px;
