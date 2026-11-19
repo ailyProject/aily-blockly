@@ -574,14 +574,11 @@ export class _UploaderService {
 
           await this._builderService.waitForUploadPreprocess(() => this.cancelled);
 
-          if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
-
-          // 云产物尚不存在时先走正常编译流程，不能被旧产物查询提前阻断。
-          buildPath = cloud ? '' : await this._builderService.getCurrentBuildPath();
+          assertContext();
 
           const needsBuild = !reuseCloud && !await this._builderService.canReuseBuildForUpload(() => this.cancelled);
 
-          if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
+          assertContext();
 
           // 如果需要编译，先执行编译
           if (needsBuild) {
@@ -592,8 +589,6 @@ export class _UploaderService {
               assertContext();
 
               cloud = initialCloud && !backendOperation.local;
-
-              if (!cloud) buildPath = await this._builderService.getCurrentBuildPath();
 
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
@@ -643,6 +638,8 @@ export class _UploaderService {
               return;
             }
           }
+          buildPath = cloud ? '' : await this._builderService.getCurrentBuildPath();
+          assertContext();
         }
 
         if (cloud) {

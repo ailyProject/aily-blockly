@@ -47,7 +47,8 @@ describe('Blockly compile and upload handoff', () => {
       translate: { instant: (text: string) => text }, noticeService: { update() {} }, message: { warning() {} },
       cmdService: { kill() {} }, hostBuilderService: { build: jasmine.createSpy('coderBuild').and.resolveTo({}) } });
     window['fs'] = { existsSync: () => true };
-    window['builder'] = { canReuseBlocklyUpload: jasmine.createSpy('reuse').and.returnValue(true),
+    const compiledCode = prepared.code;
+    window['builder'] = { canReuseBlocklyUpload: jasmine.createSpy('reuse').and.callFake(config => config.code === compiledCode),
       publishArduinoGeneratedCode: jasmine.createSpy('publish').and.throwError('Upload checks must not publish files') };
     const run = () => uploader.upload().catch((error: any) => error);
     return { events, prepared, project, builder, uploader, run };
@@ -57,6 +58,16 @@ describe('Blockly compile and upload handoff', () => {
     const f = uploadFixture(); await f.run();
     expect(f.events).toEqual(['upload']);
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
+  });
+
+  it('uses a verified local execution after reopening the editor', async () => {
+    const f = uploadFixture();
+    Object.assign(f.builder, { passed: false, lastCode: '', currentProjectPath: '' });
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1,
+      resolveBuildExecution: () => ({ buildPath: '/private/.build' }) });
+    await f.run();
+    expect(f.events).toEqual(['upload']);
+    expect(window['builder'].canReuseBlocklyUpload).toHaveBeenCalledOnceWith(jasmine.objectContaining({ code: f.prepared.code }));
   });
 
   const firmware = {
