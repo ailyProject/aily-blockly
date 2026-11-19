@@ -518,6 +518,13 @@ class LibraryDependencies {
     return { environment: this.environment.observe(root, requestId), candidateApplied: false };
   }
 
+  rejectCancelledEnvironment(root, request, submission, error) {
+    return this.locked(root, assertCurrent => {
+      assertCurrent();
+      return this.environment.rejectAdmission(root, request, submission, error);
+    }, false);
+  }
+
   pendingEnvironment(project) {
     const root = this.root(project);
     return this.queue(root, () => this.locked(root, () => this.environment.pendingReferences(root), false));

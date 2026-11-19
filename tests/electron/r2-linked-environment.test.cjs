@@ -30,7 +30,7 @@ test.before(() => {
     { module, exports: module.exports, ...kernel });
   inspectSuccessor = module.exports.inspectEnvironmentSuccessor;
 });
-async function fixture(t, { authorDraft, exitedOwner = false } = {}) {
+async function fixture(t, { authorDraft, exitedOwner = false, splitOwner = false, archive = false } = {}) {
   const root = fs.mkdtempSync(path.join(parent, 'project-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const child = fork(path.resolve('tests/electron/fixtures/r0-publication-worker.cjs'), ['fixture', root, bundle],
@@ -57,9 +57,10 @@ async function fixture(t, { authorDraft, exitedOwner = false } = {}) {
   const environment = { requestId: environmentId, operation: 'board-config',
     files: { 'package.json': { expectedHash: await kernel.hashAbsText(original), content: desired } } };
   let ref, exitOriginal;
-  if (exitedOwner) {
+  if (exitedOwner || splitOwner) {
     const owner = fork(path.resolve('tests/electron/fixtures/r2-linked-environment-owner.cjs'), [root, bundle],
-      { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true });
+      { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
+        ...(splitOwner ? { env: { ...process.env, AILY_LIBRARY_HOST_PID: String(io.executor.hostPid) } } : {}) });
     const closed = once(owner, 'close');
     exitOriginal = async () => {
       if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL');
@@ -67,13 +68,21 @@ async function fixture(t, { authorDraft, exitedOwner = false } = {}) {
     };
     t.after(exitOriginal);
     const ready = once(owner, 'message');
-    owner.send({ submission, environment });
+    owner.send({ submission, ...(splitOwner ? {} : { environment }) });
     const [message] = await ready;
     assert.equal(message.event, 'admitted', JSON.stringify(message));
     ref = message.ref;
   } else {
     ref = (await operations.beginDocumentSave(submission, guard)).ref;
+  }
+  if (!exitedOwner || splitOwner) {
     environments.begin(root, { ...environment, programRef: ref }, null, guard);
+    if (archive) {
+      const packagePath = 'node_modules/test-linked-dependency';
+      fs.mkdirSync(path.join(root, packagePath), { recursive: true });
+      fs.writeFileSync(path.join(root, packagePath, 'package.json'), '{"name":"test-linked-dependency"}');
+      environments.preserve(root, [packagePath], guard);
+    }
     fs.writeFileSync(path.join(root, 'package.json'), desired);
     environments.complete(root, guard);
   }
@@ -85,6 +94,58 @@ async function failNative(ctx) {
   await ctx.operations.restored(ctx.ref.operationId, guard);
   return ctx.applications.observeNativeSave(ctx.request, guard);
 }
+test('only the original renderer may exit after its Main completed the linked environment', async t => {
+  const ctx = await fixture(t, { splitOwner: true, authorDraft: '# Draft at admission\n' });
+  const main = new LibraryDependencies();
+  const checkpoint = ctx.environments.find(ctx.root, ctx.environmentId).record;
+  assert.notEqual(checkpoint.executor.storagePid, ctx.ref.executor.storagePid);
+  assert.equal(checkpoint.executor.hostPid, ctx.ref.executor.hostPid);
+  assert.equal((await ctx.io.observeExecutor(checkpoint.executor)).state, 'active');
+  assert.equal(await ctx.operations.inspectUnpublishedDocumentSave(ctx.ref, guard), null);
+  await ctx.exitOriginal();
+  assert.equal((await ctx.io.observeExecutor(ctx.ref.executor)).state, 'exited');
+  assert.equal((await ctx.io.observeExecutor(checkpoint.executor)).state, 'active');
+  const file = name => path.join(ctx.root, name);
+  const draft = '# Later unapplied draft\n';
+  fs.writeFileSync(file('project.abs'), draft);
+  const result = ctx.environments.find(ctx.root, ctx.environmentId).folder + '/result.json';
+  const durableResult = fs.readFileSync(result);
+  const recovery = () => kernel.settleOriginalBoardEnvironment(ctx.io, ctx.root,
+    { request: ctx.request, hostPid: ctx.ref.executor.hostPid }, main, guard);
+  fs.unlinkSync(result); // Missing durable Main terminal must remain uncertain while Main is active.
+  await assert.rejects(recovery(), { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN' });
+  fs.writeFileSync(result, durableResult);
+  fs.writeFileSync(file('package.json'), JSON.stringify({ ...JSON.parse(ctx.desired), projectConfig: { board: 'competing' } }));
+  await assert.rejects(recovery(), { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN' });
+  fs.writeFileSync(file('package.json'), ctx.desired);
+  assert.equal(await recovery(), 'settled');
+  assert.equal(fs.readFileSync(file('package.json'), 'utf8'), ctx.original);
+  assert.equal(fs.readFileSync(file('project.abs'), 'utf8'), draft);
+  assert.deepEqual(await main.pendingEnvironment(ctx.root), []);
+  const next = await main.historyBegin(ctx.root, { packages: ['@aily-project/lib-audit'] });
+  assert.ok(next.token);
+  await main.historyDiscard(ctx.root, { token: next.token });
+});
+
+test('archive pruning keeps verifiable durable receipts and never prunes an invalid resolution', async t => {
+  const ctx = await fixture(t, { archive: true });
+  const observation = await failNative(ctx);
+  ctx.environments.settleLinked(ctx.root, { requestId: ctx.environmentId, programRef: ctx.ref, observation }, guard);
+  const { folder } = ctx.environments.find(ctx.root, ctx.environmentId);
+  const terminalNames = ['checkpoint.json', 'result.json', 'restoration.json', 'program-resolution.json'];
+  const receipts = terminalNames.map(file => fs.readFileSync(path.join(folder, file)));
+  const trees = path.join(folder, 'trees'), resolution = path.join(folder, terminalNames.at(-1));
+  assert.ok(fs.readdirSync(trees).some(file => file.endsWith('.json')));
+  fs.appendFileSync(resolution, 'invalid checksum envelope');
+  ctx.environments.prune(ctx.root, 0);
+  assert.ok(fs.existsSync(trees), 'Archive remains recoverable while terminal validation fails');
+  fs.writeFileSync(resolution, receipts.at(-1));
+  ctx.environments.prune(ctx.root, 0);
+  assert.equal(fs.existsSync(trees), false);
+  assert.deepEqual(terminalNames.map(file => fs.readFileSync(path.join(folder, file))), receipts);
+  assert.equal(ctx.environments.observe(ctx.root, ctx.environmentId).status, 'restored');
+  assert.deepEqual(ctx.environments.pendingReferences(ctx.root), []);
+});
 test('real native NOT_COMMITTED restores only its original linked environment and preserves later derived metadata', async t => {
   const ctx = await fixture(t), observed = await failNative(ctx);
   const generated = { ...JSON.parse(ctx.desired), codeHash: 'later-generated', buildInfo: { success: true }, notes: 'later-user-metadata' };

@@ -11,10 +11,12 @@ process.on('message', async ({ submission, environment }) => {
   try {
     const io = await openProjectSyncStorage(root, guard);
     const { ref } = await new kernel.AbsOperationJournal(io, root).beginDocumentSave(submission, guard);
-    const journal = new LibraryEnvironmentJournal();
-    journal.begin(root, { ...environment, programRef: ref }, null, guard);
-    fs.writeFileSync(path.join(root, 'package.json'), environment.files['package.json'].content);
-    journal.complete(root, guard);
+    if (environment) {
+      const journal = new LibraryEnvironmentJournal();
+      journal.begin(root, { ...environment, programRef: ref }, null, guard);
+      fs.writeFileSync(path.join(root, 'package.json'), environment.files['package.json'].content);
+      journal.complete(root, guard);
+    }
     process.send({ event: 'admitted', ref });
   } catch (error) {
     process.send({ event: 'failed', message: error.message, code: error.code });

@@ -169,6 +169,24 @@ function readRecord(file) {
   return record.payload;
 }
 
+function readEnvironmentResult(folder, record, name = 'result.json') {
+  const result = readRecord(path.join(folder, name));
+  if (result.version !== 1 || result.requestId !== record.requestId || result.candidateApplied !== false
+    || !['completed', 'restored'].includes(result.status) || (name === 'restoration.json' && result.status !== 'restored')
+    || !Array.isArray(result.trees) || result.trees.some(value => logicalRoot(value.relative) !== value.relative)
+    || new Set(result.trees.map(value => value.relative)).size !== result.trees.length) {
+    throw fail('The original environment terminal changed.');
+  }
+  return result;
+}
+
+function readLinkedResolution(folder, record) {
+  const result = readRecord(path.join(folder, 'program-resolution.json'));
+  if (result.version !== 1 || result.requestId !== record.requestId || !same(result.programRef, record.request.programRef)
+    || !['retained', 'restored', 'superseded'].includes(result.status)) throw fail('The linked environment resolution changed.');
+  return result;
+}
+
 /** Promote nested npm changes to their owned top-level package. A linked leaf
  * is read through its real source, but no restoration ever writes that source. */
 function logicalRoot(relative) {
@@ -302,13 +320,10 @@ class LibraryEnvironmentJournal {
       if (name !== `environment-${digest(record.requestId).slice(7)}`) throw fail('Dependency request index changed.');
       if (record.admission) { this.assertAdmission(folder, record); return null; }
       if (fs.existsSync(path.join(folder, 'result.json'))) {
-        const result = readRecord(path.join(folder, 'result.json'));
-        if (result.version !== 1 || result.requestId !== record.requestId || !['completed', 'restored'].includes(result.status)) throw fail('The original environment terminal changed.');
+        readEnvironmentResult(folder, record);
         if (!record.request.programRef) return null;
         if (fs.existsSync(path.join(folder, 'program-resolution.json'))) {
-          const resolved = readRecord(path.join(folder, 'program-resolution.json'));
-          if (resolved.version !== 1 || resolved.requestId !== record.requestId || !same(resolved.programRef, record.request.programRef)
-            || !['retained', 'restored', 'superseded'].includes(resolved.status)) throw fail('The linked environment resolution changed.');
+          readLinkedResolution(folder, record);
           return null;
         }
       }
@@ -418,18 +433,27 @@ class LibraryEnvironmentJournal {
       if (!/^environment-[0-9a-f]{64}$/.test(name)) continue;
       const folder = path.join(base, name);
       try {
-        if (!fs.lstatSync(folder).isDirectory() || !fs.existsSync(path.join(folder, 'result.json'))) continue;
+        const stat = fs.lstatSync(folder);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || !fs.existsSync(path.join(folder, 'result.json'))) continue;
         const record = readRecord(path.join(folder, 'checkpoint.json'));
-        if (record.request?.programRef && !fs.existsSync(path.join(folder, 'program-resolution.json'))) continue;
-        settled.push({ folder, createdAt: record.createdAt || 0 });
+        if (record.project !== root || name !== `environment-${digest(record.requestId).slice(7)}`
+          || (record.request?.programRef && !fs.existsSync(path.join(folder, 'program-resolution.json')))) continue;
+        settled.push({ folder, record });
       } catch { /* An unreadable operation stays for recovery to report. */ }
     }
-    settled.sort((left, right) => right.createdAt - left.createdAt);
-    for (const { folder } of settled.slice(keep)) {
+    settled.sort((left, right) => (right.record.createdAt || 0) - (left.record.createdAt || 0));
+    for (const { folder, record } of settled.slice(keep)) {
       if (active.has(path.basename(folder))) continue;
-      for (const name of ['trees', 'attempts']) {
-        const data = path.join(folder, name);
-        if (fs.lstatSync(data, { throwIfNoEntry: false })?.isDirectory()) {
+      const archives = ['trees', 'attempts'].map(name => path.join(folder, name))
+        .filter(data => fs.lstatSync(data, { throwIfNoEntry: false })?.isDirectory());
+      if (archives.length) {
+        try {
+          this.assertAttachment(root, record);
+          readEnvironmentResult(folder, record);
+          if (fs.existsSync(path.join(folder, 'restoration.json'))) readEnvironmentResult(folder, record, 'restoration.json');
+          if (record.request?.programRef) readLinkedResolution(folder, record);
+        } catch { continue; } // Preserve rollback bytes until the terminal is independently readable.
+        for (const data of archives) {
           try { fs.renameSync(data, path.join(folder, `pruned-${randomUUID()}`)); } catch { /* Retried on the next completion. */ }
         }
       }
@@ -571,6 +595,16 @@ class LibraryEnvironmentJournal {
       requestId: value.record.requestId, programRef: value.record.request.programRef,
     }));
   }
+  currentMainCompleted(root, { folder, record }) {
+    const main = storageExecutor(), source = record.request.programRef.executor;
+    if (main.hostPid !== main.storagePid || !same(record.executor, main)
+      || source.hostPid !== main.hostPid || source.storagePid === main.storagePid
+      || this.owned.get(root)?.record.requestId === record.requestId
+      || this.attempts.get(root)?.some(attempt => path.dirname(path.dirname(attempt.folder)) === folder)
+      || !fs.existsSync(path.join(folder, 'result.json'))) return false;
+    const completed = this.observe(root, record.requestId);
+    return completed.status === 'completed' && completed.current === true;
+  }
   settleLinked(root, request, assertCurrent) {
     const operation = this.find(root, request?.requestId);
     if (!operation || !same(operation.record.request.programRef, request.programRef)) throw fail('The linked original environment request changed.');
@@ -618,7 +652,8 @@ class LibraryEnvironmentJournal {
       || fact.requestId !== ref.request.requestId || fact.operationId !== ref.operationId || !same(fact.attachment, ref.attachment)
       || !same(fact.originalExecutor, ref.executor) || fact.oldWriter?.state !== 'exited'
       || !/^sha256:[0-9a-f]{64}$/.test(fact.snapshotHash || '') || !source
-      || observeStorageExecutor(ref.executor).state !== 'exited' || observeStorageExecutor(operation.record.executor).state !== 'exited') {
+      || observeStorageExecutor(ref.executor).state !== 'exited'
+      || (observeStorageExecutor(operation.record.executor).state !== 'exited' && !this.currentMainCompleted(root, operation))) {
       throw fail('The original source publication is still uncertain; its environment was retained.');
     }
     const expected = { 'project.abi': fact.saved?.abiHash, 'project.abs': fact.saved?.absHash,
@@ -657,7 +692,7 @@ class LibraryEnvironmentJournal {
     if (record.admission) return { ...identity, status: 'not-started', requestId, current: false, candidateApplied: false,
       admission: record.admission, code: record.code, message: record.message };
     if (!fs.existsSync(path.join(folder, 'result.json'))) return { ...identity, status: 'unknown', requestId, current: false, candidateApplied: false };
-    const result = readRecord(path.join(folder, fs.existsSync(path.join(folder, 'restoration.json')) ? 'restoration.json' : 'result.json'));
+    const result = readEnvironmentResult(folder, record, fs.existsSync(path.join(folder, 'restoration.json')) ? 'restoration.json' : 'result.json');
     const actual = inputs(root), expected = result.after ?? record.before;
     let current = ['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock'].every(name => name === 'package.json'
       ? same(relevantPackage(actual[name]), relevantPackage(expected[name])) : actual[name] === expected[name]);

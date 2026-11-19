@@ -245,12 +245,28 @@ export class AbsOperationJournal {
         || validation.base.scope.projectKey !== this.project) throw conflict();
       if (record.disk.abi === null || record.disk.abs === null || record.disk.map === null || record.committed === null) return null;
       const stageKey = `recoveries/application-${pointer.id}.json`, staged = await storage.read(stageKey);
+      // Keep the original proof bound to its snapshot. Verify and preserve a
+      // separate author draft only when sealing the durable project-v1 record.
+      const readbackDisk = retained ? record.disk : await this.disk(storage);
+      if (readbackDisk.abi !== record.disk.abi || readbackDisk.map !== record.disk.map) return null;
+      const draftChanged = readbackDisk.abs !== record.disk.abs;
+      if (draftChanged && !retain) return null;
+      const accepted = draftChanged
+        ? new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' })
+        : undefined;
+      const draftIsIndependent = async () => {
+        if (!accepted) return true;
+        if (await accepted.workspaceMode(storage) !== 'project-v1') return false;
+        const committed = await accepted.readCommittedSnapshot();
+        return committed?.projection.map.scope.projectKey === this.project && await accepted.matchesAcceptedDisk(committed, readbackDisk);
+      };
       const unchanged = async (historical: boolean) => {
         assertCurrent();
         if (await storage.read(indexKey) !== indexText || await storage.read(recoveryKey) !== recoveryText
           || await storage.read(snapshotKey(pointer.id)) !== snapshotText
           || await storage.read(stageKey) !== staged
-          || (!historical && (await storage.read(currentKey) !== pointerText || absJson(await this.disk(storage)) !== absJson(record.disk)
+          || (!historical && (await storage.read(currentKey) !== pointerText || !await draftIsIndependent()
+            || absJson(await this.disk(storage)) !== absJson(readbackDisk)
             || await storage.read('committed.json') !== record.committed || await storage.read('prepared.json') !== null))) return false;
         for (const key of [`recoveries/application-commit-${pointer.id}.json`,
           `recoveries/application-result-${pointer.id}.json`]) if (await storage.read(key) !== null) return false;
