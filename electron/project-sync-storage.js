@@ -7,6 +7,7 @@ const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, 
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
 
 const PROJECT_SYNC_STORAGE_VERSION = 2;
+const SCOPE_CHECK_INTERVAL_MS = 200;
 const mirrors = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
 const readOnlyInputs = new Set(['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock']);
 const readableFiles = new Set([...mirrors, ...readOnlyInputs]);
@@ -96,10 +97,11 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       guard(); return result;
     },
     read: async key => { guard(); return readText(key); },
-    withLock: async operation => {
+    withLock: async (operation, observeScope = false) => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
       const lock = await acquireProjectFileLock(access, guard, options.timeoutMs);
       let active = true;
+      let scopeTimer;
       const pending = new Set();
       const check = () => {
         if (!active) throw fault('ABS_STORAGE_SCOPE_CLOSED', 'Storage write capability has expired.');
@@ -173,11 +175,21 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       };
       try {
         check();
-        const result = await operation(scoped);
+        const callback = operation(scoped);
+        // A renderer may no longer be able to deliver its settlement after
+        // revocation. Observe the same trusted guard while its callback waits.
+        // A slow but current owner retains the native lock.
+        const invalidated = observeScope && new Promise((_, reject) => {
+          scopeTimer = setInterval(() => {
+            try { check(); } catch (error) { reject(error); }
+          }, SCOPE_CHECK_INTERVAL_MS);
+        });
+        const result = await (invalidated ? Promise.race([callback, invalidated]) : callback);
         check();
         return result;
       } finally {
         active = false;
+        clearInterval(scopeTimer);
         // An unawaited callback write must finish (or fail its revoked guard)
         // before another process may acquire this lock.
         await Promise.allSettled([...pending]);
@@ -219,7 +231,7 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
           reject(fault('ABS_STORAGE_OPERATION_INVALID', 'Bridge callbacks must return void and settle explicitly.'));
         }
       } catch (error) { reject(error); }
-    }));
+    }), true);
   return {
     attachment: storage.attachment,
     executor: storage.executor,

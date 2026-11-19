@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { test, after } = require('node:test');
-const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
+const { openProjectSyncStorage, openProjectSyncStorageBridge } = require('../../electron/project-sync-storage');
 const { replaceProjectText } = require('../../electron/project-file-writer');
 const { projectFileHash: hash } = require('../../electron/project-file-access');
 const roots = [];
@@ -137,6 +137,48 @@ test('unawaited writes are revoked and drained before the shared lock is release
   await assert.rejects(pending, { code: 'ABS_STORAGE_SCOPE_CLOSED' });
   assert.equal(await store.read('project.abi'), null);
   assert.equal((await replaceProjectText(request(root), guard)).status, 'COMMITTED');
+});
+
+test('a revoked renderer with a lost settlement releases the lock after its admitted writes drain', async () => {
+  const root = project();
+  const entered = Promise.withResolvers(), started = Promise.withResolvers();
+  const drain = Promise.withResolvers(), revoked = Promise.withResolvers();
+  const files = { ...fs, promises: { ...fs.promises, async open(...args) {
+    const handle = await fs.promises.open(...args);
+    started.resolve();
+    await drain.promise;
+    return handle;
+  } } };
+  let current = true;
+  const old = await openProjectSyncStorageBridge(root, () => {
+    if (!current) {
+      revoked.resolve();
+      throw Object.assign(new Error('Original scope revoked'), { code: 'ORIGINAL_SCOPE_REVOKED' });
+    }
+  }, { files });
+  const next = await openProjectSyncStorageBridge(root, guard, { timeoutMs: 20 });
+  const compete = () => next.withLockResult((_locked, settle) => settle({ ok: true, value: 'new owner' }));
+  const original = old.withLockResult((locked, settle) => {
+    entered.resolve({ locked, settle, writing: locked.replaceResult('project.abi', null, 'old writer') });
+  });
+  const { locked, settle, writing } = await entered.promise;
+  try {
+    await started.promise;
+    assert.equal((await compete()).error.code, 'PROJECT_FILE_BUSY');
+    current = false;
+    await revoked.promise;
+    assert.equal((await compete()).error.code, 'PROJECT_FILE_BUSY');
+    drain.resolve();
+    assert.equal((await original).error.code, 'ORIGINAL_SCOPE_REVOKED');
+    assert.equal((await writing).error.code, 'ABS_STORAGE_SCOPE_CLOSED');
+    assert.deepEqual(await compete(), { ok: true, value: 'new owner' });
+    settle({ ok: true, value: 'old receipt' });
+    assert.equal((await locked.replaceResult('project.abi', null, 'late')).error.code, 'ABS_STORAGE_SCOPE_CLOSED');
+    assert.equal(fs.existsSync(path.join(root, 'project.abi')), false);
+  } finally {
+    drain.resolve();
+    settle({ ok: true, value: null });
+  }
 });
 
 test('rejects linked storage, hard-linked records, and invalid UTF-8 without rewriting them', async () => {

@@ -344,6 +344,8 @@ module.exports = {
     registerNpmHandlers,
     killAllNpmProcesses,
     killOwnerProjectNpmProcesses,
+    hasOwnerProjectNpmProcesses: (owner, projectPath, projectSessionId) => [...activeNpmProcesses.values()]
+        .some(entry => matchesProjectTask(entry, owner, projectPath, projectSessionId)),
     getActiveNpmProcesses,
     beginNpmShutdown: () => { npmShutdown = true; },
 };

@@ -8,7 +8,7 @@ describe('Project command lifecycle during close', () => {
   let service: any;
   let order: string[];
   beforeEach(() => {
-    original = { projectLock: window['projectLock'], ipcRenderer: window['ipcRenderer'], path: window['path'] };
+    original = { projectLock: window['projectLock'], ipcRenderer: window['ipcRenderer'], path: window['path'], cloudBuild: window['cloudBuild'] };
     order = [];
     window['path'] = { resolve: (value: string) => value, normalize: (value: string) => value };
     window['projectLock'] = { release: jasmine.createSpy('release').and.callFake(async (path: string) => {
@@ -83,6 +83,58 @@ describe('Project command lifecycle during close', () => {
     });
   });
 
+  it('settles a lost native stop ACK and closes the original project once', async () => {
+    const original = service.getProjectDependencySession('/active');
+    window['ipcRenderer'].invoke.and.callFake(async (channel: string, data: any) => {
+      if (!channel.startsWith('project-commands-stop')) return { ok: true };
+      expect(data.projectSessionId).toBe(original.projectSessionId);
+      if (channel === 'project-commands-stop') throw new Error('Native completed stop; ACK lost');
+      return { ok: true, ...data, state: 'stopped' };
+    });
+    expect(await service.close()).toBeTrue();
+    expect(service.currentProjectPath).toBe('');
+    const stopChannels = window['ipcRenderer'].invoke.calls.allArgs()
+      .map(([channel]) => channel).filter(channel => channel.startsWith('project-commands-stop'));
+    expect(stopChannels).toEqual([
+      'project-commands-stop', 'project-commands-stop-status',
+    ]);
+    expect(window['projectLock'].release).toHaveBeenCalledOnceWith('/active');
+  });
+
+  it('retries failed cloud invalidation for the observed original scope before releasing it', async () => {
+    let attempts = 0;
+    const invalidate = jasmine.createSpy('invalidate').and.callFake(async () => {
+      if (++attempts === 1) throw new Error('Cloud reply lost');
+    });
+    window['cloudBuild'] = { invalidate };
+    window['ipcRenderer'].invoke.and.callFake(async (channel: string, data: any) =>
+      channel === 'project-commands-stop-status' ? { ok: true, ...data, state: 'stopped' } : { ok: true });
+    expect(await service.close()).toBeTrue();
+    expect(invalidate.calls.allArgs()).toEqual([[{ projectPath: '/active' }], [{ projectPath: '/active' }]]);
+    expect(window['projectLock'].release).toHaveBeenCalledOnceWith('/active');
+  });
+
+  it('admits the next lifecycle after its exact stopped scope is observable, ignoring a mismatched reply', async () => {
+    const original = service.getProjectDependencySession('/active');
+    let exact = false;
+    window['ipcRenderer'].invoke.and.callFake(async (channel: string, data: any) => {
+      expect(data.projectSessionId).toBe(original.projectSessionId);
+      if (channel === 'project-commands-stop') throw new Error('Native completed stop; ACK lost');
+      return { ok: true, ...data, projectSessionId: exact ? data.projectSessionId : 'different-project-session', state: 'stopped' };
+    });
+    expect(await service.close()).toBeFalse();
+    const operation = jasmine.createSpy('next lifecycle').and.resolveTo(true);
+    const admit = () => service.withProjectLifecycleAdmission(() => {}, operation);
+    await expectAsync(admit()).toBeRejected();
+    expect(operation).not.toHaveBeenCalled();
+    exact = true;
+    expect(await admit()).toBeTrue();
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(window['ipcRenderer'].invoke.calls.allArgs().filter(([channel]) => channel === 'project-commands-stop').length).toBe(1);
+    expect(service.getProjectDependencySession('/active')).not.toBe(original);
+    expect(window['projectLock'].release).not.toHaveBeenCalled();
+  });
+
   it('stops each project once when closing the workspace', async () => {
     service.coderProjectsSubject.next([{ path: '/active' }, { path: '/tab' }]);
     expect(await service.close()).toBeTrue();
@@ -98,6 +150,7 @@ describe('Project command lifecycle during close', () => {
     const calls = window['ipcRenderer'].invoke.calls.allArgs();
     expect(calls).toEqual([
       ['project-commands-stop', jasmine.objectContaining({ projectPath: '/tab', projectSessionId: jasmine.any(String) })],
+      ['project-commands-stop-status', jasmine.objectContaining({ projectPath: '/tab', projectSessionId: jasmine.any(String) })],
     ]);
     expect(service.currentProjectPath).toBe('/active');
     expect(service.coderProjects).toEqual([folder]);

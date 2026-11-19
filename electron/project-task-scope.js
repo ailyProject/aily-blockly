@@ -42,6 +42,10 @@ function cancelProjectTaskScope(owner, options) {
   return scope;
 }
 
+function isProjectTaskScopeCancelled(owner, scope) {
+  return cancelledScopes.get(owner)?.has(scopeKey(scope)) === true;
+}
+
 function matchesProjectTask(entry, owner, projectPath, projectSessionId) {
   if (entry.ownerWebContents !== owner) return false;
   const scope = readProjectTaskScope(entry);
@@ -49,4 +53,4 @@ function matchesProjectTask(entry, owner, projectPath, projectSessionId) {
     && scope.projectSessionId === projectSessionId;
 }
 
-module.exports = { assertProjectTaskActive, cancelProjectTaskScope, matchesProjectTask };
+module.exports = { assertProjectTaskActive, cancelProjectTaskScope, isProjectTaskScopeCancelled, matchesProjectTask, readProjectTaskScope };

@@ -2,6 +2,7 @@ import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-proj
 import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
 import { recoverAbsProjectOperation } from '../../integrations/blockly/abs/abs-project-restart';
 import { AbsOperationJournal } from '../../integrations/blockly/abs/abs-operation-journal';
+import { sameAbsSavedState } from '../../integrations/blockly/abs/abs-save-semantics';
 import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback,
   type AbsLoadNormalizationInput, type AbsLoadNormalizationDeferred } from '../../integrations/blockly/abs/abs-load-normalization';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
@@ -27,7 +28,8 @@ import { _ProjectService } from './services/project.service';
 import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
-import { ProjectService, projectDataRuntime, ProjectDataError, type DeferredProjectDataNormalization } from '@domain/project/public-api';
+import { ProjectService, projectDataRuntime, ProjectDataError, type AilyDataRef, type DeferredProjectDataNormalization } from '@domain/project/public-api';
+import type { BlocklyWorkspaceEditLease } from './services/blockly-workspace-edit-lease';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { CodeViewerIpcService } from './services/code-viewer-ipc.service';
@@ -500,7 +502,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       loadLease.assertCurrent();
       if (recoveredOperation) {
         await this._projectService.rememberRecoveredProject(projectPath, diskText, projectDocument, loadLease);
-        await recoveredOperation();
+        await recoveredOperation(loadLease);
       } else this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument, loadLease);
       if (loadNormalization && !bindAbsLoadNormalizationReadback(loadNormalization,
         this.blocklyService.captureProjectSnapshot(loadLease))) {
@@ -621,7 +623,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     loadNormalization?: AbsLoadNormalizationInput;
     deferredNormalization?: AbsLoadNormalizationDeferred;
     diskText: string;
-    recoveredOperation?: () => Promise<void>;
+    recoveredOperation?: (lease: BlocklyWorkspaceEditLease) => Promise<void>;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
@@ -672,11 +674,33 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       document: this.blocklyService.normalizeProjectAbiForLoad(recovery?.document ?? projectAbi),
       usedBoardTemplate,
       diskText, completeAbs: derivedAbi !== null,
-      ...(recovery ? { recoveredOperation: async () => {
+      ...(recovery ? { recoveredOperation: async (lease: BlocklyWorkspaceEditLease) => {
         const current = await absPort.read('project.abi');
         assertCurrent();
         if (current !== diskText || await absPort.read('committed.json') !== recovery.committed) throw new Error('The saved document changed during recovered view loading.');
-        await new AbsOperationJournal(absPort, projectPath).restored(recovery.operationId, assertCurrent);
+        const journal = new AbsOperationJournal(absPort, projectPath);
+        await journal.restored(recovery.operationId, assertCurrent);
+        try {
+          await journal.recordRestoredApplication(recovery.operationId, assertCurrent, async document => {
+            lease.assertCurrent();
+            const view = this.blocklyService.captureProjectSnapshot(lease);
+            const guard = () => {
+              assertCurrent(); lease.assertCurrent();
+              if (this.blocklyService.captureProjectSnapshot(lease).revision !== view.revision) throw new Error('The recovered view changed during readback.');
+            };
+            if (!await sameAbsSavedState(view.document, document, {
+              normalize: value => this.blocklyService.normalizeProjectAbi(value),
+              resolve: <T>(ref: AilyDataRef) => projectDataRuntime.resolve<T>(ref),
+              assertCurrent: guard,
+            })) throw new Error('The recovered view differs from the retained complete document.');
+            guard();
+          });
+        } catch (error) {
+          assertCurrent(); lease.assertCurrent();
+          // Historical proof failure keeps that request unverified. The
+          // independently validated restored view can still open normally.
+          console.warn('[Blockly] Original application recovery could not be recorded:', error);
+        }
       } }
         : { ...(normalizationPreparation?.input ? { loadNormalization: normalizationPreparation.input } : {}),
           ...(normalizationPreparation?.outcome ? { deferredNormalization: normalizationPreparation.outcome } : {}) }),
