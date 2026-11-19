@@ -18,7 +18,7 @@ import {
   ProtectedToolCloseError,
   switchServiceRegionAndRequestLogin,
 } from '@core/auth/public-api';
-import { getChildToolConfig } from '../../../configs/tool.config';
+import { getChildToolConfig, isWindowOnlyChildTool } from '../../../configs/tool.config';
 import { ConfigService } from '@core/preferences/public-api';
 import { BoardSelectorDialogComponent } from '../../../main-window/components/board-selector-dialog/board-selector-dialog.component';
 import {
@@ -359,6 +359,16 @@ export class UiService {
     if (this.requestLoginForProtectedTool(name)) {
       return;
     }
+    if (isWindowOnlyChildTool(name)) {
+      void import('@integration/automation/public-api')
+        .then(({ MainUiAutomationService }) => this.injector.get(MainUiAutomationService).openChildApp({ toolId: name, mode: 'window' }))
+        .then(result => {
+          if (result['ok'] !== true) throw new Error(String(result['message']));
+        })
+        .catch(error => this.injector.get(NzMessageService).error(error instanceof Error ? error.message : String(error)));
+      return;
+    }
+
     // if (name == 'terminal') {
     //   this.openTerminal();
     //   return;
@@ -384,7 +394,7 @@ export class UiService {
    * the requested presentation mode before calling this method.
    */
   openToolEmbedded(name: string, presentationId?: string): boolean {
-    if (getChildToolConfig(name)?.app?.extension === true) return false;
+    if (isWindowOnlyChildTool(name) || getChildToolConfig(name)?.app?.extension === true) return false;
     if (this.requestLoginForProtectedTool(name)) {
       return false;
     }
@@ -402,7 +412,7 @@ export class UiService {
   }
 
   private openToolInMainWindow(name: string, presentationId?: string) {
-    if (getChildToolConfig(name)?.app?.extension === true) return;
+    if (isWindowOnlyChildTool(name) || getChildToolConfig(name)?.app?.extension === true) return;
     if (!name || this.requestLoginForProtectedTool(name)) {
       return;
     }

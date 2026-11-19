@@ -18,20 +18,29 @@
         [attr.aria-disabled]="isArchitectureGenerating" nz-tooltip
         [nzTooltipTitle]="'FLOAT_SIDER.ARCH' | translate" (click)="showArch()">
         <i class="fa-light fa-diagram-project"></i>
+
         @if (isArchitectureGenerating) {
             <i class="ai-generation-loading fa-regular fa-spinner-third fa-spin" aria-hidden="true"></i>
         }
+
     </div>
     <div class="btn ccenter" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.PINMAP' | translate" (click)="showPinmap()">
         <i class="fa-light fa-microchip"></i>
     </div>
-    <div class="btn ccenter" [class.disabled]="isProjectSceneGenerating"
-        [attr.aria-disabled]="isProjectSceneGenerating" nz-tooltip
+    <div class="btn ccenter" [class.disabled]="circuitOpening"
+        [attr.aria-disabled]="circuitOpening" nz-tooltip
         [nzTooltipTitle]="'FLOAT_SIDER.CIRCUIT' | translate" (click)="showCircuit()">
         <i class="fa-light fa-code-branch"></i>
+    </div>
+    <div class="btn ccenter" [class.disabled]="isProjectSceneGenerating || circuitOpening"
+        [attr.aria-disabled]="isProjectSceneGenerating || circuitOpening" nz-tooltip
+        [nzTooltipTitle]="'FLOAT_SIDER.GENERATE_CIRCUIT' | translate" (click)="generateCircuit()">
+        <i class="fa-light fa-wand-magic-sparkles"></i>
+
         @if (isProjectSceneGenerating) {
             <i class="ai-generation-loading fa-regular fa-spinner-third fa-spin" aria-hidden="true"></i>
         }
+
     </div>
     <div class="btn ccenter" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.DOCUMENTATION' | translate" (click)="openDocUrl()">
         <i class="fa-light fa-book"></i>

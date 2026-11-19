@@ -115,7 +115,8 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
                 guard();
             }
             const view = await host.openView({ ...lease, guard, surface: input.surface }, input.presentation === undefined
-                ? undefined : { presentation: input.presentation, parent: event.sender, bounds: input.bounds, visible: input.visible });
+                ? undefined : { presentation: input.presentation, parent: event.sender, bounds: input.bounds, visible: input.visible,
+                    managedClose: input.managedClose === true, show: input.show !== false });
             if (!lease.nodeControlSource) return view;
             const connection = host.viewConnection({ ...lease, guard, connectionId: view.connectionId });
             let node;
@@ -130,6 +131,10 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
                 if (failures.length) throw new AggregateError([error, ...failures.map(result => result.reason)], 'Installed View cleanup requires retry');
                 throw error;
             }
+        }
+        if (input.action === 'waitForWindowClose' || input.action === 'focusWindow') {
+            const result = await host.managedWindow({ ...lease, guard, connectionId: input.connectionId }, input.action);
+            return input.action === 'waitForWindowClose' ? { requested: result } : result;
         }
         if (input.action === 'updateView') return host.updateView({ ...lease, guard, connectionId: input.connectionId },
             { bounds: input.bounds, visible: input.visible });

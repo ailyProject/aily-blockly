@@ -2,11 +2,11 @@
  * Creates visible demand sessions in the independently installed Aily Chat
  * runtime. Blockly supplies project context only; it does not execute agents.
  */
-
 import { Injectable } from '@angular/core';
 import { UiService } from '@core/app-shell/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { BehaviorSubject } from 'rxjs';
+
 import {
   ChildToolProcessService,
   DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
@@ -52,6 +52,7 @@ export interface AilyChatDemandSessionRequest {
   prompt: string;
   mode: 'agent' | 'ask';
   revealSession?: boolean;
+
   resources?: AilyChatDemandResource[];
   projectPath?: string;
   preferredSessionId?: string;
@@ -68,6 +69,7 @@ export interface AilyChatDemandSessionResult {
 export interface ProjectSceneGenerationOptions {
   revealSession?: boolean;
   title?: string;
+  projectPath?: string;
 }
 
 const AILY_CHAT_TOOL_ID = DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID;
@@ -76,6 +78,7 @@ const DEMAND_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const ARCHITECTURE_AGENT_PREFIX = '[AGENT: ArchitectureAgent]';
 const PROJECT_SCENE_AGENT_PREFIX = '[AGENT: ProjectSceneAgent]';
 const DEFAULT_PROJECT_SCENE_PROMPT = '根据当前项目生成仿真连线场景';
+
 const EMPTY_DIAGRAM_GENERATION_STATE: DiagramGenerationState = {
   architecture: null,
   projectScene: null,
@@ -92,6 +95,7 @@ interface DemandSessionEvent {
   channel: typeof AILY_CHAT_DEMAND_SESSION_CHANNEL;
   type: 'event';
   requestId: string;
+
   event?: {
     type?: 'session-created';
     sessionId?: string;
@@ -99,10 +103,12 @@ interface DemandSessionEvent {
 }
 
 @Injectable({ providedIn: 'root' })
+
 export class AilyChatDemandSessionService {
   // Shared across all Simulator product scopes in this Main. A cancelled
   // observer cannot admit another turn while its original turn is unconfirmed.
   private codeSyncOwned = false;
+
   private readonly diagramGenerationStateSubject =
     new BehaviorSubject<DiagramGenerationState>(EMPTY_DIAGRAM_GENERATION_STATE);
 
@@ -157,6 +163,7 @@ export class AilyChatDemandSessionService {
       prompt: this.withAgentPrefix(prompt, PROJECT_SCENE_AGENT_PREFIX),
       mode: 'agent',
       revealSession: options.revealSession !== false,
+      projectPath: options.projectPath,
     }, signal);
   }
 
@@ -194,38 +201,51 @@ export class AilyChatDemandSessionService {
     signal?: AbortSignal,
   ): Promise<AilyChatDemandSessionResult> {
     throwIfAborted(signal);
+
     const cwd = request.projectPath ?? this.projectService.currentProjectPath;
+
     if (request.projectPath && !this.isSameProjectPath(cwd, this.projectService.currentProjectPath)) {
       throw new Error('当前项目已切换，请重新打开演示');
     }
+
     if (!cwd) throw new Error('请先打开项目');
+
     const requestId = crypto.randomUUID();
     const diagramKind = this.toDiagramGenerationKind(request.kind);
+
     if (diagramKind) {
       if (this.isDiagramGenerating(diagramKind)) {
         if (diagramKind === 'project-scene') {
           return { accepted: false, reason: 'project-scene-agent-running' };
         }
+
         throw new Error('框架图正在生成，请等待当前任务结束');
       }
+
       this.beginDiagramGeneration(diagramKind, requestId, cwd);
     }
 
     const ownsCodeSync = request.kind === 'code-sync';
+
     if (ownsCodeSync) {
       if (this.codeSyncOwned) throw new Error('Simulator code synchronization still owns its original work.');
+
       this.codeSyncOwned = true;
     }
 
     let runtimeAcquired = false;
+
     try {
       await this.childToolProcess.acquire(AILY_CHAT_TOOL_ID);
+
       runtimeAcquired = true;
+
       throwIfAborted(signal);
 
       if (request.projectPath && !this.isSameProjectPath(cwd, this.projectService.currentProjectPath)) {
         throw new Error('当前项目已切换，请重新打开演示');
       }
+
       const result = await this.requestDemandSession(
         cwd,
         request,
@@ -233,23 +253,28 @@ export class AilyChatDemandSessionService {
         diagramKind,
         signal,
       );
+
       if (
         result.accepted === false
         && result.reason === 'project-scene-agent-running'
       ) {
         return result;
       }
+
       if (request.kind === 'lesson-code' && result.accepted === true && result.state === 'accepted' && result.sessionId) {
         await this.uiService.openAilyChatSession(result.sessionId);
 
         return result;
       }
+
       if (result.accepted !== true || result.state !== 'settled') {
         throw new Error(result.error || 'aily Chat 需求会话执行失败');
       }
+
       return result;
     } finally {
       if (diagramKind) this.endDiagramGeneration(diagramKind, requestId);
+
       try {
         if (runtimeAcquired) await this.childToolProcess.release(AILY_CHAT_TOOL_ID);
       } finally {
@@ -260,6 +285,7 @@ export class AilyChatDemandSessionService {
 
   isDiagramGenerating(kind: DiagramGenerationKind): boolean {
     const activity = this.readDiagramActivity(kind);
+
     return !!activity && this.isSameProjectPath(
       activity.projectPath,
       this.projectService.currentProjectPath,
@@ -283,27 +309,37 @@ export class AilyChatDemandSessionService {
       let announcedSession = false;
       let originalRuntime: ReturnType<ChildToolProcessService['bindRuntimeGeneration']> | undefined;
       let timeout: ReturnType<typeof setTimeout> | undefined;
+
       const codeSyncStage = (stage: string, status?: string) => {
         if (retainOriginalCompletion) {
           console.info('[AilyChatDemandSession][CodeSync]', { requestId, stage, status });
         }
       };
+
       const finish = (callback: () => void) => {
         if (settled) return;
+
         settled = true;
+
         if (timeout !== undefined) clearTimeout(timeout);
+
         removeListener();
         originalRuntime?.dispose();
         signal?.removeEventListener('abort', onAbort);
         callback();
       };
+
       const cancelOriginal = (error: Error, trigger: 'abort' | 'timeout' | 'run-send-failed') => {
         if (settled || cancellationError) return;
+
         cancellationError = error;
+
         codeSyncStage('cancel-requested', trigger);
+
         // Sending or acknowledging cancellation does not prove the original
         // Agent turn stopped. Keep its exact response listener and lease.
         const cancellationSendFailed = () => codeSyncStage('cancel-send-failed');
+
         try {
           void originalRuntime?.sendMessage({
             channel: AILY_CHAT_DEMAND_SESSION_CHANNEL,
@@ -316,17 +352,22 @@ export class AilyChatDemandSessionService {
           cancellationSendFailed();
         }
       };
+
       const onAbort = () => {
         if (retainOriginalCompletion && dispatched) {
           cancelOriginal(abortReason(signal), 'abort');
+
           return;
         }
+
         finish(() => reject(abortReason(signal)));
       };
+
       const removeListener = this.childToolProcess.onMessage(
         AILY_CHAT_TOOL_ID,
         message => {
           const response = message as unknown as DemandSessionResponse | DemandSessionEvent;
+
           if (
             response.channel !== AILY_CHAT_DEMAND_SESSION_CHANNEL
             || response.requestId !== requestId
@@ -338,14 +379,19 @@ export class AilyChatDemandSessionService {
             const sessionId = response.event?.type === 'session-created'
               ? String(response.event.sessionId || '').trim()
               : '';
+
             if (retainOriginalCompletion && sessionId && !announcedSession) {
               announcedSession = true;
+
               codeSyncStage('session-created');
             }
+
             if (retainOriginalCompletion && (signal?.aborted || cancellationError)) return;
+
             if (sessionId && diagramKind) {
               this.attachDiagramSession(diagramKind, requestId, sessionId);
             }
+
             if (sessionId && revealSession && request.kind !== 'lesson-code') {
               void this.uiService.openAilyChatSession(sessionId).then(
                 opened => {
@@ -356,51 +402,69 @@ export class AilyChatDemandSessionService {
                 error => console.warn('[AilyChatDemandSession] 会话导航失败:', error),
               );
             }
+
             return;
           }
 
           if (response.type !== 'response') return;
+
           const result = response.result;
+
           if (retainOriginalCompletion && (!result || typeof result !== 'object'
             || (result.accepted !== false && !(result.accepted === true
               && ['settled', 'rejected', 'failed'].includes(result.state ?? ''))))) return;
+
           codeSyncStage('terminal', result?.accepted === false ? 'refused' : result?.state);
+
           finish(() => {
             // The Host run response is sent after the original turn settles.
             // Aborting only this wait must not free its work slot or Runtime
             // reference while that independent turn may still be running.
             if (retainOriginalCompletion && (signal?.aborted || cancellationError)) {
               reject(signal?.aborted ? abortReason(signal) : cancellationError);
+
               return;
             }
+
             if (response.result) resolve(response.result);
             else reject(new Error('Aily Chat Runtime 未返回需求会话结果'));
           });
         },
       );
+
       if (retainOriginalCompletion) {
         try {
           originalRuntime = this.childToolProcess.bindRuntimeGeneration(AILY_CHAT_TOOL_ID, () => {
             codeSyncStage('runtime-exited');
+
             const error = signal?.aborted ? abortReason(signal) : cancellationError;
+
             finish(() => reject(error ?? new Error('Aily Chat Runtime 已退出，请重试同步场景并编译')));
           });
         } catch (error) {
           finish(() => reject(error));
+
           return;
         }
       }
+
       timeout = setTimeout(() => {
         const error = new Error('Aily Chat 需求会话执行超时');
+
         if (retainOriginalCompletion && dispatched) {
           cancelOriginal(error, 'timeout');
+
           return;
         }
+
         finish(() => reject(error));
       }, DEMAND_SESSION_TIMEOUT_MS);
+
       signal?.addEventListener('abort', onAbort, { once: true });
+
       if (signal?.aborted) {
         onAbort();
+
         return;
       }
 
@@ -410,12 +474,17 @@ export class AilyChatDemandSessionService {
           // not accept the request. Keep the exact listener and reference in
           // quarantine until its original response; owner close stays joined.
           cancelOriginal(error instanceof Error ? error : new Error(String(error)), 'run-send-failed');
+
           return;
         }
+
         finish(() => reject(error));
       };
+
       dispatched = true;
+
       codeSyncStage('dispatch');
+
       try {
         const message = {
           channel: AILY_CHAT_DEMAND_SESSION_CHANNEL,
@@ -431,6 +500,7 @@ export class AilyChatDemandSessionService {
           revealSession,
           resources: request.resources || [],
         };
+
         void Promise.resolve(originalRuntime
           ? originalRuntime.sendMessage(message)
           : this.childToolProcess.sendMessage(AILY_CHAT_TOOL_ID, message)).catch(failedDispatch);
@@ -440,15 +510,18 @@ export class AilyChatDemandSessionService {
 
   private clearDiagramGenerationOutsideProject(projectPath: string): void {
     const current = this.diagramGenerationStateSubject.value;
+
     const keep = (activity: DiagramGenerationActivity | null) => (
       activity && this.isSameProjectPath(activity.projectPath, projectPath)
         ? activity
         : null
     );
+
     const next: DiagramGenerationState = {
       architecture: keep(current.architecture),
       projectScene: keep(current.projectScene),
     };
+
     if (
       next.architecture !== current.architecture
       || next.projectScene !== current.projectScene
@@ -462,6 +535,7 @@ export class AilyChatDemandSessionService {
       .replace(/\\/g, '/')
       .replace(/\/+$/u, '')
       .toLowerCase();
+
     return normalize(left) === normalize(right);
   }
 
@@ -484,6 +558,7 @@ export class AilyChatDemandSessionService {
     activity: DiagramGenerationActivity | null,
   ): void {
     const current = this.diagramGenerationStateSubject.value;
+
     this.diagramGenerationStateSubject.next(kind === 'architecture'
       ? { ...current, architecture: activity }
       : { ...current, projectScene: activity });
@@ -508,18 +583,23 @@ export class AilyChatDemandSessionService {
     sessionId: string,
   ): void {
     const current = this.readDiagramActivity(kind);
+
     if (!current || current.requestId !== requestId) return;
+
     this.writeDiagramActivity(kind, { ...current, sessionId });
   }
 
   private endDiagramGeneration(kind: DiagramGenerationKind, requestId: string): void {
     const current = this.readDiagramActivity(kind);
+
     if (!current || current.requestId !== requestId) return;
+
     this.writeDiagramActivity(kind, null);
   }
 
   private withAgentPrefix(prompt: string, prefix: string): string {
     const normalized = String(prompt || '').trim();
+
     return normalized.startsWith(prefix) ? normalized : `${prefix} ${normalized}`;
   }
 }

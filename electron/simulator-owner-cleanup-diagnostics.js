@@ -21,6 +21,10 @@ const ERROR_CODES = new Set([
 
 // D12: only the existing private bounded D6/D9 formatter vocabulary may persist.
 const INTERNAL_PREFIX = 'AILY_INTERNAL_CLEANUP_V1 ';
+const STARTUP_PREFIX = '[aily-simulator-startup] ';
+const STARTUP_STATES = new Set(['started', 'progress', 'complete']);
+const STARTUP_METRICS = new Set(['elapsedMs', 'durationMs', 'fileCount', 'totalBytes',
+    'fileMetadataMs', 'fileHashMs', 'workerIdleMs', 'maxParallelFiles']);
 const MAX_BUFFER_LINE_BYTES = 4096;
 const INTERNAL_PHASES = new Set(['main-view-disconnect', 'node-view-detach']);
 const INTERNAL_SOURCES = new Set(['registered-view-cleanup', 'execution-view-detach', 'node-handler-cleanup', 'node-detach-result-send']);
@@ -126,7 +130,7 @@ function createSimulatorOwnerCleanupDiagnostics({ enabled, write: observer, noti
         if (final) ordinaryText(ordinaryDecoder.end());
     };
     const reset = () => { dropping = false; bytes = 0; parts = []; ordinaryMode = false; ordinaryDecoder = undefined; };
-    const prefix = Buffer.from(INTERNAL_PREFIX, 'utf8');
+    const prefixes = [INTERNAL_PREFIX, STARTUP_PREFIX].map(value => Buffer.from(value));
     const append = chunk => {
         if (!chunk.length) return;
         if (!dropping && chunk.length <= MAX_BUFFER_LINE_BYTES - bytes) {
@@ -136,7 +140,10 @@ function createSimulatorOwnerCleanupDiagnostics({ enabled, write: observer, noti
                 const held = Buffer.concat(parts, bytes);
                 // Only a possible exact private prefix may delay notification.
                 // All known ordinary stderr remains immediate, even without LF.
-                if (!held.subarray(0, Math.min(bytes, prefix.length)).equals(prefix.subarray(0, Math.min(bytes, prefix.length)))) {
+                if (!prefixes.some(prefix => {
+                    const length = Math.min(bytes, prefix.length);
+                    return held.subarray(0, length).equals(prefix.subarray(0, length));
+                })) {
                     ordinaryMode = true; ordinary(held);
                 }
             }
@@ -150,12 +157,20 @@ function createSimulatorOwnerCleanupDiagnostics({ enabled, write: observer, noti
     const line = () => {
         if (!dropping && bytes) {
             const raw = Buffer.concat(parts, bytes);
-            let internal;
+            let internal, startup;
             try {
                 const text = raw.toString('utf8');
                 if (text.startsWith(INTERNAL_PREFIX)) {
                     internal = internalFrame(JSON.parse(text.slice(INTERNAL_PREFIX.length)));
                     if (internal) write(internal);
+                } else if (text.startsWith(STARTUP_PREFIX) && bytes <= MAX_LINE_BYTES) {
+                    const value = JSON.parse(text.slice(STARTUP_PREFIX.length));
+                    if (ownRecord(value) && /^(?:cli|service|runtime-[a-z-]{1,32})$/.test(value.phase)
+                        && STARTUP_STATES.has(value.state) && Number.isFinite(value.elapsedMs) && Number.isFinite(value.durationMs)
+                        && Object.entries(value).every(([key, metric]) =>
+                            key === 'phase' || key === 'state' || (STARTUP_METRICS.has(key) && Number.isFinite(metric)))) {
+                        startup = JSON.stringify(value);
+                    }
                 } else if (bytes <= MAX_LINE_BYTES) {
                     const value = JSON.parse(text);
                     if (value && typeof value === 'object' && !Array.isArray(value)
@@ -167,6 +182,7 @@ function createSimulatorOwnerCleanupDiagnostics({ enabled, write: observer, noti
                 }
             } catch { /* Bad input and a failed diagnostic sink cannot affect command I/O. */ }
             if (internal) notice('internal-cleanup', JSON.stringify(internal));
+            else if (startup) notice('startup', startup);
             else if (!ordinaryMode) ordinary(raw);
         }
         ordinary(Buffer.alloc(0), true);

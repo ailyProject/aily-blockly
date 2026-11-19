@@ -68,7 +68,7 @@ export class SubappOwnerGuard {
   /** View operations retain this exact owner; closing a View never disposes the
    * renderer generation shared with Agent owners. */
   async browserView(
-    action: 'openView' | 'updateView' | 'closeView' | 'release',
+    action: 'openView' | 'updateView' | 'closeView' | 'waitForWindowClose' | 'focusWindow' | 'release',
     toolId: string,
     ownerSessionId: string,
     input: Record<string, unknown>,

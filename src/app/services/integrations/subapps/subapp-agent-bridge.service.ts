@@ -6,6 +6,7 @@ import {
   ChildToolConfig,
   getChildToolConfig,
   getChildToolConfigs,
+  isWindowOnlyChildTool,
 } from '../../../configs/tool.config';
 
 import { ChildToolHostInfo, ChildToolProcessService } from './child-tool-process.service';
@@ -235,13 +236,22 @@ export class SubappAgentBridgeService implements OnDestroy {
       const mapped = this.mapRpc(resolved.definition, rpcParams);
       let presentation: Record<string, unknown> | undefined;
 
-      if (presentationPolicy.uiMode === 'window' && browserPresentation) {
+      if (presentationPolicy.uiMode === 'window' && browserPresentation && isWindowOnlyChildTool(resolved.config.id)) {
+        await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
+        this.throwIfCancelled(signal);
+        const opened = await this.automation.openChildApp({
+          toolId: resolved.config.id, mode: 'window', reveal: tool !== 'simulator_scene_generation_open',
+        });
+        if (opened['ok'] !== true) throw new SubappRpcError(String(opened['message']), 'SUBAPP_PRESENTATION_NOT_READY');
+
+        presentation = { ...opened, mode: 'window' };
+      } else if (presentationPolicy.uiMode === 'window' && browserPresentation) {
         // Browser execution stays on its original Agent owner. Ordinary
         // window opening has no trusted View grant and selects a default UI.
         await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
         await this.ownerGuard.track(resolved.config.id, ownerSessionId);
         this.throwIfCancelled(signal);
-        presentation = await this.presentOwner({ toolId: resolved.config.id, mode: 'embedded' }, ownerSessionId, activitySessionId, true);
+        presentation = await this.presentOwner({ toolId: resolved.config.id }, ownerSessionId, activitySessionId, true);
       } else if (presentationPolicy.uiMode === 'window') {
         if (!webSelected && !nativeBatch) await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
 
@@ -249,7 +259,7 @@ export class SubappAgentBridgeService implements OnDestroy {
 
         presentation = await this.automation.openChildApp({
           toolId: resolved.config.id,
-          mode: webSelected ? 'embedded' : 'window',
+          mode: webSelected && !isWindowOnlyChildTool(resolved.config.id) ? 'embedded' : 'window',
         });
 
         if (presentation['ok'] !== true) {
@@ -318,6 +328,16 @@ export class SubappAgentBridgeService implements OnDestroy {
       if (webSelected) {
         this.throwIfCancelled(signal);
         this.ownerLeases.require(ownerSessionId, activitySessionId, context.toolCallId);
+      }
+
+      const resultStatus = this.record(result)['status'];
+      if (tool === 'simulator_scene_generation_submit' && browserPresentation && isWindowOnlyChildTool(resolved.config.id)
+        && (resultStatus === 'applied' || resultStatus === 'unchanged')) {
+        try {
+          presentation = await this.automation.openChildApp({ toolId: resolved.config.id, mode: 'window' });
+        } catch (error) {
+          presentation = { ok: false, toolId: resolved.config.id, message: error instanceof Error ? error.message : String(error) };
+        }
       }
 
       const response = this.enforceResponseBudget({
@@ -534,7 +554,14 @@ export class SubappAgentBridgeService implements OnDestroy {
     if (!config?.runtime?.browserExecution || !config.ui?.surfaces?.['full']?.entry || !this.browserPresentations) {
       throw new SubappRpcError('This Subapp has no Agent Browser presentation', 'SUBAPP_OWNER_PRESENTATION_UNAVAILABLE');
     }
-    if (input['mode'] !== undefined && input['mode'] !== 'embedded') {
+    if (isWindowOnlyChildTool(toolId)) {
+      const opened = await this.automation.openChildApp({ toolId, mode: 'window' });
+      validate();
+      return { ...opened, mode: 'window' };
+    }
+
+    const mode = 'embedded';
+    if (input['mode'] !== undefined && input['mode'] !== mode) {
       throw new SubappRpcError('Agent Browser presentation requires embedded mode', 'SUBAPP_OWNER_PRESENTATION_MODE');
     }
     const existing = reuseOwnedView ? this.browserPresentations.reuseOwned(toolId, ownerLeaseId, validate) : null;
@@ -547,21 +574,21 @@ export class SubappAgentBridgeService implements OnDestroy {
         String(focused?.['message'] || focused?.['error'] || 'The original Agent Browser View could not be focused'), 'SUBAPP_PRESENTATION_NOT_READY');
       validate();
       this.browserPresentations.requireReusableMount(toolId, existing.id);
-      return { ok: true, toolId, mode: 'embedded', ...ready };
+      return { ok: true, toolId, mode, ...ready };
     }
     const ticket = this.browserPresentations.prepare(toolId, ownerLeaseId, validate);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await Promise.race([
         (async () => {
-          const opened = await this.automation.openChildApp({ toolId, mode: 'embedded', [SUBAPP_BROWSER_PRESENTATION]: ticket.id });
+          const opened = await this.automation.openChildApp({ toolId, mode, [SUBAPP_BROWSER_PRESENTATION]: ticket.id });
           if (opened['ok'] !== true) throw new Error(String(opened['message'] || opened['error'] || 'Agent Browser presentation was not opened'));
           return await ticket.ready;
         })(),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Agent Browser presentation startup timed out')), 15000); }),
       ]);
       validate();
-      return { ok: true, toolId, mode: 'embedded', ...result };
+      return { ok: true, toolId, mode, ...result };
     } catch (error) {
       try { await this.browserPresentations.cancel(ticket.id, error); }
       catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Agent Browser presentation failed; View cleanup remains unconfirmed'); }

@@ -5,6 +5,7 @@ const { createConfiguredBrowserExecutionHost } = require('./subapp-browser-resou
 
 const browserExecutionHost = createConfiguredBrowserExecutionHost({ BrowserWindow, MessageChannelMain,
     allowLoopbackHttp: !app.isPackaged && process.argv.includes('--serve'),
+    windowBounds: contents => simulatorWindowBounds(BrowserWindow.fromWebContents(contents)),
     viewLoadTimeoutMs: 30000,
 });
 
@@ -1025,6 +1026,25 @@ function centerSubWindowOnMainDisplay(
     } catch (e) {
         console.warn('[SubWindowPool] 子窗口居中定位失�?', e.message);
     }
+}
+
+function simulatorWindowBounds(ownerWindow) {
+    const { workArea } = ownerWindow
+        ? screen.getDisplayMatching(ownerWindow.getBounds())
+        : screen.getPrimaryDisplay();
+    const minWidth = Math.min(1179, workArea.width);
+    const minHeight = Math.min(806, workArea.height);
+    const width = Math.max(minWidth, Math.round(workArea.width * 0.92));
+    const height = Math.max(minHeight, Math.round(workArea.height * 0.92));
+
+    return {
+        x: workArea.x + Math.round((workArea.width - width) / 2),
+        y: workArea.y + Math.round((workArea.height - height) / 2),
+        width,
+        height,
+        minWidth,
+        minHeight,
+    };
 }
 
 /**
@@ -2155,15 +2175,18 @@ function registerWindowHandlers(mainWindow, options = {}) {
             ? SETTINGS_WINDOW_URL
             : normalizedWindowUrl;
 
-        const width = data.width ? data.width : 800;
-        const height = data.height ? data.height : 600;
+        const simulatorBounds = windowUrl === '/child-tool/simulator' && data.applyInitialBounds !== true
+            ? simulatorWindowBounds(mainWindow)
+            : null;
+        const width = simulatorBounds?.width ?? (data.width || 800);
+        const height = simulatorBounds?.height ?? (data.height || 600);
         const alwaysOnTop = data.alwaysOnTop ? data.alwaysOnTop : false;
         const needInitPayload = !!(data.data || data.url || data.title);
         const windowClass = resolveChildWindowClass(windowUrl, data.windowClass);
 
         const minimumSize = resolveChildWindowMinimumSize(windowUrl, {
-            width: data.minWidth,
-            height: data.minHeight,
+            width: simulatorBounds?.minWidth ?? data.minWidth,
+            height: simulatorBounds?.minHeight ?? data.minHeight,
         }, windowClass);
 
         // 检查是否已存在该URL的窗�?

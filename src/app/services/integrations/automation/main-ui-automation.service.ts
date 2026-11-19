@@ -1,9 +1,10 @@
 import { Inject, Injectable, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
-import { getChildToolConfig, getChildToolConfigs, type ChildToolConfig } from '../../../configs/tool.config';
+import { getChildToolConfig, getChildToolConfigs, isWindowOnlyChildTool, type ChildToolConfig } from '../../../configs/tool.config';
 import { ChildAppHostRegistryService, SubappManagerService, type ChildAppHostAction } from '@integration/subapps/public-api';
 import { recoverChildAppCapabilities } from './subapp-capability-recovery';
 import { UiAutomationRegistryService } from './ui-automation-registry.service';
+import { SubappBrowserSurfaceService } from '../subapps/subapp-browser-surface.service';
 import { SUBAPP_BROWSER_PRESENTATION, SubappBrowserPresentationService } from '../subapps/subapp-browser-presentation.service';
 import {
   AUTOMATION_UI_PORT,
@@ -78,6 +79,7 @@ export class MainUiAutomationService {
     @Optional() @Inject(SubappBrowserPresentationService)
     private readonly browserPresentations: SubappBrowserPresentationService | null = null,
     private readonly subappManager: SubappManagerService,
+    @Optional() private readonly browserSurfaces: SubappBrowserSurfaceService | null = null,
   ) {
     this.childHostRegistry.ensureInitialized();
   }
@@ -158,7 +160,8 @@ export class MainUiAutomationService {
 
     if (!config) return false;
 
-    return (await this.readWindowState(this.routePath(config))).open === true;
+    return !!this.browserSurfaces?.getWindow(config.id)
+      || (await this.readWindowState(this.routePath(config))).open === true;
   }
 
   /** Called only through the internal Subapp port with a registry-owned grant.
@@ -233,16 +236,18 @@ export class MainUiAutomationService {
 
   async openChildApp(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const toolId = this.stringParam(params, 'toolId');
-    const mode = (this.stringParam(params, 'mode') || 'embedded') as ChildAppOpenMode;
+    const requestedMode = this.stringParam(params, 'mode') || 'embedded';
     const config = getChildToolConfig(toolId);
 
     if (!toolId || !config) {
       return { ok: false, message: `未找到子应用: ${toolId || '(空)'}` };
     }
 
-    if (mode !== 'embedded' && mode !== 'window') {
-      return { ok: false, message: `不支持的打开模式: ${mode}；可用 embedded 或 window。` };
+    if (requestedMode !== 'embedded' && requestedMode !== 'window') {
+      return { ok: false, message: `不支持的打开模式: ${requestedMode}；可用 embedded 或 window。` };
     }
+
+    const mode: ChildAppOpenMode = isWindowOnlyChildTool(toolId) ? 'window' : requestedMode;
 
     if (config.app?.extension === true) {
       return this.extensionUiUnavailable(config);
@@ -280,9 +285,20 @@ export class MainUiAutomationService {
       }
     }
 
+    const presentationId = Reflect.get(params, SUBAPP_BROWSER_PRESENTATION) as string | undefined;
+    if (isWindowOnlyChildTool(toolId) && config.runtime?.browserExecution) {
+      if (!this.browserSurfaces) return { ok: false, message: '独立电路仿真窗口不可用。' };
+
+      const reveal = params['reveal'] !== false;
+      const existing = this.browserSurfaces.getWindow(toolId);
+      const surface = existing ?? this.browserSurfaces.openWindow(toolId, reveal);
+      await surface.ready;
+      if (existing && reveal) await existing.focus();
+      return { ok: true, toolId, requestedMode: mode, visible: reveal };
+    }
+
     const routePath = this.routePath(config);
     const windowState = await this.readWindowState(routePath);
-    const presentationId = Reflect.get(params, SUBAPP_BROWSER_PRESENTATION) as string | undefined;
     if (presentationId && (mode !== 'embedded' || windowState.open || this.ui.openToolList.includes(toolId))) {
       return { ok: false, message: 'Close the current Subapp View before presenting an Agent owner' };
     }
@@ -350,6 +366,17 @@ export class MainUiAutomationService {
 
     if (config.app?.extension === true && action !== 'close' && action !== 'prepareUpdate') {
       return this.extensionUiUnavailable(config);
+    }
+
+    if (action === 'embed' && isWindowOnlyChildTool(toolId)) {
+      return { ok: false, toolId, action, message: '电路仿真仅支持独立窗口。' };
+    }
+
+    const native = this.browserSurfaces?.getWindow(toolId);
+    if (native && (action === 'focus' || action === 'detach' || action === 'close' || action === 'prepareUpdate')) {
+      if (action === 'close' || action === 'prepareUpdate') await native.close();
+      else await native.focus();
+      return { ok: true, toolId, action, mode: 'window' };
     }
 
     const routePath = this.routePath(config);
@@ -560,12 +587,16 @@ export class MainUiAutomationService {
     sessions: readonly ChildToolSessionState[],
   ): Promise<Record<string, unknown>> {
     const routePath = this.routePath(config);
-    const windowState = await this.readWindowState(routePath);
+    const native = this.browserSurfaces?.getWindow(config.id);
+    const windowState = native ? { open: true } : await this.readWindowState(routePath);
     const embedded = this.ui.openToolList.includes(config.id);
     const session = sessions.find(candidate => candidate.toolId === config.id);
     let hostStatus = embedded ? this.childHostRegistry.getStatus(config.id) : null;
 
-    if (!hostStatus && windowState.open) {
+    if (native) {
+      hostStatus = await native.ready.then(() => ({ ok: true, status: 'ready', version: config.version }),
+        () => ({ ok: false, status: 'error' }));
+    } else if (!hostStatus && windowState.open) {
       const statusResult = await this.sendHostCommand(routePath, config.id, 'status');
 
       hostStatus = statusResult['ok'] === true ? statusResult : null;
@@ -609,7 +640,8 @@ export class MainUiAutomationService {
         url: this.sanitizeLocalUrl(session?.hostInfo?.url),
       },
       supportedActions: config.app?.extension === true ? [] : [
-        'open_embedded', 'open_window', 'restart', 'detach', 'embed', 'focus',
+        ...(!isWindowOnlyChildTool(config.id) ? ['open_embedded', 'embed'] : []),
+        'open_window', 'restart', 'detach', 'focus',
         'maximize', 'unmaximize', 'minimize', 'restore', 'move', 'resize', 'close',
       ],
     };
@@ -661,6 +693,12 @@ export class MainUiAutomationService {
   private async readChildAppHostStatus(
     config: ChildToolConfig,
   ): Promise<Record<string, unknown> | null> {
+    const native = this.browserSurfaces?.getWindow(config.id);
+    if (native) {
+      return native.ready.then(() => ({ status: 'ready', version: config.version }),
+        error => ({ status: 'error', error: error instanceof Error ? error.message : String(error) }));
+    }
+
     const embeddedStatus = this.ui.openToolList.includes(config.id)
       ? this.childHostRegistry.getStatus(config.id)
       : null;

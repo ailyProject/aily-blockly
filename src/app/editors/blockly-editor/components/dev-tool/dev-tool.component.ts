@@ -12,8 +12,6 @@ import { ElectronService } from '@core/platform/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { ImageViewerComponent } from '../../../../components/image-viewer/image-viewer.component';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
-import { SimulatorHostProviderProductService } from '../../../../integrations/simulator/simulator-host-provider-product.service';
-import { getChildToolConfig } from '../../../../configs/tool.config';
 import { InstalledChildToolLauncherService } from '../../services/installed-child-tool-launcher.service';
 import { Subscription } from 'rxjs';
 import { getToolWebUrl } from '../../../../configs/api.config';
@@ -30,6 +28,7 @@ import { DevToolDragController, DragBounds, DragPoint } from './dev-tool-drag-co
   templateUrl: './dev-tool.component.html',
   styleUrl: './dev-tool.component.scss'
 })
+
 export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('imageViewer') imageViewer!: ImageViewerComponent;
   @ViewChild('devtoolBox', { static: true }) private devtoolBox!: ElementRef<HTMLElement>;
@@ -42,7 +41,6 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   isArchitectureGenerating = false;
   isProjectSceneGenerating = false;
   dragTooltipVisible?: boolean;
-
   private _autoSave = true;
   private loadBoardInfoTimer: ReturnType<typeof setTimeout> | null = null;
   private positionReady = false;
@@ -60,6 +58,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
   get reloadDisabled(): boolean {
     const projectPath = this.projectService.currentProjectPath;
+
     return this.isReloading || this.projectService.isProjectOpening
       || !!(projectPath && this.currentProjectMode === 'coder'
         && this.projectService.getCoderOperation(projectPath));
@@ -67,6 +66,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
   set autoSave(value: boolean) {
     this._autoSave = value;
+
     this.ensureDevModeConfig().autoSave = value;
     this.configService.save();
   }
@@ -86,7 +86,6 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     private themeService: ThemeService,
     private ngZone: NgZone,
     private installedChildTools: InstalledChildToolLauncherService,
-    private simulatorProjects: SimulatorHostProviderProductService,
     private ailyChatDemandSession: AilyChatDemandSessionService,
   ) { }
 
@@ -99,15 +98,21 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         });
       },
     );
+
     const devmode = this.ensureDevModeConfig();
+
     this._autoSave = devmode.autoSave ?? true;
+
     this.projectPathSubscription = this.projectService.currentProjectPath$.subscribe(projectPath => {
       if (projectPath === this.boardPackageProjectPath) return;
+
       this.currentProjectMode = projectPath ? this.projectService.getProjectMode(projectPath) : null;
       this.boardPackagePath = '';
       this.boardPackageProjectPath = projectPath;
+
       if (projectPath) this.loadBoardInfo();
     });
+
     this.boardChangeSubscription = this.projectService.boardChangeSubject.subscribe(() => {
       if (this.projectService.currentProjectPath) this.loadBoardInfo();
     });
@@ -116,6 +121,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   ngAfterViewInit() {
     this.ngZone.runOutsideAngular(() => {
       const handle = this.dragHandle.nativeElement;
+
       this.dragController = new DevToolDragController({
         handle,
         initialPosition: { x: 0, y: 1 },
@@ -124,17 +130,21 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         onDraggingChange: dragging => this.setDragging(dragging),
         onPositionCommitted: position => this.savePosition(position),
       });
+
       this.dragController.connect();
       handle.addEventListener('pointerleave', this.onDragHandleLeave);
 
       const container = this.getPositionContainer();
+
       if (container) {
         this.containerResizeObserver = new ResizeObserver(this.onContainerResize);
+
         this.containerResizeObserver.observe(container);
       }
 
       this.initAnimationFrame = window.requestAnimationFrame(() => {
         this.initAnimationFrame = null;
+
         this.restorePosition();
       });
     });
@@ -142,30 +152,43 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngOnDestroy() {
     this.diagramGenerationSubscription?.unsubscribe();
+
     this.diagramGenerationSubscription = null;
+
     this.projectPathSubscription?.unsubscribe();
+
     this.projectPathSubscription = null;
+
     this.boardChangeSubscription?.unsubscribe();
+
     this.boardChangeSubscription = null;
+
     const handle = this.dragHandle?.nativeElement;
+
     handle?.removeEventListener('pointerleave', this.onDragHandleLeave);
     this.dragController?.disconnect();
+
     this.dragController = null;
+
     this.containerResizeObserver?.disconnect();
+
     this.containerResizeObserver = null;
 
     if (this.loadBoardInfoTimer) {
       clearTimeout(this.loadBoardInfoTimer);
+
       this.loadBoardInfoTimer = null;
     }
 
     if (this.resizeAnimationFrame !== null) {
       window.cancelAnimationFrame(this.resizeAnimationFrame);
+
       this.resizeAnimationFrame = null;
     }
 
     if (this.initAnimationFrame !== null) {
       window.cancelAnimationFrame(this.initAnimationFrame);
+
       this.initAnimationFrame = null;
     }
   }
@@ -178,7 +201,9 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private setDragging(dragging: boolean): void {
     const element = this.devtoolBox.nativeElement;
+
     element.classList.toggle('dragging', dragging);
+
     if (dragging) {
       this.setDragTooltipVisible(false);
     } else if (!this.dragHandle.nativeElement.matches(':hover')) {
@@ -190,29 +215,36 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.dragTooltipVisible === visible) {
       return;
     }
+
     this.ngZone.run(() => this.dragTooltipVisible = visible);
   }
 
   private restorePosition(): void {
     const bounds = this.getPositionBounds();
     const saved = this.configService.data.devToolPosition;
+
     const position = saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
       && saved.x >= 0 && saved.y >= bounds.minY
       ? { x: saved.x, y: saved.y }
       : { x: Math.round(bounds.maxX / 2), y: bounds.minY };
+
     // Keep the preferred position while applyPosition clamps it for a smaller
     // window/panel layout. Resizing must not replace the saved preference.
     this.dragController?.setPosition(position, bounds);
+
     this.positionReady = true;
+
     this.devtoolBox.nativeElement.classList.add('position-ready');
   }
 
   private savePosition(position: DragPoint): void {
     const bounds = this.getPositionBounds();
+
     this.configService.data.devToolPosition = {
       x: Math.round(this.clamp(position.x, 0, bounds.maxX)),
       y: Math.round(this.clamp(position.y, bounds.minY, bounds.maxY)),
     };
+
     void this.configService.save().catch(error => {
       console.warn('[DevTool] Failed to save toolbar position:', error);
     });
@@ -221,6 +253,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   private applyPosition(position: DragPoint, bounds = this.getPositionBounds()): void {
     const x = this.clamp(position.x, 0, bounds.maxX);
     const y = this.clamp(position.y, bounds.minY, bounds.maxY);
+
     this.devtoolBox.nativeElement.style.transform =
       `translate3d(${Math.round(x)}px, ${-Math.round(y)}px, 0)`;
   }
@@ -232,7 +265,9 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
     this.resizeAnimationFrame = window.requestAnimationFrame(() => {
       this.resizeAnimationFrame = null;
+
       const bounds = this.getPositionBounds();
+
       this.dragController?.refreshBounds(bounds);
     });
   };
@@ -265,23 +300,28 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     const projectPath = this.projectService.currentProjectPath;
+
     if (!projectPath) {
       return;
     }
 
     this.isReloading = true;
+
     try {
       const isCoder = this.projectService.getProjectMode(projectPath) === 'coder';
       // A failed/partially disposed Blockly runtime cannot produce an
       // authoritative save. Retry the disk load instead of trapping reload
       // behind save()'s project-not-ready guard.
       const retryFailedLoad = !isCoder && !!this.projectService.getBlocklyProjectLoadStatus(projectPath).error;
+
       // Coder's projectOpen(reload) saves every open editor through its own
       // lifecycle bridge before replacing the iframe.
       if (this.autoSave && !isCoder && !retryFailedLoad) {
         const result = await this.projectService.save(projectPath);
+
         if (!result.success) {
           this.messageService.error('Save project failed: ' + (result.error || 'unknown error'));
+
           return;
         }
       }
@@ -289,6 +329,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
       await this.projectService.projectOpen(projectPath, {
         reason: 'reload', ...(this.autoSave && !retryFailedLoad ? {} : { saveBeforeReload: false }),
       });
+
       this.loadBoardInfo();
     } catch (error) {
       console.error('Reload project failed:', error);
@@ -300,12 +341,16 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
   async clear() {
     const projectPath = this.projectService.currentProjectPath;
+
     if (!projectPath) return;
+
     if (this.projectService.getProjectMode(projectPath) === 'coder') {
       if (this.projectService.getCoderOperation(projectPath)) {
         this.messageService.warning('Cannot clear cache while compiling or uploading');
+
         return;
       }
+
       try {
         // Coder keeps source files in sketch/; clear only rebuildable outputs.
         await this.builderService.clearBuildCache(projectPath);
@@ -313,12 +358,15 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
       } catch (error) {
         this.messageService.error('Clear build folder failed: ' + ((error as Error)?.message || String(error)));
       }
+
       return;
     }
 
     const currentState = this.workflowService.currentState;
+
     if (currentState === ProcessState.BUILDING || currentState === ProcessState.UPLOADING) {
       this.messageService.warning('Cannot clear cache while compiling or uploading');
+
       return;
     }
 
@@ -328,6 +376,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
           if (feedback.success) {
             console.log('preprocess stopped');
           }
+
           resolve();
         }, 3000);
       });
@@ -340,6 +389,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
       }
 
       const tempDirPath = this.electronService.pathJoin(projectPath, '.temp');
+
       if (this.electronService.exists(tempDirPath)) {
         console.log('Deleting .temp directory:', tempDirPath);
         this.electronService.deleteDir(tempDirPath);
@@ -362,15 +412,14 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   help() {
-
   }
 
   close() {
-
   }
 
   loadBoardInfo() {
     this.boardPackagePath = '';
+
     if (this.loadBoardInfoTimer) {
       clearTimeout(this.loadBoardInfoTimer);
     }
@@ -378,14 +427,17 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     this.loadBoardInfoTimer = setTimeout(async () => {
       this.loadBoardInfoTimer = null;
       this.boardPackagePath = await this.resolveBoardPackagePath();
+
       console.log('Board Package Path:', this.boardPackagePath);
     }, 1000);
   }
 
   async showPinmap() {
     const boardPackagePath = await this.resolveBoardPackagePath();
+
     if (!boardPackagePath) {
       this.messageService.error(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
+
       return;
     }
 
@@ -393,15 +445,20 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
     if (boardPackageData.pinmap === false) {
       const pinmapWebpPath = boardPackagePath + '/pinmap.webp';
+
       if (this.electronService.exists(pinmapWebpPath)) {
         this.imageViewer.open(pinmapWebpPath);
+
         return;
       }
+
       this.messageService.error(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
+
       return;
     }
 
     const pinmapJsonPath = boardPackagePath + '/pinmap.json';
+
     if (this.electronService.exists(pinmapJsonPath)) {
       this.uiService.openWindow({
         title: this.translate.instant('FLOAT_SIDER.PINMAP'),
@@ -410,12 +467,15 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         width: 800,
         height: 600
       });
+
       return;
     }
 
     const pinmapWebpPath = boardPackagePath + '/pinmap.webp';
+
     if (this.electronService.exists(pinmapWebpPath)) {
       this.imageViewer.open(pinmapWebpPath);
+
       return;
     }
 
@@ -424,16 +484,21 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
   async openDocUrl() {
     let data = await this.projectService.getPackageJson();
+
     if (data.doc_url) {
       this.electronService.openUrl(data.doc_url);
+
       return;
     }
 
     const boardPackagePath = await this.resolveBoardPackagePath();
+
     if (boardPackagePath) {
       data = JSON.parse(this.electronService.readFile(boardPackagePath + '/package.json'));
+
       if (data.url) {
         this.electronService.openUrl(data.url);
+
         return;
       }
     }
@@ -448,14 +513,18 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   async showArch(): Promise<void> {
     if (this.isArchitectureGenerating) return;
     if (!this.requireLogin()) return;
+
     if (!this.electronService.isElectron) {
       this.messageService.warning(this.translate.instant('FLOAT_SIDER.ARCH_ELECTRON_ONLY'));
+
       return;
     }
 
     const projectPath = this.projectService.currentProjectPath;
+
     if (!projectPath) {
       this.messageService.error(this.translate.instant('FLOAT_SIDER.NO_PROJECT'));
+
       return;
     }
 
@@ -465,20 +534,25 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
     if (!this.electronService.exists(archPath)) {
       const prompt = this.translate.instant('FLOAT_SIDER.GENERATE_ARCH_PROMPT');
+
       void this.ailyChatDemandSession
         .createArchitectureSession(prompt)
         .catch(error => {
           const message = error instanceof Error ? error.message : String(error);
+
           this.messageService.error(message);
         });
+
       return;
     }
 
     try {
       const raw = this.electronService.readFile(archPath);
       const code = this.extractMermaidCode(raw);
+
       if (!code?.trim()) {
         this.messageService.warning(this.translate.instant('FLOAT_SIDER.ARCH_EMPTY'));
+
         return;
       }
 
@@ -488,16 +562,21 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
       ]);
 
       mermaid.initialize({ theme: this.themeService.getMermaidTheme() as any, startOnLoad: false });
+
       const diagramId = `mermaid-arch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const result = await mermaid.render(diagramId, code);
       const svg = typeof result === 'object' && result?.svg ? result.svg : typeof result === 'string' ? result : '';
+
       document.getElementById(diagramId)?.remove();
+
       if (!svg?.trim()) {
         this.messageService.warning(this.translate.instant('FLOAT_SIDER.ARCH_RENDER_FAILED'));
+
         return;
       }
 
       const forcedStyle = 'width: 60vw !important; height: 80vh !important; max-width: 100% !important; display: block !important;';
+
       const enhancedSvg = svg
         .replace('<svg', `<svg id="${diagramId}" data-mermaid-svg="true"`)
         .replace(/width="[^"]*"/, 'width="60vw"')
@@ -506,6 +585,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
           const merged = /style=/.test(attrs)
             ? attrs.replace(/style="[^"]*"/, `style="${forcedStyle}"`)
             : `${attrs} style="${forcedStyle}"`;
+
           return `<svg${merged}>`;
         });
 
@@ -528,16 +608,20 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     this.uiService.openFeedback();
   }
 
-  private circuitOpening = false;
+  circuitOpening = false;
 
-  async showCircuit() {
+  async showCircuit(): Promise<void> {
     if (this.circuitOpening) return;
+
+    if (!this.projectService.currentProjectPath) {
+      this.messageService.warning(this.translate.instant('FLOAT_SIDER.NO_PROJECT'));
+
+      return;
+    }
 
     this.circuitOpening = true;
 
     try {
-      if (getChildToolConfig('simulator')) await this.simulatorProjects.prepareCurrentProjectForSimulation();
-
       const result = await this.installedChildTools.launch('simulator', { mode: 'window' });
 
       if (result.status === 'not-installed') {
@@ -548,9 +632,27 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         this.messageService.error(result.message || '无法打开 Simulator 子应用。');
       }
     } catch (error) {
-      this.messageService.error(error instanceof Error ? error.message : '仿真固件编译失败。');
+      this.messageService.error(error instanceof Error ? error.message : '无法打开 Simulator 子应用。');
     } finally {
       this.circuitOpening = false;
+    }
+  }
+
+  async generateCircuit(): Promise<void> {
+    if (this.isProjectSceneGenerating || this.circuitOpening || !this.requireLogin()) return;
+
+    const projectPath = this.projectService.currentProjectPath;
+
+    if (!projectPath) {
+      this.messageService.warning(this.translate.instant('FLOAT_SIDER.NO_PROJECT'));
+
+      return;
+    }
+
+    try {
+      await this.ailyChatDemandSession.generateProjectScene(undefined, { projectPath });
+    } catch (error) {
+      this.messageService.error(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -573,23 +675,31 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!this.authService.isLoggedIn) {
       this.messageService.warning(this.translate.instant('FLOAT_SIDER.LOGIN_REQUIRED'));
       this.authService.requestLogin('dev-tool');
+
       return false;
     }
+
     return true;
   }
 
   private async resolveBoardPackagePath(): Promise<string> {
     const projectPath = this.projectService.currentProjectPath;
+
     if (!projectPath) return '';
     if (this.boardPackageProjectPath === projectPath && this.boardPackagePath) return this.boardPackagePath;
+
     try {
       const boardPackagePath = await this.projectService.getBoardPackagePath();
+
       if (this.projectService.currentProjectPath !== projectPath) return '';
+
       this.boardPackageProjectPath = projectPath;
       this.boardPackagePath = boardPackagePath;
+
       return boardPackagePath;
     } catch (error) {
       console.warn('Board package unavailable:', error);
+
       return '';
     }
   }
@@ -597,8 +707,9 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   private extractMermaidCode(content: string): string {
     const trimmed = content.trim();
     const blockMatch = trimmed.match(/```mermaid\s*([\s\S]*?)```/);
+
     if (blockMatch) return blockMatch[1].trim();
+
     return trimmed;
   }
-
 }

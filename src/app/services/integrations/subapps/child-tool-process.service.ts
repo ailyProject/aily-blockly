@@ -1108,8 +1108,9 @@ export class ChildToolProcessService implements OnDestroy {
     if (output.type === 'stderr-notice') {
       if (classifiedSimulatorStderr && typeof output.data === 'string' && output.data.length > 0
         && output.data.length <= 4096 && new TextEncoder().encode(output.data).byteLength <= 4096
-        && (output.classification === 'ordinary' || output.classification === 'internal-cleanup')) {
-        if (output.classification === 'internal-cleanup') this.log(config, 'internal cleanup diagnostic', output.data);
+        && (output.classification === 'ordinary' || output.classification === 'internal-cleanup' || output.classification === 'startup')) {
+        if (output.classification === 'startup') this.log(config, 'startup progress', output.data);
+        else if (output.classification === 'internal-cleanup') this.log(config, 'internal cleanup diagnostic', output.data);
         else this.logError(config, 'stderr', this.tailText(output.data));
       } else {
         this.logError(config, 'invalid stderr notice');

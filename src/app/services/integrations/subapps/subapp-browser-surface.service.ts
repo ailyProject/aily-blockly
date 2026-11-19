@@ -15,6 +15,12 @@ export interface SubappBrowserSurfaceHandle {
   update(geometry: SubappBrowserSurfaceGeometry): Promise<void>;
   close(): Promise<Record<string, unknown>>;
 }
+interface BrowserWindowPresentation {
+  readonly ready: Promise<SubappBrowserSurfaceReady>;
+  focus(): Promise<void>;
+  close(): Promise<Record<string, unknown>>;
+}
+
 interface SurfaceRecord {
   id: string; presentation?: SubappBrowserPresentationClaim;
   toolId: string; ownerSessionId: string; processAcquired: boolean; ownerTracked: boolean;
@@ -29,12 +35,56 @@ interface SurfaceRecord {
 export class SubappBrowserSurfaceService {
   private readonly guard = new SubappOwnerGuard();
   private readonly surfaces = new Map<string, SurfaceRecord>();
+  private readonly windows = new Map<string, BrowserWindowPresentation>();
 
   constructor(private readonly processService: ChildToolProcessService,
     @Optional() @Inject(SubappBrowserPresentationService)
     private readonly presentations: SubappBrowserPresentationService | null = null) {}
 
+  getWindow(toolId: string): BrowserWindowPresentation | undefined {
+    return this.windows.get(toolId);
+  }
+
+  openWindow(toolId: string, reveal: boolean): BrowserWindowPresentation {
+    const existing = this.windows.get(toolId);
+    if (existing) return existing;
+
+    const surface = this.start(toolId, null, '', reveal);
+    const window = {
+      ready: surface.ready,
+      focus: async () => {
+        const { runtimeId, connectionId } = await surface.ready;
+        const result = await this.guard.browserView('focusWindow', toolId, surface.ownerSessionId, { runtimeId, connectionId });
+        if (result['focused'] !== true) throw new Error('Simulator window could not be focused');
+      },
+      close: async () => {
+        const receipt = await surface.close();
+        if (this.windows.get(toolId) === window) this.windows.delete(toolId);
+        return receipt;
+      },
+    };
+
+    this.windows.set(toolId, window);
+    void surface.ready.then(async ({ runtimeId, connectionId }) => {
+      const requested = await this.guard.browserView('waitForWindowClose', toolId, surface.ownerSessionId, { runtimeId, connectionId });
+      if (requested['requested'] === true) await window.close();
+    }, () => window.close()).catch(error => {
+      if (this.windows.get(toolId) === window) console.warn('[Subapp Browser] Window lifecycle:', error);
+    });
+
+    return window;
+  }
+
   open(toolId: string, geometry: SubappBrowserSurfaceGeometry, presentationId = ''): SubappBrowserSurfaceHandle {
+    return this.start(toolId, geometry, presentationId);
+  }
+
+  private start(
+    toolId: string,
+    geometry: SubappBrowserSurfaceGeometry | null,
+    presentationId: string,
+    reveal = true,
+  ): SubappBrowserSurfaceHandle {
     const config = getChildToolConfig(toolId);
     if (!config?.runtime?.browserExecution || !config.ui?.surfaces?.['full']?.entry) {
       throw new Error('The Subapp does not declare a full Browser execution surface');
@@ -54,11 +104,13 @@ export class SubappBrowserSurfaceService {
       const bound = await this.guard.browserExecution(toolId, ownerSessionId);
       record.runtimeId = bound.browserExecution.endpoint.runtimeId; current();
       const view = await this.guard.browserView('openView', toolId, ownerSessionId, {
-        runtimeId: record.runtimeId, surface: 'full', presentation: 'embedded', ...geometry,
+        runtimeId: record.runtimeId, surface: 'full',
+        ...(geometry ? { presentation: 'embedded', ...geometry } : { presentation: 'window', managedClose: true, show: reveal }),
       });
+
       if (view['executionId'] !== record.runtimeId || typeof view['connectionId'] !== 'string'
         || !/^[a-f0-9-]{36}$/.test(view['connectionId'])
-        || view['presentation'] !== 'embedded') throw new Error('Invalid embedded Browser View identity');
+        || (geometry && view['presentation'] !== 'embedded')) throw new Error('Invalid Browser View identity');
       record.connectionId = view['connectionId']; current();
       return { hostInfo, ownerSessionId, runtimeId: record.runtimeId, connectionId: record.connectionId };
     });

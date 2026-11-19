@@ -10,7 +10,7 @@ import { Connection, WindowMessenger, connect } from 'penpal';
 import { combineLatest, firstValueFrom, merge, Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
-import { ChildToolConfig, getChildToolConfig, isAppAvailableForApplication } from '../../configs/tool.config';
+import { ChildToolConfig, getChildToolConfig, isAppAvailableForApplication, isWindowOnlyChildTool } from '../../configs/tool.config';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import {
   ChildToolHostInfo,
@@ -136,7 +136,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   subappUpdateProgress = 0;
   subappRestartInProgress = false;
   uiHealthFailed = false;
-  readonly standaloneWinBtns: string[];
+  private readonly windowButtons: string[];
+
+  get standaloneWinBtns(): string[] {
+    return isWindowOnlyChildTool(this.resolvedToolId)
+      ? this.windowButtons.filter(button => button !== 'go-main')
+      : this.windowButtons;
+  }
 
   private config: ChildToolConfig | null = null;
   private initialized = false;
@@ -236,7 +242,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private workspaceHostProviders: SubappWorkspaceHostProviderService,
     private serialService: SerialService,
   ) {
-    this.standaloneWinBtns = platformService.isWindows()
+    this.windowButtons = platformService.isWindows()
       ? ['go-main', 'minimize', 'maximize', 'close']
       : ['go-main'];
     this.langSubscription = this.translate.onLangChange.subscribe(() => {
@@ -740,6 +746,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   async embed(): Promise<Record<string, unknown>> {
+    if (isWindowOnlyChildTool(this.resolvedToolId)) {
+      return { ok: false, message: '电路仿真仅支持独立窗口。' };
+    }
+
     if (!this.isStandalone) {
       return { ok: true, toolId: this.resolvedToolId, action: 'embed', message: '子应用已经处于内嵌模式。' };
     }
@@ -2168,7 +2178,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const sessionId = this.ailyChatSessionId;
     const remote = this.remoteApi;
     const lang = this.translate.currentLang || this.translate.defaultLang || 'en';
-    const activities = sessionId ? this.subappActivityService.getSessionActivities(sessionId) : [];
+    const activities = sessionId ? this.chatSubappActivities(sessionId) : [];
     const items = activities.map(activity => this.projectSubappActivity(activity));
     void Promise.resolve(remote.setSubappActivities({ sessionId, items })).catch(() => undefined);
 
@@ -2182,12 +2192,17 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         if (version !== this.chatActivityTitlesVersion || this.remoteApi !== remote
           || this.ailyChatSessionId !== sessionId
           || (this.translate.currentLang || this.translate.defaultLang || 'en') !== lang) return;
-        const latest = this.subappActivityService.getSessionActivities(sessionId)
+        const latest = this.chatSubappActivities(sessionId)
           .map(activity => this.projectSubappActivity(activity));
         if (!latest.some(item => titles.get(item['toolId']) !== item['title'])) return;
         return Promise.resolve(remote.setSubappActivities({ sessionId, items: latest }));
       })
       .catch(() => undefined);
+  }
+
+  private chatSubappActivities(sessionId: string): SubappActivity[] {
+    return this.subappActivityService.getSessionActivities(sessionId)
+      .filter(activity => !isWindowOnlyChildTool(activity.toolId));
   }
 
   private projectSubappActivity(activity: SubappActivity): Record<string, unknown> {

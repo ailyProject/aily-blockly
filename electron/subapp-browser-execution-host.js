@@ -63,8 +63,9 @@ function resourceLocation(location, source) {
 /** Hosts documents/leases/ports, never domain sessions or MCU state. The package
  * execution entry owns its existing Runtime and decides its own RPC schema. */
 class SubappBrowserExecutionHost {
-    constructor({ BrowserWindow, MessageChannelMain, timeoutMs = 10000, viewLoadTimeoutMs = timeoutMs, createServer, createViewDocument } = {}) {
+    constructor({ BrowserWindow, MessageChannelMain, timeoutMs = 10000, viewLoadTimeoutMs = timeoutMs, createServer, createViewDocument, windowBounds } = {}) {
         this.BrowserWindow = BrowserWindow; this.MessageChannelMain = MessageChannelMain;
+        this.windowBounds = windowBounds;
         this.createViewDocument = createViewDocument || (input => createEmbeddedViewDocument({ BrowserWindow, ...input }));
         if (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 30000) throw fault('Invalid execution deadline');
         if (!Number.isInteger(viewLoadTimeoutMs) || viewLoadTimeoutMs < 10 || viewLoadTimeoutMs > 30000) throw fault('Invalid Browser View load deadline');
@@ -134,8 +135,8 @@ class SubappBrowserExecutionHost {
         };
     }
 
-    createDocument(state) {
-        const win = new this.BrowserWindow({ show: false, webPreferences: this.documentPreferences(state) });
+    createDocument(state, bounds) {
+        const win = new this.BrowserWindow({ ...bounds, show: false, webPreferences: this.documentPreferences(state) });
         return this.protectDocument(state, win);
     }
 
@@ -371,7 +372,7 @@ class SubappBrowserExecutionHost {
         }
     }
 
-    async openView(input, { show = true, presentation = 'window', parent, bounds, visible = true } = {}) {
+    async openView(input, { show = true, presentation = 'window', parent, bounds, visible = true, managedClose = false } = {}) {
         input.guard();
         const state = this.runtimes.get(input.runtimeId);
         if (!state || state.executionId !== input.executionId || !state.source.surfaces[input.surface]
@@ -380,7 +381,7 @@ class SubappBrowserExecutionHost {
         if (!['window', 'embedded'].includes(presentation)) throw fault('Unknown Browser View presentation');
         const win = presentation === 'embedded'
             ? this.protectDocument(state, this.createViewDocument({ parent, bounds, visible, webPreferences: this.documentPreferences(state) }))
-            : this.createDocument(state);
+            : this.createDocument(state, managedClose ? this.windowBounds?.(parent) : undefined);
         (state.views ||= new Set()).add(win);
         win.once('closed', () => state.views.delete(win));
         try {
@@ -388,13 +389,34 @@ class SubappBrowserExecutionHost {
                 'Browser View load', this.viewLoadTimeoutMs);
             const connected = await this.connect({ ...input, target: win.webContents, purpose: 'view' });
             const binding = state.connections.get(connected.connectionId); binding.window = win;
-            win.on('close', event => {
-                event.preventDefault();
-                void this.disconnect(state, connected.connectionId).finally(() => { if (!win.isDestroyed()) win.destroy(); }).catch(() => {});
-            });
+            if (presentation === 'window' && managedClose) {
+                // The owning renderer joins View cleanup before releasing its presentation grant.
+                binding.closeRequested = new Promise(resolve => {
+                    win.on('close', event => { event.preventDefault(); resolve(true); });
+                    win.once('closed', () => resolve(false));
+                });
+            } else {
+                win.on('close', event => {
+                    event.preventDefault();
+                    void this.disconnect(state, connected.connectionId).finally(() => { if (!win.isDestroyed()) win.destroy(); }).catch(() => {});
+                });
+            }
             if (show) win.show();
             return presentation === 'embedded' ? { ...connected, presentation } : connected;
         } catch (error) { if (!win.isDestroyed()) await this.bounded(Promise.resolve(win.destroy()), 'Browser View close'); throw error; }
+    }
+
+    managedWindow(input, action) {
+        this.viewConnection(input);
+        const binding = this.runtimes.get(input.runtimeId).connections.get(input.connectionId);
+        if (!binding.closeRequested) throw fault('View is not a managed window');
+
+        if (action === 'waitForWindowClose') return binding.closeRequested;
+
+        if (binding.window.isMinimized()) binding.window.restore();
+        binding.window.show();
+        binding.window.focus();
+        return { focused: true };
     }
 
     updateView({ runtimeId, executionId, ownerId, leaseId, guard, connectionId }, { bounds, visible }) {

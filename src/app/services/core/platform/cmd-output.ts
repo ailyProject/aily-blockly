@@ -10,7 +10,7 @@ export interface CmdOutput {
   data?: string;
   /** Private Main-owned Simulator stderr presentation; raw output stays unchanged. */
   stderrPresentation?: 'main-simulator-line-v1';
-  classification?: 'ordinary' | 'internal-cleanup';
+  classification?: 'ordinary' | 'internal-cleanup' | 'startup';
   code?: number | null;
   signal?: string | null;
   error?: string;

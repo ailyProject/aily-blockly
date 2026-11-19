@@ -39,6 +39,10 @@ export function isAppAvailableForApplication(only: unknown, applicationName: str
   return target === 'all' || target === applicationName.trim().toLowerCase();
 }
 
+export function isWindowOnlyChildTool(toolId: string): boolean {
+  return toolId === 'simulator';
+}
+
 export interface ChildToolAppConfig extends Partial<AppItem> {
   available?: boolean;
   /** Install in the background at startup whenever the app is missing. */
