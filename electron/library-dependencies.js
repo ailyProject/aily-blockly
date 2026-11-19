@@ -145,14 +145,14 @@ class LibraryDependencies {
     };
   }
 
-  async locked(root, operation, settle = true) {
+  async locked(root, operation, settle = true, reader) {
     const access = createProjectFileAccess(root, root);
     const lock = await acquireProjectFileLock(access, () => {});
     try {
       access.readRegular(path.join(root, 'package.json'));
       access.readRegular(path.join(root, 'package-lock.json'));
       if (settle !== false) assertNoPendingAbsGeneration(access);
-      const restored = settle ? this.environment.settle(root, lock.assertOwned, { read: settle === 'read' }) : undefined;
+      const restored = settle ? this.environment.settle(root, lock.assertOwned, { read: settle === 'read', reader }) : undefined;
       if (restored !== undefined) {
         if (restored === null) this.states.delete(root); else this.states.set(root, restored);
       }
@@ -162,8 +162,8 @@ class LibraryDependencies {
     finally { this.environmentGuards.delete(root); lock.release(); }
   }
 
-  settleEnvironment(project) {
-    return this.queue(project, root => this.locked(root, () => this.status(root), 'read'));
+  settleEnvironment(project, reader) {
+    return this.queue(project, root => this.locked(root, () => this.status(root), 'read', reader));
   }
 
   beginEnvironmentAttempt(project, request, control) {

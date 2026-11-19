@@ -2772,9 +2772,15 @@ function createWindow() {
       }
       return librarySessions.capabilities();
     });
-    ipcMain.handle('library-dependencies', async (event, { operation, projectPath, request }) => {
+    ipcMain.handle('library-dependencies', async (event, { operation, projectPath, request, reader }) => {
       if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
         throw new Error('Library operations require the current main frame.');
+      }
+      if (operation === 'status') {
+        // The preload and the program journal use the same storage executor.
+        // Bind that identity to the actual sending frame before using it.
+        const publisher = reader?.hostPid === process.pid && reader.storagePid === event.senderFrame.osProcessId ? reader : undefined;
+        return librarySessions.readStatus(projectPath, publisher);
       }
       return runProjectLibraryOperation(operation, projectPath, request);
     });

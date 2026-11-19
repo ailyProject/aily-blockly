@@ -22,8 +22,16 @@ class LibraryDependencySessions {
     this.requests = new Map();
   }
 
+  async readStatus(project, reader) {
+    const root = this.libraries.root(project);
+    const status = this.libraries.queues.has(root) || this.sessions.has(root)
+      ? this.libraries.status(root) : await this.libraries.settleEnvironment(root, reader);
+    return { ...status, busy: this.libraries.queues.has(root) || this.sessions.has(root) };
+  }
+
   async run(operation, project, request, token, control) {
     if (operation === 'capabilities') return this.capabilities();
+    if (operation === 'status') return this.readStatus(project);
     const root = this.libraries.root(project);
     if (operation === 'cancelEnvironment') {
       if (!isRequestId(request?.requestId)) throw new Error('Invalid original environment cancellation.');
@@ -42,11 +50,6 @@ class LibraryDependencySessions {
         busy: this.libraries.queues.has(root) || this.sessions.has(root) }; }
       catch (error) { return { ok: false, code: error.code || 'LIBRARY_DEPENDENCY_RECOVERY_FAILED', message: error.message,
         ...(error.dependencyConflict ? { dependencyConflict: error.dependencyConflict } : {}) }; }
-    }
-    if (operation === 'status') {
-      const status = this.libraries.queues.has(root) || this.sessions.has(root)
-        ? this.libraries.status(root) : await this.libraries.settleEnvironment(root);
-      return { ...status, busy: this.libraries.queues.has(root) || this.sessions.has(root) };
     }
     if (operation === 'observeEnvironment' || operation === 'historyDiscard') {
       // Original receipts and exact in-memory history cleanup own no writer.

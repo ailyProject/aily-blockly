@@ -24,8 +24,7 @@ const inputs = root => Object.fromEntries(inputNames.map(name => {
 }));
 const relevantPackage = environmentManifest;
 const RETAINED_SETTLED_ARCHIVES = 5;
-function programSource(root) {
-  const access = createProjectFileAccess(root, root);
+function programSource(root, access = createProjectFileAccess(root, root)) {
   for (const directory of ['.aily', '.aily/abs-sync']) access.checkDirectory(path.join(root, directory));
   return Object.fromEntries(['project.abi', 'project.abs', 'project.abs.map.json', '.aily/abs-sync/committed.json', '.aily/abs-sync/operation.json']
     .map(name => { const bytes = access.readRegular(path.join(root, name)); return [name, bytes === null ? null : digest(bytes)]; }));
@@ -34,6 +33,49 @@ function programPointer(root) {
   const access = createProjectFileAccess(root, root);
   const text = access.readRegular(path.join(root, '.aily/abs-sync/operation.json'));
   return text === null ? null : JSON.parse(text.toString('utf8'));
+}
+
+function parseProgramRecord(bytes) {
+  try { return bytes === null ? null : JSON.parse(bytes.toString('utf8')); }
+  catch { return undefined; }
+}
+
+/** The author ABS is an independent draft in project-v1. Verify the accepted
+ * output selected by the locked project instead of using the draft as a mirror. */
+function matchesCurrentProgram(root, result, attachment) {
+  const access = createProjectFileAccess(root, root);
+  const actual = programSource(root, access);
+  const read = relative => access.readRegular(path.join(root, relative));
+  const hash = bytes => bytes === null ? null : digest(bytes);
+  const binding = result.evidence?.binding;
+  if (!binding || binding.abiHash !== actual['project.abi'] || binding.mapHash !== actual['project.abs.map.json']) return false;
+
+  const selected = read('.aily/workspace-mode.json'), mode = parseProgramRecord(selected);
+  if (selected === null) return binding.absHash === actual['project.abs'];
+  if (mode?.version !== 1 || Object.keys(mode).sort().join(',') !== 'mode,version') return false;
+  if (mode.mode === 'overlay-v1') return binding.absHash === actual['project.abs'];
+
+  const proof = result.acceptedSource, generation = binding.generation;
+  if (mode.mode !== 'project-v1' || !access.attachment || proof?.version !== 1 || proof.workspaceMode !== 'project-v1'
+    || !same(proof.attachment, attachment) || !same(proof.attachment, access.attachment) || !same(proof.binding, binding)
+    || typeof generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(generation)
+    || result.publication.generation !== generation || typeof binding.scope?.projectKey !== 'string'
+    || !path.isAbsolute(binding.scope.projectKey) || path.relative(access.attachment.root, binding.scope.projectKey) !== ''
+    || typeof binding.scope.pageId !== 'string' || !binding.scope.pageId) return false;
+
+  const committed = read('.aily/abs-sync/committed.json'), pointer = parseProgramRecord(committed);
+  if (!pointer || hash(committed) !== proof.committedHash || actual['.aily/abs-sync/committed.json'] !== proof.committedHash
+    || pointer.schemaVersion !== 1 || pointer.generation !== generation) return false;
+  const baselines = '.aily/abs-sync/baselines';
+  try { access.checkDirectory(path.join(root, baselines)); }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  const bytes = read(`${baselines}/${generation}.json`);
+  if (bytes === null || hash(bytes) !== pointer.hash) return false;
+  const baseline = parseProgramRecord(bytes);
+  const accepted = baseline?.schemaVersion === 2 ? baseline.snapshot : baseline?.schemaVersion === 1 ? baseline.projection?.abs : undefined;
+  const context = baseline?.schemaVersion === 2 ? baseline.context : baseline?.projection?.map;
+  return typeof accepted === 'string' && context?.generation === generation && same(context.scope, binding.scope)
+    && digest(accepted) === binding.absHash && hash(read('.aily/abs-sync/committed.json')) === proof.committedHash;
 }
 
 function directory(root, relative) {
@@ -439,15 +481,16 @@ class LibraryEnvironmentJournal {
     this.latest.set(root, result);
     return { result, state: operation.record.state };
   }
-  settle(root, assertCurrent, { read = false } = {}) {
+  settle(root, assertCurrent, { read = false, reader } = {}) {
     if (this.owned.has(root)) return undefined;
     let state;
     for (const operation of this.pending(root)) {
       this.assertAttachment(root, operation.record);
       if (operation.record.request.programRef) {
         const result = path.join(operation.folder, 'result.json');
+        const publisher = operation.record.request.programRef.executor;
         if (read && fs.existsSync(result)
-          && observeStorageExecutor(operation.record.request.programRef.executor).state === 'active') {
+          && ((reader && same(reader, publisher)) || observeStorageExecutor(publisher).state === 'active')) {
           this.latest.set(root, readRecord(result));
           continue; // The active publisher may read its completed environment.
         }
@@ -477,10 +520,12 @@ class LibraryEnvironmentJournal {
     if (fs.existsSync(resolution)) return this.observe(root, request.requestId);
     const ref = operation.record.request.programRef, observation = request.observation;
     if (observation?.state === 'completed' && same(observation.ref, ref) && observation.result?.publication?.status === 'COMMITTED') {
-      const binding = observation.result.evidence?.binding, actual = programSource(root);
-      if (observation.current === true && (!binding || binding.abiHash !== actual['project.abi']
-        || binding.absHash !== actual['project.abs'] || binding.mapHash !== actual['project.abs.map.json'])) throw fail('The committed program/environment attachment is no longer current.');
+      if (observation.current !== true) programSource(root);
+      else if (!matchesCurrentProgram(root, observation.result, operation.record.attachment)) {
+        throw fail('The committed program/environment attachment is no longer current.');
+      }
       if (!fs.existsSync(path.join(operation.folder, 'result.json'))) throw fail('Program commit did not complete the original environment.');
+      assertCurrent();
       immutable(resolution, { version: 1, requestId: request.requestId, status: 'retained', programRef: ref, current: observation.current === true });
       const result = this.observe(root, request.requestId); this.latest.set(root, result); return result;
     }
