@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { captureBlocklyUploadInputs, publishBlocklyUploadState, readBlocklyUploadArtifacts } = require('../child/scripts/blockly-upload-state');
+const { captureBlocklyUploadInputs, publishBlocklyUploadState, readBlocklyUploadArtifacts, materializeEspSrModel } = require('../child/scripts/blockly-upload-state');
 const { processUploadParams, selectUploadParamForPort } = require('../child/scripts/upload');
 
 function fixture(t) {
@@ -96,13 +96,13 @@ test('ESP SR partition without the library omits only its optional model from th
 
 test('an ESP_SR build requires its model and records it when present', t => {
     const f = espSrFixture(t);
-    f.put('.build/libraries/ESP_SR/esp_sr.cpp.o');
+    f.put('.build/library/ESP_SR/esp_sr.cpp.o');
     assert.throws(f.publish, /ESP_SR was built but srmodels.bin is missing/);
     assert.throws(() => selectUploadParamForPort(f.root, 'serial', {}), /ESP_SR was built but srmodels.bin is missing/);
     const model = f.put('.build/srmodels.bin');
     f.publish();
     assert.ok(readBlocklyUploadArtifacts(f.build).includes(model));
-    assert.equal(selectUploadParamForPort(f.root, 'serial', {}).uploadParam, f.prepared.upload.command);
+    assert.ok(selectUploadParamForPort(f.root, 'serial', {}).uploadParam.endsWith(` 0xC10000 "${model}"`));
 });
 
 test('an unrelated missing image or an invalid existing model still fails artifact validation', t => {
@@ -113,4 +113,19 @@ test('an unrelated missing image or an invalid existing model still fails artifa
     f.put('.build/srmodels.bin', '');
     assert.throws(f.publish, /Empty firmware output/);
     assert.throws(() => selectUploadParamForPort(f.root, 'serial', {}), /Invalid ESP_SR model image/);
+});
+
+
+test('the current compile dependencies materialize the installed SDK model even with a reused library archive', t => {
+    const f = espSrFixture(t);
+    f.prepared.dependencies = [{ type: 'library', name: 'ESP_SR' }];
+    f.prepared.envVars.COMPILER_SDK_PATH = path.join(f.root, 'sdk');
+    const preprocess = f.put('.temp/preprocess.json', JSON.stringify(f.prepared));
+    assert.throws(() => materializeEspSrModel(preprocess, f.build), /SDK has no srmodels.bin/);
+    f.put('sdk/esp_sr/srmodels.bin', 'sdk model');
+    materializeEspSrModel(preprocess, f.build);
+    materializeEspSrModel(preprocess, f.build);
+    assert.equal(fs.readFileSync(path.join(f.build, 'srmodels.bin'), 'utf8'), 'sdk model');
+    f.publish();
+    assert.ok(readBlocklyUploadArtifacts(f.build).includes(path.join(f.build, 'srmodels.bin')));
 });

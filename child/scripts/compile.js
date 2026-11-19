@@ -10,7 +10,7 @@ const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
-const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
+const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, materializeEspSrModel } = require('./blockly-upload-state');
 const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
 const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
 const { captureBlocklyCompileSource } = require('./compile-source');
@@ -270,6 +270,7 @@ async function main() {
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
+                materializeEspSrModel(preprocessCachePath, buildPath);
                 if (projectSnapshot) {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);
                     await reportBuildDelivery(config, receipt);

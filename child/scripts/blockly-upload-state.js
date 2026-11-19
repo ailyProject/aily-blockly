@@ -57,38 +57,80 @@ function invalidateBlocklyUploadState(root) {
     fs.rmSync(receiptPath(root), { force: true });
 }
 
-// Arduino ESP32 adds the model pair at preprocess time, but its post-build hook
-// copies the image only when libraries/ESP_SR was built. Share the exception
-// with the SDK upload command so the receipt and flasher expect the same files.
-function resolveEspSrUploadCommand(prepared, directory) {
+function espSrUploadPair(prepared, directory) {
     const command = prepared?.upload?.command;
     const board = prepared?.arduinoConfig?.board;
     const pair = /^\s*(0x[\da-f]+) \{build\.path\}\/srmodels\.bin$/i.exec(board?.['upload.extra_flags'] || '');
-    if (typeof command !== 'string' || !pair || board?.['build.mcu'] !== 'esp32s3'
+    if (prepared?.success !== true || typeof command !== 'string' || !pair || board?.['build.mcu'] !== 'esp32s3'
         || !/^esp_sr_\w+$/.test(board?.['build.partitions'] || '')
         || !['esptool_py', 'esptool_py_app_only'].includes(prepared.upload.toolName)
         || !/\swrite[-_]flash\s/.test(command)
         || typeof prepared.envVars?.BUILD_PATH !== 'string'
-        || path.resolve(prepared.envVars.BUILD_PATH) !== path.resolve(directory)) return command;
+        || path.resolve(prepared.envVars.BUILD_PATH) !== path.resolve(directory)) return null;
 
     const model = path.join(directory, 'srmodels.bin');
-    try {
-        const stat = fs.lstatSync(model);
-        if (!stat.isFile() || !stat.size) {
-            throw new Error('BUILD_ARTIFACT_INVALID: Invalid ESP_SR model image; build again.');
-        }
-        return command;
-    } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-    }
-    if (fs.existsSync(path.join(directory, 'libraries', 'ESP_SR'))) {
-        throw new Error('BUILD_ARTIFACT_INVALID: ESP_SR was built but srmodels.bin is missing; build again.');
-    }
-    // The SDK appends upload.extra_flags as an address/path pair. Match both
-    // path separators and preserve the exact quoting of the rest of the recipe.
     const escapedModel = model.replace(/\\/g, '/').split('/')
         .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]');
-    return command.replace(new RegExp(`\\s+${pair[1]}\\s+(?:"${escapedModel}"|${escapedModel})(?=\\s|$)`, 'i'), '');
+    const pattern = new RegExp(`\\s+${pair[1]}\\s+(?:"${escapedModel}"|${escapedModel})(?=\\s|$)`, 'i');
+    return pattern.test(command) ? { model, pattern, address: pair[1] } : null;
+}
+
+function needsEspSrModel(prepared, directory) {
+    return (Array.isArray(prepared.dependencies) && prepared.dependencies.some(item => item?.type === 'library' && item.name === 'ESP_SR'))
+        || fs.existsSync(path.join(directory, 'library', 'ESP_SR'))
+        || fs.existsSync(path.join(directory, 'libraries', 'ESP_SR'));
+}
+
+function hasEspSrModel(model) {
+    try {
+        const stat = fs.lstatSync(model);
+        if (!stat.isFile() || !stat.size) throw new Error('BUILD_ARTIFACT_INVALID: Invalid ESP_SR model image; build again.');
+        return true;
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        return false;
+    }
+}
+
+// Arduino's hook looks in libraries/ESP_SR; aily-builder also compiles into
+// library/ESP_SR and can reuse archives without emitting that directory.
+function materializeEspSrModel(preprocessPath, directory) {
+    if (!fs.existsSync(preprocessPath)) return;
+    const prepared = JSON.parse(fs.readFileSync(preprocessPath, 'utf8'));
+    const pair = espSrUploadPair(prepared, directory);
+    if (!pair || !needsEspSrModel(prepared, directory) || hasEspSrModel(pair.model)) return;
+
+    const sdkPath = prepared.envVars.COMPILER_SDK_PATH;
+    if (typeof sdkPath !== 'string' || !path.isAbsolute(sdkPath)) {
+        throw new Error('BUILD_ARTIFACT_INVALID: Missing ESP_SR SDK directory; build again.');
+    }
+    const source = path.join(sdkPath, 'esp_sr', 'srmodels.bin');
+    if (!hasEspSrModel(source)) {
+        throw new Error('BUILD_ARTIFACT_INVALID: ESP_SR was built but the SDK has no srmodels.bin; reinstall the board tools.');
+    }
+    const temporary = `${pair.model}.${randomUUID()}.tmp`;
+    try {
+        fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL);
+        fs.renameSync(temporary, pair.model);
+    } finally {
+        fs.rmSync(temporary, { force: true });
+    }
+}
+
+function resolveEspSrUploadCommand(prepared, directory) {
+    const command = prepared?.upload?.command;
+    const pair = espSrUploadPair(prepared, directory);
+    if (!pair) return command;
+
+    // Treat the model and its flash address as a pair. Quote the path because
+    // the SDK's upload.extra_flags leaves the build directory unquoted.
+    if (hasEspSrModel(pair.model)) {
+        return command.replace(pair.pattern, () => ` ${pair.address} "${pair.model}"`);
+    }
+    if (needsEspSrModel(prepared, directory)) {
+        throw new Error('BUILD_ARTIFACT_INVALID: ESP_SR was built but srmodels.bin is missing; build again.');
+    }
+    return command.replace(pair.pattern, '');
 }
 
 function captureGeneratedUploadFiles(root) {
@@ -160,4 +202,4 @@ function canReuseBlocklyUpload(config) {
     } catch { return false; } // Missing/changed/unreadable inputs require compilation.
 }
 
-module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts, captureFirmware, resolveEspSrUploadCommand };
+module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts, captureFirmware, resolveEspSrUploadCommand, materializeEspSrModel };
