@@ -2436,6 +2436,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         }
         case 'nativeFsWriteBinary': {
           const abs = this.assertPathInsideCoderEmbedRoot(String(payload['path']));
+          const expectedManifest = payload['expectedManifestBase64'];
+          if (typeof expectedManifest === 'string' && fsAny['readFileAsBase64'](abs) !== expectedManifest) {
+            throw new Error('package.json 的磁盘内容已变化，请先保存或放弃相关更改，再更新编译入口。');
+          }
           fsAny['writeBase64File'](abs, String(payload['base64'] ?? ''));
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
           break;
