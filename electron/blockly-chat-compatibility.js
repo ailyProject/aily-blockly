@@ -67,24 +67,34 @@ async function verifyBlocklyChatArtifact(packagePath, entries) {
   }
 }
 
-async function verifyBlocklyChatRuntime(url, expected, fetchImpl = globalThis.fetch) {
-  if (!isHash(expected?.inputHash) || !isHash(expected?.outputHash)) return false;
+async function verifyBlocklyChatRuntime(url, expected, fetchImpl = globalThis.fetch, retryUnavailable = false) {
+  if (!isHash(expected?.inputHash) || !isHash(expected?.outputHash)) return 'unavailable';
+  let endpoint;
   try {
     const origin = new URL(url);
     if (origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1' || !origin.port
-      || origin.username || origin.password) return false;
-    const response = await fetchImpl(new URL('/health', origin), {
-      redirect: 'error',
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) return false;
-    const health = await response.json();
-    const build = health?.buildEvidence;
-    return health?.ok === true && health?.state === 'ready' && supportsBlocklyAbs(health.compatibility)
-      && build?.version === 1 && build.inputHash === expected.inputHash && build.outputHash === expected.outputHash;
+      || origin.username || origin.password) return 'unavailable';
+    endpoint = new URL('/health', origin);
   } catch {
-    return false;
+    return 'unavailable';
   }
+  const probe = async timeout => {
+    try {
+      const response = await fetchImpl(endpoint, { redirect: 'error', signal: AbortSignal.timeout(timeout) });
+      if (!response.ok) return 'unavailable';
+      const health = await response.json();
+      if (health?.ok !== true || health.state !== 'ready') return 'unavailable';
+      const build = health.buildEvidence;
+      return supportsBlocklyAbs(health.compatibility) && build?.version === 1
+        && build.inputHash === expected.inputHash && build.outputHash === expected.outputHash
+        ? 'verified' : 'incompatible';
+    } catch {
+      return 'unavailable';
+    }
+  };
+  const timeout = retryUnavailable ? 2500 : 5000;
+  const result = await probe(timeout);
+  return result === 'unavailable' && retryUnavailable ? probe(timeout) : result;
 }
 
 function chatCompatibilityError() {

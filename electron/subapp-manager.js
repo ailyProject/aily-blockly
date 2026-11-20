@@ -844,6 +844,7 @@ function readInstalledState(rootDir, entry, selected = resolveInstalledPackagePa
       installedVersion,
       development,
       localNext,
+      integrity: selected.integrity,
       packagePath: runnablePackagePath,
       config: complete ? {
         id: toolId,
@@ -2431,11 +2432,13 @@ function createSubappManager(options = {}) {
   const updateOperations = new Map();
   const backgroundAttempts = new Set();
   const backgroundDownloads = new Map();
-  const chatCompatibilityRefreshes = new Set();
+  let lastChatCompatibilityRefresh = null;
   let currentIndex = null;
   let currentMeta = null;
   let currentIndexUrl = null;
   let indexUrlGeneration = 0;
+  let catalogRequest = 0;
+  let appliedCatalogRequest = 0;
 
   function resolveIndexUrl() {
     const configuredIndexUrl = typeof options.getIndexUrl === 'function'
@@ -2525,6 +2528,7 @@ function createSubappManager(options = {}) {
       }
     }
 
+    const request = ++catalogRequest;
     try {
       const remoteIndex = await fetchRemoteIndex(indexUrl, options.fetchImpl);
       if (
@@ -2535,12 +2539,14 @@ function createSubappManager(options = {}) {
         return loadIndex(strategy);
       }
 
+      if (request < appliedCatalogRequest && currentIndex) return { index: currentIndex, meta: currentMeta };
       const index = localIndex?.dev === true
         ? mergeDevelopmentLinkedEntries(rootDir, remoteIndex, localIndex)
         : remoteIndex;
       if (localIndex?.dev !== true) {
         writeIndexCache(rootDir, index, indexUrl);
       }
+      appliedCatalogRequest = request;
       currentIndex = index;
       currentMeta = { indexUrl, source: 'network', fetchedAt: new Date().toISOString(), warning: null };
       return { index, meta: currentMeta };
@@ -2553,6 +2559,7 @@ function createSubappManager(options = {}) {
         return loadIndex(strategy);
       }
 
+      if (request < appliedCatalogRequest && currentIndex) return { index: currentIndex, meta: currentMeta };
       if (localIndex?.dev === true) {
         currentIndex = localIndex;
         currentMeta = {
@@ -2711,17 +2718,25 @@ function createSubappManager(options = {}) {
   function scheduleBackgroundUpdates(index, meta) {
     if (meta.source !== 'network' || index.dev === true) return;
     for (const [id, entry] of Object.entries(index)) {
-      if (id === 'dev' || !entry.update || entry.app.enabled === false) continue;
+      if (id === 'dev' || entry.app.enabled === false) continue;
+      const refreshBlocklyChat = options.requireBlocklyChatCompatibility && id === CHAT_ID
+        && lastChatCompatibilityRefresh !== meta && supportsBlocklyAbs(entry.compatibility);
+      if (!entry.update && !refreshBlocklyChat) continue;
       const installedState = readInstalledState(rootDir, entry);
       if (
         pendingUninstalls.has(operationKey(rootDir, entry.id))
         || !installedState.installed
         || installedState.development
         || installedState.localNext
-        || !hasUpdate(installedState.installedVersion, entry.version)
       ) {
         continue;
       }
+      if (refreshBlocklyChat) {
+        void prepareBlocklyChat(entry, installedState, true, meta, true).catch(error => {
+          console.warn('[subapp-manager] compatible Chat refresh deferred:', error.message || error);
+        });
+      }
+      if (!entry.update || !hasUpdate(installedState.installedVersion, entry.version)) continue;
       const key = updateKey(entry);
       const status = readSubappUpdateStatus(updateRootDir, entry, installedState, null, rootDir);
       const canDownload = status.state === 'available'
@@ -2745,10 +2760,14 @@ function createSubappManager(options = {}) {
     return next;
   }
 
-  async function prepareBlocklyChat(entry, installed, ordinaryCatalog) {
+  const sameChatInstall = (a, b) => a.packagePath === b.packagePath && a.integrity === b.integrity
+    && a.installedVersion === b.installedVersion;
+  const currentChatCatalog = meta => currentMeta === meta && meta.indexUrl === resolveIndexUrl();
+
+  async function prepareBlocklyChat(entry, installed, ordinaryCatalog, meta, background = false) {
     const eligible = candidate => candidate?.id === CHAT_ID && candidate.app?.enabled !== false
       && candidate.package === CHAT_PACKAGE;
-    if (!eligible(entry)) throw chatCompatibilityError();
+    if (!eligible(entry) || installed.uninstalling) throw chatCompatibilityError();
     const check = async (state, compatibilityOverride = false) => {
       if (!state?.config) return null;
       try {
@@ -2766,9 +2785,11 @@ function createSubappManager(options = {}) {
         ...(compatibilityOverride ? { env: { ...env, AILY_SUBAPP_SOURCE: 'blockly-compatibility' } } : {}),
       } : null;
     };
-    if (installed.uninstalling) throw chatCompatibilityError();
     const current = await check(installed);
     const regularInstall = ordinaryCatalog && !installed.development && !installed.localNext;
+    if (current && !regularInstall) return { current };
+    if (!installed.installed) throw chatCompatibilityError();
+
     let next = null;
     if (regularInstall && hasUpdate(installed.installedVersion, entry.version)) {
       try {
@@ -2780,17 +2801,23 @@ function createSubappManager(options = {}) {
         console.warn('[subapp-manager] prepared Chat update deferred:', error.message || error);
       }
     }
-    if (current) return { current, next };
-    if (!installed.installed) throw chatCompatibilityError();
 
     // This is only a Blockly launch override. Preserve the user's shared Coder
     // selection and all paths held by the original Runtime.
     const overrideRoot = path.join(rootDir, 'blockly-chat-compatibility');
     const cacheRoot = integrity => path.join(overrideRoot, createHash('sha256').update(integrity).digest('hex'));
-    const indexUrl = resolveIndexUrl();
+    const indexUrl = meta.indexUrl;
+    const stillCurrent = () => currentChatCatalog(meta)
+      && !pendingUninstalls.has(operationKey(rootDir, CHAT_ID));
+    const installStillCurrent = () => {
+      if (!stillCurrent()) return false;
+      const latest = readInstalledState(rootDir, entry);
+      return latest.installed && sameChatInstall(installed, latest);
+    };
     const cachedEntryPath = path.join(overrideRoot, createHash('sha256').update(indexUrl).digest('hex') + '.json');
-    const prepareReplacement = async target => {
-      const distribution = await resolvePackageDistribution(target, options.runNpm || runNpm, options);
+    const predecessor = current?.blocklyChatFingerprint;
+    const resolveDistribution = target => resolvePackageDistribution(target, options.runNpm || runNpm, options);
+    const prepareReplacement = async (target, distribution) => {
       const prepared = await prepareVersionPackage(cacheRoot(distribution.integrity), target, options.runNpm || runNpm, {
         ...options, distribution, requirePortable: true,
         beforePublish: async source => {
@@ -2802,30 +2829,29 @@ function createSubappManager(options = {}) {
       });
       if (prepared.integrity !== distribution.integrity) throw chatCompatibilityError();
       const compatible = await check(readInstalledState(rootDir, target, prepared), true);
-      if (!compatible || indexUrl !== resolveIndexUrl()) throw chatCompatibilityError();
-      writeJsonAtomic(cachedEntryPath, { ...target, dist: distribution });
+      if (!compatible) throw chatCompatibilityError();
+      if (installStillCurrent()) {
+        writeJsonAtomic(cachedEntryPath, { ...target, dist: distribution, compatibilityPredecessor: predecessor });
+      }
       return compatible;
     };
+
+    let selected = current;
+    let selectedIntegrity = installed.integrity;
     try {
       const cachedEntry = validateIndex({ [CHAT_ID]: readJson(cachedEntryPath) })[CHAT_ID];
-      if (eligible(cachedEntry) && cachedEntry.dist) {
+      // A private replacement may supersede only the same shared artifact
+      // that it was verified against. Do not override a later installation.
+      const replacesCurrent = current && cachedEntry.version === current.version
+        && isDeepStrictEqual(cachedEntry.compatibilityPredecessor, predecessor)
+        && (!entry.dist || entry.dist.integrity !== installed.integrity);
+      if (eligible(cachedEntry) && cachedEntry.dist && (!current || replacesCurrent)) {
         const cached = readPreparedVersion(cacheRoot(cachedEntry.dist.integrity), cachedEntry);
         const compatible = cached?.integrity === cachedEntry.dist.integrity
           ? await check(readInstalledState(rootDir, cachedEntry, cached), true) : null;
         if (compatible && indexUrl === resolveIndexUrl()) {
-          if (next && !semver.lt(next.version, compatible.version)) return { current: compatible, next };
-          // A rebuilt version with different bytes cannot trigger semver-based
-          // background staging. Keep the working package available while the
-          // declared compatible artifact is verified in its own cache.
-          const rebuilt = regularInstall && entry.version === cachedEntry.version && entry.dist
-            && entry.dist.integrity !== cachedEntry.dist.integrity && supportsBlocklyAbs(entry.compatibility);
-          if (rebuilt && !chatCompatibilityRefreshes.has(indexUrl)) {
-            chatCompatibilityRefreshes.add(indexUrl);
-            void prepareReplacement(entry).catch(error => {
-              console.warn('[subapp-manager] compatible Chat refresh deferred:', error.message || error);
-            }).finally(() => chatCompatibilityRefreshes.delete(indexUrl));
-          }
-          return { current: compatible };
+          if (!isDeepStrictEqual(current?.blocklyChatFingerprint, compatible.blocklyChatFingerprint)) selected = compatible;
+          selectedIntegrity = cached.integrity;
         }
       }
     } catch (error) {
@@ -2833,19 +2859,50 @@ function createSubappManager(options = {}) {
         console.warn('[subapp-manager] cached compatible Chat could not be verified:', error.message || error);
       }
     }
+
+    if (selected) {
+      if (next && !semver.lt(next.version, selected.version)) return { current: selected, next };
+      // A version-only catalog can resolve a new distribution for the same
+      // version. Resolve it once per successful catalog refresh, never on
+      // every launch, and stage it without interrupting the working runtime.
+      const checkRebuilt = regularInstall && entry.version === selected.version && supportsBlocklyAbs(entry.compatibility)
+        && (entry.dist ? entry.dist.integrity !== selectedIntegrity : meta.source === 'network');
+      if (checkRebuilt && stillCurrent() && lastChatCompatibilityRefresh !== meta) {
+        lastChatCompatibilityRefresh = meta;
+        void resolveDistribution(entry).then(distribution => {
+          if (!installStillCurrent() || distribution.integrity === selectedIntegrity) return;
+          return prepareReplacement(entry, distribution);
+        }).catch(error => {
+          console.warn('[subapp-manager] compatible Chat refresh deferred:', error.message || error);
+        });
+      }
+      return { current: selected };
+    }
     if (next) return { current: next };
+    if (background) return null;
     const catalog = await fetchRemoteIndex(indexUrl, options.fetchImpl);
     const target = catalog[CHAT_ID];
     if (!eligible(target) || catalog.dev === true || indexUrl !== resolveIndexUrl()) throw chatCompatibilityError();
-    return { current: await prepareReplacement(target) };
+    return { current: await prepareReplacement(target, await resolveDistribution(target)) };
   }
 
   async function prepareLaunch(payload = {}) {
-    const { index } = await loadIndex('cache-first');
+    const { index, meta } = await loadIndex('cache-first');
     const entry = index[validateId(payload.id)];
     if (!entry) throw new Error('Subapp is not present in the catalog');
-    const compatibleChat = options.requireBlocklyChatCompatibility && entry.id === CHAT_ID
-      ? await prepareBlocklyChat(entry, readInstalledState(rootDir, entry), index.dev !== true) : null;
+    const chatInstall = options.requireBlocklyChatCompatibility && entry.id === CHAT_ID
+      ? readInstalledState(rootDir, entry) : null;
+    let compatibleChat = null;
+    if (chatInstall) {
+      try {
+        compatibleChat = await prepareBlocklyChat(entry, chatInstall, index.dev !== true, meta);
+      } catch (error) {
+        if (!currentChatCatalog(meta) || !sameChatInstall(chatInstall, readInstalledState(rootDir, entry))) {
+          return prepareLaunch(payload);
+        }
+        throw error;
+      }
+    }
     // Only serialize the tiny selection/start handshake, never npm extraction.
     const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
     try {
@@ -2857,6 +2914,10 @@ function createSubappManager(options = {}) {
         // A previously verified runtime stays pinned as the catalog moves. The
         // renderer still checks its live evidence before attaching.
         if (runningConfig?.blocklyChatFingerprint) return { config: runningConfig, release };
+        if (!currentChatCatalog(meta) || !sameChatInstall(chatInstall, installed)) {
+          release();
+          return prepareLaunch(payload);
+        }
         const useNext = next && !runningConfig && payload.deferPreparedUpdate !== true;
         return { config: useNext ? next : current, release };
       }
@@ -3292,8 +3353,9 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     const launch = launches.get(token);
     if (launch?.owner === event.sender.id) launch.release();
   });
-  ipcMain.handle('subapp-manager-verify-blockly-chat', (_event, { url, fingerprint } = {}) =>
-    requireBlocklyChatCompatibility === true && verifyBlocklyChatRuntime(url, fingerprint));
+  ipcMain.handle('subapp-manager-verify-blockly-chat', (_event, { url, fingerprint, retryUnavailable } = {}) =>
+    requireBlocklyChatCompatibility === true
+      ? verifyBlocklyChatRuntime(url, fingerprint, undefined, retryUnavailable === true) : 'unavailable');
 
   ipcMain.handle('subapp-manager-diagnostics', () => defaultManager.diagnostics());
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
