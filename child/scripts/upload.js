@@ -618,9 +618,10 @@ async function main() {
             return parsed;
         };
 
-        let command;
-        let templateArgs;
-        ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
+        const { command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource);
+        if (uploadParamSource === 'preprocess') {
+            isolateEsp32FlashReferences(command, templateArgs, buildPath, fullSdkPath);
+        }
 
         // 上传预处理：处理 1200bps touch 和 wait_for_upload
         // 四种组合：
@@ -883,6 +884,30 @@ function parseArgs(str) {
     return args;
 }
 
+function isolateEsp32FlashReferences(command, args, buildPath, sdkPath) {
+    const unquote = arg => (arg || '').replace(/^"|"$/g, '');
+    if (!sdkPath || !args.some(arg => arg === 'write-flash' || arg === 'write_flash')) return;
+    const sdkTools = path.resolve(sdkPath, 'tools');
+    const isSdkFlasher = path.resolve(unquote(command)) === path.join(sdkTools, 'flasher.exe')
+        || path.resolve(unquote(args[0])) === path.join(sdkTools, 'flasher.py');
+    if (!isSdkFlasher) return;
+
+    const directoryOption = args.indexOf('--build-dir');
+    if (directoryOption < 0 || path.resolve(unquote(args[directoryOption + 1])) !== path.resolve(buildPath)) return;
+
+    // Espressif's flasher writes reference copies here after upload. Storing
+    // them beside the binaries would invalidate the completed-build receipt.
+    const temp = path.join(path.dirname(buildPath), '.temp');
+    const references = path.join(temp, 'esp32-flash-references');
+    for (const directory of [temp, references]) {
+        fs.mkdirSync(directory, { recursive: true });
+        if (!fs.lstatSync(directory).isDirectory()) {
+            throw new Error('Invalid ESP32 flash reference directory.');
+        }
+    }
+    args[directoryOption + 1] = wrapInQuotesIfNeeded(references);
+}
+
 function wrapInQuotesIfNeeded(value) {
     if (!value || value.startsWith('"') || !/\s/.test(value)) {
         return value;
@@ -973,4 +998,5 @@ module.exports = {
     selectUploadParamForPort,
     processUploadParams,
     selectUploadFirmwareFile,
+    isolateEsp32FlashReferences,
 };

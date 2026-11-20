@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, readBlocklyUploadArtifacts, materializeEspSrModel } = require('../child/scripts/blockly-upload-state');
-const { processUploadParams, selectUploadParamForPort } = require('../child/scripts/upload');
+const { processUploadParams, selectUploadParamForPort, isolateEsp32FlashReferences } = require('../child/scripts/upload');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-generated 产物-'));
@@ -45,6 +45,32 @@ test('legacy wildcard uses exact completed-build outputs while retaining old app
 test('changing a generated application rejects the receipt instead of uploading another candidate', async t => {
     const f = fixture(t); f.publish(); f.put('.build/sketch.bin', 'replaced');
     await assert.rejects(f.upload(), /BUILD_ARTIFACT_STALE/);
+});
+
+test('ESP32 fast-flash references can change without invalidating the compiled firmware', t => {
+    const f = fixture(t);
+    const sdk = path.join(f.root, 'sdk');
+    const buildDir = ['--build-dir', `"${f.build}"`];
+    const binaryArgs = ['write-flash', '0x10000', `"${path.join(f.build, 'sketch.bin')}"`];
+    const script = `"${path.join(sdk, 'tools', 'flasher.py')}"`;
+    const executable = `"${path.join(sdk, 'tools', 'flasher.exe')}"`;
+    const macArgs = [script, ...buildDir, ...binaryArgs];
+    const windowsArgs = [...buildDir, ...binaryArgs];
+    const otherArgs = [`"${path.join(f.root, 'flasher.py')}"`, ...buildDir, ...binaryArgs];
+    const references = path.join(f.root, '.temp', 'esp32-flash-references');
+    f.publish();
+
+    isolateEsp32FlashReferences('python3', macArgs, f.build, sdk);
+    isolateEsp32FlashReferences(executable, windowsArgs, f.build, sdk);
+    isolateEsp32FlashReferences('python3', otherArgs, f.build, sdk);
+    assert.deepEqual(macArgs, [script, '--build-dir', `"${references}"`, ...binaryArgs]);
+    assert.deepEqual(windowsArgs, ['--build-dir', `"${references}"`, ...binaryArgs]);
+    assert.deepEqual(otherArgs.slice(1), [...buildDir, ...binaryArgs]);
+
+    fs.copyFileSync(path.join(f.build, 'sketch.bin'), path.join(references, 'sketch_flashed.bin'));
+    assert.ok(readBlocklyUploadArtifacts(f.build).includes(path.join(f.build, 'sketch.bin')));
+    f.put('.build/sketch.bin', 'replaced');
+    assert.throws(() => readBlocklyUploadArtifacts(f.build), /BUILD_ARTIFACT_STALE/);
 });
 
 test('adding an extra application requires a fresh build, which restores exact selection', async t => {
