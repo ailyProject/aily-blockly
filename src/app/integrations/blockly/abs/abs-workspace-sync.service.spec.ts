@@ -7,7 +7,7 @@ import '../../../editors/blockly-editor/components/blockly/plugins/block-plus-mi
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { AbsBaselineStore, AbsSyncStoragePort, AbsSyncStorageAccess, absBaselineKey } from './abs-baseline-store';
 import { readWorkingCandidate } from './abs-working-candidate';
-import { acceptedInputFormattingEdits } from './abs-accepted-input-edits';
+import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { absJson, createAbsProjection, hashAbsText, indexAbsSyntax } from './abs-identity-map';
 import { parseAbsSyntax } from './abs-syntax';
 import { normalizeAbsSerializedWorkspace } from './abs-serialized-workspace';
@@ -5084,7 +5084,7 @@ describe('v2 actual workspace generation coordinator', () => {
         successor.abs.replace('abs_author_conditional(null)', 'abs_author_conditional(UNKNOWN=null)'),
       ]) {
         expect(changed).not.toBe(successor.abs);
-        expect(acceptedInputFormattingEdits(committed, changed)).toBeUndefined();
+        expect(acceptedInputEditProof(committed, changed)).toBeUndefined();
       }
       const replaced = /math_number\([^)]*\)/.exec(author)!;
       const edited = await applyTracked(successor, author, {
@@ -5095,6 +5095,63 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(editor.workspace.getBlockById(established.id)?.saveExtraState()).toEqual({ hasElse: true });
       expect(gate.busy).toBeFalse();
     });
+    it('tracks deletions across accepted aliases and value shorthand without losing repeated block identities', async () => {
+      const replay = enableNative(), type = 'abs_alias_owner';
+      const definition = { type, message0: '%1', args0: [{ type: 'input_value', name: 'VALUE', check: 'Number' }] };
+      const number = { type: 'math_number', message0: '%1', args0: [{ type: 'field_number', name: 'NUM', value: 0 }], output: 'Number' };
+      declare(definition);
+      catalog.record(number, Blockly.Blocks['math_number']);
+      replay.steps.push({ kind: 'definitions', definitions: [definition, number] }, {
+        kind: 'script', label: 'shorthand owner', source: "Arduino.forBlock.abs_alias_owner = () => '';",
+      });
+      const store = new AbsBaselineStore(port, scope);
+      const request = async (source: string, workingCandidate: Awaited<ReturnType<typeof retainWorkingCandidate>>) =>
+        service.bindWorkingCandidate(source, { version: 2, requestId: crypto.randomUUID(), workingCandidate,
+          candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } } as any);
+      const apply = async (source: string, ref: Awaited<ReturnType<typeof retainWorkingCandidate>>) => {
+        disk.set('project.abs', source);
+        const validation = await service.validateGeneration(source, await request(source, ref));
+        const result = await service.applyGeneration(source, validation.base.generation, {}, validation);
+        expect(result.publication.status).toBe('COMMITTED');
+      };
+      await baseline(); select();
+      const initial = await service.captureWorkingCandidate(), state = initial.abs.indexOf('\n# @project-state:');
+      const alias = 'abs_alias_owner(number(7))', literal = 'abs_alias_owner(7)';
+      const text = `\n${alias}\n${literal}\n`;
+      const author = initial.abs.slice(0, state) + text;
+      await apply(author, await retainWorkingCandidate(initial, author, {
+        source: initial.abs, edits: [{ start: state, end: initial.abs.length, text }],
+      }));
+      const capture = await service.captureWorkingCandidate();
+      const committed = (await store.inspectCommittedAncestor(capture.published!.generation))!.projection;
+      const byPath = committed.map.nodes.filter(node => node.blockType === type);
+      expect(byPath.length).toBe(2);
+      const retained = byPath[1].blockId;
+      const child = editor.workspace.getBlockById(retained)!.getInputTargetBlock('VALUE')!.id;
+      const changed = author.replace(alias, 'abs_alias_owner(number(9))');
+      expect(acceptedInputEditProof(committed, changed)).toBeUndefined();
+      const removeAlias = (source: string) => {
+        const start = source.indexOf('abs_alias_owner('), end = source.indexOf('\n', start) + 1;
+        const edit = { start, end, text: '' };
+        return { source: source.slice(0, start) + source.slice(end), trace: { source, edits: [edit] } };
+      };
+      const deletion = removeAlias(author), changedDeletion = removeAlias(changed);
+      expect(deletion.source).toBe(changedDeletion.source);
+      for (const [base, candidate] of [[{ ...capture, published: null }, deletion], [capture, changedDeletion]] as const) {
+        const ref = await retainWorkingCandidate(base, candidate.source, candidate.trace);
+        expect((await readWorkingCandidate(ref, port, scope, candidate.source, store)).sourceEditOrigin).toBeUndefined();
+        await expectAsync(service.validateGeneration(candidate.source, await request(candidate.source, ref)))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DELETION_INTENT_REQUIRED' }));
+      }
+      const ref = await retainWorkingCandidate(capture, deletion.source, deletion.trace);
+      const fixed = await readWorkingCandidate(ref, port, scope, deletion.source, store);
+      expect(fixed.sourceEditOrigin?.source).toBe(author);
+      expect(fixed.sourceEdits).toBeDefined();
+      await apply(deletion.source, ref);
+      expect(editor.workspace.getBlockById(byPath[0].blockId)).toBeNull();
+      expect(editor.workspace.getBlockById(retained)?.getInputTargetBlock('VALUE')?.id).toBe(child);
+      expect(disk.get('project.abs')).toBe(deletion.source); expect(gate.busy).toBeFalse();
+    });
     it('S3 source continuation rejects uncommitted or noncandidate input and corrupted accepted author hashes', async () => {
       const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
       disk.set('project.abs', f.source);
@@ -5102,7 +5159,7 @@ describe('v2 actual workspace generation coordinator', () => {
       const applied = await service.applyGeneration(f.source, validation.base.generation, {}, validation), generation = applied.evidence!.binding.generation;
       expect(await store.readAcceptedAuthorInput(generation)).toBe(f.source);
       const accepted = (await store.inspectCommittedAncestor(generation))!.projection;
-      expect(acceptedInputFormattingEdits(accepted, f.source)).toBeDefined();
+      expect(acceptedInputEditProof(accepted, f.source)).toBeDefined();
       const program = splitAbsState(f.source).program, lines = program.split('\n'), root = lines.findIndex(line => line.startsWith('abs_sync_root(')),
         portLine = lines.findIndex(line => line.startsWith('abs_origin_port('));
       [lines[root], lines[portLine]] = [lines[portLine], lines[root]];
@@ -5110,7 +5167,7 @@ describe('v2 actual workspace generation coordinator', () => {
         f.source.replace('abs_origin_port(PORT=A)', 'abs_origin_port(PORT=B)'),
         f.source.replace('\nabs_origin_port(PORT=A)', '\n    abs_origin_port(PORT=A)'),
         f.source.replace(program, lines.join('\n'))]) {
-        expect(changed).not.toBe(f.source); expect(acceptedInputFormattingEdits(accepted, changed)).toBeUndefined();
+        expect(changed).not.toBe(f.source); expect(acceptedInputEditProof(accepted, changed)).toBeUndefined();
       }
       const key = absBaselineKey(generation), recordText = disk.get(key)!, record = JSON.parse(recordText), pointer = disk.get('committed.json')!;
       disk.set('committed.json', record.previousPointer);

@@ -2,11 +2,11 @@ import { decodeAbsMap, absMapJson } from './abs-map-json';
 import { AbsSyncError, type AbsProjection, type AbsIdentityMap } from './abs-state';
 import { absJson, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import type { AbsBaselineStore, AbsProjectAttachment, AbsSyncStoragePort } from './abs-baseline-store';
-import type { AbsSourceEdit, AbsSourceEdits } from './abs-edit-provenance';
+import type { AbsSourceEdit, AbsSourceEditOrigin, AbsSourceEdits } from './abs-edit-provenance';
 import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
 import { splitAbsState } from './abs-full-state';
 import { assertAbsContractsCompatible } from './abs-contract-compatibility';
-import { acceptedInputFormattingEdits } from './abs-accepted-input-edits';
+import { acceptedInputEditProof } from './abs-accepted-input-edits';
 
 export interface WorkingCandidateRef { version: 1; id: string; revisionHash: string }
 interface ObjectRef { hash: string; bytes: number }
@@ -91,7 +91,7 @@ export function composeCandidateSplices(base: string, batches: AbsSourceEdits, e
  * revision here. Session/branch admission belongs to the SDK before dispatch. */
 export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], source: string,
   originStore?: Pick<AbsBaselineStore, 'loadIntent' | 'readDerivedAbi' | 'inspectCommittedAncestor' | 'readAcceptedAuthorInput'>,
-  proveAcceptedInput: typeof acceptedInputFormattingEdits = acceptedInputFormattingEdits) {
+  proveAcceptedInput: typeof acceptedInputEditProof = acceptedInputEditProof) {
   assertWorkingCandidateRef(ref);
   const read = (hash: string) => port.read(`history-objects/${hash}`);
   const seen = new Set<string>(), chain: CandidateRecord[] = [];
@@ -144,6 +144,7 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
   const allowedStates = [splitAbsState(baseAbs).state,
     ...(readonlyStateOrigin === undefined ? [] : [splitAbsState(readonlyStateOrigin).state])];
   let exact = true; const batches: AbsSourceEdits = [];
+  let sourceEditOrigin: AbsSourceEditOrigin | undefined;
   let previous = baseAbs;
   // Bounded prefetch avoids retaining every full source body in a long chain.
   // The immutable records stay small; exact replay still checks every edge.
@@ -156,7 +157,8 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
       else if (item.derivation?.kind === 'replace' && item.derivation.mapping === 'unresolved') {
         const bridge = exact ? readonlyStateReplacement(previous, body, allowedStates)
           ?? (previous === baseAbs && body === stateOrigin?.acceptedInput ? proveAcceptedInput(baseline, body) : undefined) : undefined;
-        if (bridge) { composeCandidateSplices(previous, [bridge], body); batches.push(bridge); }
+        if (Array.isArray(bridge)) { composeCandidateSplices(previous, [bridge], body); batches.push(bridge); }
+        else if (bridge && !sourceEditOrigin && !batches.length && stateOrigin?.samePublishedIdentities) sourceEditOrigin = bridge;
         else if (body !== previous) exact = false;
       }
       else {
@@ -169,7 +171,8 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
   }
   if (previous !== source) fail('Submitted source differs from its exact revision.');
   return { ref, record, baseline, sourceHashes: new Set(chain.map(item => `sha256:${item.source.hash}`)),
-    sourceEdits: exact ? composeCandidateSplices(baseAbs, batches, source) : undefined,
+    sourceEdits: exact ? composeCandidateSplices(sourceEditOrigin?.source ?? baseAbs, batches, source) : undefined,
+    ...(exact && sourceEditOrigin ? { sourceEditOrigin } : {}),
     ...(readonlyStateOrigin !== undefined ? { readonlyStateOrigin } : {}) };
 }
 
@@ -190,7 +193,9 @@ function readonlyStateReplacement(before: string, after: string, allowed: Array<
  * fresh export changes compatible runtime contracts. It never replaces the
  * frozen Working document or grants authority to arbitrary parent sources. */
 async function readPublishedStateOrigin(published: unknown, baseline: AbsProjection, source: string,
-  store?: Pick<AbsBaselineStore, 'loadIntent' | 'readDerivedAbi' | 'inspectCommittedAncestor' | 'readAcceptedAuthorInput'>): Promise<{ source?: string; acceptedInput?: string } | undefined> {
+  store?: Pick<AbsBaselineStore, 'loadIntent' | 'readDerivedAbi' | 'inspectCommittedAncestor' | 'readAcceptedAuthorInput'>): Promise<{
+    source?: string; acceptedInput?: string; samePublishedIdentities?: boolean;
+  } | undefined> {
   const state = splitAbsState(source).state, fresh = splitAbsState(baseline.abs).state;
   if (!store || !object(published)
     || typeof published['generation'] !== 'string' || absJson(published['scope']) !== absJson(baseline.map.scope)) return undefined;
@@ -209,7 +214,10 @@ async function readPublishedStateOrigin(published: unknown, baseline: AbsProject
   const accepted = await store.inspectCommittedAncestor(published['generation']);
   if (!accepted || accepted.projection.abs !== original.abs || accepted.abi !== abi) return undefined;
   const input = await store.readAcceptedAuthorInput(published['generation']);
-  const provenance = input === null ? undefined : { acceptedInput: input };
+  const publishedIds = new Map(original.map.nodes.map(node => [node.astPath, node.blockId]));
+  const provenance = input === null ? undefined : { acceptedInput: input,
+    samePublishedIdentities: publishedIds.size === baseline.map.nodes.length
+      && baseline.map.nodes.every(node => publishedIds.get(node.astPath) === node.blockId) };
   // Formatting provenance is independent of whether the candidate needs a
   // readonly-state exception (including a valid source with no state section).
   if (state === null || state === fresh || fresh === null) return provenance;

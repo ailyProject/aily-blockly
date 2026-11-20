@@ -85,7 +85,7 @@ import { normalizeProjectDataDocument } from '@domain/project/public-api';
 import { captureAbsNativeValues } from './abs-native-resources';
 import { AbsNativeCandidateFailures } from './abs-native-candidate-failures';
 import { readWorkingCandidate, workingCandidateBinding } from './abs-working-candidate';
-import { acceptedInputFormattingEdits } from './abs-accepted-input-edits';
+import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { mergeAbsStrictDocument } from './abs-strict-document-merge';
 import { readLegacyCandidateCapture } from './abs-legacy-candidate-capture';
 import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
@@ -1354,7 +1354,7 @@ export class AbsWorkspaceSyncService {
       const readDefinitions = context.definitions.withSynchronousRead ?? (<T>(read: () => T) => read());
       const fixed = binding?.workingCandidate ? await readWorkingCandidate(binding.workingCandidate,
         await openAbsHostStorage(context.path, context.assertCurrent), context.scope, source, store,
-        (baseline, input) => readDefinitions(() => acceptedInputFormattingEdits(baseline, input, shapes.get))) : undefined;
+        (baseline, input) => readDefinitions(() => acceptedInputEditProof(baseline, input, shapes.get))) : undefined;
       const published = await store.readCommittedSnapshot(), committed = published?.projection ?? null;
       if (committed && !fixed) assertCurrentAbsProjection(committed);
       if (!fixed && !committed) throw new AbsSyncError('ABS_BASELINE_MISSING', 'An authoritative committed generation is required.');
@@ -1426,6 +1426,7 @@ export class AbsWorkspaceSyncService {
       const reconcileOptions: AbsReconcileOptions = {
         withSynchronousRead: readDefinitions,
         sourceEdits: fixed?.sourceEdits ?? binding?.sourceEdits,
+        sourceEditOrigin: fixed?.sourceEditOrigin,
         ...(fixed?.readonlyStateOrigin !== undefined ? { readonlyStateOrigin: fixed.readonlyStateOrigin } : {}),
         requireDeletionEvidence: !!binding,
         prepareExtraState: functionSyntax.prepareExtraState,
@@ -1548,7 +1549,8 @@ export class AbsWorkspaceSyncService {
           if (draftBase.map.scope.pageId !== candidatePageId) throw new AbsSyncError('ABS_DOCUMENT_MERGE_CONFLICT',
             'A retained public draft belongs to another page; both immutable sources are preserved.', undefined, [], { reason: 'public-draft-page-identity', field: '/pages' });
           const draft = await this.reconcile(draftBase, expected.abs, absJson({ runtimeRevision: context.runtimeRevision, session: context.session }))
-            .draft({ ...reconcileOptions, sourceEdits: undefined, readonlyStateOrigin: undefined, requireDeletionEvidence: false });
+            .draft({ ...reconcileOptions, sourceEdits: undefined, sourceEditOrigin: undefined,
+              readonlyStateOrigin: undefined, requireDeletionEvidence: false });
           const user = await prepareAbsReconciledResources(expected.abs, draft, assertPreparing);
           currentWorkspace = mergeAbsRequestWorkspace(draftBase.workspace, currentWorkspace, user.workspace);
           historyContracts = { ...rollback.contracts,
