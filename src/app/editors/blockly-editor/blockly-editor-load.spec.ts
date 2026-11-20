@@ -7,6 +7,27 @@ import { canTransferProjectAbi } from './utils/project-abi-transfer';
 import { BlocklyLibraryPackageService } from '@domain/dependencies/public-api';
 import { hashAbsText } from '../../integrations/blockly/abs/abs-identity-map';
 import { projectResourceGc } from './services/project-resource-gc.service';
+import { ProjectApplicationAdapter } from '../../integrations/project/project-application.adapter';
+
+describe('Blockly startup source and environment settlement', () => {
+  it('checks the original ABS journal before asking the dependency owner even without a linked environment', async () => {
+    const originalStorage = window['fs'], originalLibraries = window['libraryDependencies'];
+    const order: string[] = [];
+    const adapter = Object.create(ProjectApplicationAdapter.prototype) as ProjectApplicationAdapter;
+    window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async () => ({
+      read: async (key: string) => { order.push(key); return null; },
+      withLock: () => { throw Error('A project without a prepared transaction has no lock work.'); },
+    }) } as any;
+    window['libraryDependencies'] = { environmentVersion: 2, pendingEnvironment: async () => { order.push('dependencies'); return []; } };
+    try {
+      await adapter.settleEnvironmentBeforeOpen('D:/project', () => {});
+      expect(order).toEqual(['prepared.json', 'dependencies']);
+    } finally {
+      window['fs'] = originalStorage;
+      window['libraryDependencies'] = originalLibraries;
+    }
+  });
+});
 
 describe('legacy native-procedure library validation', () => {
   function fixture() {
@@ -372,7 +393,7 @@ describe('Blockly dependency preparation cancellation', () => {
       };
       const closed = new Subject<any>();
       component.modal = { create: jasmine.createSpy('create').and.returnValue({ afterClose: closed }) };
-      component.electronService = { exists: () => true };
+      component.electronService = { exists: () => !recoveryTarget };
       component.installMissingBlocklyLibraries = jasmine.createSpy('install');
       const libraries = [{ name: '@aily-project/lib-missing', version: '1.0.0', localPath: '/target/local-library' }];
       const waiting = component.restoreMissingProjectLibraries('/target', libraries, session);
@@ -380,8 +401,8 @@ describe('Blockly dependency preparation cancellation', () => {
         // A pending modal must fail immediately, rather than consuming the
         // native startup deadline while Agent tools cannot take over.
         await expectAsync(waiting).toBeRejectedWith(jasmine.objectContaining({
-          code: 'PROJECT_RECOVERY_LIBRARIES_REQUIRED',
-          message: jasmine.stringMatching(/@aily-project\/lib-missing/),
+          code: 'PROJECT_RECOVERY_LIBRARY_SOURCE_MISSING',
+          message: jasmine.stringMatching(/本地积木库来源不存在/),
         }));
         expect(component.modal.create).not.toHaveBeenCalled();
       } else {

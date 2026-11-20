@@ -30,6 +30,7 @@ import {
   parseAilyBuilderProgressLine,
   parseLegacyAilyBuilderProgressLine
 } from '../../../utils/aily-builder-progress.utils';
+import { parseToolLoadFailure } from '../../../utils/aily-builder-tool-load';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 import { writeBuildRequest, captureBuildRequestGuard, buildManifestForGuard, buildSourceStale } from '../../../utils/build-request.utils';
 import { BlocklyCodePreparationInvalidatedError, type PreparedBlocklyCode } from './prepared-project-code';
@@ -1132,7 +1133,13 @@ export class _BuilderService {
   async canReuseBuildForUpload(isCancelled: () => boolean): Promise<boolean> {
     const projectPath = this.projectService.currentProjectPath;
     const settingsKey = this.compileSettingsKey();
-    if (!this.passed || projectPath !== this.currentProjectPath) return false;
+    const cloud = this.isCloudBuild();
+    const isolatedLocal = !cloud && this.isolatedBuilds();
+    const verifyLocal = window['builder']?.canReuseBlocklyUpload;
+    // An isolated local receipt also covers successful builds from a prior
+    // editor instance. Always compare its inputs with the active canvas.
+    if (!isolatedLocal && (!this.passed || projectPath !== this.currentProjectPath)) return false;
+    if (!cloud && !verifyLocal) return false;
     const boardModule = await this.projectService.getBoardModule();
     if (isCancelled() || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
     return this.runWithInteractiveProjectCode(this.blocklyService.workspace, async (prepared, assertCurrent) => {
@@ -1140,24 +1147,23 @@ export class _BuilderService {
       // Pure read: do not publish headers/macros or acquire a build workspace
       // merely to decide whether to upload an existing firmware.
       // 云产物是否可复用由主进程按完整项目/库内容核对，不能只比较生成的 sketch 代码。
-      if (this.isCloudBuild()) {
+      const config = { currentProjectPath: projectPath, boardModule, code: prepared.code,
+        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
+      let reusable: boolean;
+      if (cloud) {
         if (prepared.code !== this.lastCode || !window['cloudBuild']?.reusable) return false;
         if (!prepared.sourceWorkspace) return false;
-        const config = { currentProjectPath: projectPath, boardModule, code: prepared.code,
-          projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
         // 与实际编译使用相同的工作区快照；遗漏该字段会让主进程始终判定固件已过期。
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
-        const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
-        assertCurrent();
-        if (isCancelled() || projectPath !== this.projectService.currentProjectPath || settingsKey !== this.compileSettingsKey()) {
-          throw new Error('Upload build configuration changed or was cancelled.');
-        }
-        return reusable === true;
+        reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+      } else {
+        reusable = (isolatedLocal || prepared.code === this.lastCode) && verifyLocal(config);
       }
-      return prepared.code === this.lastCode && window['builder']?.canReuseBlocklyUpload?.({
-        currentProjectPath: projectPath, boardModule, code: prepared.code,
-        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
-      }) === true;
+      assertCurrent();
+      if (settingsKey !== this.compileSettingsKey() || cloud !== this.isCloudBuild()) {
+        throw new Error('Upload build configuration changed.');
+      }
+      return reusable === true;
     }, false, isCancelled);
   }
 
@@ -1684,6 +1690,7 @@ export class _BuilderService {
             let lastBuildText = '';
             const outputLineBuffer = new AilyBuilderOutputLineBuffer();
             let lastStdErr = '';
+            let toolLoadFailure: ReturnType<typeof parseToolLoadFailure>;
             let fullStdErr = '';
             let fullOutput = '';
             let hasStreamedStdout = false;
@@ -1754,6 +1761,12 @@ export class _BuilderService {
                     lines.forEach(({ line, type: outputType }) => {
                           let trimmedLine = line.trim();
                           if (!trimmedLine) return;
+
+                          const diagnostic = outputType === 'stderr' ? parseToolLoadFailure(trimmedLine) : undefined;
+                          if (diagnostic) {
+                            toolLoadFailure = diagnostic;
+                            return;
+                          }
 
                           // aily-builder >= 1.2.11 emits a dedicated JSON progress event.
                           // Consume it here so protocol data never enters the log component.
@@ -1932,9 +1945,10 @@ export class _BuilderService {
                       this.logService.update({ detail: fullStdErr.trim(), state: 'error' });
                       this.appendCompileLog(fullStdErr.trim(), 'ERROR');
                     }
-                    this.handleCompileError(error.message || String(error), true, detail, undefined, true);
-                    this.workflowService.finishBuild(false, error.message || 'Build error'); // 确保完成工作流状态
-                    reject({ state: 'error', text: error.message, fullStdErr: detail });
+                    const failureText = toolLoadFailure ? this.t(toolLoadFailure) : error.message || String(error);
+                    this.handleCompileError(failureText, true, detail, undefined, true);
+                    this.workflowService.finishBuild(false, failureText);
+                    reject({ state: 'error', text: failureText, fullStdErr: detail });
                   },
                   complete: async () => {
                     this.clearProgressTimer(); // 清理定时器
@@ -2011,7 +2025,8 @@ export class _BuilderService {
 
                       lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
                       const diagnosticDetail = fullOutput.trim() || fullStdErr || lastStdErr || this.t('INCOMPLETE');
-                      this.handleCompileError(lastStdErr || this.t('INCOMPLETE'), false, diagnosticDetail);
+                      const loadingError = toolLoadFailure && this.t(toolLoadFailure);
+                      this.handleCompileError(loadingError || lastStdErr || this.t('INCOMPLETE'), false, diagnosticDetail);
                       this.logService.update({ detail: fullStdErr, state: 'error' });
                       this.appendCompileLog(fullStdErr || lastStdErr || this.t('INCOMPLETE'), 'ERROR');
                       this.passed = false;
@@ -2022,7 +2037,7 @@ export class _BuilderService {
                       });
 
                       this.workflowService.finishBuild(false, 'Compilation failed');
-                      reject({ state: 'error', text: this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: diagnosticDetail });
+                      reject({ state: 'error', text: loadingError || this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: diagnosticDetail });
                     } else if (this.cancelled) {
                       console.warn("编译中断")
                       console.log(`编译已取消，耗时: ${buildDuration} 秒`);

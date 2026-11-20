@@ -20,7 +20,7 @@ const fail = text => { throw new Error(`LIBRARY_INPUTS_CHANGED: ${text}`); };
 const identity = filename => hash(process.platform === 'win32' ? filename.toLowerCase() : filename);
 
 /** Preserves the existing library cache fingerprint; adds bounded race evidence. */
-function captureLibrarySource(sourcePath) {
+function captureLibrarySource(sourcePath, { include = () => true, maxFiles = 4096, maxBytes = MAX_LIBRARY_SOURCE_BYTES } = {}) {
     const root = realpath(sourcePath), active = new Set(), digest = crypto.createHash('sha256');
     const states = [];
     let fileCount = 0, sizeBytes = 0, maxRelativePathBytes = 0;
@@ -32,11 +32,14 @@ function captureLibrarySource(sourcePath) {
         if (before.isDirectory()) {
             if (active.has(real)) fail('Library source contains a directory link cycle.');
             digest.update(`directory\0${normalized}\0`); active.add(real);
-            for (const name of fs.readdirSync(filename).sort((a, b) => a.localeCompare(b))) visit(path.join(filename, name), path.join(relative, name), depth + 1);
+            for (const name of fs.readdirSync(filename).sort((a, b) => a.localeCompare(b))) {
+                const child = path.join(relative, name);
+                if (include(child.split(path.sep).join('/'))) visit(path.join(filename, name), child, depth + 1);
+            }
             active.delete(real);
         } else if (before.isFile()) {
             maxRelativePathBytes = Math.max(maxRelativePathBytes, Buffer.byteLength(relative));
-            if (++fileCount > 4096 || (sizeBytes += before.size) > MAX_LIBRARY_SOURCE_BYTES) fail('Source exceeds capture budget.');
+            if (++fileCount > maxFiles || (sizeBytes += before.size) > maxBytes) fail('Source exceeds capture budget.');
             const fd = fs.openSync(filename, 'r');
             try {
                 const opened = fs.fstatSync(fd);

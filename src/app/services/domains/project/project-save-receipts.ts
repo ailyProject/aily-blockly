@@ -173,6 +173,7 @@ export class ProjectSaveReceipts {
       || receipt.operation !== request.operation || projectKey(receipt.project) !== projectKey(project) || !sameInput) {
       throw fail('PROJECT_SAVE_RECEIPT_CONFLICT', 'The durable observation does not identify this exact original request.');
     }
+    this.retainTerminalIdentity(project, request, response);
     return response;
   }
 
@@ -191,20 +192,23 @@ export class ProjectSaveReceipts {
     return retained === 'matching';
   }
 
-  private async settleNativeIdentity(project: string, request: ProjectSaveRequest, entry: SaveEntry): Promise<ProjectSaveReceiptResponse | null> {
-    const response = await this.durable(project, request);
-    const proof = response?.publicationObservation;
+  /** The original project's journal is authoritative even when its first
+   * observation, the renderer, or the private identity write was interrupted. */
+  private retainTerminalIdentity(project: string, request: ProjectSaveRequest, response: ProjectSaveReceiptResponse): void {
+    if (!this.settledIdentities || response.saveReceipt.state !== 'completed' || !response.result) return;
+    const proof = response.publicationObservation;
     const attachment = proof?.attachment;
-    if (response?.saveReceipt.state === 'completed' && response.result && proof?.version === 1 && proof.durable === true
-      && proof.requestId === request.requestId && proof.operation === request.operation && /^[a-f0-9-]{36}$/.test(proof.operationId)
-      && attachment?.version === 1 && projectKey(attachment.root) === projectKey(project)
-      && [attachment.identity?.dev, attachment.identity?.ino, attachment.identity?.birthtimeNs].every(value => /^\d+$/.test(value ?? ''))) {
-      try { this.settledIdentities!.remember(request.requestId, this.saveBinding(project, request)); }
-      catch { return response; } // Keep the volatile fence when the private index cannot be written.
-      if (this.entries.get(request.requestId) === entry) this.entries.delete(request.requestId);
-      this.expired.delete(request.requestId);
-    }
-    return response;
+    if (proof?.version !== 1 || proof.durable !== true || proof.requestId !== request.requestId
+      || proof.operation !== request.operation || !/^[a-f0-9-]{36}$/.test(proof.operationId)
+      || attachment?.version !== 1 || projectKey(attachment.root) !== projectKey(project)
+      || ![attachment.identity?.dev, attachment.identity?.ino, attachment.identity?.birthtimeNs].every(value => /^\d+$/.test(value ?? ''))) return;
+    // A read-only observer can arrive while the writer's outer callback still
+    // owns its entry. Keep that owner's lifetime independent of this disk fact.
+    const entry = this.find(project, request);
+    try { this.settledIdentities.remember(request.requestId, this.saveBinding(project, request)); }
+    catch { return; } // The same verified lookup can retry once storage recovers.
+    if (entry?.state === 'completed') this.entries.delete(request.requestId);
+    if (!entry || entry.state === 'completed') this.expired.delete(request.requestId);
   }
 
   private admit(project: string, request: ProjectSaveRequest, context: readonly unknown[], run: () => Promise<Record<string, any>>): SaveEntry {
@@ -236,7 +240,7 @@ export class ProjectSaveReceipts {
       }
       entry.state = 'completed'; entry.completedAt = this.now();
       if (request.version === 2 && this.settledIdentities) {
-        entry.nativeSettlement = this.settleNativeIdentity(project, request, entry);
+        entry.nativeSettlement = this.durable(project, request);
         // A disconnected observer may never await its original settlement.
         void entry.nativeSettlement.catch(() => undefined);
       }

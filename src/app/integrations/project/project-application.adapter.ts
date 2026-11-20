@@ -31,6 +31,8 @@ import { NzModalService } from 'ng-zorro-antd/modal';
 import { firstValueFrom } from 'rxjs';
 import { PasteInstallDialogComponent } from '../../editors/blockly-editor/components/paste-install-dialog/paste-install-dialog.component';
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
+import { openAbsHostStorage } from '../blockly/abs/abs-host-storage';
+import { settleAbsProjectTransaction } from '../blockly/abs/abs-project-restart';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 import { settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
 import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
@@ -62,6 +64,12 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   }
 
   async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void): Promise<void> {
+    // Dependency preparation shares the file lock and refuses an interrupted
+    // source transaction even when it has no linked dependency environment.
+    if (window['fs']?.projectSyncStorageVersion === 2) {
+      const storage = await openAbsHostStorage(project, assertCurrent);
+      await settleAbsProjectTransaction(storage, storage.attachment?.root ?? project, assertCurrent);
+    }
     await settleLinkedProjectEnvironment(project, assertCurrent);
   }
 

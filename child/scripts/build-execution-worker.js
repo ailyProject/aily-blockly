@@ -3,16 +3,18 @@ const { prepareBuildExecution, pruneTerminalPreprocessInputs, abandonPreparedPre
 process.once('message', ({ config, workspace, operation, action }) => {
     const abandoning = action === 'abandon-preprocess';
     const inspecting = action === 'inspect-compile-proof';
+    const checkingCoderUpload = action === 'check-coder-upload';
     let result;
     try {
-        result = inspecting ? { ok: true, proof: inspectBlocklyCompileProof(config) }
-            : abandoning ? { ok: true, abandoned: abandonPreparedPreprocess(config) }
-            : { ok: true, config: prepareBuildExecution(config, workspace, operation) };
+        if (checkingCoderUpload) result = { ok: true, reusable: require('./coder-upload-state').canReuseCoderUpload(config) };
+        else if (inspecting) result = { ok: true, proof: inspectBlocklyCompileProof(config) };
+        else if (abandoning) result = { ok: true, abandoned: abandonPreparedPreprocess(config) };
+        else result = { ok: true, config: prepareBuildExecution(config, workspace, operation) };
     }
     catch (error) { result = { ok: false, error: error.message, code: error.code }; }
     process.send(result, () => {
         process.disconnect();
         // Reclaim older terminal preprocess inputs off the editor's critical path.
-        if (!abandoning && !inspecting) pruneTerminalPreprocessInputs(config?.currentProjectPath);
+        if (!abandoning && !inspecting && !checkingCoderUpload) pruneTerminalPreprocessInputs(config?.currentProjectPath);
     });
 });

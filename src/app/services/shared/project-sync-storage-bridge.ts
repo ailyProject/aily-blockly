@@ -13,6 +13,10 @@ export interface ProjectStorageExecutorObservation {
   readonly reason: 'invalid-executor' | 'same-instance' | 'system-restarted' | 'process-exited'
     | 'process-unavailable' | 'identity-unavailable' | 'process-matched' | 'process-reused';
 }
+export interface CopiedProjectLockRecovery {
+  readonly original: { attachment: ProjectStorageAttachment; executor: ProjectStorageExecutor };
+  readonly expected: Readonly<Record<string, string | null>>;
+}
 export interface ProjectStorageAccess {
   readonly attachment?: ProjectStorageAttachment;
   readonly executor?: ProjectStorageExecutor;
@@ -27,11 +31,13 @@ export interface ProjectStorageBridge {
   readonly attachment?: ProjectStorageAttachment;
   readonly executor?: ProjectStorageExecutor;
   observeExecutor?(original: ProjectStorageExecutor): Promise<ProjectStorageExecutorObservation>;
+  retireCopiedLock?(proof: CopiedProjectLockRecovery): Promise<void>;
   read(key: string): Promise<string | null>;
   withLock<T>(run: (storage: ProjectStorageAccess, settle: (result: ProjectStorageSettlement<T>) => void) => void): Promise<T>;
 }
 export interface NativeProjectStorageBridge extends ProjectStorageBridge {
   observeExecutorResult?(original: ProjectStorageExecutor): Promise<ProjectStorageSettlement<ProjectStorageExecutorObservation>>;
+  retireCopiedLockResult?(proof: CopiedProjectLockRecovery): Promise<ProjectStorageSettlement<void>>;
   readResult?(key: string): Promise<ProjectStorageSettlement<string | null>>;
   withLockResult?<T>(run: (storage: NativeProjectStorageAccess,
     settle: (result: ProjectStorageSettlement<T>) => void) => void): Promise<ProjectStorageSettlement<T>>;
@@ -59,6 +65,9 @@ export function projectStorageBridge(storage: NativeProjectStorageBridge, assert
       assertCurrent();
       const observed = storage.observeExecutorResult ? value(await storage.observeExecutorResult(original)) : await storage.observeExecutor!(original);
       assertCurrent(); return observed;
+    } } : {}),
+    ...(storage.retireCopiedLockResult ? { retireCopiedLock: async (proof: CopiedProjectLockRecovery) => {
+      assertCurrent(); value(await storage.retireCopiedLockResult!(proof)); assertCurrent();
     } } : {}),
     read: key => read(storage, key),
     withLock<T>(run: (storage: ProjectStorageAccess, settle: (result: ProjectStorageSettlement<T>) => void) => void) {

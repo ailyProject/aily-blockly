@@ -100,6 +100,61 @@ describe('subapp prepared update UI state', () => {
     expect(finishLaunch).toHaveBeenCalledWith('token');
   });
 
+  it('replaces only the verified stale Blockly Chat stream, even when the version is the same', async () => {
+    const service = Object.create(ChildToolProcessService.prototype) as any;
+    const oldConfig = { id: 'aily-chat', catalogId: 'aily-chat', version: '0.1.53' };
+    const fingerprint = { inputHash: '1'.repeat(64), outputHash: '2'.repeat(64) };
+    const config = { ...oldConfig, blocklyChatFingerprint: fingerprint };
+    const oldHost = { url: 'http://127.0.0.1:3000', runtimeConfig: oldConfig };
+    const newHost = { url: 'http://127.0.0.1:3001', runtimeConfig: config };
+    const prepareLaunch = jasmine.createSpy('prepareLaunch').and.resolveTo({ config, token: 'token' });
+    const finishLaunch = jasmine.createSpy('finishLaunch').and.resolveTo(undefined);
+    const verifyBlocklyChat = jasmine.createSpy('verifyBlocklyChat').and.resolveTo(false);
+    const oldStream = 'old-chat-stream';
+    const acquire = jasmine.createSpy('acquire').and.resolveTo({ hostInfo: oldHost, streamId: oldStream, refCount: 2 });
+    const restart = jasmine.createSpy('restart').and.resolveTo({ success: true });
+    const previousElectronApi = (window as any).electronAPI;
+    const previousSessions = (window as any).childToolSession;
+    (window as any).electronAPI = { subapps: { prepareLaunch, finishLaunch, verifyBlocklyChat } };
+    (window as any).childToolSession = { acquire, restart };
+    service.configService = { isCoderProduct: () => false };
+    service.startServer = jasmine.createSpy('startServer').and.resolveTo(newHost);
+    service.log = jasmine.createSpy('log');
+
+    const session = { version: '', leaseId: 'original-renderer' };
+    try {
+      await expectAsync(service.startOrAcquireSession(oldConfig, session)).toBeResolvedTo(newHost);
+    } finally {
+      (window as any).electronAPI = previousElectronApi;
+      (window as any).childToolSession = previousSessions;
+    }
+
+    expect(prepareLaunch).toHaveBeenCalledBefore(acquire);
+    expect(verifyBlocklyChat).toHaveBeenCalledOnceWith({ url: oldHost.url, fingerprint });
+    expect(restart).toHaveBeenCalledOnceWith({
+      toolId: 'aily-chat', streamId: oldStream, leaseId: session.leaseId, restartShared: true,
+    });
+    expect(service.startServer).toHaveBeenCalledOnceWith(config, session);
+    expect(finishLaunch).toHaveBeenCalledWith('token');
+  });
+
+  it('keeps the verified Chat endpoint private until the startup handshake completes', () => {
+    const service = Object.create(ChildToolProcessService.prototype) as any;
+    const config = { id: 'aily-chat', blocklyChatFingerprint: { inputHash: '1'.repeat(64), outputHash: '2'.repeat(64) } };
+    const readyResolve = jasmine.createSpy('readyResolve');
+    const session = { hostInfo: null, running: false, readyResolve };
+    const hostInfo = { url: 'http://127.0.0.1:3001' };
+    service.publishRuntimeState = jasmine.createSpy('publishRuntimeState');
+
+    service.handleBackendMessage(config, session, { event: 'ready', data: hostInfo });
+
+    expect(readyResolve).toHaveBeenCalledOnceWith(hostInfo);
+    expect(session.readyResolve).toBeNull();
+    expect(session.hostInfo).toBeNull();
+    expect(session.running).toBeFalse();
+    expect(service.publishRuntimeState).not.toHaveBeenCalled();
+  });
+
   it('continues an interrupted uninstall instead of invoking install from the app card', () => {
     const store = Object.create(AppStoreComponent.prototype) as any;
     store.runSubappAction = jasmine.createSpy('runSubappAction');

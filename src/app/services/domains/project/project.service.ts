@@ -341,28 +341,44 @@ export class ProjectService {
     const assertCurrent = () => {
       if (!unchanged() || this.pendingLibraryMutation !== pending || controller.signal.aborted || Date.now() >= deadline) throw expired();
     };
+    let cancelPreparation!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      cancelPreparation = () => reject(expired());
+      controller.signal.addEventListener('abort', cancelPreparation, { once: true });
+    });
+    void cancelled.catch(() => {});
     pending.timer = setTimeout(() => this.releasePendingLibraryMutation(pending), Math.max(0, deadline - Date.now()));
     try {
       // The live input fence belongs to the same request even before history returns a token.
-      edit = await this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames, controller.signal);
+      const editor = this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames, controller.signal).then(value => {
+        if (released) value.release();
+        else edit = value;
+        return value;
+      });
+      const preparedEdit = await Promise.race([editor, cancelled]);
       assertCurrent();
       if (!requestId) await this.saveLibraryChanges(projectPath);
       assertCurrent();
-      const { token } = await window['libraryDependencies'].historyBegin(projectPath, requestId
-        ? { packages, requestId, expiresAt: deadline } : { packages });
-      historyToken = token;
+      const history = window['libraryDependencies'].historyBegin(projectPath, requestId
+        ? { packages, requestId, expiresAt: deadline } : { packages }).then((value: {token: string}) => {
+        if (released) this.discardLibraryMutationHistory(projectPath, value.token);
+        else historyToken = value.token;
+        return value;
+      });
+      const { token } = await Promise.race([history, cancelled]);
       assertCurrent();
       clearTimeout(pending.timer);
       this.pendingLibraryMutation = undefined;
-      const mutation = { projectPath, token, requestId, deadline, before: edit.document, packages: packages.map(packageName), removedPackages: removedNames, edit, lease };
+      const mutation = { projectPath, token, requestId, deadline, before: preparedEdit.document, packages: packages.map(packageName), removedPackages: removedNames, edit: preparedEdit, lease };
       this.libraryMutation = mutation;
       this.libraryMutation.timer = setTimeout(() => { void this.abortLibraryMutation(token, requestId, projectPath); }, Math.max(0, deadline - Date.now()));
       return { token };
     } catch (error) {
-      if (released) edit?.release();
       this.releasePendingLibraryMutation(pending);
       if (historyToken) this.discardLibraryMutationHistory(projectPath, historyToken);
       throw error;
+    } finally {
+      controller.signal.removeEventListener('abort', cancelPreparation);
     }
   }
 
@@ -1045,6 +1061,8 @@ export class ProjectService {
   private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease } | null = null;
   private readonly projectLifecycle = new ProjectLifecycleGate();
   private dependencyLifecycleState?: ProjectDependencyLifecycle;
+  private projectCommandStopCloud?: WeakMap<ProjectDependencySession, Promise<void>>;
+  private projectCommandStopObservation?: WeakMap<ProjectDependencySession, Promise<boolean>>;
   private boardSwitchLifecycle: { projectPath: string; token: symbol } | null = null;
   private loadingBlocklyProjectPath = '';
   private loadedBlocklyProjectPath = '';
@@ -1366,7 +1384,12 @@ export class ProjectService {
   }
 
   async withProjectLifecycleAdmission<T>(assertCurrent: () => void, operation: (owner: symbol) => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const lease = this.acquireProjectLifecycle([this.currentProjectPath, '*']);
+    const path = this.currentProjectPath;
+    assertCurrent();
+    if (this.dependencyLifecycle.isStopping(path)) await this.observeProjectCommandStop(path);
+    assertCurrent();
+    if (path !== this.currentProjectPath) throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', 'The selected project changed before lifecycle admission.');
+    const lease = this.acquireProjectLifecycle([path, '*']);
     const release = () => lease.release();
     signal?.addEventListener('abort', release, { once: true });
     try { assertCurrent(); return await operation(lease.token); }
@@ -1375,7 +1398,7 @@ export class ProjectService {
 
   private acquireProjectLifecycle(paths: string[], owner?: symbol, checkMutation = true): ProjectLifecycleLease {
     if (paths.some(path => this.dependencyLifecycle.isStopping(path))) {
-      throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', '项目任务尚未确认停止，请重试关闭项目。');
+      throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', '正在确认上一项项目任务已停止。');
     }
     if (checkMutation && paths.some(path => this.application.hasActiveProjectMutation(path))) {
       throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', '项目正在写入或执行宿主操作，请等待操作完成后再切换或关闭。会话思考和读取不会锁定项目。');
@@ -1978,7 +2001,12 @@ export class ProjectService {
     const paths = coderActivation && !this.boardSwitchLifecycle
       ? [projectPath] : [this.currentProjectPath, projectPath];
     let lease: ProjectLifecycleLease;
-    try { lease = this.acquireProjectLifecycle(paths, options.lifecycleOwner, !coderActivation); }
+    try {
+      const stopping = paths.filter(path => this.dependencyLifecycle.isStopping(path));
+      if (stopping.length) await Promise.all(stopping.map(path => this.observeProjectCommandStop(path)));
+      options.createActivation?.assertCurrent();
+      lease = this.acquireProjectLifecycle(paths, options.lifecycleOwner, !coderActivation);
+    }
     catch (error) { this.message.warning((error as Error).message); return false; }
     let session: ProjectDependencySession | undefined;
     const promise = this.projectOpenInternal(projectPath, options, current => { session = current; });
@@ -3403,6 +3431,56 @@ export class ProjectService {
     } finally { lease.release(); }
   }
 
+  private async observeProjectCommandStop(
+    projectPath: string,
+    session = this.dependencyLifecycle.get(projectPath),
+  ): Promise<boolean> {
+    const lifecycle = this.dependencyLifecycle;
+    if (!session?.signal.aborted || lifecycle.get(projectPath) !== session) return false;
+    const pending = this.projectCommandStopObservation ??= new WeakMap();
+    const existing = pending.get(session);
+    if (existing) return existing;
+    const scope = { projectPath: session.projectPath, projectSessionId: session.projectSessionId };
+    const observe = async () => {
+      const ipc = window['ipcRenderer'];
+      const read = async () => {
+        const result = await ipc.invoke('project-commands-stop-status', scope);
+        return result?.ok && result.projectSessionId === scope.projectSessionId
+          && typeof result.projectPath === 'string' && lifecycle.get(result.projectPath) === session
+          && lifecycle.get(projectPath) === session ? result.state : undefined;
+      };
+      try {
+        let state = await read();
+        if (state === 'unknown') {
+          // Main never registered this exact stop. Reconcile its idempotent
+          // control, then verify the original scope before releasing it.
+          if (lifecycle.get(projectPath) !== session) return false;
+          try { await ipc.invoke('project-commands-stop', scope); } catch { /* Verify even when its acknowledgement is lost. */ }
+          state = await read();
+        }
+        if (state !== 'stopped') return false;
+        await this.invalidateProjectCommandCloud(session);
+        await lifecycle.waitForIdle(session);
+        lifecycle.release(session);
+        return true;
+      } catch { return false; }
+    };
+    const attempt = observe().finally(() => { pending.delete(session); });
+    pending.set(session, attempt);
+    return attempt;
+  }
+
+  private invalidateProjectCommandCloud(session: ProjectDependencySession): Promise<void> {
+    const attempts = this.projectCommandStopCloud ??= new WeakMap();
+    const existing = attempts.get(session);
+    if (existing) return existing;
+    const attempt = Promise.resolve().then(async () => {
+      await window['cloudBuild']?.invalidate?.({ projectPath: session.projectPath });
+    }).catch(error => { attempts.delete(session); throw error; });
+    attempts.set(session, attempt);
+    return attempt;
+  }
+
   private async stopProjectCommands(projectPath: string): Promise<void> {
     const lifecycle = this.dependencyLifecycle;
     const interrupted = lifecycle.isBusy(projectPath);
@@ -3410,14 +3488,16 @@ export class ProjectService {
     lifecycle.cancel(projectPath);
     this.cloudBoardProfileCache = undefined;
     // 首次等待前同时撤销旧工程的云端授权并停止本地命令；生命周期锁阻止新会话提前启动。
-    const cloudInvalidation = window['cloudBuild']?.invalidate?.({ projectPath });
+    const cloudInvalidation = this.invalidateProjectCommandCloud(session);
     const commandStop = this.electronService.isElectron
       ? window['ipcRenderer'].invoke('project-commands-stop', {
-        projectPath, projectSessionId: session.projectSessionId,
+        projectPath: session.projectPath, projectSessionId: session.projectSessionId,
       }) : Promise.resolve({ ok: true });
     const [cloudStopped, commandsStopped] = await Promise.allSettled([cloudInvalidation, commandStop]);
-    if (commandsStopped.status === 'rejected' || !commandsStopped.value?.ok) throw new Error('项目任务未确认停止，请重试关闭项目。');
-    if (cloudStopped.status === 'rejected') throw cloudStopped.reason;
+    if ((cloudStopped.status === 'rejected' || commandsStopped.status === 'rejected' || !commandsStopped.value?.ok)
+      && !(await this.observeProjectCommandStop(projectPath, session))) {
+      throw new Error('正在确认上一项项目任务已停止。');
+    }
     await lifecycle.waitForIdle(session);
     lifecycle.release(session);
     if (interrupted) {
@@ -4884,6 +4964,27 @@ export class ProjectService {
       }
 
       menuItem.children = children;
+    }
+
+    // Arduino's generic ESP32-S3 SDK ships opi_opi, but no opi_qspi variant.
+    // Apply the dependency to the effective SDK selections, including defaults.
+    if (!cloudProfile && boardName === 'esp32s3' && boardConfig) {
+      const flash = menu.find(item => item.key === 'FlashMode')?.children;
+      const psram = menu.find(item => item.key === 'PSRAM')?.children;
+      const opiFlash = flash?.find(item => item.data === 'opi');
+      const opiPsram = psram?.find(item => item.data === 'opi');
+      if (opiFlash && opiPsram && psram) {
+        if (!opiPsram.check) {
+          opiFlash.disabled = true;
+          opiFlash.tooltip = this.translate.instant('PROJECT.OPI_FLASH_REQUIRES_OPI_PSRAM');
+        }
+        if (opiFlash.check) {
+          for (const item of psram.filter(option => option !== opiPsram)) {
+            item.disabled = true;
+            item.tooltip = this.translate.instant('PROJECT.CHANGE_OPI_FLASH_FIRST');
+          }
+        }
+      }
     }
 
     if (packageJsonChanged) {

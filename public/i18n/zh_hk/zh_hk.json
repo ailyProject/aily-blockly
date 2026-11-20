@@ -475,6 +475,7 @@
         },
         "BOARD": {
             "SEARCH": "搜尋開發板",
+            "CLEAR_SEARCH": "清除搜尋",
             "READ_DOC": "閱讀文件",
             "ADD_BOARD": "新增開發板",
             "DEV": "dev",
@@ -1098,6 +1099,8 @@
             "PROCESS_START_FAILED": "編譯進程啟動失敗",
             "INCOMPLETE": "編譯未完成",
             "FAILED_WITH_TIME": "編譯失敗 (耗時: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "建置工具無法載入 Python 執行階段 DLL。請查看本次編譯日誌。",
+            "TOOL_LOAD_XTENSA_CONFIG": "編譯器無法載入 Xtensa 晶片設定。請查看本次編譯日誌。",
             "ABNORMAL_END_TITLE": "編譯異常結束",
             "ABNORMAL_END_WITH_TIME": "編譯進程異常結束 (耗時: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "編譯完成",

@@ -10,7 +10,8 @@ const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
-const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
+const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, materializeEspSrModel } = require('./blockly-upload-state');
+const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
 const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
 const { captureBlocklyCompileSource } = require('./compile-source');
 
@@ -79,11 +80,12 @@ async function main() {
         if (config.execution) recordFor(config);
         workspace = acquireBuildWorkspace(currentProjectPath, 'compile');
         startBuildExecution(config, workspace);
+        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+        if (isAilyCode) invalidateCoderUploadState(currentProjectPath);
         confirmBuildSource(config);
         invalidateBuildDelivery(currentProjectPath);
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
         // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
-        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
         if (!isAilyCode) invalidateBlocklyUploadState(currentProjectPath);
         const tempPath = isAilyCode
             ? ailyCodeProject.resolveCompileWorkspacePath(currentProjectPath)
@@ -156,7 +158,7 @@ async function main() {
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         const materializedSource = !isAilyCode ? captureBlocklyCompileSource(config, compileSourcePath) : undefined;
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
-        const uploadInputs = !isAilyCode ? captureBlocklyUploadInputs(config) : null;
+        const uploadInputs = isAilyCode ? captureCoderUploadInputs(config) : captureBlocklyUploadInputs(config);
 
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
@@ -268,6 +270,7 @@ async function main() {
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
+                materializeEspSrModel(preprocessCachePath, buildPath);
                 if (projectSnapshot) {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);
                     await reportBuildDelivery(config, receipt);
@@ -308,6 +311,7 @@ async function main() {
             throw new Error(`编译进程异常退出，退出码: ${exitCode}`);
         }
 
+        if (isAilyCode) publishCoderUploadState(config, uploadInputs);
         logger.log('编译完成');
 
     } catch (error) {

@@ -7,6 +7,7 @@ const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, 
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
 
 const PROJECT_SYNC_STORAGE_VERSION = 2;
+const SCOPE_CHECK_INTERVAL_MS = 200;
 const mirrors = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
 const readOnlyInputs = new Set(['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock']);
 const readableFiles = new Set([...mirrors, ...readOnlyInputs]);
@@ -87,6 +88,41 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     if (!Buffer.from(text, 'utf8').equals(bytes)) throw fault('ABS_STORAGE_ENCODING_INVALID', 'Sync files must contain exact UTF-8; invalid bytes were retained.');
     return text;
   };
+  const retireCopiedLock = async ({ original, expected } = {}) => {
+    const required = ['prepared.json', 'committed.json', 'operation.json', ...mirrors];
+    const sha256 = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+    if (!original?.attachment || !original.executor || !expected || Array.isArray(expected)
+      || required.some(key => !sha256(expected[key]))
+      || !Object.keys(expected).some(key => baseline.test(key))
+      || !Object.keys(expected).some(key => /^recoveries\/operation-[a-f0-9-]{36}\.json$/.test(key)))
+      throw fault('PROJECT_FILE_LOCK_CHANGED', 'Missing exact source and journal evidence for the copied lock.');
+    const verify = () => {
+      guard(); assertNoPreparedWorkspaceMigration(access);
+      for (const [key, expectedHash] of Object.entries(expected)) {
+        if (hash(readBytes(key)) !== expectedHash)
+          throw fault('ABS_TRANSACTION_CONFLICT', 'The copied journal changed before lock recovery.');
+      }
+      const pointer = JSON.parse(readText('operation.json'));
+      const prepared = JSON.parse(readText('prepared.json'));
+      const snapshotKey = `recoveries/operation-${pointer.id}.json`;
+      const snapshot = JSON.parse(readText(snapshotKey));
+      if (expected[snapshotKey] !== pointer.hash || snapshot.id !== pointer.id
+        || !sha256(prepared.hash) || expected[`baselines/${prepared.generation}.json`] !== prepared.hash
+        || snapshot.project !== original.attachment.root
+        || JSON.stringify(snapshot.attachment) !== JSON.stringify(original.attachment)
+        || JSON.stringify(snapshot.executor) !== JSON.stringify(original.executor))
+        throw fault('PROJECT_FILE_LOCK_CHANGED', 'The copied journal does not bind the retained native lock owner.');
+    };
+    verify();
+    const lock = await acquireProjectFileLock(access, guard, options.timeoutMs, {
+      original, archive: () => {
+        verify();
+        return locate(`recoveries/copied-lock-${randomUUID()}.json`, true);
+      },
+    });
+    const warnings = lock.release();
+    if (warnings.length) throw fault('ABS_COMMIT_UNCERTAIN', warnings.join('; '));
+  };
   return {
     attachment: access.attachment,
     executor,
@@ -96,10 +132,12 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       guard(); return result;
     },
     read: async key => { guard(); return readText(key); },
-    withLock: async operation => {
+    retireCopiedLock,
+    withLock: async (operation, observeScope = false) => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
       const lock = await acquireProjectFileLock(access, guard, options.timeoutMs);
       let active = true;
+      let scopeTimer;
       const pending = new Set();
       const check = () => {
         if (!active) throw fault('ABS_STORAGE_SCOPE_CLOSED', 'Storage write capability has expired.');
@@ -173,11 +211,21 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       };
       try {
         check();
-        const result = await operation(scoped);
+        const callback = operation(scoped);
+        // A renderer may no longer be able to deliver its settlement after
+        // revocation. Observe the same trusted guard while its callback waits.
+        // A slow but current owner retains the native lock.
+        const invalidated = observeScope && new Promise((_, reject) => {
+          scopeTimer = setInterval(() => {
+            try { check(); } catch (error) { reject(error); }
+          }, SCOPE_CHECK_INTERVAL_MS);
+        });
+        const result = await (invalidated ? Promise.race([callback, invalidated]) : callback);
         check();
         return result;
       } finally {
         active = false;
+        clearInterval(scopeTimer);
         // An unawaited callback write must finish (or fail its revoked guard)
         // before another process may acquire this lock.
         await Promise.allSettled([...pending]);
@@ -219,7 +267,7 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
           reject(fault('ABS_STORAGE_OPERATION_INVALID', 'Bridge callbacks must return void and settle explicitly.'));
         }
       } catch (error) { reject(error); }
-    }));
+    }), true);
   return {
     attachment: storage.attachment,
     executor: storage.executor,
@@ -228,6 +276,7 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
     read: key => storage.read(key),
     withLock: operation => withBridgeLock(operation, false),
     readResult: key => resultOf(() => storage.read(key)),
+    retireCopiedLockResult: proof => resultOf(() => storage.retireCopiedLock(proof)),
     withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),
   };
 }

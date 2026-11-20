@@ -201,6 +201,9 @@ export class MenuComponent implements AfterViewChecked {
   }
 
   getSubmenuSimpleItemTitle(subItem: IMenuItem | null | undefined): string {
+    const tooltip = this.getTooltipTitle(subItem?.tooltip);
+    if (tooltip) return tooltip;
+
     const text = typeof subItem?.text === 'string' ? subItem.text.trim() : '';
     if (text) {
       return text;

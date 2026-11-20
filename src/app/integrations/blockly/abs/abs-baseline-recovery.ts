@@ -1,7 +1,8 @@
 import { absMapJson } from './abs-map-json';
 import { createProjectDataMarker } from '@domain/project/project-data/project-data.types';
-import { AbsBaselineStore, absBaselineKey, type AbsSyncStoragePort } from './abs-baseline-store';
-import { decodeAbsState } from './abs-full-state';
+import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
+import { AbsBaselineStore, absBaselineKey, type AbsGenerationInput, type AbsSyncStoragePort } from './abs-baseline-store';
+import { decodeAbsState, splitAbsState } from './abs-full-state';
 import { absJson, reconstructAbsProjection, hashAbsText } from './abs-identity-map';
 import { sameAbsProgram } from './abs-program-state';
 import { AbsSyncError, type AbsIdentityMap } from './abs-state';
@@ -9,6 +10,12 @@ import { inspectAbsGeneration } from './abs-generation-inspection';
 
 const recoverable = new Set(['ABS_BASELINE_CORRUPT', 'ABS_BASELINE_MISSING']);
 export const ABS_BASELINE_RECOVERY_HINT = 'Preserve source, candidate, staging and private records. Inspect project recovery and execute only the offered same-project preserving recovery. Do not delete locks/baselines, overwrite ABI/map, create another project or ask the user to open a copy. A request generation mismatch is not baseline corruption.';
+
+interface BaselineRecoverySource extends Pick<AbsGenerationInput, 'projection' | 'draftBaseGeneration' | 'authorIntent'> {
+  store: AbsBaselineStore;
+  disk: AbsGenerationInput['expected'];
+  committed: string | null;
+}
 
 /** Preserve the existing typed inspection boundary; diagnosis never repairs
  * its own journal or grants authority to consume a competing source. */
@@ -23,7 +30,7 @@ export async function inspectAbsGenerationForRecovery(store: AbsBaselineStore, s
 
 /** A public full-state ABS plus its matching saved ABI can repair private
  * baseline metadata. An unapplied draft or competing ABI never authorizes it. */
-async function source(port: AbsSyncStoragePort, project: string) {
+async function source(port: AbsSyncStoragePort, project: string): Promise<BaselineRecoverySource | null> {
   if (await port.read('prepared.json') !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Converge the original transaction before baseline repair.');
   const store = new AbsBaselineStore(port, { projectKey: project, pageId: '' }), disk = await store.captureDisk();
   if (disk.abi === null || disk.abs === null) return null;
@@ -41,15 +48,47 @@ async function source(port: AbsSyncStoragePort, project: string) {
     return { store: new AbsBaselineStore(port, scope), disk, projection, committed };
   } catch (error) {
     if (error instanceof SyntaxError) return null;
+    if (committed === null && disk.map !== null && error instanceof AbsSyncError && error.code === 'ABS_STATE_INVALID') {
+      const recovered = await reconstructDraftBase(port, project, { abi: disk.abi, abs: disk.abs, map: disk.map });
+      if (recovered) return recovered;
+    }
     throw error;
   }
+}
+
+/** A copied project may only carry the public files. Recreate the saved state
+ * from ABI and verify the entire original index before archiving the draft. */
+async function reconstructDraftBase(port: AbsSyncStoragePort, project: string,
+  disk: { abi: string; abs: string; map: string }): Promise<BaselineRecoverySource | null> {
+  let verified: Awaited<ReturnType<typeof reconstructAbsProjection>>;
+  try {
+    const map = JSON.parse(disk.map);
+    const document = JSON.parse(disk.abi);
+    const state = JSON.parse(splitAbsState(disk.abs).state ?? 'null');
+    const savedAbiHash = await hashAbsText(absJson(document));
+    if (document.schemaVersion !== 3 || !state?.contracts?.fields || savedAbiHash !== map?.savedAbiHash
+      || typeof map.scope?.projectKey !== 'string' || map.scope.pageId !== document.activePageId
+      || map.baselineRef !== absBaselineKey(map.generation)) return null;
+    const workspace = composeBlocklyPage(document, map.scope.pageId);
+    verified = await reconstructAbsProjection(workspace, { document, contracts: state.contracts, scope: map.scope,
+      generation: map.generation, baselineRef: map.baselineRef, savedAbiHash }, disk.abs);
+    if (absMapJson(verified.map) !== disk.map || verified.abs === disk.abs) return null;
+  } catch {
+    // An invalid public file cannot prove a missing private generation.
+    return null;
+  }
+  const generation = crypto.randomUUID(), scope = { projectKey: project, pageId: verified.map.scope.pageId };
+  const store = new AbsBaselineStore(port, scope);
+  const projection = { ...verified, map: { ...verified.map, scope, generation, baselineRef: absBaselineKey(generation) } };
+  const authorIntent = await store.workspaceMode() === 'project-v1' ? 'preserve' : undefined;
+  return { store, disk, projection, committed: null, draftBaseGeneration: verified.map.generation, authorIntent };
 }
 
 /** A pending ABS is a draft, not a second saved document. A verified saved
  * recipe and its exact public map identify its origin without parsing or
  * trusting that draft. Archive it using the existing draft journal. */
 async function committedSource(port: AbsSyncStoragePort, project: string, lookup: AbsBaselineStore,
-  healthy: NonNullable<Awaited<ReturnType<AbsBaselineStore['inspectCommitted']>>>) {
+  healthy: NonNullable<Awaited<ReturnType<AbsBaselineStore['readCommittedSnapshot']>>>): Promise<BaselineRecoverySource | null> {
   const disk = await lookup.captureDisk();
   if (disk.abi === null || disk.abs === null || disk.map !== absMapJson(healthy.projection.map)) return null;
   const abi = await lookup.readDerivedAbi(healthy.projection.map.generation);
@@ -61,7 +100,11 @@ async function committedSource(port: AbsSyncStoragePort, project: string, lookup
   const projection = await reconstructAbsProjection(previous.workspace, { document: previous.document, contracts: previous.contracts,
     generation, baselineRef: absBaselineKey(generation), scope, savedAbiHash: await hashAbsText(absJson(JSON.parse(disk.abi))) }, previous.abs);
   if (projection.abs !== previous.abs) return null;
+  const authorIntent = healthy.workspaceMode === 'project-v1' && disk.abs !== previous.abs
+    ? (healthy.authorSource?.disposition === 'accepted' && healthy.authorSource.hash === await hashAbsText(disk.abs)
+      ? 'candidate' : 'preserve') : undefined;
   return { store: new AbsBaselineStore(port, scope), disk, projection, committed: await port.read('committed.json'),
+    ...(authorIntent ? { authorIntent } : {}),
     ...(disk.abs !== previous.abs ? { draftBaseGeneration: previous.map.generation } : {}) };
 }
 
@@ -71,9 +114,9 @@ async function committedSource(port: AbsSyncStoragePort, project: string, lookup
 async function classifyRecovery(port: AbsSyncStoragePort, project: string) {
   if (await port.read('prepared.json') !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Converge the original transaction before baseline repair.');
   const lookup = new AbsBaselineStore(port, { projectKey: project, pageId: '' });
-  let healthy: Awaited<ReturnType<AbsBaselineStore['inspectCommitted']>> = null;
+  let healthy: Awaited<ReturnType<AbsBaselineStore['readCommittedSnapshot']>> = null;
   try {
-    healthy = await lookup.inspectCommitted();
+    healthy = await lookup.readCommittedSnapshot();
   } catch (error) {
     if (!(error instanceof AbsSyncError) || !recoverable.has(error.code)) throw error;
   }
@@ -141,9 +184,11 @@ export async function recoverAbsBaseline(port: AbsSyncStoragePort, project: stri
     if (!await storage.replace(archive, null, absJson({ version: 1, kind: 'baseline-repair', project,
       disk: input.disk, committed: input.committed }))) throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_CONFLICT', 'Could not preserve baseline recovery inputs.');
   });
-  const draftBaseGeneration = 'draftBaseGeneration' in input && typeof input.draftBaseGeneration === 'string' ? input.draftBaseGeneration : undefined;
+  const { draftBaseGeneration, authorIntent } = input;
   await input.store.stage({ projection: input.projection, mode: 'import', inputAbs: input.disk.abs, inputMap: input.disk.map, abi: input.disk.abi,
-    expected: input.disk, ...(draftBaseGeneration ? { draftBaseGeneration } : { metadataOnly: true }) },
+    expected: input.disk, ...(draftBaseGeneration ? { draftBaseGeneration } : {}),
+    ...(authorIntent === 'candidate' || authorIntent === 'preserve' ? { authorIntent, metadataOnly: true } : {}),
+    ...(!draftBaseGeneration ? { metadataOnly: true } : {}) },
     input.committed === null ? null : await hashAbsText(input.committed));
   assertCurrent();
   const result = await input.store.commit(input.projection.map.generation, assertCurrent, async (text, hash, storage) => {

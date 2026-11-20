@@ -177,8 +177,9 @@ describe('dependency-only persistence around library edits', () => {
       expect(f.service.isLibraryMutationInProgress()).toBeFalse();
       expect(f.release).toHaveBeenCalledTimes(1);
       expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
-      acknowledge({ token: 'old-token' });
       expect(await failure).toEqual(jasmine.any(Error));
+      acknowledge({ token: 'old-token' });
+      await Promise.resolve();
       expect(window['libraryDependencies'].historyDiscard).toHaveBeenCalledOnceWith('/project', {token: 'old-token'});
       window['libraryDependencies'].historyBegin.and.resolveTo({token: 'new-token'});
       const next = await f.service.beginLibraryMutation(['@aily-project/lib-test']);

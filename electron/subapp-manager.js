@@ -14,6 +14,8 @@ const { extractNpmTarballInBackground } = require('./subapp-package-worker-clien
 const { resolveAilyNpmPrefix } = require('./appdata-path');
 const subappBinRouter = require('./subapp-bin-router');
 const { downloadFileWithProgress, fault, duration } = require('./subapp-download');
+const { CHAT_ID, CHAT_PACKAGE, chatCompatibilityError, supportsBlocklyAbs,
+  verifyBlocklyChatArtifact, verifyBlocklyChatRuntime } = require('./blockly-chat-compatibility');
 
 const INDEX_CACHE_FILE = 'subapp-index.json';
 const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
@@ -774,8 +776,7 @@ function resolveInstalledPackagePath(rootDir, entry) {
   return { packagePath: legacyPath, source: 'legacy-npm', selectionError };
 }
 
-function readInstalledState(rootDir, entry) {
-  const selected = resolveInstalledPackagePath(rootDir, entry);
+function readInstalledState(rootDir, entry, selected = resolveInstalledPackagePath(rootDir, entry)) {
   const packagePath = selected.packagePath;
   const packageJsonPath = path.join(packagePath, 'package.json');
   if (selected.disabled || !fs.existsSync(packageJsonPath)) {
@@ -1625,6 +1626,7 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
       portability = { portable: true, bundledFallback: true };
     }
     if (!portability.portable) {
+      if (options.requirePortable) throw chatCompatibilityError();
       // Compatibility path for older npm packages: install dependencies and run lifecycle scripts
       // inside A/source. The shared legacy app project and B are never reified.
       const npmSource = fs.realpathSync(candidate.source);
@@ -2429,6 +2431,7 @@ function createSubappManager(options = {}) {
   const updateOperations = new Map();
   const backgroundAttempts = new Set();
   const backgroundDownloads = new Map();
+  const chatCompatibilityRefreshes = new Set();
   let currentIndex = null;
   let currentMeta = null;
   let currentIndexUrl = null;
@@ -2742,15 +2745,125 @@ function createSubappManager(options = {}) {
     return next;
   }
 
+  async function prepareBlocklyChat(entry, installed, ordinaryCatalog) {
+    const eligible = candidate => candidate?.id === CHAT_ID && candidate.app?.enabled !== false
+      && candidate.package === CHAT_PACKAGE;
+    if (!eligible(entry)) throw chatCompatibilityError();
+    const check = async (state, compatibilityOverride = false) => {
+      if (!state?.config) return null;
+      try {
+        const manifest = readJson(path.join(state.packagePath, 'package.json'));
+        if (options.allowBlocklyChatDevelopment && state.development
+          && manifest.name === CHAT_PACKAGE && supportsBlocklyAbs(manifest.ailySubapp?.compatibility)) {
+          return { ...state.config, blocklyChatFingerprint: { development: true } };
+        }
+        if (!portablePackageStatus(state.packagePath, manifest, options).portable) return null;
+      } catch {
+        return null;
+      }
+      const { entry, uiIndex, env } = state.config;
+      const fingerprint = await verifyBlocklyChatArtifact(state.packagePath, [entry, uiIndex]);
+      return fingerprint ? {
+        ...state.config,
+        blocklyChatFingerprint: fingerprint,
+        // Its bundled MCP must match this Chat, not the unchanged global selector.
+        ...(compatibilityOverride ? { env: { ...env, AILY_SUBAPP_SOURCE: 'blockly-compatibility' } } : {}),
+      } : null;
+    };
+    if (installed.uninstalling) throw chatCompatibilityError();
+    const current = await check(installed);
+    const regularInstall = ordinaryCatalog && !installed.development && !installed.localNext;
+    let next = null;
+    if (regularInstall && hasUpdate(installed.installedVersion, entry.version)) {
+      try {
+        const prepared = readPreparedVersion(rootDir, entry);
+        if (prepared?.integrity && (!entry.dist || prepared.integrity === entry.dist.integrity)) {
+          next = await check(readInstalledState(rootDir, entry, prepared), true);
+        }
+      } catch (error) {
+        console.warn('[subapp-manager] prepared Chat update deferred:', error.message || error);
+      }
+    }
+    if (current) return { current, next };
+    if (!installed.installed) throw chatCompatibilityError();
+
+    // This is only a Blockly launch override. Preserve the user's shared Coder
+    // selection and all paths held by the original Runtime.
+    const overrideRoot = path.join(rootDir, 'blockly-chat-compatibility');
+    const cacheRoot = integrity => path.join(overrideRoot, createHash('sha256').update(integrity).digest('hex'));
+    const indexUrl = resolveIndexUrl();
+    const cachedEntryPath = path.join(overrideRoot, createHash('sha256').update(indexUrl).digest('hex') + '.json');
+    const prepareReplacement = async target => {
+      const distribution = await resolvePackageDistribution(target, options.runNpm || runNpm, options);
+      const prepared = await prepareVersionPackage(cacheRoot(distribution.integrity), target, options.runNpm || runNpm, {
+        ...options, distribution, requirePortable: true,
+        beforePublish: async source => {
+          const { runnable } = validatePreparedPackage(source, target);
+          if (!await verifyBlocklyChatArtifact(runnable.packagePath, [runnable.mainEntry, runnable.uiIndex])) {
+            throw chatCompatibilityError();
+          }
+        },
+      });
+      if (prepared.integrity !== distribution.integrity) throw chatCompatibilityError();
+      const compatible = await check(readInstalledState(rootDir, target, prepared), true);
+      if (!compatible || indexUrl !== resolveIndexUrl()) throw chatCompatibilityError();
+      writeJsonAtomic(cachedEntryPath, { ...target, dist: distribution });
+      return compatible;
+    };
+    try {
+      const cachedEntry = validateIndex({ [CHAT_ID]: readJson(cachedEntryPath) })[CHAT_ID];
+      if (eligible(cachedEntry) && cachedEntry.dist) {
+        const cached = readPreparedVersion(cacheRoot(cachedEntry.dist.integrity), cachedEntry);
+        const compatible = cached?.integrity === cachedEntry.dist.integrity
+          ? await check(readInstalledState(rootDir, cachedEntry, cached), true) : null;
+        if (compatible && indexUrl === resolveIndexUrl()) {
+          if (next && !semver.lt(next.version, compatible.version)) return { current: compatible, next };
+          // A rebuilt version with different bytes cannot trigger semver-based
+          // background staging. Keep the working package available while the
+          // declared compatible artifact is verified in its own cache.
+          const rebuilt = regularInstall && entry.version === cachedEntry.version && entry.dist
+            && entry.dist.integrity !== cachedEntry.dist.integrity && supportsBlocklyAbs(entry.compatibility);
+          if (rebuilt && !chatCompatibilityRefreshes.has(indexUrl)) {
+            chatCompatibilityRefreshes.add(indexUrl);
+            void prepareReplacement(entry).catch(error => {
+              console.warn('[subapp-manager] compatible Chat refresh deferred:', error.message || error);
+            }).finally(() => chatCompatibilityRefreshes.delete(indexUrl));
+          }
+          return { current: compatible };
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn('[subapp-manager] cached compatible Chat could not be verified:', error.message || error);
+      }
+    }
+    if (next) return { current: next };
+    const catalog = await fetchRemoteIndex(indexUrl, options.fetchImpl);
+    const target = catalog[CHAT_ID];
+    if (!eligible(target) || catalog.dev === true || indexUrl !== resolveIndexUrl()) throw chatCompatibilityError();
+    return { current: await prepareReplacement(target) };
+  }
+
   async function prepareLaunch(payload = {}) {
     const { index } = await loadIndex('cache-first');
     const entry = index[validateId(payload.id)];
     if (!entry) throw new Error('Subapp is not present in the catalog');
+    const compatibleChat = options.requireBlocklyChatCompatibility && entry.id === CHAT_ID
+      ? await prepareBlocklyChat(entry, readInstalledState(rootDir, entry), index.dev !== true) : null;
     // Only serialize the tiny selection/start handshake, never npm extraction.
     const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
     try {
       let installed = readInstalledState(rootDir, entry);
       const runningConfig = options.getRunningSubappConfig?.(entry.id) || null;
+      if (compatibleChat) {
+        if (!installed.installed || pendingUninstalls.has(operationKey(rootDir, entry.id))) throw chatCompatibilityError();
+        const { current, next } = compatibleChat;
+        // A previously verified runtime stays pinned as the catalog moves. The
+        // renderer still checks its live evidence before attaching.
+        if (runningConfig?.blocklyChatFingerprint) return { config: runningConfig, release };
+        const useNext = next && !runningConfig && payload.deferPreparedUpdate !== true;
+        return { config: useNext ? next : current, release };
+      }
       if (!runningConfig && payload.deferPreparedUpdate !== true
         && index.dev !== true && !installed.development && !installed.localNext && installed.installed
         && hasUpdate(installed.installedVersion, entry.version)) {
@@ -3113,6 +3226,8 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getIndexUrl,
     getRunningSubappConfig,
     isCoderProjectOpen,
+    requireBlocklyChatCompatibility,
+    allowBlocklyChatDevelopment,
   } = handlerOptions;
 
   const sendProgress = (progress) => {
@@ -3137,6 +3252,8 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getIndexUrl,
     getRunningSubappConfig,
     isCoderProjectOpen,
+    requireBlocklyChatCompatibility,
+    allowBlocklyChatDevelopment,
     getBusyDialogStrings: () => readSubappBusyDialogStringsFromI18n(),
     forceStopChildToolByCatalogId,
     listChildToolHolders: listChildToolHoldersForCatalogId,
@@ -3181,6 +3298,9 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     const launch = launches.get(token);
     if (launch?.owner === event.sender.id) launch.release();
   });
+  ipcMain.handle('subapp-manager-verify-blockly-chat', (_event, { url, fingerprint } = {}) =>
+    requireBlocklyChatCompatibility === true && verifyBlocklyChatRuntime(url, fingerprint, globalThis.fetch,
+      { allowDevelopment: allowBlocklyChatDevelopment === true }));
 
   ipcMain.handle('subapp-manager-diagnostics', () => defaultManager.diagnostics());
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));

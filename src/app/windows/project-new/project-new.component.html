@@ -17,13 +17,22 @@
         <div class="right-inner flex-start">
           <div class="search-box">
             <div class="search-field">
-              <nz-input-group [nzPrefix]="prefixIconSearch" [nzSize]="'small'">
-                <input #boardSearchInput nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
-                  (ngModelChange)="search()" />
+              <nz-input-group [nzPrefix]="prefixIconSearch" [nzSuffix]="searchActions" [nzSize]="'small'">
+                <input #boardSearchInput nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [ngModel]="keyword"
+                  (ngModelChange)="search($event)" />
               </nz-input-group>
-              <span class="search-shortcut">{{ searchShortcutHint }}</span>
               <ng-template #prefixIconSearch>
                 <i class="fa-light fa-search"></i>
+              </ng-template>
+              <ng-template #searchActions>
+                @if (keyword) {
+                <button class="search-clear" type="button" [attr.aria-label]="'PROJECT_NEW.BOARD.CLEAR_SEARCH' | translate"
+                  [title]="'PROJECT_NEW.BOARD.CLEAR_SEARCH' | translate" (click)="clearBoardSearch()">
+                  <i class="fa-light fa-xmark" aria-hidden="true"></i>
+                </button>
+                } @else {
+                <span class="search-shortcut">{{ searchShortcutHint }}</span>
+                }
               </ng-template>
             </div>
             <div class="btns">
@@ -46,6 +55,10 @@
               </div>
               <div class="name">{{ board._nickname }}</div>
             </div>
+            } @empty {
+            @if (keyword.trim() && !isBoardSearchPending) {
+            <div class="empty-list" role="status">{{ 'BOARD_SELECTOR.EMPTY_LIST' | translate }}</div>
+            }
             }
           </div>
           @if(currentBoard){
@@ -145,19 +158,18 @@
     </div>
     <div class="window-footer">
       <div class="btns">
-        @if (currentStep == 0 && currentBoard?.state !== 'todo') {
-        <button nz-button nzType="primary" (click)="nextStep()">
+        @if (currentStep == 0) {
+        <button nz-button nzType="primary" [disabled]="!canUseSelectedBoard" (click)="nextStep()">
           {{ 'PROJECT_NEW.BUTTONS.NEXT' | translate }}
         </button>
-        } @else {
-        @if (currentStep == 1) {
+        } @else if (currentStep == 1) {
         <button nz-button nzType="default" (click)="currentStep = 0">
           {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
         </button>
-        <button nz-button nzType="primary" [disabled]="showIsExist || showIsPathPassed" (click)="onCreateProject()">
+        <button nz-button nzType="primary" [disabled]="!canUseSelectedBoard || showIsExist || showIsPathPassed"
+          (click)="onCreateProject()">
           {{ 'PROJECT_NEW.BUTTONS.CREATE' | translate }}
         </button>
-        }
         }
         @if (currentStep == 2) {
         <button nz-button nzType="default" nzLoading>

@@ -10,6 +10,9 @@ const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex
 const stable = value => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
 const same = (left, right) => JSON.stringify(stable(left)) === JSON.stringify(stable(right));
+const librarySubmission = (operation, request) => ({
+  operation, requestDigest: digest(JSON.stringify(stable({ operation, request }))),
+});
 const fail = message => Object.assign(new Error(message), { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN' });
 const raw = file => { try { return fs.readFileSync(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const inputNames = ['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock', 'node_modules/.package-lock.json'];
@@ -21,16 +24,118 @@ const inputs = root => Object.fromEntries(inputNames.map(name => {
 }));
 const relevantPackage = environmentManifest;
 const RETAINED_SETTLED_ARCHIVES = 5;
-function programSource(root) {
-  const access = createProjectFileAccess(root, root);
+function programSource(root, access = createProjectFileAccess(root, root)) {
   for (const directory of ['.aily', '.aily/abs-sync']) access.checkDirectory(path.join(root, directory));
   return Object.fromEntries(['project.abi', 'project.abs', 'project.abs.map.json', '.aily/abs-sync/committed.json', '.aily/abs-sync/operation.json']
     .map(name => { const bytes = access.readRegular(path.join(root, name)); return [name, bytes === null ? null : digest(bytes)]; }));
 }
-function programPointer(root) {
-  const access = createProjectFileAccess(root, root);
+function programPointer(root, access = createProjectFileAccess(root, root)) {
   const text = access.readRegular(path.join(root, '.aily/abs-sync/operation.json'));
   return text === null ? null : JSON.parse(text.toString('utf8'));
+}
+
+function parseProgramRecord(bytes) {
+  try { return bytes === null ? null : JSON.parse(bytes.toString('utf8')); }
+  catch { return undefined; }
+}
+
+function programWorkspaceMode(read) {
+  const selected = read('.aily/workspace-mode.json');
+  if (selected === null) return 'overlay-v1';
+  const mode = parseProgramRecord(selected);
+  if (mode?.version === 1 && Object.keys(mode).sort().join(',') === 'mode,version') return mode.mode;
+}
+
+function readAcceptedProgram(root, access, read, committedHash) {
+  const committed = read('.aily/abs-sync/committed.json'), pointer = parseProgramRecord(committed);
+  if (!pointer || digest(committed) !== committedHash || pointer.schemaVersion !== 1
+    || typeof pointer.generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(pointer.generation)) return null;
+  const baselines = '.aily/abs-sync/baselines';
+  try { access.checkDirectory(path.join(root, baselines)); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  const bytes = read(`${baselines}/${pointer.generation}.json`);
+  if (bytes === null || digest(bytes) !== pointer.hash) return null;
+  const baseline = parseProgramRecord(bytes);
+  const accepted = baseline?.schemaVersion === 2 ? baseline.snapshot : baseline?.schemaVersion === 1 ? baseline.projection?.abs : undefined;
+  const context = baseline?.schemaVersion === 2 ? baseline.context : baseline?.projection?.map;
+  const verifyPointer = read('.aily/abs-sync/committed.json');
+  if (typeof accepted !== 'string' || context?.generation !== pointer.generation
+    || typeof context.scope?.projectKey !== 'string' || !path.isAbsolute(context.scope.projectKey)
+    || path.relative(root, context.scope.projectKey) !== '' || typeof context.scope.pageId !== 'string' || !context.scope.pageId
+    || !verifyPointer?.equals(committed)) return null;
+  return { context, absHash: digest(accepted) };
+}
+
+/** The author ABS is an independent draft in project-v1. Verify the accepted
+ * output selected by the locked project instead of using the draft as a mirror. */
+function matchesCurrentProgram(root, result, attachment) {
+  const access = createProjectFileAccess(root, root);
+  const actual = programSource(root, access);
+  const read = relative => access.readRegular(path.join(root, relative));
+  const binding = result.evidence?.binding;
+  if (!binding || binding.abiHash !== actual['project.abi'] || binding.mapHash !== actual['project.abs.map.json']) return false;
+
+  const mode = programWorkspaceMode(read);
+  if (mode === 'overlay-v1') return binding.absHash === actual['project.abs'];
+
+  const proof = result.acceptedSource, generation = binding.generation;
+  if (mode !== 'project-v1' || !access.attachment || proof?.version !== 1 || proof.workspaceMode !== 'project-v1'
+    || !same(proof.attachment, attachment) || !same(proof.attachment, access.attachment) || !same(proof.binding, binding)
+    || typeof generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(generation)
+    || result.publication.generation !== generation || typeof binding.scope?.projectKey !== 'string'
+    || !path.isAbsolute(binding.scope.projectKey) || path.relative(access.attachment.root, binding.scope.projectKey) !== ''
+    || typeof binding.scope.pageId !== 'string' || !binding.scope.pageId) return false;
+
+  if (actual['.aily/abs-sync/committed.json'] !== proof.committedHash) return false;
+  const accepted = readAcceptedProgram(root, access, read, proof.committedHash);
+  return accepted?.context.generation === generation && same(accepted.context.scope, binding.scope)
+    && accepted.absHash === binding.absHash;
+}
+
+/** Compare the exact old published bytes and preserve the current draft as a
+ * separate witness. The author exception requires a verified accepted head. */
+function matchesAuthorDraftProgram(root, access, actual) {
+  const read = relative => access.readRegular(path.join(root, relative));
+  if (programWorkspaceMode(read) !== 'project-v1' || !actual['project.abi']) return false;
+  const accepted = readAcceptedProgram(root, access, read, actual['.aily/abs-sync/committed.json']);
+  const map = parseProgramRecord(read('project.abs.map.json'));
+  return !!accepted && map?.generation === accepted.context.generation && same(map.scope, accepted.context.scope)
+    && map.savedAbiHash === accepted.context.savedAbiHash && map.baseAbsHash === accepted.absHash;
+}
+
+function matchesOriginalProgram(root, access, original, actual) {
+  if (!original) return false;
+  const unchanged = Object.keys(original).filter(name => !['project.abs', '.aily/abs-sync/operation.json'].includes(name))
+    .every(name => original[name] === actual[name]);
+  return unchanged && (original['project.abs'] === actual['project.abs'] || matchesAuthorDraftProgram(root, access, actual));
+}
+
+/** An admitted successor may retain a different author draft from the one it
+ * opened with. Check its immutable request and source snapshot under Main's lock. */
+function matchesNativeSuccessor(root, access, pointer, successor, actual) {
+  const ref = successor?.ref, requestId = ref?.request?.requestId;
+  if (successor?.kind !== 'native-admission' || ref?.request?.version !== 2
+    || typeof requestId !== 'string' || !/^pub2-[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/.test(requestId)
+    || ref.operationId !== pointer.id || successor.snapshotHash !== pointer.hash
+    || !['pending', 'restored', 'completed'].includes(pointer.state) || !same(ref.attachment, access.attachment)) return false;
+  const folder = path.join(root, '.aily/abs-sync/recoveries');
+  const snapshotBytes = access.readRegular(path.join(folder, `operation-${pointer.id}.json`));
+  if (snapshotBytes === null || digest(snapshotBytes) !== pointer.hash) return false;
+  const snapshot = parseProgramRecord(snapshotBytes);
+  const requestKey = digest('native-save-v2\0' + requestId).slice(7);
+  const index = parseProgramRecord(access.readRegular(path.join(folder, `request-${requestKey}.json`)));
+  if (snapshot?.version !== 1 || snapshot.kind !== 'document-save' || snapshot.id !== pointer.id || snapshot.project !== root
+    || !same(snapshot.nativeSave, ref.request) || !same(snapshot.attachment, ref.attachment) || !same(snapshot.executor, ref.executor)
+    || index?.version !== 2 || index.kind !== 'native-save' || index.project !== root || index.operationId !== pointer.id
+    || index.snapshotHash !== pointer.hash || !same(index.request, ref.request)
+    || !same(index.attachment, ref.attachment) || !same(index.executor, ref.executor)) return false;
+
+  const hash = value => typeof value === 'string' ? digest(value) : value === null ? null : undefined;
+  const committed = pointer.sourceCommitted ?? snapshot.committed, disk = snapshot.disk;
+  if (!disk || hash(disk.abi) !== actual['project.abi'] || hash(disk.map) !== actual['project.abs.map.json']
+    || hash(committed) !== actual['.aily/abs-sync/committed.json']
+    || pointer.sourceCommitted !== undefined && pointer.sourceAbiHash !== actual['project.abi']) return false;
+  return hash(disk.abs) === actual['project.abs'] || matchesAuthorDraftProgram(root, access, actual);
 }
 
 function directory(root, relative) {
@@ -62,6 +167,24 @@ function readRecord(file) {
   const record = JSON.parse(raw(file));
   if (record.version !== 1 || record.hash !== digest(JSON.stringify(record.payload))) throw fail('Dependency checkpoint checksum changed.');
   return record.payload;
+}
+
+function readEnvironmentResult(folder, record, name = 'result.json') {
+  const result = readRecord(path.join(folder, name));
+  if (result.version !== 1 || result.requestId !== record.requestId || result.candidateApplied !== false
+    || !['completed', 'restored'].includes(result.status) || (name === 'restoration.json' && result.status !== 'restored')
+    || !Array.isArray(result.trees) || result.trees.some(value => logicalRoot(value.relative) !== value.relative)
+    || new Set(result.trees.map(value => value.relative)).size !== result.trees.length) {
+    throw fail('The original environment terminal changed.');
+  }
+  return result;
+}
+
+function readLinkedResolution(folder, record) {
+  const result = readRecord(path.join(folder, 'program-resolution.json'));
+  if (result.version !== 1 || result.requestId !== record.requestId || !same(result.programRef, record.request.programRef)
+    || !['retained', 'restored', 'superseded'].includes(result.status)) throw fail('The linked environment resolution changed.');
+  return result;
 }
 
 /** Promote nested npm changes to their owned top-level package. A linked leaf
@@ -151,6 +274,39 @@ class LibraryEnvironmentJournal {
   assertOriginal(operation) {
     if (!same(readRecord(path.join(operation.folder, 'checkpoint.json')), operation.record)) throw fail('The original environment checkpoint changed.');
   }
+  publishCheckpoint(root, record) {
+    const base = this.base(root);
+    const folder = path.join(base, `environment-${digest(record.requestId).slice(7)}`);
+    const staging = fs.mkdtempSync(path.join(base, '.environment-'));
+    const checkpoint = path.join(staging, 'checkpoint.json');
+    try {
+      immutable(checkpoint, record);
+      // Execution and admission refusal compete for the same nonempty,
+      // atomically published directory. A refusal cannot replace a writer.
+      try { fs.renameSync(staging, folder); }
+      catch (error) {
+        if (fs.existsSync(path.join(folder, 'checkpoint.json'))) return false;
+        throw error;
+      }
+      return true;
+    } finally {
+      try { fs.unlinkSync(checkpoint); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try { fs.rmdirSync(staging); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+  rejectAdmission(root, request, submission, error) {
+    if (this.find(root, request.requestId)) return false;
+    return this.publishCheckpoint(root, {
+      version: 1, requestId: request.requestId, project: root, attachment: rootAttachment(root), executor: storageExecutor(),
+      request, submission, admission: { status: 'NOT_STARTED', ...submission },
+      code: error.code, message: error.message, createdAt: Date.now(),
+    });
+  }
+  assertAdmission(folder, record) {
+    if (record.admission.status !== 'NOT_STARTED' || !same(record.submission, librarySubmission(record.admission.operation, record.request))
+      || !same(record.admission, { status: 'NOT_STARTED', ...record.submission })
+      || fs.readdirSync(folder).some(name => name !== 'checkpoint.json')) throw fail('The dependency admission terminal changed.');
+  }
   pending(root) {
     const base = path.join(root, '.aily/dependency-recovery');
     if (!fs.existsSync(base)) return [];
@@ -162,21 +318,19 @@ class LibraryEnvironmentJournal {
       if (!fs.existsSync(checkpoint)) return null;
       const record = readRecord(checkpoint);
       if (name !== `environment-${digest(record.requestId).slice(7)}`) throw fail('Dependency request index changed.');
+      if (record.admission) { this.assertAdmission(folder, record); return null; }
       if (fs.existsSync(path.join(folder, 'result.json'))) {
-        const result = readRecord(path.join(folder, 'result.json'));
-        if (result.version !== 1 || result.requestId !== record.requestId || !['completed', 'restored'].includes(result.status)) throw fail('The original environment terminal changed.');
+        readEnvironmentResult(folder, record);
         if (!record.request.programRef) return null;
         if (fs.existsSync(path.join(folder, 'program-resolution.json'))) {
-          const resolved = readRecord(path.join(folder, 'program-resolution.json'));
-          if (resolved.version !== 1 || resolved.requestId !== record.requestId || !same(resolved.programRef, record.request.programRef)
-            || !['retained', 'restored', 'superseded'].includes(resolved.status)) throw fail('The linked environment resolution changed.');
+          readLinkedResolution(folder, record);
           return null;
         }
       }
       return { folder, record };
     }).filter(Boolean);
   }
-  begin(root, request, state, assertCurrent) {
+  begin(root, request, state, assertCurrent, submission) {
     if (this.owned.has(root)) {
       const owned = this.owned.get(root);
       if (request.requestId && request.requestId !== owned.record.requestId) throw fail('Another original environment request is still pending.');
@@ -185,16 +339,17 @@ class LibraryEnvironmentJournal {
     assertCurrent();
     const requestId = request.requestId ?? randomUUID();
     if (typeof requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) throw fail('Invalid original dependency request.');
-    const folder = directory(root, `.aily/dependency-recovery/environment-${digest(requestId).slice(7)}`);
+    const folder = path.join(this.base(root), `environment-${digest(requestId).slice(7)}`);
     if (fs.existsSync(path.join(folder, 'checkpoint.json'))) throw fail('An original dependency request must be observed, never executed again.');
     const record = JSON.parse(JSON.stringify({ version: 1, requestId, project: root, attachment: rootAttachment(root), executor: storageExecutor(),
-      request, before: inputs(root), state: state ?? null, createdAt: Date.now(),
+      request, before: inputs(root), state: state ?? null, createdAt: Date.now(), ...(submission ? { submission } : {}),
       ...(request.programRef ? { programSource: programSource(root), programPointer: programPointer(root) } : {}) }));
     if (request.programRef && (!same(request.programRef.attachment, record.attachment)
       || record.programPointer?.id !== request.programRef.operationId || record.programPointer?.state !== 'pending')) {
       throw fail('The environment must attach to its currently admitted native Working checkpoint.');
     }
-    immutable(path.join(folder, 'checkpoint.json'), record); assertCurrent();
+    if (!this.publishCheckpoint(root, record)) throw fail('An original dependency request must be observed, never executed again.');
+    assertCurrent();
     const operation = { folder, record }; this.owned.set(root, operation); return operation;
   }
   beginAttempt(root, state, assertCurrent) {
@@ -278,18 +433,27 @@ class LibraryEnvironmentJournal {
       if (!/^environment-[0-9a-f]{64}$/.test(name)) continue;
       const folder = path.join(base, name);
       try {
-        if (!fs.lstatSync(folder).isDirectory() || !fs.existsSync(path.join(folder, 'result.json'))) continue;
+        const stat = fs.lstatSync(folder);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || !fs.existsSync(path.join(folder, 'result.json'))) continue;
         const record = readRecord(path.join(folder, 'checkpoint.json'));
-        if (record.request?.programRef && !fs.existsSync(path.join(folder, 'program-resolution.json'))) continue;
-        settled.push({ folder, createdAt: record.createdAt || 0 });
+        if (record.project !== root || name !== `environment-${digest(record.requestId).slice(7)}`
+          || (record.request?.programRef && !fs.existsSync(path.join(folder, 'program-resolution.json')))) continue;
+        settled.push({ folder, record });
       } catch { /* An unreadable operation stays for recovery to report. */ }
     }
-    settled.sort((left, right) => right.createdAt - left.createdAt);
-    for (const { folder } of settled.slice(keep)) {
+    settled.sort((left, right) => (right.record.createdAt || 0) - (left.record.createdAt || 0));
+    for (const { folder, record } of settled.slice(keep)) {
       if (active.has(path.basename(folder))) continue;
-      for (const name of ['trees', 'attempts']) {
-        const data = path.join(folder, name);
-        if (fs.lstatSync(data, { throwIfNoEntry: false })?.isDirectory()) {
+      const archives = ['trees', 'attempts'].map(name => path.join(folder, name))
+        .filter(data => fs.lstatSync(data, { throwIfNoEntry: false })?.isDirectory());
+      if (archives.length) {
+        try {
+          this.assertAttachment(root, record);
+          readEnvironmentResult(folder, record);
+          if (fs.existsSync(path.join(folder, 'restoration.json'))) readEnvironmentResult(folder, record, 'restoration.json');
+          if (record.request?.programRef) readLinkedResolution(folder, record);
+        } catch { continue; } // Preserve rollback bytes until the terminal is independently readable.
+        for (const data of archives) {
           try { fs.renameSync(data, path.join(folder, `pruned-${randomUUID()}`)); } catch { /* Retried on the next completion. */ }
         }
       }
@@ -401,15 +565,16 @@ class LibraryEnvironmentJournal {
     this.latest.set(root, result);
     return { result, state: operation.record.state };
   }
-  settle(root, assertCurrent, { read = false } = {}) {
+  settle(root, assertCurrent, { read = false, reader } = {}) {
     if (this.owned.has(root)) return undefined;
     let state;
     for (const operation of this.pending(root)) {
       this.assertAttachment(root, operation.record);
       if (operation.record.request.programRef) {
         const result = path.join(operation.folder, 'result.json');
+        const publisher = operation.record.request.programRef.executor;
         if (read && fs.existsSync(result)
-          && observeStorageExecutor(operation.record.request.programRef.executor).state === 'active') {
+          && ((reader && same(reader, publisher)) || observeStorageExecutor(publisher).state === 'active')) {
           this.latest.set(root, readRecord(result));
           continue; // The active publisher may read its completed environment.
         }
@@ -431,6 +596,16 @@ class LibraryEnvironmentJournal {
       requestId: value.record.requestId, programRef: value.record.request.programRef,
     }));
   }
+  currentMainCompleted(root, { folder, record }) {
+    const main = storageExecutor(), source = record.request.programRef.executor;
+    if (main.hostPid !== main.storagePid || !same(record.executor, main)
+      || source.hostPid !== main.hostPid || source.storagePid === main.storagePid
+      || this.owned.get(root)?.record.requestId === record.requestId
+      || this.attempts.get(root)?.some(attempt => path.dirname(path.dirname(attempt.folder)) === folder)
+      || !fs.existsSync(path.join(folder, 'result.json'))) return false;
+    const completed = this.observe(root, record.requestId);
+    return completed.status === 'completed' && completed.current === true;
+  }
   settleLinked(root, request, assertCurrent) {
     const operation = this.find(root, request?.requestId);
     if (!operation || !same(operation.record.request.programRef, request.programRef)) throw fail('The linked original environment request changed.');
@@ -439,26 +614,27 @@ class LibraryEnvironmentJournal {
     if (fs.existsSync(resolution)) return this.observe(root, request.requestId);
     const ref = operation.record.request.programRef, observation = request.observation;
     if (observation?.state === 'completed' && same(observation.ref, ref) && observation.result?.publication?.status === 'COMMITTED') {
-      const binding = observation.result.evidence?.binding, actual = programSource(root);
-      if (observation.current === true && (!binding || binding.abiHash !== actual['project.abi']
-        || binding.absHash !== actual['project.abs'] || binding.mapHash !== actual['project.abs.map.json'])) throw fail('The committed program/environment attachment is no longer current.');
+      if (observation.current !== true) programSource(root);
+      else if (!matchesCurrentProgram(root, observation.result, operation.record.attachment)) {
+        throw fail('The committed program/environment attachment is no longer current.');
+      }
       if (!fs.existsSync(path.join(operation.folder, 'result.json'))) throw fail('Program commit did not complete the original environment.');
+      assertCurrent();
       immutable(resolution, { version: 1, requestId: request.requestId, status: 'retained', programRef: ref, current: observation.current === true });
       const result = this.observe(root, request.requestId); this.latest.set(root, result); return result;
     }
     if (observation?.state === 'completed' && same(observation.ref, ref) && observation.result?.publication?.status === 'NOT_COMMITTED') {
-      const actual = programSource(root), pointer = programPointer(root), original = operation.record.programPointer;
+      const access = createProjectFileAccess(root, root);
+      const actual = programSource(root, access), pointer = programPointer(root, access), original = operation.record.programPointer;
       if (pointer?.version === 1 && /^[0-9a-f-]{36}$/.test(pointer.id || '') && /^sha256:[0-9a-f]{64}$/.test(pointer.hash || '')
         && pointer.id !== ref.operationId && this.observe(root, request.requestId).current === true) {
         const successor = request.successor, saved = successor?.saved;
         const stamped = { 'project.abi': saved?.abiHash, 'project.abs': saved?.absHash, 'project.abs.map.json': saved?.mapHash,
           '.aily/abs-sync/committed.json': saved?.committedHash, '.aily/abs-sync/operation.json': saved?.operationPointerHash };
-        const native = successor?.kind === 'native-admission' && successor.ref?.request?.version === 2
-          && successor.ref.operationId === pointer.id && successor.snapshotHash === pointer.hash
-          && same(successor.ref.attachment, ref.attachment);
         const published = successor?.kind === 'complete-published-successor' && /^sha256:[0-9a-f]{64}$/.test(saved?.committedHash || '')
           && saved.committedHash !== operation.record.programSource['.aily/abs-sync/committed.json'];
-        if (successor?.version === 1 && same(successor.attachment, ref.attachment) && same(actual, stamped) && (native || published)) {
+        if (successor?.version === 1 && same(successor.attachment, ref.attachment) && same(actual, stamped)
+          && (published || matchesNativeSuccessor(root, access, pointer, successor, actual))) {
           immutable(resolution, { version: 1, requestId: request.requestId, status: 'superseded', programRef: ref,
             successor, candidateApplied: false });
           return { ...this.observe(root, request.requestId), current: false, superseded: true };
@@ -466,8 +642,7 @@ class LibraryEnvironmentJournal {
       }
       if (!original || pointer?.version !== 1 || pointer.id !== ref.operationId || pointer.id !== original.id
         || pointer.hash !== original.hash || !['pending', 'restored'].includes(pointer.state)
-        || Object.keys(operation.record.programSource).filter(name => name !== '.aily/abs-sync/operation.json')
-          .some(name => operation.record.programSource[name] !== actual[name])) throw fail('A newer source owner superseded the failed original environment operation.');
+        || !matchesOriginalProgram(root, access, operation.record.programSource, actual)) throw fail('A newer source owner superseded the failed original environment operation.');
       const restored = this.restore(root, operation, assertCurrent);
       if (!same(programSource(root), actual)) throw fail('The failed original source changed during environment restoration.');
       immutable(resolution, { version: 1, requestId: request.requestId, status: 'restored', programRef: ref, publication: 'NOT_COMMITTED' });
@@ -478,14 +653,18 @@ class LibraryEnvironmentJournal {
       || fact.requestId !== ref.request.requestId || fact.operationId !== ref.operationId || !same(fact.attachment, ref.attachment)
       || !same(fact.originalExecutor, ref.executor) || fact.oldWriter?.state !== 'exited'
       || !/^sha256:[0-9a-f]{64}$/.test(fact.snapshotHash || '') || !source
-      || observeStorageExecutor(ref.executor).state !== 'exited' || observeStorageExecutor(operation.record.executor).state !== 'exited') {
+      || observeStorageExecutor(ref.executor).state !== 'exited'
+      || (observeStorageExecutor(operation.record.executor).state !== 'exited' && !this.currentMainCompleted(root, operation))) {
       throw fail('The original source publication is still uncertain; its environment was retained.');
     }
     const expected = { 'project.abi': fact.saved?.abiHash, 'project.abs': fact.saved?.absHash,
       'project.abs.map.json': fact.saved?.mapHash, '.aily/abs-sync/committed.json': fact.saved?.committedHash,
       '.aily/abs-sync/operation.json': fact.saved?.operationPointerHash };
-    const actual = programSource(root);
-    if (!same(actual, expected) || Object.keys(source).filter(name => name !== '.aily/abs-sync/operation.json').some(name => source[name] !== actual[name])) {
+    const access = createProjectFileAccess(root, root);
+    const actual = programSource(root, access), pointer = programPointer(root, access), original = operation.record.programPointer;
+    if (!original || pointer?.version !== 1 || pointer.id !== ref.operationId || pointer.id !== original.id
+      || pointer.hash !== original.hash || pointer.hash !== fact.snapshotHash || !['pending', 'restored'].includes(pointer.state)
+      || !same(actual, expected) || !matchesOriginalProgram(root, access, source, actual)) {
       throw fail('The unpublished source or recovery pointer changed after native observation.');
     }
     const restored = this.restore(root, operation, assertCurrent);
@@ -502,7 +681,8 @@ class LibraryEnvironmentJournal {
     if (!fs.existsSync(checkpoint)) return null;
     directory(root, path.relative(root, folder).replace(/\\/g, '/'));
     const record = readRecord(checkpoint); this.assertAttachment(root, record);
-    if (record.requestId !== requestId) throw fail('Dependency request binding changed.');
+    if (record.requestId !== requestId || record.project !== root) throw fail('Dependency request binding changed.');
+    if (record.admission) this.assertAdmission(folder, record);
     return { folder, record };
   }
   observe(root, requestId) {
@@ -510,8 +690,10 @@ class LibraryEnvironmentJournal {
     if (!original) return { status: 'unknown', requestId, current: false, candidateApplied: false };
     const { folder, record } = original;
     const identity = { version: 1, project: root, attachment: record.attachment, executor: record.executor, observer: storageExecutor() };
+    if (record.admission) return { ...identity, status: 'not-started', requestId, current: false, candidateApplied: false,
+      admission: record.admission, code: record.code, message: record.message };
     if (!fs.existsSync(path.join(folder, 'result.json'))) return { ...identity, status: 'unknown', requestId, current: false, candidateApplied: false };
-    const result = readRecord(path.join(folder, fs.existsSync(path.join(folder, 'restoration.json')) ? 'restoration.json' : 'result.json'));
+    const result = readEnvironmentResult(folder, record, fs.existsSync(path.join(folder, 'restoration.json')) ? 'restoration.json' : 'result.json');
     const actual = inputs(root), expected = result.after ?? record.before;
     let current = ['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock'].every(name => name === 'package.json'
       ? same(relevantPackage(actual[name]), relevantPackage(expected[name])) : actual[name] === expected[name]);
@@ -535,4 +717,4 @@ class LibraryEnvironmentJournal {
   }
 }
 
-module.exports = { LibraryEnvironmentJournal, logicalRoot, tree };
+module.exports = { LibraryEnvironmentJournal, librarySubmission, logicalRoot, tree };
