@@ -559,6 +559,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     diagnostics: () => ipcRenderer.invoke('subapp-manager-diagnostics'),
     prepareLaunch: (options) => ipcRenderer.invoke("subapp-manager-prepare-launch", options),
     finishLaunch: (token) => ipcRenderer.invoke("subapp-manager-finish-launch", token),
+    verifyBlocklyChat: (options) => ipcRenderer.invoke("subapp-manager-verify-blockly-chat", options),
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
     install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
     reinstall: (options) => ipcRenderer.invoke("subapp-manager-reinstall", options),

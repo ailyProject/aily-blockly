@@ -17,9 +17,34 @@ const {
 const { npmTarball, portableSubappTarball } = require('./fixtures/npm-tarball-fixture');
 const http = require('node:http');
 const { acquireInstallLock } = require('../../electron/subapp-install-lock');
+const { verifyBlocklyChatRuntime } = require('../../electron/blockly-chat-compatibility');
 
 const ID = 'aily-chat';
 const PACKAGE = '@aily-project/subapp-aily-chat';
+const compatibility = {
+  version: 1,
+  blocklyAbs: { generation: 2, absSchema: 2, workingCandidateVersion: 1, publicMapSchemas: [1, 2], legacyDraftTakeover: 1 },
+};
+const sha256 = value => createHash('sha256').update(value).digest('hex');
+
+function compatibleChatArchive(version, { tampered = false, declaration = compatibility, ui = 'updated Chat' } = {}) {
+  const files = {
+    'package.json': JSON.stringify({
+      name: PACKAGE, version, main: 'server/index.js',
+      aily: { uiIndex: 'ui/index.html' },
+      ailySubapp: { id: ID, compatibility: declaration },
+      ailyPortable: { version: 1, format: 'js' },
+    }),
+    'server/index.js': 'module.exports=1', 'runtime/agent/index.js': 'module.exports=2',
+    'ui/index.html': ui, 'i18n/en.json': '{}', 'vendor/runtime.js': 'module.exports=3',
+  };
+  const inputs = { 'index.js': sha256('source') };
+  const outputs = Object.fromEntries(Object.entries(files).map(([file, content]) => [file, sha256(content)]));
+  const fingerprint = { inputHash: sha256(JSON.stringify(inputs)), outputHash: sha256(JSON.stringify(outputs)) };
+  files['runtime/build-evidence.json'] = JSON.stringify({ version: 1, ...fingerprint, inputs, outputs });
+  if (tampered) files['runtime/agent/index.js'] = 'tampered';
+  return { archive: npmTarball(files), fingerprint };
+}
 
 function integrity(buffer) {
   return `sha512-${createHash('sha512').update(buffer).digest('base64')}`;
@@ -111,6 +136,219 @@ function fixture(t, options = {}) {
     manager: createSubappManager(managerOptions),
   };
 }
+
+test('Blockly launch replaces an old same-version Chat with a verified artifact without switching the shared selection', async t => {
+  const version = '0.1.53';
+  const f = fixture(t, { version });
+  await f.manager.install({ id: ID });
+  const selected = readInstalledState(f.rootDir, f.entry);
+  const active = fs.readFileSync(versions.activePath(f.rootDir, f.entry), 'utf8');
+  const compatible = compatibleChatArchive(version);
+  const entry = catalogEntry(version, compatible.archive);
+  let network = 0;
+  let downloads = 0;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    fetchImpl: async () => {
+      network++;
+      return { ok: true, text: async () => JSON.stringify({ [ID]: entry }) };
+    },
+    downloadFile: async (_url, destination) => {
+      downloads++;
+      fs.writeFileSync(destination, compatible.archive);
+    },
+  });
+
+  const replacement = await manager.prepareLaunch({ id: ID, deferPreparedUpdate: true });
+  replacement.release();
+  assert.equal(replacement.config.version, selected.installedVersion);
+  assert.deepEqual(replacement.config.blocklyChatFingerprint, compatible.fingerprint);
+  assert.notEqual(replacement.config.packagePath, selected.packagePath);
+  assert.equal(replacement.config.env.AILY_SUBAPP_INSTALL_ROOT, f.rootDir);
+  assert.equal(replacement.config.env.AILY_SUBAPP_SOURCE, 'blockly-compatibility');
+  assert.equal(fs.readFileSync(versions.activePath(f.rootDir, f.entry), 'utf8'), active);
+  assert.equal(readInstalledState(f.rootDir, f.entry).packagePath, selected.packagePath);
+  assert.equal(downloads, 1);
+  assert.equal(network, 1);
+
+  const cached = await manager.prepareLaunch({ id: ID });
+  cached.release();
+  assert.equal(cached.config.packagePath, replacement.config.packagePath);
+  assert.equal(network, 1);
+  assert.equal(downloads, 1);
+  assert.ok(f.calls.every(call => call.args[0] !== 'install'));
+});
+
+test('Blockly Chat must attest draft takeover and an unchanged portable payload', async t => {
+  const noTakeover = { ...compatibility, blocklyAbs: { ...compatibility.blocklyAbs, legacyDraftTakeover: 0 } };
+  for (const options of [{ declaration: noTakeover }, { tampered: true }]) {
+    await t.test(JSON.stringify(options), async t => {
+      const version = '0.1.53';
+      const { archive } = compatibleChatArchive(version, options);
+      const f = fixture(t, { version, archive, managerOptions: { requireBlocklyChatCompatibility: true } });
+      writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), version);
+      await assert.rejects(f.manager.prepareLaunch({ id: ID }), { code: 'BLOCKLY_CHAT_INCOMPATIBLE' });
+      assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, version);
+    });
+  }
+});
+
+test('Blockly uses its verified fallback across restarts without rewriting a linked development catalog', async t => {
+  const version = '0.1.53';
+  const compatible = compatibleChatArchive(version);
+  const f = fixture(t, { version, archive: compatible.archive });
+  const link = packagePathFor(f.rootDir, PACKAGE);
+  const oldSource = path.join(f.temporary, 'prior Chat');
+  writeRunnablePackage(oldSource, version);
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(oldSource, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const catalogPath = path.join(f.rootDir, 'subapp-index.json');
+  const content = JSON.stringify({ [ID]: catalogEntry(version, Buffer.from('prior artifact')), dev: true });
+  fs.writeFileSync(catalogPath, content);
+
+  const options = { ...f.managerOptions, requireBlocklyChatCompatibility: true };
+  const online = await createSubappManager(options).prepareLaunch({ id: ID });
+  online.release();
+  const offline = await createSubappManager({
+    ...options,
+    fetchImpl: async () => { throw new Error('offline'); },
+  }).prepareLaunch({ id: ID });
+  offline.release();
+  assert.equal(offline.config.packagePath, online.config.packagePath);
+  assert.deepEqual(offline.config.blocklyChatFingerprint, compatible.fingerprint);
+  assert.equal(fs.readFileSync(catalogPath, 'utf8'), content);
+  assert.equal(fs.realpathSync(link), fs.realpathSync(oldSource));
+  assert.equal(f.downloads.length, 1);
+});
+
+test('Blockly uses a verified newer prepared Chat only when idle and keeps it pinned across windows', async t => {
+  const currentVersion = '0.1.53';
+  const nextVersion = '0.1.54';
+  const current = compatibleChatArchive(currentVersion);
+  const next = compatibleChatArchive(nextVersion);
+  const f = fixture(t, { version: currentVersion, archive: current.archive });
+  await f.manager.install({ id: ID });
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const active = fs.readFileSync(activePath, 'utf8');
+  const target = catalogEntry(nextVersion, next.archive);
+  let running = null;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    getRunningSubappConfig: () => running,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: target }) }),
+    downloadFile: async (_url, destination) => fs.writeFileSync(destination, next.archive),
+  });
+  await manager.list({ refresh: true });
+  await manager.downloadUpdate({ id: ID });
+  const selected = async (options = {}) => {
+    const launch = await manager.prepareLaunch({ id: ID, ...options });
+    launch.release();
+    return launch.config;
+  };
+
+  const deferred = await selected({ deferPreparedUpdate: true });
+  assert.equal(deferred.version, currentVersion);
+  assert.deepEqual(deferred.blocklyChatFingerprint, current.fingerprint);
+  running = deferred;
+  assert.equal((await selected()).version, currentVersion);
+
+  running = null;
+  const upgraded = await selected();
+  assert.equal(upgraded.version, nextVersion);
+  assert.deepEqual(upgraded.blocklyChatFingerprint, next.fingerprint);
+  assert.equal(upgraded.env.AILY_SUBAPP_SOURCE, 'blockly-compatibility');
+  running = upgraded;
+  assert.deepEqual(await selected({ deferPreparedUpdate: true }), upgraded);
+  assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+});
+
+test('Blockly advances a compatible fallback after ordinary background staging without touching the shared selector', async t => {
+  const version = '0.1.53';
+  const f = fixture(t, { version });
+  await f.manager.install({ id: ID });
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const active = fs.readFileSync(activePath, 'utf8');
+  const fallback = compatibleChatArchive(version);
+  const upgrade = compatibleChatArchive('0.1.54');
+  let target = catalogEntry(version, fallback.archive);
+  let archive = fallback.archive;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: target }) }),
+    downloadFile: async (_url, destination) => fs.writeFileSync(destination, archive),
+  });
+  const select = async options => {
+    const launch = await manager.prepareLaunch({ id: ID, ...options });
+    launch.release();
+    return launch.config;
+  };
+  assert.deepEqual((await select()).blocklyChatFingerprint, fallback.fingerprint);
+
+  target = catalogEntry('0.1.54', upgrade.archive);
+  archive = upgrade.archive;
+  await manager.list({ refresh: true });
+  await manager.downloadUpdate({ id: ID });
+  assert.deepEqual((await select({ deferPreparedUpdate: true })).blocklyChatFingerprint, fallback.fingerprint);
+  assert.deepEqual((await select()).blocklyChatFingerprint, upgrade.fingerprint);
+  assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+});
+
+test('Blockly stages a changed same-version compatibility digest behind the verified fallback', async t => {
+  const version = '0.1.53';
+  const f = fixture(t, { version });
+  await f.manager.install({ id: ID });
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const active = fs.readFileSync(activePath, 'utf8');
+  const fallback = compatibleChatArchive(version);
+  const rebuilt = compatibleChatArchive(version, { ui: 'second compatible Chat' });
+  let target = catalogEntry(version, fallback.archive, { compatibility });
+  let archive = fallback.archive;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: target }) }),
+    downloadFile: async (_url, destination) => fs.writeFileSync(destination, archive),
+  });
+  const select = async () => {
+    const launch = await manager.prepareLaunch({ id: ID });
+    launch.release();
+    return launch.config.blocklyChatFingerprint;
+  };
+  assert.deepEqual(await select(), fallback.fingerprint);
+
+  target = catalogEntry(version, rebuilt.archive, { compatibility });
+  archive = rebuilt.archive;
+  await manager.list({ refresh: true });
+  assert.deepEqual(await select(), fallback.fingerprint);
+  const deadline = Date.now() + 5000;
+  let selected;
+  do {
+    await new Promise(resolve => setTimeout(resolve, 40));
+    selected = await select();
+  } while (selected.outputHash !== rebuilt.fingerprint.outputHash && Date.now() < deadline);
+  assert.deepEqual(selected, rebuilt.fingerprint);
+  assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+});
+
+test('Blockly Chat verifies the live process fingerprint and capabilities against the selected artifact', async () => {
+  const { fingerprint } = compatibleChatArchive('0.1.53');
+  const health = { ok: true, state: 'ready', compatibility, buildEvidence: { version: 1, ...fingerprint } };
+  const url = 'http://127.0.0.1:3234/';
+  const response = body => async (target, options) => {
+    assert.equal(target.href, `${url}health`);
+    assert.equal(options.redirect, 'error');
+    return { ok: true, json: async () => body };
+  };
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response(health)), true);
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response({ ...health, compatibility: undefined })), false);
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response({
+    ...health, buildEvidence: { ...health.buildEvidence, outputHash: 'a'.repeat(64) },
+  })), false);
+  assert.equal(await verifyBlocklyChatRuntime('http://192.0.2.5:3234/', fingerprint, response(health)), false);
+});
 
 test('Agent repair keeps the installed version even when the catalog has a newer release', async t => {
   const oldVersion = '0.1.32';
