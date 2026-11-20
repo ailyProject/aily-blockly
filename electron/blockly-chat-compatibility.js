@@ -67,8 +67,9 @@ async function verifyBlocklyChatArtifact(packagePath, entries) {
   }
 }
 
-async function verifyBlocklyChatRuntime(url, expected, fetchImpl = globalThis.fetch) {
-  if (!isHash(expected?.inputHash) || !isHash(expected?.outputHash)) return false;
+async function verifyBlocklyChatRuntime(url, expected, fetchImpl = globalThis.fetch, { allowDevelopment = false } = {}) {
+  const development = allowDevelopment && expected?.development === true;
+  if (!development && (!isHash(expected?.inputHash) || !isHash(expected?.outputHash))) return false;
   try {
     const origin = new URL(url);
     if (origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1' || !origin.port
@@ -81,7 +82,7 @@ async function verifyBlocklyChatRuntime(url, expected, fetchImpl = globalThis.fe
     const health = await response.json();
     const build = health?.buildEvidence;
     return health?.ok === true && health?.state === 'ready' && supportsBlocklyAbs(health.compatibility)
-      && build?.version === 1 && build.inputHash === expected.inputHash && build.outputHash === expected.outputHash;
+      && (development || (build?.version === 1 && build.inputHash === expected.inputHash && build.outputHash === expected.outputHash));
   } catch {
     return false;
   }

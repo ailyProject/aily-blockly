@@ -222,6 +222,28 @@ test('Blockly uses its verified fallback across restarts without rewriting a lin
   assert.equal(f.downloads.length, 1);
 });
 
+test('a source development host launches the selected compatible Chat link without downloading a release', async t => {
+  const f = fixture(t, { version: '0.1.53', managerOptions: {
+    requireBlocklyChatCompatibility: true, allowBlocklyChatDevelopment: true,
+  } });
+  const entry = { ...f.entry, version: '0.1.53-dev' };
+  const candidate = versions.createCandidate(f.rootDir, entry);
+  writeRunnablePackage(candidate.source, entry.version);
+  const manifestPath = path.join(candidate.source, 'package.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, ailySubapp: { compatibility } }));
+  const development = await versions.publishCandidate(f.rootDir, entry, candidate, { installMode: 'development' });
+  versions.activate(f.rootDir, entry, development, { mode: 'pinned' });
+
+  const launch = await f.manager.prepareLaunch({ id: ID });
+  launch.release();
+  assert.equal(launch.config.version, entry.version);
+  assert.deepEqual(launch.config.blocklyChatFingerprint, { development: true });
+  assert.equal(f.downloads.length, 0);
+  const releaseHost = createSubappManager({ ...f.managerOptions, allowBlocklyChatDevelopment: false });
+  await assert.rejects(releaseHost.prepareLaunch({ id: ID }), { code: 'BLOCKLY_CHAT_INCOMPATIBLE' });
+});
+
 test('Blockly uses a verified newer prepared Chat only when idle and keeps it pinned across windows', async t => {
   const currentVersion = '0.1.53';
   const nextVersion = '0.1.54';
@@ -344,6 +366,12 @@ test('Blockly Chat verifies the live process fingerprint and capabilities agains
   };
   assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response(health)), true);
   assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response({ ...health, compatibility: undefined })), false);
+  const development = { development: true };
+  const devHealth = { ...health, buildEvidence: null };
+  assert.equal(await verifyBlocklyChatRuntime(url, development, response(devHealth)), false);
+  assert.equal(await verifyBlocklyChatRuntime(url, development, response(devHealth), { allowDevelopment: true }), true);
+  assert.equal(await verifyBlocklyChatRuntime(url, development, response({ ...devHealth, compatibility: undefined }),
+    { allowDevelopment: true }), false);
   assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response({
     ...health, buildEvidence: { ...health.buildEvidence, outputHash: 'a'.repeat(64) },
   })), false);

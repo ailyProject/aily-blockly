@@ -2753,6 +2753,10 @@ function createSubappManager(options = {}) {
       if (!state?.config) return null;
       try {
         const manifest = readJson(path.join(state.packagePath, 'package.json'));
+        if (options.allowBlocklyChatDevelopment && state.development
+          && manifest.name === CHAT_PACKAGE && supportsBlocklyAbs(manifest.ailySubapp?.compatibility)) {
+          return { ...state.config, blocklyChatFingerprint: { development: true } };
+        }
         if (!portablePackageStatus(state.packagePath, manifest, options).portable) return null;
       } catch {
         return null;
@@ -3223,6 +3227,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getRunningSubappConfig,
     isCoderProjectOpen,
     requireBlocklyChatCompatibility,
+    allowBlocklyChatDevelopment,
   } = handlerOptions;
 
   const sendProgress = (progress) => {
@@ -3248,6 +3253,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getRunningSubappConfig,
     isCoderProjectOpen,
     requireBlocklyChatCompatibility,
+    allowBlocklyChatDevelopment,
     getBusyDialogStrings: () => readSubappBusyDialogStringsFromI18n(),
     forceStopChildToolByCatalogId,
     listChildToolHolders: listChildToolHoldersForCatalogId,
@@ -3293,7 +3299,8 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     if (launch?.owner === event.sender.id) launch.release();
   });
   ipcMain.handle('subapp-manager-verify-blockly-chat', (_event, { url, fingerprint } = {}) =>
-    requireBlocklyChatCompatibility === true && verifyBlocklyChatRuntime(url, fingerprint));
+    requireBlocklyChatCompatibility === true && verifyBlocklyChatRuntime(url, fingerprint, globalThis.fetch,
+      { allowDevelopment: allowBlocklyChatDevelopment === true }));
 
   ipcMain.handle('subapp-manager-diagnostics', () => defaultManager.diagnostics());
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));

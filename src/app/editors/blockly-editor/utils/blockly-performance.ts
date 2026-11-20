@@ -21,15 +21,18 @@ export function loadBlocklyWorkspace(workspace: Blockly.WorkspaceSvg, state: obj
     serializer.load = function(blockState, target) {
       if (target !== workspace || loading) return originalLoad.call(this, blockState, target);
       loading = true;
+      // Native extension callbacks may request a synchronous render while a
+      // root is still being deserialized. Keep its queued children until the
+      // root is initialized so their first render can measure their fields.
+      const release = Blockly.renderManagement.beginWorkspaceRenderBatch(workspace);
       try {
         for (const block of blockState.blocks) {
           Blockly.serialization.blocks.appendInternal(block, target, {recordUndo: Blockly.Events.getRecordUndo()});
         }
         // Small projects don't benefit from a separate style-read pass.
         if (workspace.getAllBlocks(false).length >= 1000) primeBlocklyTextWidths(workspace);
-        Blockly.renderManagement.triggerQueuedRenders(workspace);
       } finally {
-        loading = false;
+        try { release(); } finally { loading = false; }
       }
     };
   }

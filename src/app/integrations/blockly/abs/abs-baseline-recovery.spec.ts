@@ -54,7 +54,7 @@ describe('private baseline recovery diagnosis', () => {
     for (const error of [Object.assign(new Error('third-party callback'), { code: 'ABS_BASELINE_CORRUPT' }),
       new AbsSyncError('ABS_BASELINE_STALE', 'changed during inspection'), new Error('unreadable disk')]) {
       let failure: unknown;
-      try { await inspectAbsGenerationForRecovery({ captureDisk: async () => { throw error; } } as any,
+      try { await inspectAbsGenerationForRecovery({ workspaceMode: async () => 'overlay-v1', captureDisk: async () => { throw error; } } as any,
         { projectKey: '/isolated/baseline-recovery', pageId: 'main' }); }
       catch (caught) { failure = caught; }
       expect(failure).toBe(error);
