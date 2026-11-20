@@ -2880,6 +2880,7 @@ function createWindow() {
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
   registerSubappManagerHandlers(() => mainWindow, {
+    requireBlocklyChatCompatibility: getBuildProduct() !== 'coder',
     isCoderProjectOpen: () => getBuildProduct() === 'coder'
       && !!(projectContextState.workspace || heldProjectLockNormalized || coderOpenProjects.length),
     canMutateSharedTree: () => !hasOtherRunningInstances(),
