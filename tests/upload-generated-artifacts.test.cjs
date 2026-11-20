@@ -73,6 +73,33 @@ test('ESP32 fast-flash references can change without invalidating the compiled f
     assert.throws(() => readBlocklyUploadArtifacts(f.build), /BUILD_ARTIFACT_STALE/);
 });
 
+test('ESP32 upload falls back to full flash when its optional reference directory cannot be created', t => {
+    const f = fixture(t);
+    const sdk = path.join(f.root, 'sdk');
+    const recipe = [
+        `"${path.join(sdk, 'tools', 'flasher.py')}"`,
+        '--build-dir', `"${f.build}"`, 'write-flash', '0x10000',
+        `"${path.join(f.build, 'sketch.bin')}"`,
+    ];
+    const collision = f.put('.temp/esp32-flash-references', 'keep this file');
+    const args = [...recipe];
+    isolateEsp32FlashReferences('python3', args, f.build, sdk);
+    assert.deepEqual(args, [...recipe, '--no-fast-flash']);
+    assert.equal(fs.readFileSync(collision, 'utf8'), 'keep this file');
+});
+
+test('ESP32 upload honours explicit full-flash and differential options without preparing a reference directory', t => {
+    const f = fixture(t);
+    const sdk = path.join(f.root, 'sdk');
+    const recipe = [`"${path.join(sdk, 'tools', 'flasher.py')}"`, '--build-dir', `"${f.build}"`, 'write-flash'];
+    for (const flags of [['--no-fast-flash'], ['--diff-with', 'skip']]) {
+        const args = [...recipe, ...flags];
+        isolateEsp32FlashReferences('python3', args, f.build, sdk);
+        assert.deepEqual(args, [...recipe, ...flags]);
+    }
+    assert.equal(fs.existsSync(path.join(f.root, '.temp', 'esp32-flash-references')), false);
+});
+
 test('adding an extra application requires a fresh build, which restores exact selection', async t => {
     const f = fixture(t); f.publish(); f.put('.build/another.bin');
     await assert.rejects(f.upload(), /BUILD_ARTIFACT_STALE/);

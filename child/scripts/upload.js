@@ -887,6 +887,7 @@ function parseArgs(str) {
 function isolateEsp32FlashReferences(command, args, buildPath, sdkPath) {
     const unquote = arg => (arg || '').replace(/^"|"$/g, '');
     if (!sdkPath || !args.some(arg => arg === 'write-flash' || arg === 'write_flash')) return;
+    if (args.includes('--no-fast-flash') || args.includes('--diff-with')) return;
     const sdkTools = path.resolve(sdkPath, 'tools');
     const isSdkFlasher = path.resolve(unquote(command)) === path.join(sdkTools, 'flasher.exe')
         || path.resolve(unquote(args[0])) === path.join(sdkTools, 'flasher.py');
@@ -899,11 +900,17 @@ function isolateEsp32FlashReferences(command, args, buildPath, sdkPath) {
     // them beside the binaries would invalidate the completed-build receipt.
     const temp = path.join(path.dirname(buildPath), '.temp');
     const references = path.join(temp, 'esp32-flash-references');
-    for (const directory of [temp, references]) {
-        fs.mkdirSync(directory, { recursive: true });
-        if (!fs.lstatSync(directory).isDirectory()) {
-            throw new Error('Invalid ESP32 flash reference directory.');
+    try {
+        for (const directory of [temp, references]) {
+            fs.mkdirSync(directory, { recursive: true });
+            if (!fs.lstatSync(directory).isDirectory()) {
+                throw new Error('Invalid ESP32 flash reference directory.');
+            }
         }
+    } catch (error) {
+        logger.warn('ESP32 差量参考目录不可用，将进行全量烧录:', error.message);
+        args.push('--no-fast-flash');
+        return;
     }
     args[directoryOption + 1] = wrapInQuotesIfNeeded(references);
 }
