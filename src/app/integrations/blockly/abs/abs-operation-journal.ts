@@ -44,7 +44,7 @@ export interface AbsUnpublishedDocumentSave {
   saved: { abiHash: string | null; absHash: string | null; mapHash: string | null;
     committedHash: string | null; operationPointerHash: string };
 }
-interface LocationOperation {
+export interface LocationOperation {
   operation: AbsOperationSnapshot; pointer: string; snapshot: string;
 }
 const currentKey = 'operation.json';
@@ -71,11 +71,16 @@ export class AbsOperationJournal {
       if (pointerText === null) return null;
       const pointer = this.pointer(pointerText);
       if (pointer.id !== ref.operationId || pointer.hash !== original.snapshotHash || pointer.state === 'completed') return null;
+      const disk = await this.disk(storage), source = original.snapshot.disk;
+      if (disk.abi !== source.abi || disk.map !== source.map) return null;
+      const draftChanged = disk.abs !== source.abs;
+      const accepted = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' });
       const unchanged = async () => {
         guard();
         return await storage.read(currentKey) === pointerText
-          && absJson(await this.disk(storage)) === absJson(original.snapshot.disk)
+          && absJson(await this.disk(storage)) === absJson(disk)
           && await storage.read('committed.json') === original.snapshot.committed
+          && (!draftChanged || await accepted.workspaceMode(storage) === 'project-v1')
           && await storage.read('prepared.json') === null
           && await storage.read(`recoveries/application-commit-${ref.operationId}.json`) === null
           && await storage.read(`recoveries/application-result-${ref.operationId}.json`) === null;
@@ -83,9 +88,14 @@ export class AbsOperationJournal {
       if (!await unchanged()) return null;
       const oldWriter = await this.port.observeExecutor!(ref.executor);
       if (oldWriter.state !== 'exited' || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
+      if (draftChanged) {
+        const committed = await accepted.readCommittedSnapshot();
+        if (!committed || committed.projection.map.scope.projectKey !== this.project
+          || !await accepted.matchesAcceptedDisk(committed, disk)) return null;
+      }
       const hash = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
-      const saved = { abiHash: await hash(original.snapshot.disk.abi), absHash: await hash(original.snapshot.disk.abs),
-        mapHash: await hash(original.snapshot.disk.map), committedHash: await hash(original.snapshot.committed),
+      const saved = { abiHash: await hash(disk.abi), absHash: await hash(disk.abs),
+        mapHash: await hash(disk.map), committedHash: await hash(original.snapshot.committed),
         operationPointerHash: await hashAbsText(pointerText) };
       if (!await unchanged() || absJson(await this.port.observeExecutor!(ref.executor)) !== absJson(oldWriter)) return null;
       guard();
@@ -235,12 +245,28 @@ export class AbsOperationJournal {
         || validation.base.scope.projectKey !== this.project) throw conflict();
       if (record.disk.abi === null || record.disk.abs === null || record.disk.map === null || record.committed === null) return null;
       const stageKey = `recoveries/application-${pointer.id}.json`, staged = await storage.read(stageKey);
+      // Keep the original proof bound to its snapshot. Verify and preserve a
+      // separate author draft only when sealing the durable project-v1 record.
+      const readbackDisk = retained ? record.disk : await this.disk(storage);
+      if (readbackDisk.abi !== record.disk.abi || readbackDisk.map !== record.disk.map) return null;
+      const draftChanged = readbackDisk.abs !== record.disk.abs;
+      if (draftChanged && !retain) return null;
+      const accepted = draftChanged
+        ? new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' })
+        : undefined;
+      const draftIsIndependent = async () => {
+        if (!accepted) return true;
+        if (await accepted.workspaceMode(storage) !== 'project-v1') return false;
+        const committed = await accepted.readCommittedSnapshot();
+        return committed?.projection.map.scope.projectKey === this.project && await accepted.matchesAcceptedDisk(committed, readbackDisk);
+      };
       const unchanged = async (historical: boolean) => {
         assertCurrent();
         if (await storage.read(indexKey) !== indexText || await storage.read(recoveryKey) !== recoveryText
           || await storage.read(snapshotKey(pointer.id)) !== snapshotText
           || await storage.read(stageKey) !== staged
-          || (!historical && (await storage.read(currentKey) !== pointerText || absJson(await this.disk(storage)) !== absJson(record.disk)
+          || (!historical && (await storage.read(currentKey) !== pointerText || !await draftIsIndependent()
+            || absJson(await this.disk(storage)) !== absJson(readbackDisk)
             || await storage.read('committed.json') !== record.committed || await storage.read('prepared.json') !== null))) return false;
         for (const key of [`recoveries/application-commit-${pointer.id}.json`,
           `recoveries/application-result-${pointer.id}.json`]) if (await storage.read(key) !== null) return false;
@@ -282,12 +308,31 @@ export class AbsOperationJournal {
     });
   }
 
-  private async matchesRestoredStage(storage: AbsSyncStorageAccess, operation: AbsOperationSnapshot, staged: string): Promise<boolean> {
+  async matchesCopiedApplication(retained: LocationOperation, generation: string, pageId: string): Promise<boolean> {
+    const source = retained.operation, application = source.application, candidate = source.candidate;
+    if (source.kind !== 'abs-apply' || source.project !== this.project || !source.committed || !application || !candidate) return false;
+    const validation = application.validation as any;
+    assertGenerationValidation(validation);
+    const indexText = await this.port.read(await applicationRequestKey(application.requestId));
+    const index = indexText === null ? null : JSON.parse(indexText);
+    const staged = await this.port.read(`recoveries/application-${source.id}.json`);
+    if (index?.version !== 1 || index.project !== this.project || index.requestId !== application.requestId
+      || index.operationId !== source.id || index.snapshotHash !== await hashAbsText(retained.snapshot)
+      || validation.requestId !== application.requestId || validation.candidate.hash !== candidate.hash
+      || validation.candidate.bytes !== new TextEncoder().encode(candidate.source).length
+      || validation.base.generation !== candidate.generation || validation.base.scope.projectKey !== this.project
+      || validation.base.scope.pageId !== pageId || staged === null) return false;
+    return this.matchesRestoredStage(this.port, source, staged, generation);
+  }
+
+  private async matchesRestoredStage(storage: Pick<AbsSyncStorageAccess, 'read'>, operation: AbsOperationSnapshot, staged: string,
+    generation?: string): Promise<boolean> {
     const record = JSON.parse(staged), evidence = record.outcome?.evidence;
     const binding = evidence?.binding;
     if (record.version !== 1 || record.project !== this.project || record.operationId !== operation.id
       || absJson(record.validation) !== absJson(operation.application!.validation) || binding?.scope?.projectKey !== this.project
       || typeof binding.scope.pageId !== 'string' || typeof binding.generation !== 'string' || binding.generation === operation.candidate!.generation
+      || generation !== undefined && binding.generation !== generation
       || record.outcome?.publication?.status !== 'COMMITTED' || record.outcome.publication.generation !== binding.generation) return false;
     return new AbsBaselineStore(this.port, binding.scope).matchesRestoredApplicationStage(storage, evidence,
       operation.candidate!.source, operation.disk, operation.committed!);
@@ -344,7 +389,7 @@ export class AbsOperationJournal {
   async relocate(input: LocationOperation, disk: AbsDiskSnapshot, committed: string,
     assertCurrent: () => void): Promise<AbsOperationSnapshot> {
     const id = crypto.randomUUID();
-    const { application, ...original } = input.operation;
+    const { application, nativeSave, attachment, executor, ...original } = input.operation;
     const record: AbsOperationSnapshot = { ...original, id, project: this.project, disk, committed };
     const text = absJson(record), hash = await hashAbsText(text), previous = this.pointer(input.pointer);
     await this.port.withLock(async storage => {

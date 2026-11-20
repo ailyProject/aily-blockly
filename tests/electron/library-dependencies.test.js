@@ -6,6 +6,45 @@ const path = require('node:path');
 const { LibraryDependencies, runDependencyWorker } = require('../../electron/library-dependencies');
 const { LibraryDependencySessions } = require('../../electron/library-dependency-sessions');
 const { randomUUID } = require('node:crypto');
+const { librarySubmission } = require('../../electron/library-environment-journal');
+const { rootAttachment, storageExecutor } = require('../../electron/project-file-lock-owner');
+
+test('an exact cancellation before Main dispatch persists the original refusal and prevents any late writer', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-library-cancel-predispatch-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const manifest = '{"name":"cancelled-library","dependencies":{}}';
+  fs.writeFileSync(path.join(root, 'package.json'), manifest);
+  const create = () => new LibraryDependencySessions(new LibraryDependencies({ run: () => assert.fail('No npm worker expected') }));
+  const original = { requestId: 'env1-' + randomUUID(), action: 'install', packages: ['test-cancelled@1.0.0'] };
+  const { requestDigest } = librarySubmission('mutate', original);
+  const attachment = rootAttachment(root), executor = storageExecutor();
+  const cancel = { requestId: original.requestId, originalRequest: original, requestDigest, attachment,
+    originalExecutorPid: executor.hostPid };
+  const sessions = create();
+  for (const changed of [
+    { ...cancel, originalExecutorPid: 0 },
+    { ...cancel, requestDigest: 'sha256:' + '0'.repeat(64) },
+    { ...cancel, attachment: { ...attachment, identity: { ...attachment.identity, ino: '0' } } },
+  ]) {
+    await assert.rejects(sessions.run('cancelEnvironment', root, changed), { code: 'LIBRARY_OPERATION_INVALID' });
+    assert.equal(sessions.libraries.environment.find(root, original.requestId), null);
+    assert.equal(sessions.requests.size, 0);
+  }
+  const { environment: refused } = await sessions.run('cancelEnvironment', root, cancel);
+  assert.equal(refused.code, 'LIBRARY_OPERATION_CANCELLED');
+  assert.equal(refused.status, 'not-started');
+  assert.equal(refused.executor.hostPid, executor.hostPid);
+  assert.deepEqual(refused.attachment, attachment);
+  assert.deepEqual(refused.admission, { status: 'NOT_STARTED', operation: 'mutate', requestDigest });
+  const restarted = create();
+  assert.deepEqual((await restarted.run('observeEnvironment', root, { requestId: original.requestId })).environment, refused);
+  assert.deepEqual((await restarted.run('mutate', root, original)).environment, refused);
+  await assert.rejects(restarted.run('mutate', root, { ...original, packages: ['different@1.0.0'] }), /arguments changed/);
+  const next = await restarted.run('historyBegin', root, { packages: ['@aily-project/lib-audit'] });
+  assert.ok(next.token);
+  await restarted.run('historyDiscard', root, { token: next.token });
+  assert.equal(fs.readFileSync(path.join(root, 'package.json'), 'utf8'), manifest);
+});
 
 test('a refused original library request remains exact across host readers and never reacquires the writer', async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-library-refusal-')));

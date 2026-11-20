@@ -447,6 +447,7 @@
         },
         "BOARD": {
             "SEARCH": "Pesquisar placas",
+            "CLEAR_SEARCH": "Limpar pesquisa",
             "READ_DOC": "Ler documentação",
             "ADD_BOARD": "Adicionar placa",
             "DEV": "dev",
@@ -1010,6 +1011,8 @@
             "PROCESS_START_FAILED": "Falha ao iniciar o processo de compilação",
             "INCOMPLETE": "A compilação não foi concluída",
             "FAILED_WITH_TIME": "Falha na compilação (tempo: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "A ferramenta de compilação não conseguiu carregar a DLL do ambiente Python. Consulte o log da compilação.",
+            "TOOL_LOAD_XTENSA_CONFIG": "O compilador não conseguiu carregar a configuração do chip Xtensa. Consulte o log da compilação.",
             "ABNORMAL_END_TITLE": "Compilação encerrada de forma anormal",
             "ABNORMAL_END_WITH_TIME": "O processo de compilação terminou de forma anormal (tempo: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "Compilação concluída",

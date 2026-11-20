@@ -17,6 +17,12 @@ for (const operation of ['project_fork_status', 'project_recovery_open', 'projec
   });
 }
 
+test('board settlement never infers its original attachment from the active project', () => {
+  const operation = 'project_board_environment_settle', requested = path.resolve('explicit-board-project');
+  assert.deepEqual(routeLiveOperationProject(operation, undefined, '/isolated/current'), { path: '', parameterScoped: true });
+  assert.equal(routeLiveOperationProject(operation, requested, '/isolated/current').path, requested);
+});
+
 test('ordinary workspace operations retain existing current-project fallback and requirement', () => {
   for (const operation of ['project_fork', 'abs_apply', 'abs_validate', 'project_save', 'project_build', 'unknown-operation']) {
     assert.deepEqual(routeLiveOperationProject(operation, undefined, '/isolated/current'), {

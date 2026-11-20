@@ -447,6 +447,7 @@
         },
         "BOARD": {
             "SEARCH": "보드 검색",
+            "CLEAR_SEARCH": "검색 지우기",
             "READ_DOC": "문서 읽기",
             "ADD_BOARD": "보드 추가",
             "DEV": "개발",
@@ -1010,6 +1011,8 @@
             "PROCESS_START_FAILED": "빌드 프로세스를 시작하지 못했습니다",
             "INCOMPLETE": "빌드가 완료되지 않았습니다",
             "FAILED_WITH_TIME": "빌드 실패 (소요 시간: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "빌드 도구가 Python 런타임 DLL을 로드하지 못했습니다. 빌드 로그를 확인하세요.",
+            "TOOL_LOAD_XTENSA_CONFIG": "컴파일러가 Xtensa 칩 구성을 로드하지 못했습니다. 빌드 로그를 확인하세요.",
             "ABNORMAL_END_TITLE": "빌드가 비정상 종료되었습니다",
             "ABNORMAL_END_WITH_TIME": "빌드 프로세스가 비정상 종료되었습니다 (소요 시간: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "빌드 완료",

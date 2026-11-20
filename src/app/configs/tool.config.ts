@@ -147,6 +147,7 @@ export interface ChildToolConfig {
   uiIndex?: string;
   routePath?: string;
   startupTimeoutMs?: number;
+  blocklyChatFingerprint?: { inputHash: string; outputHash: string } | { development: true };
   runtime?: ChildToolRuntimeConfig;
   env?: Record<string, string>;
   ui?: ChildToolUiConfig;

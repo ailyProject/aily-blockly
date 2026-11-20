@@ -2,6 +2,7 @@ import { absMapJson } from './abs-map-json';
 import { restoreAbsProjectCaches } from './abs-project-open';
 import { AbsBaselineStore, absBaselineKey } from './abs-baseline-store';
 import { createAbsProjection, hashAbsText, absJson } from './abs-identity-map';
+import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
 
 describe('complete ABS cache restoration',()=>{
  let files:Map<string,string>,port:any,store:AbsBaselineStore;
@@ -59,6 +60,44 @@ describe('complete ABS cache restoration',()=>{
  files.delete('committed.json'); const before = [...files];
  await expectAsync(restoreAbsProjectCaches(port, 'project', () => {})).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_INVALID' }));
  expect([...files]).toEqual(before);
+ });
+ async function copyPublicDraft() {
+   const document = { schemaVersion: 3, activePageId: 'main', openedPageIds: ['main'], sharedModel: { procedureBlocks: [] },
+     pages: [{ id: 'main', title: 'Main', content: { blocks: { blocks: [{ id: 'setup', type: 'root', fields: { TEXT: 'one' } }] } } }] };
+   const abi = JSON.stringify(document), generation = crypto.randomUUID();
+   const base = await createAbsProjection(composeBlocklyPage(document, 'main'), { document, generation,
+     baselineRef: absBaselineKey(generation), scope, savedAbiHash: await hashAbsText(absJson(document)) });
+   const draft = base.abs.replace('TEXT="one"', 'TEXT="draft"');
+   expect(draft).not.toBe(base.abs);
+   files.set('project.abi', abi);
+   files.set('project.abs', draft);
+   files.set('project.abs.map.json', absMapJson(base.map));
+   return { base, abi, draft };
+ }
+ for (const projectMode of [false, true]) it(`restores the verified canvas of a public-only copy and archives its draft (${projectMode})`, async () => {
+   const { base, abi, draft } = await copyPublicDraft();
+   if (projectMode) files.set('workspace-mode.json', '{"version":1,"mode":"project-v1"}');
+   const copy = 'copied-project';
+   expect(await restoreAbsProjectCaches(port, copy, () => {})).toBe(abi);
+   const copyStore = new AbsBaselineStore(port, { ...scope, projectKey: copy });
+   const recovered = (await copyStore.loadCommitted())!;
+   expect(recovered.abs).toBe(base.abs);
+   expect(recovered.map.scope.projectKey).toBe(copy);
+   const archived = await copyStore.readArchivedDraft(recovered.map.generation);
+   expect(archived.abs).toBe(draft);
+   expect(archived.baseGeneration).toBe(base.map.generation);
+   expect(files.get('project.abs')).toBe(projectMode ? draft : base.abs);
+   expect(await restoreAbsProjectCaches(port, copy, () => {})).toBe(abi);
+ });
+ it('keeps every file when a copied draft has an inconsistent public identity map', async () => {
+   await copyPublicDraft();
+   const map = JSON.parse(files.get('project.abs.map.json')!);
+   map.nodes[0].blockId = 'wrong';
+   files.set('project.abs.map.json', absJson(map));
+   const before = [...files];
+   await expectAsync(restoreAbsProjectCaches(port, 'copied-project', () => {}))
+     .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_INVALID' }));
+   expect([...files]).toEqual(before);
  });
  it('restores an earlier complete ABS with a new derived generation',async()=>{
  const first=await save('one');await save('two');files.set('project.abs',first.projection.abs);

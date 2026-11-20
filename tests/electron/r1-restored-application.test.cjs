@@ -17,13 +17,14 @@ before(() => {
       '@domain/project/project-data/public-api': path.join(__dirname, 'fixtures/r0-publication-domain-exports.ts') } });
   kernel = require(bundle);
 });
-async function fixture(legacy = false) {
+async function fixture(legacy = false, projectMode = false) {
   const project = fs.mkdtempSync(path.join(root, 'project-'));
   await new Promise((resolve, reject) => {
     const child = fork(path.join(__dirname, 'fixtures/r0-publication-worker.cjs'), ['fixture', project, bundle],
       { execPath: process.execPath, windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     child.once('exit', code => code === 0 ? resolve() : reject(Error('Fixture failed ' + code)));
   });
+  if (projectMode) fs.writeFileSync(path.join(project, '.aily/workspace-mode.json'), '{"version":1,"mode":"project-v1"}');
   const child = fork(path.join(__dirname, 'fixtures/r1-restored-application-worker.cjs'), [project, bundle, legacy === true ? 'legacy' : legacy || ''],
     { execPath: process.execPath, windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
   children.add(child);
@@ -58,6 +59,43 @@ test('restored S1 with a live original writer is denied; actual process death gr
     assert.equal(old.result.publication.status, 'UNKNOWN'); assert.equal(old.result.applicationObservation.current, false);
     assert.deepEqual(await new kernel.AbsBaselineStore(ctx.port, { projectKey: ctx.project, pageId: 'main' }).captureDisk(), disk);
   } finally { if (children.has(ctx.child)) await ctx.stop(); }
+});
+test('a project-v1 draft independent of the recovered Working document preserves the durable writer fence', async () => {
+  const ctx = await fixture('identical-document', true);
+  await ctx.stop();
+  const source = path.join(ctx.project, 'project.abs'), draft = '# Authored after the interrupted application\n';
+  fs.writeFileSync(source, draft);
+  const marker = `recoveries/application-restored-${ctx.original.operationId}.json`;
+  const restored = await kernel.recoverAbsProjectOperation(ctx.port, ctx.project, guard);
+  assert.deepEqual(restored.document, ctx.original.document);
+  await ctx.journal.restored(restored.operationId, guard);
+  const store = new kernel.AbsBaselineStore(ctx.port, { projectKey: ctx.project, pageId: 'main' });
+  const before = await store.captureDisk();
+
+  const baseline = path.join(ctx.project, '.aily/abs-sync/baselines/r0-base.json'), exactBaseline = fs.readFileSync(baseline);
+  try {
+    fs.appendFileSync(baseline, '\n');
+    await assert.rejects(ctx.journal.recordRestoredApplication(restored.operationId, guard,
+      async () => assert.fail('Invalid accepted generation cannot reach Working readback')));
+  } finally { fs.writeFileSync(baseline, exactBaseline); }
+  await ctx.journal.recordRestoredApplication(restored.operationId, guard, async () => fs.appendFileSync(source, '# Newer writer'));
+  assert.equal(await ctx.port.read(marker), null);
+  assert.equal(fs.readFileSync(source, 'utf8'), draft + '# Newer writer');
+  fs.writeFileSync(source, draft);
+
+  await ctx.journal.recordRestoredApplication(restored.operationId, guard, async document => {
+    assert.deepEqual(document, ctx.original.document);
+  });
+  const stored = await ctx.port.read(marker);
+  assert.ok(stored);
+  assert.deepEqual(await store.captureDisk(), before);
+  const next = await ctx.journal.begin({ kind: 'document-save', document: JSON.parse(before.abi), disk: before }, guard);
+  await ctx.journal.finishUnchangedSave(next, before, guard);
+  const reply = (await new kernel.AbsApplicationJournal(ctx.port, ctx.project).observe(ctx.original.requestId, guard)).result;
+  assert.equal(reply.publication.status, 'UNKNOWN');
+  assert.equal(reply.currentDocumentRecovery.oldWriter.state, 'exited');
+  assert.equal(reply.currentDocumentRecovery.settlement.recordHash, await kernel.hashAbsText(stored));
+  assert.equal(fs.readFileSync(source, 'utf8'), draft);
 });
 
 test('pending/completed/different pointers, changed mirrors, prepared or application facts never grant a restored Working fact', async () => {

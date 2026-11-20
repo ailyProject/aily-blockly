@@ -3,6 +3,9 @@
 export { AbsBaselineStore, absBaselineKey } from '../../../src/app/integrations/blockly/abs/abs-baseline-store';
 export { AbsOperationJournal } from '../../../src/app/integrations/blockly/abs/abs-operation-journal';
 export { AbsApplicationJournal } from '../../../src/app/integrations/blockly/abs/abs-application-journal';
+export { nativeSaveIdentity } from '../../../src/app/integrations/blockly/abs/abs-native-save-result';
+export { nativeSaveIndexKey } from '../../../src/app/integrations/blockly/abs/abs-native-save-protocol';
+export { settleOriginalBoardEnvironment } from '../../../src/app/integrations/blockly/environment-settlement';
 export { recoverAbsProjectOperation } from '../../../src/app/integrations/blockly/abs/abs-project-restart';
 export { absJson, hashAbsText, createAbsProjection } from '../../../src/app/integrations/blockly/abs/abs-identity-map';
 export { generationEvidence } from '../../../src/app/integrations/blockly/abs/abs-generation-protocol';

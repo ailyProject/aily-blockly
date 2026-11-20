@@ -32,6 +32,7 @@ const { routeLiveOperationProject, projectLifecycleRequestRejection } = require(
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
 const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
+const { coderWorkspaceHistory } = require('./coder-workspace-history');
 const repairBootstrap = readRepairBootstrap(process.env.AILY_REPAIR_BOOTSTRAP, { execPath: process.execPath, appPath: app.getAppPath() });
 let repairEnvironmentController;
 let repairContinuationController;
@@ -930,7 +931,7 @@ function rendererCommandAvailability() {
   return isCurrentRendererGenerationReady() ? 'ready' : '';
 }
 
-function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal) {
+function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal, onDispatchedTimeout) {
   const deadline = Date.now() + timeoutMs;
   const startupDeadline = Date.now() + Math.min(Math.max(timeoutMs, 0), RENDERER_STARTUP_WAIT_MS);
 
@@ -956,7 +957,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
     if (lifecycleRejection) { resolve(lifecycleRejection); return; }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
+      resolve({ ok: false, commandDispatched: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
       return;
     }
 
@@ -965,7 +966,9 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       ipcMain.removeListener(responseChannel, listener);
-      resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
+      const result = { ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' };
+      if (!onDispatchedTimeout || rendererGeneration !== requestGeneration) { resolve(result); return; }
+      Promise.resolve().then(() => onDispatchedTimeout(requestGeneration)).finally(() => resolve(result)).catch(() => {});
     }, remaining);
 
     const listener = (event, message) => {
@@ -1074,6 +1077,22 @@ async function queryCloudBuildAuth(request, signal) {
 async function handleCliBridgeCommand(action, payload) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
   switch (action) {
+    case 'coder-workspace-history': {
+      try {
+        if (!path.isAbsolute(requestedPath)) throw new Error('An attached Coder project is required.');
+        const root = fs.realpathSync.native(requestedPath);
+        const key = projectLock.normalizeProjectPathLoose(root);
+        const assertCurrent = () => {
+          if (!isCurrentRendererGenerationReady() || !coderOpenProjects.some(project => {
+            try { return projectLock.normalizeProjectPathLoose(fs.realpathSync.native(project)) === key; }
+            catch { return false; }
+          })) throw new Error('This Host no longer owns the requested Coder project.');
+        };
+        return await coderWorkspaceHistory(root, payload, assertCurrent);
+      } catch (error) {
+        return { ok: false, code: error.code || 'CODER_WORKSPACE_HOST_UNAVAILABLE', message: error.message };
+      }
+    }
     case 'library-dependencies': {
       try {
         const result = await runProjectLibraryOperation(payload.operation, payload.projectPath, payload.request, payload.transaction);
@@ -1244,6 +1263,15 @@ async function handleCliBridgeCommand(action, payload) {
               || operation === 'child_app_window_arrange'
                 ? 120000
                 : 12000;
+      const requestId = payload?.params?.requestId;
+      // Without its prepare reply the caller cannot enter the dependency writer.
+      // Retire that exact renderer fence before returning the missed observation.
+      const releasePreparation = operation === 'library_mutation_prepare' && typeof requestId === 'string'
+        ? generation => requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response', {
+          path: dir || '', operation: 'library_mutation_abort', params: { requestId },
+          lifecycle: { version: 1, rendererGeneration: generation, sourceProject: dir || null },
+        }, 5000)
+        : undefined;
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
@@ -1254,6 +1282,8 @@ async function handleCliBridgeCommand(action, payload) {
           ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
         },
         liveOperationTimeoutMs,
+        undefined,
+        releasePreparation,
       );
       if ((operation === 'project_build_status' || operation === 'project_build' && payload?.params?.buildRequest)
         && !result?.buildReceipt && ['RENDERER_RESPONSE_TIMEOUT', 'RENDERER_REQUEST_CANCELLED',
@@ -2772,9 +2802,15 @@ function createWindow() {
       }
       return librarySessions.capabilities();
     });
-    ipcMain.handle('library-dependencies', async (event, { operation, projectPath, request }) => {
+    ipcMain.handle('library-dependencies', async (event, { operation, projectPath, request, reader }) => {
       if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
         throw new Error('Library operations require the current main frame.');
+      }
+      if (operation === 'status') {
+        // The preload and the program journal use the same storage executor.
+        // Bind that identity to the actual sending frame before using it.
+        const publisher = reader?.hostPid === process.pid && reader.storagePid === event.senderFrame.osProcessId ? reader : undefined;
+        return librarySessions.readStatus(projectPath, publisher);
       }
       return runProjectLibraryOperation(operation, projectPath, request);
     });
@@ -2844,6 +2880,8 @@ function createWindow() {
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
   registerSubappManagerHandlers(() => mainWindow, {
+    requireBlocklyChatCompatibility: getBuildProduct() !== 'coder',
+    allowBlocklyChatDevelopment: serve && !app.isPackaged,
     isCoderProjectOpen: () => getBuildProduct() === 'coder'
       && !!(projectContextState.workspace || heldProjectLockNormalized || coderOpenProjects.length),
     canMutateSharedTree: () => !hasOtherRunningInstances(),

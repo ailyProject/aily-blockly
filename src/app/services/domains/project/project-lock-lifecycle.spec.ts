@@ -101,6 +101,31 @@ describe('Project command lifecycle during close', () => {
     expect(window['projectLock'].release).toHaveBeenCalledOnceWith('/active');
   });
 
+  it('reconciles an undelivered stop before completing the original save and close once', async () => {
+    const original = service.getProjectDependencySession('/active');
+    const channels: string[] = [];
+    let dispatched = false;
+    const saved = spyOn(service, 'save').and.resolveTo({ success: true });
+    spyOn(service, 'getBlocklyProjectLoadStatus').and.returnValue({ ready: true });
+    spyOn(service, 'discardDepartingBlocklyProject').and.resolveTo(true);
+    window['ipcRenderer'].invoke.and.callFake(async (channel: string, data: any) => {
+      if (!channel.startsWith('project-commands-stop')) return { ok: true };
+      expect(data).toEqual({ projectPath: '/active', projectSessionId: original.projectSessionId });
+      channels.push(channel);
+      if (channel === 'project-commands-stop-status') return { ok: true, ...data, state: dispatched ? 'stopped' : 'unknown' };
+      if (channels.length === 1) throw new Error('The first stop did not reach Main');
+      dispatched = true;
+      throw new Error('Main applied the exact stop but its acknowledgement was lost');
+    });
+    expect(await service.close({ save: true })).toBeTrue();
+    expect(channels).toEqual([
+      'project-commands-stop', 'project-commands-stop-status', 'project-commands-stop', 'project-commands-stop-status',
+    ]);
+    expect(saved).toHaveBeenCalledOnceWith('/active');
+    expect(window['projectLock'].release).toHaveBeenCalledOnceWith('/active');
+    expect(service.isProjectTransitionInProgress('/active')).toBeFalse();
+  });
+
   it('retries failed cloud invalidation for the observed original scope before releasing it', async () => {
     let attempts = 0;
     const invalidate = jasmine.createSpy('invalidate').and.callFake(async () => {

@@ -14,9 +14,10 @@ const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { createNotificationApi } = require('./notification-preload');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
+const { storageExecutor } = require('./project-file-lock-owner');
 const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
-const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
+const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
     prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
@@ -558,6 +559,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     diagnostics: () => ipcRenderer.invoke('subapp-manager-diagnostics'),
     prepareLaunch: (options) => ipcRenderer.invoke("subapp-manager-prepare-launch", options),
     finishLaunch: (token) => ipcRenderer.invoke("subapp-manager-finish-launch", token),
+    verifyBlocklyChat: (options) => ipcRenderer.invoke("subapp-manager-verify-blockly-chat", options),
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
     install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
     reinstall: (options) => ipcRenderer.invoke("subapp-manager-reinstall", options),
@@ -592,6 +594,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     patchBuildMetadata,
     captureBuildSource,
     canReuseBlocklyUpload,
+    canReuseCoderUpload,
     inspectBlocklyCompileProof,
     isolatedBuildExecutionVersion: ISOLATED_BUILD_EXECUTION_VERSION,
     prepareBuildExecution,
@@ -911,7 +914,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     historyRestore: (projectPath, request) => invokeDependencyEnvironmentMutation('historyRestore', projectPath, request),
     historyPreview: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyPreview', projectPath, request }),
     historyDiscard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyDiscard', projectPath, request }),
-    status: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'status', projectPath }),
+    status: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'status', projectPath, reader: storageExecutor() }),
     recover: (projectPath, request) => request?.action === 'resolve' ? invokeDependencyEnvironmentMutation('recover', projectPath, request)
       : ipcRenderer.invoke('library-dependencies', { operation: 'recover', projectPath, request }),
     mutate: (projectPath, request) => invokeDependencyEnvironmentMutation('mutate', projectPath, request),

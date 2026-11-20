@@ -131,7 +131,7 @@ export class ChildToolProcessService implements OnDestroy {
 
   async acquire(toolId: string, options: ChildToolAcquireOptions = {}): Promise<ChildToolHostInfo> {
     const openingConfig = this.requireConfig(toolId);
-    if (options.deferPreparedUpdate !== true) {
+    if (options.deferPreparedUpdate !== true && !this.requiresBlocklyChat(openingConfig)) {
       await this.installReadyUpdateBeforeLaunch(toolId);
     }
     const config = options.deferPreparedUpdate === true
@@ -563,12 +563,14 @@ export class ChildToolProcessService implements OnDestroy {
     session: ChildToolSession,
     options: ChildToolAcquireOptions = {},
   ): Promise<ChildToolHostInfo> {
-    const sharedHostInfo = await this.acquireSharedSession(config, session);
-    if (sharedHostInfo) {
-      return sharedHostInfo;
-    }
-
     const api = (window as any).electronAPI?.subapps;
+    const requiresVerifiedChat = this.requiresBlocklyChat(config);
+    if (!requiresVerifiedChat) {
+      const sharedHostInfo = await this.acquireSharedSession(config, session);
+      if (sharedHostInfo) return sharedHostInfo;
+    } else if (!config.catalogId || !api?.prepareLaunch) {
+      throw new Error('Blockly Chat compatibility check is unavailable');
+    }
     if (!config.catalogId || !api?.prepareLaunch) return this.startServer(config, session);
 
     const prepared = await api.prepareLaunch({
@@ -578,6 +580,9 @@ export class ChildToolProcessService implements OnDestroy {
     try {
       if (this.hostShuttingDown) throw new Error('Host is shutting down');
       const latestConfig = prepared.config as ChildToolConfig;
+      if (requiresVerifiedChat && !latestConfig.blocklyChatFingerprint) {
+        throw new Error('Blockly Chat compatibility check did not select a verified package');
+      }
       session.version = latestConfig.version || '';
       // Another renderer can register the Runtime while prepareLaunch waits on
       // the shared install lock. Reuse its pinned package before spawning.
@@ -681,6 +686,14 @@ export class ChildToolProcessService implements OnDestroy {
       return null;
     }
 
+    if (config.blocklyChatFingerprint && !await this.verifyBlocklyChat(config, hostInfo)) {
+      this.log(config, 'replace shared Chat without matching ABS capability or build fingerprint', {
+        streamId: String(sharedSession.streamId || ''),
+      });
+      await this.discardIncompatibleSharedSession(config, session, sharedSession, true);
+      return null;
+    }
+
     const selectedApiServer = this.selectedApiServerFor(config);
     const sharedApiServer = this.normalizeApiServer(hostInfo.apiServer);
     if (selectedApiServer && sharedApiServer !== selectedApiServer) {
@@ -716,9 +729,11 @@ export class ChildToolProcessService implements OnDestroy {
     return hostInfo;
   }
 
-  private async discardIncompatibleSharedSession(config: ChildToolConfig, session: ChildToolSession, shared: any): Promise<void> {
+  private async discardIncompatibleSharedSession(
+    config: ChildToolConfig, session: ChildToolSession, shared: any, replaceIncompatibleChat = false,
+  ): Promise<void> {
     const streamId = String(shared.streamId || '');
-    if (Number(shared.refCount) > 1) {
+    if (Number(shared.refCount) > 1 && !replaceIncompatibleChat) {
       await window['childToolSession']?.release?.({ toolId: config.id, streamId, leaseId: session.leaseId });
       throw new Error(`${config.id} Runtime is in use by another window; close it before changing its service region or development entry`);
     }
@@ -726,8 +741,9 @@ export class ChildToolProcessService implements OnDestroy {
       toolId: config.id,
       streamId,
       leaseId: session.leaseId,
+      ...(replaceIncompatibleChat ? { restartShared: true } : {}),
     });
-    if (stopped?.success !== true) {
+    if (stopped?.success !== true && stopped?.reason !== 'not-found') {
       await window['childToolSession']?.release?.({ toolId: config.id, streamId, leaseId: session.leaseId });
       throw new Error(`${config.id} Runtime could not be safely replaced: ${stopped?.reason || 'unknown error'}`);
     }
@@ -801,6 +817,16 @@ export class ChildToolProcessService implements OnDestroy {
     if (config.runtime?.headless) {
       throw new Error(`${config.id} is headless; use its native runtime integration, not the UI launcher`);
     }
+  }
+
+  private requiresBlocklyChat(config: ChildToolConfig): boolean {
+    return config.id === 'aily-chat' && this.configService?.isCoderProduct?.() === false;
+  }
+
+  private async verifyBlocklyChat(config: ChildToolConfig, hostInfo: ChildToolHostInfo): Promise<boolean> {
+    const fingerprint = config.blocklyChatFingerprint;
+    const api = (window as any).electronAPI?.subapps;
+    return !!fingerprint && await api?.verifyBlocklyChat?.({ url: hostInfo.url, fingerprint }) === true;
   }
 
   private async startServer(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
@@ -921,6 +947,9 @@ export class ChildToolProcessService implements OnDestroy {
       }
 
       const hostInfo = await readyPromise;
+      if (config.blocklyChatFingerprint && !await this.verifyBlocklyChat(config, hostInfo)) {
+        throw new Error('The running Chat could not confirm its ABS capability and build fingerprint');
+      }
       if (session.streamId !== streamId) {
         throw new Error(`${config.id} startup was superseded before registration`);
       }
@@ -944,6 +973,7 @@ export class ChildToolProcessService implements OnDestroy {
       if (registered?.reused === true) {
         return await this.adoptConcurrentSharedSession(config, session, streamId, registered.session);
       }
+      session.running = true;
       this.cancelRecovery(session, true);
       this.log(config, 'server ready promise resolved', this.sanitizeHostInfo(registeredHostInfo));
       return registeredHostInfo;
@@ -984,6 +1014,12 @@ export class ChildToolProcessService implements OnDestroy {
       toolId: config.id,
       streamId: candidateStreamId,
     });
+    if (config.blocklyChatFingerprint && !await this.verifyBlocklyChat(config, sharedHostInfo)) {
+      await window['childToolSession']?.release?.({
+        toolId: config.id, streamId: sharedStreamId, leaseId: session.leaseId,
+      });
+      throw new Error('The shared Chat could not confirm its ABS capability and build fingerprint');
+    }
 
     session.streamId = sharedStreamId;
     session.hostInfo = sharedHostInfo;
@@ -1188,6 +1224,13 @@ export class ChildToolProcessService implements OnDestroy {
       const sharedStreamId = String(shared?.streamId || '');
       const sharedHostInfo = shared?.hostInfo as ChildToolHostInfo | undefined;
       if (!sharedStreamId || !sharedHostInfo?.url) return;
+      if (this.requiresBlocklyChat(config) && (!sharedHostInfo.runtimeConfig
+        || !await this.verifyBlocklyChat(sharedHostInfo.runtimeConfig, sharedHostInfo))) {
+        await window['childToolSession']?.release?.({
+          toolId: config.id, streamId: sharedStreamId, leaseId: session.leaseId,
+        });
+        return;
+      }
       const selectedApiServer = this.selectedApiServerFor(config);
       if (selectedApiServer && this.normalizeApiServer(sharedHostInfo.apiServer) !== selectedApiServer) {
         await window['childToolSession']?.release?.({
@@ -1243,6 +1286,10 @@ export class ChildToolProcessService implements OnDestroy {
 
   private handleBackendMessage(config: ChildToolConfig, session: ChildToolSession, message: ChildToolBackendMessage): void {
     if (message.event === 'ready' && message.data?.url) {
+      if (config.blocklyChatFingerprint) {
+        this.resolveReady(session, message.data as ChildToolHostInfo);
+        return;
+      }
       session.hostInfo = message.data as ChildToolHostInfo;
       session.running = true;
       this.publishRuntimeState(config.id, 'ready', session);

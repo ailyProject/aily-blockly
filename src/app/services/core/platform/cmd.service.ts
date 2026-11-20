@@ -91,6 +91,7 @@ export class CmdService {
     let settled = false;
     let removeListener: (() => void) | undefined;
     let observation: ReturnType<typeof setTimeout> | undefined;
+    let exitObserved = false;
     let dispatched = false;
     const onAbort = () => {
       if (dispatched && observeExit && typeof window['cmd'].kill === 'function') {
@@ -162,8 +163,16 @@ export class CmdService {
           const status = await window['cmd'].status(streamId);
           if (status?.streamId === streamId && status.state === 'exited'
             && (Number.isInteger(status.code) || typeof status.signal === 'string')) {
-            receive({ type: 'close', streamId, code: status.code, signal: status.signal ?? undefined,
-              ownershipReleased: status.ownershipReleased === true, recovered: true });
+            // Status and streamed output take separate IPC paths. Give the
+            // original close and its preceding output one more poll interval
+            // to arrive before falling back to status-only recovery.
+            if (exitObserved) {
+              receive({ type: 'close', streamId, code: status.code, signal: status.signal ?? undefined,
+                ownershipReleased: status.ownershipReleased === true, recovered: true });
+            }
+            exitObserved = true;
+          } else {
+            exitObserved = false;
           }
         } catch { /* Retain the event subscription and observe the original again. */ }
         observe();

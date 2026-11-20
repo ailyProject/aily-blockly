@@ -133,6 +133,25 @@ test('cancellation before Main dispatch sends no lifecycle business request', as
   assert.equal(f.sent.length, 0);
 });
 
+test('timed-out library preparation releases that request on its original renderer generation', async () => {
+  const project = path.resolve('fixtures/library-preparation');
+  const requestId = 'env1-baf84ee4-c9c0-4e8d-83d9-c4b20bc425e6';
+  const f = mainRouteFixture(project, async (_channel, _response, sent, _budget, _signal, onDispatchedTimeout) => {
+    if (sent.operation === 'library_mutation_abort') return { ok: true };
+    assert.equal(sent.operation, 'library_mutation_prepare');
+    await onDispatchedTimeout(7);
+    return { ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT' };
+  });
+  const result = await f.handleCliBridgeCommand('blockly-live-operation', {
+    path: project, operation: 'library_mutation_prepare', params: { requestId },
+  });
+  assert.equal(result.errorCode, 'RENDERER_RESPONSE_TIMEOUT');
+  assert.deepEqual(f.calls.map(call => call.operation), ['library_mutation_prepare', 'library_mutation_abort']);
+  assert.equal(f.calls[1].path, project);
+  assert.equal(f.calls[1].params.requestId, requestId);
+  assert.equal(f.calls[1].lifecycle.rendererGeneration, 7);
+});
+
 test('idle create prepares once and activates directly with the same admitted owner', async () => {
   const f = bridgeFixture();
   f.bridge.executeProjectCreate = f.originalMethods.executeProjectCreate;

@@ -141,7 +141,7 @@ test('rejects cancelled outcomes with a mismatched original execution binding', 
     }
 });
 
-test('conversion evidence survives repeated view-only saves without weakening upload reuse', async t => {
+test('view-only saves preserve conversion evidence and the existing firmware for upload', async t => {
     const f = fixture(t);
     const document = { pages: [{ id: 'main', blocks: { languageVersion: 0, blocks: [] }, viewState: { scrollX: 0, scrollY: 0, scale: 1 } }] };
     f.put('project.abi', JSON.stringify(document));
@@ -153,14 +153,34 @@ test('conversion evidence survives repeated view-only saves without weakening up
         document.pages[0].viewState.scrollY = index * -42;
         f.put('project.abi', JSON.stringify(document, null, index % 2 ? 2 : 0));
         assert.equal(api.inspectBlocklyCompileProof(f.config).status, 'verified');
+        assert.equal(api.canReuseBuildExecution(f.config), true);
+        assert.equal(api.resolveBuildExecution(f.root)?.buildRequestId, f.config.buildRequestId);
     }
-    assert.equal(api.canReuseBuildExecution(f.config), false, 'upload retains strict document identity');
     for (const [name, content] of receipts) assert.deepEqual(fs.readFileSync(path.join(f.root, '.aily/build-executions', name)), content);
     const worker = fork(require.resolve('../child/scripts/build-execution-worker'), [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     const message = once(worker, 'message'), closed = once(worker, 'close');
     worker.send({ action: 'inspect-compile-proof', config: f.config });
     assert.equal((await message)[0].proof.status, 'verified');
     assert.deepEqual(await closed, [0, null]);
+});
+
+test('can upload a compiled unsaved canvas after saving that exact canvas', t => {
+    const f = fixture(t);
+    const compiledDocument = { pages: [{ id: 'main', blocks: { text: 'compiled' } }] };
+    f.put('project.abi', JSON.stringify({ pages: [{ id: 'main', blocks: { text: 'previously saved' } }] }));
+    const compiled = api.prepareBuildExecution(f.config, { documentText: JSON.stringify({
+        pages: [{ blocks: { text: 'compiled' }, id: 'main' }],
+    }), revision: 1, runtimeRevision: 1, pageId: 'main' });
+    complete(compiled);
+    compiledDocument.pages[0].viewState = { scrollX: 27 };
+    f.put('project.abi', JSON.stringify(compiledDocument));
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+    assert.equal(api.canReuseBuildExecution({ ...f.config, code: 'unsaved code change' }), false);
+    assert.equal(api.canReuseBuildExecution({ ...f.config, projectMacros: [] }), false);
+    assert.equal(api.canReuseBuildExecution({ ...f.config, generatedArtifacts: [] }), false);
+    compiledDocument.pages[0].blocks.text = 'changed after compile';
+    f.put('project.abi', JSON.stringify(compiledDocument));
+    assert.equal(api.resolveBuildExecution(f.root), null);
 });
 
 test('conversion evidence compares actual code, macros, generated artifacts and all compiler files', t => {
