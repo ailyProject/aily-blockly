@@ -2,7 +2,7 @@ const path = require('node:path');
 
 const parameterScopedProjects = new Set([
   'project_fork_status', 'project_recovery_open', 'project_save_status', 'project_publication_status',
-  'project_board_environment_settle',
+  'project_board_environment_settle', 'project_navigation_status',
 ]);
 
 /** Recovery observation names its protected source in params.project. The

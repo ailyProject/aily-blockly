@@ -146,6 +146,7 @@ interface ProjectOpenOptions {
   interactive?: boolean;
   /** In-process ownership only; never accepted from IPC/Agent parameters. */
   lifecycleOwner?: symbol;
+  onViewActivated?: (project: string | null, revision: number) => void;
   /** Host-only exact journal authority. Never accepted from IPC/Agent options. */
   recoveryReopen?: { assertCurrent(): void };
   /** Recovery-copy navigation preserves the original source recovery view. */
@@ -197,6 +198,7 @@ export class ProjectService {
   // 当前项目路径的订阅源
   private currentProjectPathSubject = new BehaviorSubject<string>('');
   currentProjectPath$ = this.currentProjectPathSubject.asObservable();
+  private viewRevision = 0;
   private recoveredCreateSession?: { project: string; sessionId: string };
 
   private readonly coderOperations = new Map<symbol, CoderProjectOperation>();
@@ -1103,9 +1105,14 @@ export class ProjectService {
     if (this.recoveredCreateSession && !this.isSameProjectPath(path, this.recoveredCreateSession.project)) {
       this.recoveredCreateSession = undefined;
     }
+    this.viewRevision += 1;
     this.currentProjectPathSubject.next(path);
     if (!this.isCoderProjectContext) this.publishCoderWorkspaceContext();
     if (!this.isCoderProjectContext) this.publishCoderOperations();
+  }
+
+  get projectViewRevision(): number {
+    return this.viewRevision;
   }
 
   getRecoveredCreateSessionId(project: string): string | undefined {
@@ -1114,8 +1121,8 @@ export class ProjectService {
       ? binding.sessionId : undefined;
   }
 
-  clearRecoveredCreateSessionId(project: string): void {
-    if (this.getRecoveredCreateSessionId(project)) this.recoveredCreateSession = undefined;
+  private clearRecoveredCreateSessionId(project: string, sessionId: string): void {
+    if (sessionId && this.getRecoveredCreateSessionId(project) === sessionId) this.recoveredCreateSession = undefined;
   }
 
   get isProjectOpening(): boolean {
@@ -1449,6 +1456,11 @@ export class ProjectService {
   async init() {
     if (this.electronService.isElectron) {
       this.registerProjectRootPathSettingListener();
+      window['ipcRenderer'].on('project-create-recovery-acknowledged', (_event, receipt) => {
+        if (typeof receipt?.project === 'string' && typeof receipt.sessionId === 'string') {
+          this.clearRecoveredCreateSessionId(receipt.project, receipt.sessionId);
+        }
+      });
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         if (message.data.action == 'open-project' || message.data.action === 'open-project-in-coder') {
@@ -2600,6 +2612,7 @@ export class ProjectService {
       this.beginBlocklyProjectLoad(projectPath);
     }
     this.currentProjectPath = projectPath;
+    options.onViewActivated?.(projectPath, this.projectViewRevision);
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
     this.projectActivationSubject.next({
       path: projectPath,
@@ -3405,7 +3418,8 @@ export class ProjectService {
     return targetProjectPath;
   }
 
-  async close(options: { save?: boolean; lifecycleOwner?: symbol } = {}) {
+  async close(options: { save?: boolean; lifecycleOwner?: symbol;
+    onViewActivated?: (project: string | null, revision: number) => void } = {}) {
     if (this.coderOperationsSubject.value.size) {
       this.message.warning('工程正在编译或上传');
       return false;
@@ -3455,7 +3469,7 @@ export class ProjectService {
           if (!(await this.discardDepartingBlocklyProject(project, false, options.save !== true))) return false;
         } else await this.discardLibraryChanges(project);
       }
-      return await this.closeInternal(closingPaths);
+      return await this.closeInternal(closingPaths, options.onViewActivated);
     } finally { lease.release(); }
   }
 
@@ -3537,7 +3551,7 @@ export class ProjectService {
     }
   }
 
-  private async closeInternal(paths: string[]) {
+  private async closeInternal(paths: string[], onViewActivated?: (project: string | null, revision: number) => void) {
     if (this.currentProjectPath && window['projectLock']?.clearActive) {
       try { await window['projectLock'].clearActive(this.currentProjectPath); }
       catch (error) { console.warn('Project crash navigation could not be cleared:', error); }
@@ -3557,6 +3571,7 @@ export class ProjectService {
     this.coderProjectContexts.clear();
     this.publishCoderProjects();
     this.currentProjectPath = '';
+    onViewActivated?.(null, this.projectViewRevision);
     this.loadingBlocklyProjectPath = '';
     this.loadedBlocklyProjectPath = '';
     this.blocklyProjectLoadFailure = null;

@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const {
   bridgeFixture,
   mainRouteFixture,
@@ -12,6 +13,148 @@ const snapshot = (sourceProject = null, rendererGeneration = 7) => ({
   version: 1,
   sourceProject,
   rendererGeneration,
+});
+
+function navigationFixture() {
+  const source = path.resolve('fixtures/navigation-source'), target = path.resolve('fixtures/navigation-target');
+  const f = bridgeFixture(source), { domain, bridge, window } = f;
+  let current = source, revision = 0;
+  Object.defineProperties(domain, {
+    currentProjectPath: { get: () => current, set: project => { current = project; revision++; } },
+    projectViewRevision: { get: () => revision },
+  });
+  const identities = new Map([[source, '1'], [target, '2']]);
+  window.fs = { captureProjectAttachment: root => ({ version: 1, root,
+    identity: { dev: '1', ino: identities.get(root), birthtimeNs: '1' } }) };
+  bridge.electronService.exists = () => true;
+  bridge.electronService.pathJoin = path.join;
+  bridge.configService.init = async () => undefined;
+  bridge.configService.getPreferredChatAgentRuntimeMode = () => 'blockly';
+  bridge.executeProjectOpen = f.originalMethods.executeProjectOpen;
+  bridge.executeProjectClose = f.originalMethods.executeProjectClose;
+  domain.getBlocklyProjectLoadStatus = () => ({ ready: true, state: 'loaded' });
+  const request = (operation, sourceProject, targetProject) =>
+    ({ version: 1, requestId: randomUUID(), rendererGeneration: f.generation, deadlineAt: Date.now() + 100_000,
+      operation, sourceProject, targetProject });
+  const send = (original, reopenFrom) => bridge.executeOperation({ operation: original.operation,
+    path: original.targetProject ?? original.sourceProject, rendererGeneration: f.generation,
+    lifecycle: snapshot(original.sourceProject), params: { navigationRequest: original, ...(reopenFrom ? { reopenFrom } : {}) } });
+  const observe = (original) => bridge.executeOperation({ operation: 'project_navigation_status',
+    rendererGeneration: f.generation, params: { navigationRequest: original } });
+  return { ...f, source, target, identities, request, send, observe };
+}
+
+test('ordinary open reports exact activation before editor readiness, then retains it after load failure and lost reply', async () => {
+  const f = navigationFixture(), id = f.request('project_open', f.source, f.target);
+  let opened = 0, markStarted, finish;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const loaded = new Promise(resolve => { finish = resolve; });
+  f.domain.projectOpen = async (target, options) => {
+    opened++;
+    f.domain.currentProjectPath = target;
+    options.onViewActivated(target, f.domain.projectViewRevision);
+    markStarted();
+    return loaded;
+  };
+  f.domain.getBlocklyProjectLoadStatus = () => ({ ready: false, state: 'error', error: 'Editor initialization failed' });
+  const start = f.send(id);
+  await started;
+  const pending = await f.observe(id);
+  assert.equal(pending.navigationReceipt.state, 'pending');
+  assert.equal(pending.navigationReceipt.activation.state, 'open');
+  assert.equal(pending.navigationReceipt.activation.attachment.identity.ino, '2');
+  assert.equal(pending.activationCurrent, true);
+  finish(false);
+  // Discard the original response as if its HTTP acknowledgement was lost.
+  await start;
+  const recovered = await f.observe(id);
+  assert.equal(recovered.navigationReceipt.state, 'failed');
+  assert.equal(recovered.result.reason, 'project_load_failed');
+  assert.equal(recovered.result.loadStatus.ready, false);
+  assert.equal(recovered.result.nextAction.input.action, 'inspect');
+  assert.equal(recovered.activationCurrent, true);
+  assert.equal((await f.send(id)).navigationReceipt.state, 'failed');
+  assert.equal(opened, 1);
+  f.domain.currentProjectPath = f.source;
+  f.domain.currentProjectPath = f.target;
+  assert.equal((await f.observe(id)).activationCurrent, false);
+  assert.equal((await f.observe({ ...id, targetProject: f.source })).navigationReceipt.state, 'unknown');
+});
+
+test('ordinary close authorizes only reopening the physically identical project in the same empty view', async () => {
+  const f = navigationFixture(), closed = f.request('project_close', f.source, null);
+  let openCalls = 0, closeCalls = 0;
+  f.domain.close = async options => {
+    closeCalls++;
+    f.domain.currentProjectPath = '';
+    options.onViewActivated(null, f.domain.projectViewRevision);
+    return true;
+  };
+  f.domain.projectOpen = async (target, options) => {
+    openCalls++;
+    f.domain.currentProjectPath = target;
+    options.onViewActivated(target, f.domain.projectViewRevision);
+    return true;
+  };
+  await f.send(closed);
+  const status = await f.observe(closed);
+  assert.equal(status.navigationReceipt.activation.state, 'closed');
+  assert.equal(status.navigationReceipt.sourceAttachment.identity.ino, '1');
+  assert.equal(status.result.project, null);
+  assert.equal(status.activationCurrent, true);
+  assert.equal((await f.send(closed)).ok, true);
+  assert.equal(closeCalls, 1);
+  assert.equal((await f.send(f.request('project_open', null, f.target), closed)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  f.identities.set(f.source, '19');
+  assert.equal((await f.observe(closed)).activationCurrent, false);
+  assert.equal((await f.send(f.request('project_open', null, f.source), closed)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  f.identities.set(f.source, '1');
+  const reopened = await f.send(f.request('project_open', null, f.source), closed);
+  assert.equal(reopened.ok, true);
+  assert.equal(reopened.navigationReceipt.activation.project, f.source);
+  assert.equal(openCalls, 1);
+  f.domain.currentProjectPath = '';
+  assert.equal((await f.send(f.request('project_open', null, f.source), closed)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  assert.equal(openCalls, 1);
+});
+
+test('Main forwards the original navigation status without substituting the active project', async () => {
+  const f = mainRouteFixture(path.resolve('fixtures/another-project'));
+  const request = navigationFixture().request('project_close', path.resolve('fixtures/navigation-source'), null);
+  const reply = await f.handleCliBridgeCommand('blockly-live-operation', { operation: 'project_navigation_status',
+    params: { navigationRequest: request } });
+  assert.equal(reply.ok, true);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].path, '');
+  assert.equal(f.calls[0].params.navigationRequest, request);
+  assert.equal(f.calls[0].lifecycle, undefined);
+});
+
+test('an activated failed view reports its static workspace protocol without preparing or publishing', async () => {
+  const project = path.resolve('fixtures/activated-failed-project');
+  const reads = [];
+  const f = bridgeFixture(project, 7, {
+    rejectAbsLiveRequest: () => null,
+    absWorkspaceProtocol: async (scope, params, guard) => {
+      guard();
+      reads.push([scope, Object.keys(params)]);
+      return { ok: true, operation: 'abs_protocol', project: scope, protocol: { version: 1, workspaceMode: 'overlay-v1' } };
+    },
+  });
+  f.domain.captureCurrentProjectGuard = () => () => f.domain.currentProjectPath === project;
+  f.domain.getBlocklyProjectLoadStatus = () => ({ ready: false, state: 'error', error: 'Editor initialization failed' });
+  f.domain.isProjectTransitionInProgress = () => true;
+  f.bridge.absGenerationTools = { workspaceMigration: () => assert.fail('would enter the workspace preparer') };
+  f.bridge.aiOperations = { setActive: () => assert.fail('would acquire an editor mutation mask') };
+  const payload = { operation: 'abs_protocol', path: project, params: { version: 1, action: 'prepare_workspace_migration' } };
+  const result = await f.bridge.executeAdmittedOperation(payload);
+  assert.equal(result.ok, true);
+  assert.equal(result.protocol.workspaceMode, 'overlay-v1');
+  assert.equal(result.migrationDeferred.reason, 'editor-not-ready');
+  assert.deepEqual(reads, [[project, ['version']]]);
+  const wrongScope = await f.bridge.executeAdmittedOperation({ ...payload, path: path.join(project, 'different') });
+  assert.equal(wrongScope.code, 'PROJECT_ADMISSION_CONTEXT_STALE');
+  assert.equal(reads.length, 1);
 });
 
 test('idle app_info advertises lifecycle admission separately from project-bound ABS protocol', async () => {

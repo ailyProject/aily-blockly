@@ -953,7 +953,13 @@ function observeOriginalProjectCreate(operation, params) {
   const opened = getOpenedProjectPathFromWindow();
   if (!isCurrentRendererGenerationReady() || !opened || !ownsProjectNavigation(opened)) return unconfirmed;
   const navigation = projectCrashResumeController();
-  if (acknowledge) return { ok: true, operation, acknowledged: navigation?.acknowledgeCreation(opened, query)?.acknowledged === true };
+  if (acknowledge) {
+    const acknowledged = navigation?.acknowledgeCreation(opened, query)?.acknowledged === true;
+    if (acknowledged) mainWindow.webContents.send('project-create-recovery-acknowledged', {
+      project: opened, sessionId: query.recoverySessionId,
+    });
+    return { ok: true, operation, acknowledged };
+  }
   const observed = navigation?.observeCreation(opened, query);
   if (!observed?.ok || !observed.project || !observed.creation) return unconfirmed;
   const { project, attachment, creation } = observed;

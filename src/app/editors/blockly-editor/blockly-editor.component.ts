@@ -169,7 +169,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           }
           this._projectService.currentProjectPath = requestedProjectPath;
           this.toolboxReadyProjectPath = null;
-          this.projectService.currentProjectPath = requestedProjectPath;
+          // ProjectService already owns the view after a normal navigation.
+          // Confirming that route must preserve the original activation revision.
+          if (this.projectService.currentProjectPath !== requestedProjectPath) {
+            this.projectService.currentProjectPath = requestedProjectPath;
+          }
           this.projectService.beginBlocklyProjectLoad(requestedProjectPath);
           projectDataRuntime.configure(params['path']);
           dataSession = projectDataRuntime.getSessionToken();
