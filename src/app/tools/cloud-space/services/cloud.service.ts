@@ -7,7 +7,7 @@ import { API } from '../../../configs/api.config';
 import { isCmdTerminalOutput, CmdService, CmdOutput, PlatformService } from '@core/platform/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
-import { preserveLegacyCloudProjectMap } from './legacy-cloud-project';
+import { preserveUnpairedCloudProjectFile } from './legacy-cloud-project';
 
 declare global {
   interface Window {
@@ -22,9 +22,11 @@ declare const process: any;
 @Injectable({
   providedIn: 'root'
 })
+
 export class CloudService {
   // 使用 getter 动态获取 URL，确保区域切换后能获取到最新的地址
   get baseUrl(): string { return API.cloudBase; }
+
   private get apiUrl() { return API.cloudSync; }
   private get cloudProjectsUrl() { return API.cloudProjects; }
 
@@ -47,9 +49,11 @@ export class CloudService {
     const keywords = String(keyword ?? '').trim();
     const projectId = String(id ?? '').trim();
     const boardName = String(board ?? '').trim();
+
     if (keywords) params = params.set('keywords', keywords);
     if (projectId) params = params.set('id', projectId);
     if (boardName) params = params.set('board', boardName);
+
     params = params.set('category', this.configService.isCoderProduct() ? 'coder' : 'blockly');
 
     return this.http.get<any>(API.cloudPublicProjects, { params })
@@ -65,21 +69,28 @@ export class CloudService {
    */
   syncProject(params: {
     pid?: string;
+
     projectData?: any; // 新增的项目数据对象
+
     archive?: string;
     category?: 'blockly' | 'coder';
   }): Observable<any> {
     const formData = new FormData();
+
     if (params.category) formData.append('category', params.category);
+
     if (params.projectData) {
       formData.append('projectData', JSON.stringify(params.projectData));
     }
+
     if (params.pid) formData.append('pid', params.pid);
+
     if (params.archive) {
       // 读取二进制文件（不指定编码参数，返回原始Buffer）
       const fileBuffer = window['fs'].readFileSync(params.archive, null);
       const archiveName = window['path'].basename(params.archive);
       const file = new File([fileBuffer], archiveName, { type: 'application/x-7z-compressed' });
+
       formData.append('archive', file, archiveName);
     }
 
@@ -99,6 +110,7 @@ export class CloudService {
     });
 
     console.log('发送请求到:', this.apiUrl);
+
     return this.http.post<any>(this.apiUrl, formData, { headers })
       .pipe(
         catchError(this.handleError)
@@ -115,6 +127,7 @@ export class CloudService {
       page: skip.toString(),
       perPage: limit.toString()
     };
+
     params['category'] = this.configService.isCoderProduct() ? 'coder' : 'blockly';
 
     return this.http.get<any>(this.cloudProjectsUrl, { params })
@@ -157,24 +170,31 @@ export class CloudService {
     nickname?: string;
     description?: string;
     doc_url?: string;
+
     tags?: string[];
+
     image?: File;
   }): Observable<any> {
     const formData = new FormData();
+
     if (params.nickname) formData.append('nickname', params.nickname);
     if (params.description) formData.append('description', params.description);
     if (params.doc_url) formData.append('doc_url', params.doc_url);
+
     if (params.tags) {
       formData.append('tags', JSON.stringify(params.tags));
     }
+
     if (params.image) {
       // 确保为image文件指定正确的文件名
       const fileName = params.image.name || 'image';
+
       formData.append('image', params.image, fileName);
     }
 
     // 创建带有正确headers的请求
     const headers = new HttpHeaders();
+
     // 注意：不要手动设置Content-Type，让浏览器自动设置multipart/form-data的boundary
 
     return this.http.put<any>(`${this.cloudProjectsUrl}/${projectId}`, formData, { headers })
@@ -266,6 +286,7 @@ export class CloudService {
     if (board?.trim()) {
       params['board'] = board.trim();
     }
+
     params['category'] = this.configService.isCoderProduct() ? 'coder' : 'blockly';
 
     return this.http.get<any>(`${this.cloudProjectsUrl}/templates`, {
@@ -308,6 +329,7 @@ export class CloudService {
    */
   private async downloadAndExtractArchive(blob: Blob): Promise<string> {
     let tempDir = '';
+
     try {
       // 检查 blob 大小和类型
       // console.log('Blob 信息:', {
@@ -324,6 +346,7 @@ export class CloudService {
       
       // 保存文件到临时目录
       const archivePath = `${tempDir}/archive.7z`;
+
       await this.saveBlobToFile(blob, archivePath);
       
       // 验证文件是否正确保存
@@ -332,6 +355,7 @@ export class CloudService {
       }
       
       const fileStats = window['fs'].statSync(archivePath);
+
       // console.log('保存的文件信息:', {
       //   path: archivePath,
       //   size: fileStats.size,
@@ -363,13 +387,14 @@ export class CloudService {
       
       // 创建解压目录
       const extractPath = `${tempDir}/extracted`;
+
       window['fs'].mkdirSync(extractPath);
       
       // 获取7za/7zz的完整路径
       const za7Path = await this.platformService.getZa7Path();
-      
       // 使用7za/7zz解压文件（明确指定7z格式）
       let extractCmd = `"${za7Path}" x "${archivePath}" -o"${extractPath}" -t7z -y`;
+
       if (window['platform'].isWindows) {
         extractCmd = `& ${extractCmd}`; // PowerShell 语法
       }
@@ -391,23 +416,29 @@ export class CloudService {
             next: (output: CmdOutput) => {
               if (output.type === 'stdout' && output.data) {
                 outputs.push(output.data);
+
                 allOutput += output.data;
               } else if (output.type === 'stderr' && output.data) {
                 errors.push(output.data);
+
                 allErrors += output.data;
               } else if (output.type === 'error') {
                 hasError = true;
+
                 if (output.error) {
                   errors.push(output.error);
+
                   allErrors += output.error;
                 }
               } else if (isCmdTerminalOutput(output)) {
                 exitCode = output.code;
+
                 resolve(output);
               }
             },
             error: (err) => {
               hasError = true;
+
               reject(err);
             }
           });
@@ -416,6 +447,7 @@ export class CloudService {
         // 检查解压结果
         if (hasError || (exitCode !== undefined && exitCode !== 0)) {
           const errorMsg = allErrors || allOutput || result.error || result.data || `退出码: ${exitCode}`;
+
           const errorDetails = JSON.stringify({
             type: result.type,
             code: exitCode,
@@ -423,19 +455,24 @@ export class CloudService {
             data: result.data,
             signal: result.signal,
             allOutput: allOutput.substring(0, 500), // 限制长度
+
             allErrors: allErrors.substring(0, 500)
           }, null, 2);
+
           console.error('解压命令执行失败:', errorDetails);
+
           throw new Error(`7za解压失败: ${errorMsg}`);
         }
       } catch (error: any) {
         const errorMsg = error.message || allErrors || allOutput || '未知错误';
+
         console.error('解压命令执行异常:', {
           error: error,
           allOutput: allOutput.substring(0, 500),
           allErrors: allErrors.substring(0, 500),
           exitCode
         });
+
         throw new Error(`7za解压失败: ${errorMsg}`);
       }
       
@@ -445,6 +482,7 @@ export class CloudService {
       }
       
       const extractedFiles = window['fs'].readDirSync(extractPath);
+
       if (extractedFiles.length === 0) {
         throw new Error('解压后没有找到任何文件');
       }
@@ -452,7 +490,7 @@ export class CloudService {
       // console.log('解压成功，文件数量:', extractedFiles.length);
 
       // Normalize only fresh cloud downloads; local saves/imports keep their ABS protection.
-      preserveLegacyCloudProjectMap(extractPath);
+      preserveUnpairedCloudProjectFile(extractPath);
 
       // 删除.7z文件，节省空间
       try {
@@ -461,6 +499,7 @@ export class CloudService {
       } catch (error) {
         console.warn('删除临时归档文件失败:', error);
       }
+
       return extractPath;
     } catch (error) {
       // 清理临时文件
@@ -471,6 +510,7 @@ export class CloudService {
           console.warn('清理临时文件失败:', cleanupError);
         }
       }
+
       throw new Error(`解压归档文件失败: ${error.message || error}`);
     }
   }
@@ -482,7 +522,9 @@ export class CloudService {
   private async createTempDirectory(): Promise<string> {
     const tempBase = await window['env'].get('TEMP') || await window['env'].get('TMP') || '/tmp';
     const tempDir = `${tempBase}/aily_cloud_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
     window['fs'].mkdirSync(tempDir);
+
     return tempDir;
   }
 
@@ -494,6 +536,7 @@ export class CloudService {
   private async saveBlobToFile(blob: Blob, filePath: string): Promise<void> {
     const arrayBuffer = await blob.arrayBuffer();
     const buffer = window.Buffer ? window.Buffer.from(arrayBuffer) : new Uint8Array(arrayBuffer);
+
     window['fs'].writeFileSync(filePath, buffer);
   }
 
@@ -506,6 +549,7 @@ export class CloudService {
       if (window['fs'].existsSync(tempDir)) {
         // 递归删除目录及其内容
         const rmOptions = { recursive: true, force: true };
+
         window['fs'].rmSync(tempDir, rmOptions);
         console.log('临时目录已清理:', tempDir);
       }
@@ -522,6 +566,7 @@ export class CloudService {
     if (extractPath && extractPath.includes('aily_cloud_')) {
       // 只清理我们创建的临时目录，确保安全
       const parentDir = extractPath.replace('/extracted', '');
+
       this.cleanupTempDirectory(parentDir);
     }
   }
@@ -543,6 +588,7 @@ export class CloudService {
       });
       
       let errorDetail = '';
+
       if (error.error) {
         if (typeof error.error === 'string') {
           errorDetail = error.error;
@@ -565,11 +611,13 @@ export class CloudService {
       } else {
         const status = error.status || '未知状态码';
         const statusText = error.statusText || '未知状态';
+
         errMsg = `服务端错误: ${status} ${statusText}, ${errorDetail || error.message || '无详细错误信息'}`;
       }
     } else {
       // 非标准错误对象（可能是网络错误、CORS错误等）
       console.debug('非标准HTTP错误:', error);
+
       if (error.message) {
         errMsg = `网络错误: ${error.message}`;
       } else if (typeof error === 'string') {
@@ -580,6 +628,7 @@ export class CloudService {
     }
     
     console.debug('处理后的错误信息:', errMsg);
+
     return throwError(() => errMsg);
   }
 }

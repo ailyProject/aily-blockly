@@ -102,6 +102,7 @@ export class SubappAgentBridgeService implements OnDestroy {
   private readonly channels = new Map<string, SubappRpcChannel>();
   private readonly ownerRequests = new SubappOwnerRequests();
   private readonly ownerGuard = new SubappOwnerGuard();
+
   private readonly ownerLeases = new SubappAgentOwnerLeases(lease => this.releaseControlledOwner(lease.ownerLeaseId, lease.sessionId),
     Date.now, id => this.ownerRequests.pendingCount(id));
 
@@ -192,7 +193,6 @@ export class SubappAgentBridgeService implements OnDestroy {
       // A trusted descriptor or explicit per-tool Web choice declares this
       // path. Unrelated installed/native tools retain their original route.
       webSelected = this.resolveAgentPlatform(resolved.config.id) === 'web';
-
       const nativeBatch = !webSelected && resolved.config.runtime?.headless === true;
       const browserPresentation = !webSelected && !nativeBatch && !!resolved.config.runtime?.browserExecution;
 
@@ -239,9 +239,11 @@ export class SubappAgentBridgeService implements OnDestroy {
       if (presentationPolicy.uiMode === 'window' && browserPresentation && isWindowOnlyChildTool(resolved.config.id)) {
         await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
         this.throwIfCancelled(signal);
+
         const opened = await this.automation.openChildApp({
           toolId: resolved.config.id, mode: 'window', reveal: tool !== 'simulator_scene_generation_open',
         });
+
         if (opened['ok'] !== true) throw new SubappRpcError(String(opened['message']), 'SUBAPP_PRESENTATION_NOT_READY');
 
         presentation = { ...opened, mode: 'window' };
@@ -251,6 +253,7 @@ export class SubappAgentBridgeService implements OnDestroy {
         await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
         await this.ownerGuard.track(resolved.config.id, ownerSessionId);
         this.throwIfCancelled(signal);
+
         presentation = await this.presentOwner({ toolId: resolved.config.id }, ownerSessionId, activitySessionId, true);
       } else if (presentationPolicy.uiMode === 'window') {
         if (!webSelected && !nativeBatch) await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
@@ -330,9 +333,8 @@ export class SubappAgentBridgeService implements OnDestroy {
         this.ownerLeases.require(ownerSessionId, activitySessionId, context.toolCallId);
       }
 
-      const resultStatus = this.record(result)['status'];
-      if (tool === 'simulator_scene_generation_submit' && browserPresentation && isWindowOnlyChildTool(resolved.config.id)
-        && (resultStatus === 'applied' || resultStatus === 'unchanged')) {
+      if (tool === 'simulator_scene_generation_open' && presentationPolicy.uiMode === 'window'
+        && browserPresentation && isWindowOnlyChildTool(resolved.config.id)) {
         try {
           presentation = await this.automation.openChildApp({ toolId: resolved.config.id, mode: 'window' });
         } catch (error) {
@@ -463,62 +465,90 @@ export class SubappAgentBridgeService implements OnDestroy {
 
     try {
       const controlled = input['ownerControl'] !== undefined || this.ownerGuard.hasAgentControl(ownerLeaseId);
+
       if (action === 'acquire' && this.ownerGuard.hasControlApi()) {
         const result = await this.ownerGuard.acquireAgent(sessionId);
+
         this.ownerLeases.adopt(result as unknown as { ownerLeaseId: string; sessionId: string; expiresAt: number });
+
         return { ...result, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
       }
+
       if (controlled) {
         const observed = await this.ownerGuard.agent('inspect', ownerLeaseId, sessionId, input['ownerControl']);
+
         if (action === 'inspect' || action === 'recover') {
           if (input['version'] !== 1) throw new SubappRpcError('Owner recovery protocol version 1 is required.', 'SUBAPP_OWNER_PROTOCOL_REQUIRED');
+
           if (observed['state'] === 'active' && observed['currentOwner'] === false) {
             throw new SubappRpcError('Historical owner evidence cannot rebind a newer session incarnation.', 'SUBAPP_OWNER_SUPERSEDED');
           }
+
           if (action === 'inspect') {
             const pendingRequests = Math.max(Number(observed['pendingRequests']), this.ownerRequests.pendingCount(ownerLeaseId));
             const { leaseExpiresAt, ...inspection } = observed;
+
             const restoresOriginal = observed['state'] === 'active' && observed['currentOwner'] === true && pendingRequests === 0
               && Number.isSafeInteger(leaseExpiresAt) && Number(leaseExpiresAt) > Date.now();
+
             if (restoresOriginal) {
               this.ownerLeases.adopt({ ownerLeaseId, sessionId, expiresAt: Number(leaseExpiresAt) });
               this.ownerLeases.require(ownerLeaseId, sessionId);
             }
+
             return { ...inspection, pendingRequests, recoverable: observed['recoverable'] === true && pendingRequests === 0,
               ...(restoresOriginal ? { ownerRestored: true, expiresAt: Number(leaseExpiresAt) } : {}) };
           }
+
           if (observed['state'] === 'active') throw new SubappRpcError('The original main-process owner is still active.', 'SUBAPP_OWNER_ACTIVE');
+
           const released = await this.ownerLeases.release(ownerLeaseId, sessionId);
+
           // Registry loss is not absence proof: retire the independently issued
           // main owner and join its actual Runtime/native cleanup as well.
           await this.ownerGuard.agent('retire', ownerLeaseId, sessionId, input['ownerControl']);
+
           const recovered = await this.ownerGuard.agent('recover', ownerLeaseId, sessionId, input['ownerControl'], {
             recoveryRequestId: input['recoveryRequestId'], pendingRequests: this.ownerRequests.pendingCount(ownerLeaseId),
             rendererCleanupConfirmed: released['ok'] === true,
           });
+
           if (recovered['ok'] === true) this.ownerLeases.adopt(recovered as unknown as { ownerLeaseId: string; sessionId: string; expiresAt: number });
+
           return { ...recovered, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
         }
+
         if (action === 'renew') {
           this.ownerLeases.require(ownerLeaseId, sessionId);
+
           const renewed = await this.ownerGuard.agent('renew', ownerLeaseId, sessionId, input['ownerControl']);
+
           this.ownerLeases.adopt(renewed as unknown as { ownerLeaseId: string; sessionId: string; expiresAt: number });
+
           return { ...renewed, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
         }
+
         if (action === 'release') {
           const result = await this.ownerLeases.release(ownerLeaseId, sessionId);
+
           await this.ownerGuard.agent('retire', ownerLeaseId, sessionId, input['ownerControl']);
+
           return result;
         }
       }
+
       if (action === 'inspect' || action === 'recover') {
         if (input['version'] !== 1) throw new SubappRpcError('Owner recovery protocol version 1 is required.', 'SUBAPP_OWNER_PROTOCOL_REQUIRED');
+
         const result = action === 'inspect' ? this.ownerLeases.inspect(ownerLeaseId, sessionId)
           : this.ownerLeases.recover(ownerLeaseId, sessionId, String(input['recoveryRequestId'] || ''));
+
         return { ok: true, ...result, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
       }
+
       if (action === 'release') return await this.ownerLeases.release(ownerLeaseId, sessionId);
       if (action === 'present') return await this.presentOwner(input, ownerLeaseId, sessionId);
+
       if (action === 'cancel') {
         const requestId = String(input['requestId'] || '');
 
@@ -543,55 +573,78 @@ export class SubappAgentBridgeService implements OnDestroy {
   private async presentOwner(input: Record<string, unknown>, ownerLeaseId: string, sessionId: string,
     reuseOwnedView = false): Promise<Record<string, unknown>> {
     const toolId = String(input['toolId'] || '').trim();
+
     const validate = () => {
       this.ownerLeases.require(ownerLeaseId, sessionId);
+
       if (!this.channels.get(toolId)?.sessionIds.has(ownerLeaseId)) {
         throw new SubappRpcError('The Agent owner has not acquired this Subapp', 'SUBAPP_OWNER_TOOL_REQUIRED');
       }
     };
+
     validate();
+
     const config = getChildToolConfig(toolId);
+
     if (!config?.runtime?.browserExecution || !config.ui?.surfaces?.['full']?.entry || !this.browserPresentations) {
       throw new SubappRpcError('This Subapp has no Agent Browser presentation', 'SUBAPP_OWNER_PRESENTATION_UNAVAILABLE');
     }
+
     if (isWindowOnlyChildTool(toolId)) {
       const opened = await this.automation.openChildApp({ toolId, mode: 'window' });
+
       validate();
+
       return { ...opened, mode: 'window' };
     }
 
     const mode = 'embedded';
+
     if (input['mode'] !== undefined && input['mode'] !== mode) {
       throw new SubappRpcError('Agent Browser presentation requires embedded mode', 'SUBAPP_OWNER_PRESENTATION_MODE');
     }
+
     const existing = reuseOwnedView ? this.browserPresentations.reuseOwned(toolId, ownerLeaseId, validate) : null;
+
     if (existing) {
       const ready = await existing.ready;
+
       validate();
       this.browserPresentations.requireReusableMount(toolId, existing.id);
+
       const focused = await this.automation.focusChildAppPresentation(toolId, existing.id);
+
       if (focused?.['ok'] !== true) throw new SubappRpcError(
         String(focused?.['message'] || focused?.['error'] || 'The original Agent Browser View could not be focused'), 'SUBAPP_PRESENTATION_NOT_READY');
+
       validate();
       this.browserPresentations.requireReusableMount(toolId, existing.id);
+
       return { ok: true, toolId, mode, ...ready };
     }
+
     const ticket = this.browserPresentations.prepare(toolId, ownerLeaseId, validate);
     let timer: ReturnType<typeof setTimeout> | undefined;
+
     try {
       const result = await Promise.race([
         (async () => {
           const opened = await this.automation.openChildApp({ toolId, mode, [SUBAPP_BROWSER_PRESENTATION]: ticket.id });
+
           if (opened['ok'] !== true) throw new Error(String(opened['message'] || opened['error'] || 'Agent Browser presentation was not opened'));
+
           return await ticket.ready;
         })(),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Agent Browser presentation startup timed out')), 15000); }),
       ]);
+
       validate();
+
       return { ok: true, toolId, mode, ...result };
     } catch (error) {
       try { await this.browserPresentations.cancel(ticket.id, error); }
       catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Agent Browser presentation failed; View cleanup remains unconfirmed'); }
+
       throw error;
     } finally { clearTimeout(timer); }
   }
@@ -601,8 +654,10 @@ export class SubappAgentBridgeService implements OnDestroy {
       this.releaseSession(ownerLeaseId, sessionId),
       ...(this.ownerGuard.hasAgentControl(ownerLeaseId) ? [this.ownerGuard.agent('retire', ownerLeaseId, sessionId)] : []),
     ]);
+
     const failed = results.some(result => result.status === 'rejected' || result.value['ok'] !== true);
     const renderer = results[0].status === 'fulfilled' ? results[0].value : {};
+
     return { ...renderer, ok: !failed, sessionId: ownerLeaseId,
       ...(failed ? { errorCode: 'SUBAPP_OWNER_CLEANUP_FAILED', error: 'Original requests and Runtime resources are not all confirmed closed.' } : {}) };
   }
@@ -618,19 +673,24 @@ export class SubappAgentBridgeService implements OnDestroy {
     const retainedTools: string[] = [];
     const cleanupErrors: Array<{ toolId: string; error: string }> = [];
     const pendingInvocations = this.ownerRequests.release(normalizedSessionId);
+
     try { await this.browserPresentations?.closeOwner(normalizedSessionId); }
+
     catch (error) {
       // Keep original channel/owner bindings intact until its View ACKs. The
       // lease authority retains this failed release for an explicit retry.
       await pendingInvocations;
+
       return { ok: false, sessionId: normalizedSessionId, releasedTools,
         retainedTools: [...this.channels.values()].filter(channel => channel.sessionIds.has(normalizedSessionId)).map(channel => channel.toolId),
         cleanupErrors: [{ toolId: 'browser-presentation', error: error instanceof Error ? error.message : String(error) }] };
     }
+
     const cleanups: Promise<unknown>[] = [];
 
     for (const [toolId, channel] of [...this.channels.entries()]) {
       if (!channel.sessionIds.has(normalizedSessionId)) continue;
+
       channel.pendingOwnerReleases++;
 
       // Serialize lifecycle callbacks, not normal RPC calls. A new owner may
@@ -639,10 +699,12 @@ export class SubappAgentBridgeService implements OnDestroy {
         await channel.socketPromise?.catch(() => undefined);
 
         const lifecycle = getChildToolConfig(toolId)?.agent?.lifecycle;
+
         const notify = async (request: ChildToolAgentLifecycleRequestConfig | undefined, owner: string): Promise<boolean> => {
           try {
             if (owner && await this.ownerGuard.release(toolId, owner)) return true;
             if (!request) return true;
+
             const timeoutMs = this.boundedNumber(request.timeoutMs, 5000, 100, 30000);
 
             if (channel.socket?.readyState === WebSocket.OPEN) {
@@ -654,26 +716,35 @@ export class SubappAgentBridgeService implements OnDestroy {
               await sendSubappLifecycleRequest(channel.lastWsUrl, request.method, { ...(request.params || {}) },
                 { actor: 'agent', actorId: 'subapp-agent-host', ...(owner ? { sessionId: owner } : {}) }, timeoutMs);
             } else throw new Error('The original Runtime endpoint is unavailable; cleanup is not proven.');
+
             return true;
           } catch (error) {
             cleanupErrors.push({ toolId, error: error instanceof Error ? error.message : String(error) });
+
             return false;
           }
         };
+
         const ownerReleased = await notify(lifecycle?.ownerRelease, normalizedSessionId);
+
         channel.pendingOwnerReleases--;
+
         if (!ownerReleased) { retainedTools.push(toolId); return; }
+
         channel.sessionIds.delete(normalizedSessionId);
+
         if (channel.pendingOwnerReleases) {
           retainedTools.push(toolId);
 
           return;
         }
+
         if (!channel.sessionIds.size && !channel.hasUnscopedOwner && !await notify(lifecycle?.sessionRelease, '')) {
           // Retain the exact last owner as the retry anchor. Do not close the
           // transport and lose an unacknowledged final resource-release target.
           channel.sessionIds.add(normalizedSessionId); retainedTools.push(toolId); return;
         }
+
         if (channel.sessionIds.size || channel.hasUnscopedOwner) {
           retainedTools.push(toolId);
 

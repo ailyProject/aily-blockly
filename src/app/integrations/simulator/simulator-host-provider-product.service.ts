@@ -26,7 +26,6 @@ import { BuilderService } from '@domain/build/public-api';
 import { ProjectDebugConfigurationService, ProjectService } from '@domain/project/public-api';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
 import { SimulatorEntitlementAccountService } from './simulator-entitlement-account.service';
-import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-scene-change.service';
 
 import {
   SubappHostProviderDispatcher,
@@ -82,7 +81,6 @@ export class SimulatorHostProviderProductService {
     private readonly registry: SubappHostProviderProductRegistryService,
     private readonly project: ProjectService,
     private readonly builder: BuilderService,
-    private readonly simulatorMainAgent: SimulatorMainAgentSceneChangeService,
     private readonly hardwareIntent: ProjectHardwareIntentProviderService,
     private readonly entitlementAccount: SimulatorEntitlementAccountService,
     private readonly blockly: BlocklyService,
@@ -383,7 +381,6 @@ export class SimulatorHostProviderProductService {
         sceneId: 'main',
         files,
         activeProject,
-        mainAgent: this.simulatorMainAgent,
         builderService: this.builder,
         readWorkspaceSource,
         isArtifactCurrent: async (artifact, signal) => {
@@ -441,7 +438,7 @@ export class SimulatorHostProviderProductService {
 
             if (result.type !== 'close' || result.code !== 0) throw new Error(result.stderr || 'Board demonstration compilation failed.');
 
-            const line = result.stdout?.split(/\r?\n/).findLast(line => line.startsWith('AILY_DEMO_BUILD '));
+            const line = result.stdout?.split(/\r?\n/).reverse().find(line => line.startsWith('AILY_DEMO_BUILD '));
             const built = line && JSON.parse(line.slice('AILY_DEMO_BUILD '.length));
 
             if (typeof built?.root !== 'string') throw new Error('Board demonstration compilation returned no Artifact directory.');

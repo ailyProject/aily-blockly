@@ -87,7 +87,6 @@ export async function runCurrentProjectScopeChecks({ captureRead, capturePin, fi
       { register(toolId, factory) { assert.equal(toolId, 'simulator'); registered = factory; return () => { registered = null; }; } },
       project,
       { buildActiveBlocklyProject() { throw new Error('No build is authorized in these source checks.'); }, cancelActiveBlocklyProjectBuild() {} },
-      { execute() { throw new Error('No Agent action is authorized in these source checks.'); } },
       { resolve() { throw new Error('Hardware intent is outside these checks.'); } },
       { readSnapshot: () => ({ state: 'signed-out', connectivity: 'unknown' }), subscribe: () => ({ close() {} }) },
       { getWorkspaceContentRevision: () => 1, getReusableGeneratedCode() { blocklyReads++; return source; },

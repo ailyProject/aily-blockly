@@ -32,7 +32,7 @@ export interface SimulatorBuildProductCompositionOptions {
   sceneId?: string;
   files: SimulatorProjectArtifactCallbackAuthorityOptions['files'];
   activeProject: SimulatorActiveProjectBindingPort;
-  mainAgent: SimulatorMainAgentSceneChangePort;
+  mainAgent?: SimulatorMainAgentSceneChangePort;
   builderService: SimulatorBlocklyBuilderServicePort;
   maxBuildJobs?: SimulatorBuildCallbackAuthorityOptions['maxJobs'];
   buildExecutionSlot?: SimulatorBuildCallbackAuthorityOptions['executionSlot'];

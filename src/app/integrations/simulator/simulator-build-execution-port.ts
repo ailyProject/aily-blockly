@@ -53,7 +53,7 @@ export interface BlocklySimulatorBuildExecutionPortOptions {
   projectIdentity: string;
   sceneId?: string;
   activeProject: SimulatorActiveProjectBindingPort;
-  mainAgent: SimulatorMainAgentSceneChangePort;
+  mainAgent?: SimulatorMainAgentSceneChangePort;
   builder: SimulatorBlocklyBuilderPort;
   artifacts: SimulatorLatestArtifactDescriptorPort;
   readCompileScene(revision: string, signal: AbortSignal): Promise<SceneEditorDocumentV2>;
@@ -78,7 +78,7 @@ implements SimulatorBuildExecutionPort {
   private readonly projectIdentity: string;
   private readonly sceneId: string;
   private readonly activeProject: SimulatorActiveProjectBindingPort;
-  private readonly mainAgent: SimulatorMainAgentSceneChangePort;
+  private readonly mainAgent?: SimulatorMainAgentSceneChangePort;
   private readonly builder: SimulatorBlocklyBuilderPort;
   private readonly artifacts: SimulatorLatestArtifactDescriptorPort;
   private readonly readCompileScene: BlocklySimulatorBuildExecutionPortOptions['readCompileScene'];
@@ -100,10 +100,7 @@ implements SimulatorBuildExecutionPort {
     ) {
       throw new TypeError('Active Project binding port is invalid.');
     }
-    if (
-      !options.mainAgent
-      || typeof options.mainAgent.execute !== 'function'
-    ) {
+    if (options.mainAgent && typeof options.mainAgent.execute !== 'function') {
       throw new TypeError('Simulator main-Agent port is invalid.');
     }
     if (!options.builder || typeof options.builder.build !== 'function') {
@@ -135,11 +132,10 @@ implements SimulatorBuildExecutionPort {
     observer.report('resolving', 100);
     this.requireActiveBlocklyProject();
 
-    observer.report('generating', 250);
-    // A source-only rebuild already has the same Scene semantics. Regenerate
-    // Blockly code through the normal Builder; only circuit changes need the
-    // visible main Agent to reconcile the user's program.
-    if (request.reason === 'graph-semantic-changed') {
+    // The standard Simulator build compiles the current Blockly program.
+    // A caller with an explicit reconciliation port can request its existing workflow.
+    if (this.mainAgent && request.reason === 'graph-semantic-changed') {
+      observer.report('generating', 250);
       const mainAgentRequest: SimulatorMainAgentSceneChangeRequest = {
         schemaVersion: 1,
         kind: 'aily-simulator-main-agent-scene-change-request',

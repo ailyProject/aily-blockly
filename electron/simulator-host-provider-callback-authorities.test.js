@@ -226,6 +226,17 @@ test('Project context preserves Artifact discovery while reporting live source u
   assert.equal(result.activeArtifactRevision, null);
   assert.equal(result.workspaceSourceSha256, source);
 
+  for (const invalidManifest of ['{', '{}']) {
+    await fs.writeFile(manifestPath, invalidManifest);
+
+    result = await read(signal);
+
+    assert.equal(result.activeSceneId, sceneId);
+    assert.equal(result.activeArtifactRevision, null);
+    assert.equal(result.workspaceSourceSha256, source);
+    await assert.rejects(authority.readCurrentArtifact(null, signal), { code: 'operation-failed' });
+  }
+
   failure = new Error('source-generation-failed');
 
   await assert.rejects(read(signal), error => error === failure);
@@ -269,7 +280,7 @@ test('normal Host product source callback fences generation, async hash races, p
     getReusableGeneratedCode: () => reusable ? code : null,
   };
 
-  const service = new Service({}, project, {}, {}, {}, {}, blockly, {}, {}, {});
+  const service = new Service({}, project, {}, {}, {}, blockly, {}, {}, {}, {});
   const session = await service.open({ hostInstanceId: 'source-test', transport: {} });
 
   try {
@@ -1640,7 +1651,7 @@ test('a failing diagnostic sink cannot change the real Build outcome or retain t
   assert.equal(authority.snapshot().activeSubscriptions, 0);
 });
 
-for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`Blockly Build execution routes ${reason} through its required reconciliation before compiling the exact Scene revision`, async () => {
+for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`Blockly Build execution compiles the current program for ${reason} against the exact Scene revision`, async () => {
   const {
     BlocklySimulatorBuildExecutionPort,
     createEmptySceneEditorDocumentV2,
@@ -1657,9 +1668,7 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
     document.graphSemanticRevision,
   );
 
-  const agentRequests = [];
   const builderCalls = [];
-  let completeMainAgent;
 
   const execution = new BlocklySimulatorBuildExecutionPort({
     readCompileScene: async () => document,
@@ -1678,15 +1687,6 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
       isSameProjectRoot(left, right) {
         return left.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
           === right.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
-      },
-    },
-    mainAgent: {
-      execute(request) {
-        agentRequests.push(request);
-
-        return new Promise(resolve => {
-          completeMainAgent = resolve;
-        });
       },
     },
     builder: {
@@ -1715,13 +1715,6 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
     new AbortController().signal,
   );
 
-  if (reason === 'graph-semantic-changed') {
-    await waitFor(() => agentRequests.length === 1);
-    assert.equal(builderCalls.length, 0);
-    assert.equal(agentRequests[0].reason, reason);
-    completeMainAgent(mainAgentSceneChangeResult(rebuild, { outcome: 'completed', agentRunId: 'agent-run-main' }));
-  } else assert.equal(agentRequests.length, 0, 'Source-only builds must not require account-backed Agent execution.');
-
   assert.equal(await completion, artifact);
   assert.equal(builderCalls.length, 1);
 
@@ -1737,7 +1730,6 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
     stages.map(([stage]) => stage),
     [
       'resolving',
-      'generating',
       'compiling',
       'staging',
     ],

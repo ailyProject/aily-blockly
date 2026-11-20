@@ -1,17 +1,19 @@
-import { preserveLegacyCloudProjectMap } from './legacy-cloud-project';
+import { preserveUnpairedCloudProjectFile } from './legacy-cloud-project';
 
 describe('fresh cloud archive legacy map compatibility', () => {
   const root = '/cloud-extracted';
   const rawMap = '{"generation":"old-local-generation"}\r\n';
   let files: Map<string, string>, directories: Set<string>, links: Set<string>, io: any;
   const paths = { join: (...parts: string[]) => parts.join('/') };
-  const run = () => preserveLegacyCloudProjectMap(root, io, paths);
+  const run = () => preserveUnpairedCloudProjectFile(root, io, paths);
 
   beforeEach(() => {
     files = new Map([[`${root}/package.json`, '{"name":"old-cloud-project"}'],
       [`${root}/project.abi`, '{"blocks":{"blocks":[]}}'], [`${root}/project.abs.map.json`, rawMap],
       [`${root}/assets/project-data/data.bin`, 'resource'], [`${root}/local-libraries/lib-driver/driver.cpp`, 'source']]);
+
     directories = new Set([root]); links = new Set();
+
     io = {
       existsSync: path => files.has(path) || directories.has(path) || links.has(path),
       lstatSync: path => ({ _isFile: files.has(path), _isDirectory: directories.has(path), _isSymbolicLink: links.has(path) }),
@@ -21,6 +23,7 @@ describe('fresh cloud archive legacy map compatibility', () => {
       mkdirSync: jasmine.createSpy('mkdir').and.callFake(path => directories.add(path)),
       renameSync: jasmine.createSpy('rename').and.callFake((source, target) => {
         if (files.has(target)) throw new Error('backup collision');
+
         files.set(target, files.get(source)!); files.delete(source);
       }),
     };
@@ -28,17 +31,46 @@ describe('fresh cloud archive legacy map compatibility', () => {
 
   it('preserves exact orphan map bytes and leaves ABI, resources and local sources untouched', () => {
     const before = new Map(files), backup = run()!;
+
     expect(backup).toMatch(/\/\.cloud-import-backup\/project\.abs\.map\..+\.json$/);
     expect(files.get(backup)).toBe(rawMap);
     expect(files.has(`${root}/project.abs.map.json`)).toBeFalse();
+
     for (const [name, content] of before) if (!name.endsWith('project.abs.map.json')) expect(files.get(name)).toBe(content);
+
     expect(run()).toBeUndefined(); expect(io.renameSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a legacy generated ABS when the original cloud archive has no map', () => {
+    const source = '# ============================================\r\n# Blockly ABS File\r\n# Generated: 2026-02-28T03:45:09.232Z\r\n';
+
+    files.delete(`${root}/project.abs.map.json`);
+    files.set(`${root}/project.abs`, source);
+
+    const abi = files.get(`${root}/project.abi`);
+    const backup = run()!;
+
+    expect(backup).toMatch(/\/\.cloud-import-backup\/project\..+\.abs$/);
+    expect(files.get(backup)).toBe(source);
+    expect(files.has(`${root}/project.abs`)).toBeFalse();
+    expect(files.get(`${root}/project.abi`)).toBe(abi);
+  });
+
+  it('keeps an unpaired ABS with a project-state marker in its original location', () => {
+    const source = '# =====\n# Blockly ABS File\n# Generated: 2026-11-20\n# @project-state: {}\n';
+
+    files.delete(`${root}/project.abs.map.json`);
+    files.set(`${root}/project.abs`, source);
+    expect(run()).toBeUndefined();
+    expect(files.get(`${root}/project.abs`)).toBe(source);
+    expect(io.renameSync).not.toHaveBeenCalled();
   });
 
   it('recognizes complete multipage ABI without changing pages or shared models', () => {
     const abi = JSON.stringify({ schemaVersion: 3, activePageId: 'main', pages: [
       { id: 'main', content: { blocks: { blocks: [] } } }, { id: 'other', content: { blocks: { blocks: [] } } }],
       sharedModel: { variables: [{ id: 'v', name: 'count' }], procedureBlocks: [] } });
+
     files.set(`${root}/project.abi`, abi);
     expect(run()).toBeDefined(); expect(files.get(`${root}/project.abi`)).toBe(abi);
   });
@@ -46,8 +78,11 @@ describe('fresh cloud archive legacy map compatibility', () => {
   for (const extra of ['project.abs', '.aily/abs-sync/prepared.json', '.aily/abs-sync/committed.json'])
     it(`retains ABS/draft/transaction protection when ${extra} is present`, () => {
       files.set(`${root}/${extra}`, 'retained');
+
       if (extra.includes('/')) directories.add(`${root}/.aily/abs-sync`);
+
       const before = [...files]; expect(run()).toBeUndefined(); expect([...files]).toEqual(before);
+
       expect(io.renameSync).not.toHaveBeenCalled();
     });
 
@@ -82,6 +117,7 @@ describe('fresh cloud archive legacy map compatibility', () => {
 
   it('handles the same single-wrapper layout accepted by cloud example import', () => {
     files = new Map([...files].map(([name, content]) => [name.replace(root + '/', root + '/wrapped/'), content]));
+
     directories.add(`${root}/wrapped`);
     expect(run()).toContain(`${root}/wrapped/.cloud-import-backup/`);
   });

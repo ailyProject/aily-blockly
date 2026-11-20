@@ -650,6 +650,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     try {
+      void this.showCircuit();
       await this.ailyChatDemandSession.generateProjectScene(undefined, { projectPath });
     } catch (error) {
       this.messageService.error(error instanceof Error ? error.message : String(error));

@@ -318,7 +318,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
 
         throw error;
       }),
-      this.readManifest(signal, true).catch((error: unknown) => {
+      this.readManifest(signal, 'discovery').catch((error: unknown) => {
         logProjectArtifactReadFailure('context-manifest', error);
 
         throw error;
@@ -328,7 +328,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
     this.requireActive(signal);
 
     const source = await this.readWorkspaceSource(signal);
-    const currentArtifact = await this.readManifest(signal, true);
+    const currentArtifact = artifact ? await this.readManifest(signal, 'discovery') : null;
     const sourceCurrent = currentArtifact ? await this.isArtifactCurrent(currentArtifact, signal) : false;
 
     this.requireActive(signal);
@@ -452,7 +452,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   ): Promise<SimulationArtifact> {
     this.requireActive(signal);
 
-    const artifact = await this.readManifest(signal, false, buildRoot);
+    const artifact = await this.readManifest(signal, 'required', buildRoot);
 
     if (!artifact) {
       throw new SimulatorHostProviderOperationError(
@@ -614,7 +614,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
 
   private async readManifest(
     signal: AbortSignal,
-    allowMissing: boolean,
+    mode: 'discovery' | 'required',
     buildRoot: string | null = this.resolveBuildRoot(),
   ): Promise<SimulationArtifact | null> {
     if (!buildRoot) return null;
@@ -623,20 +623,24 @@ export class SimulatorProjectArtifactCallbackAuthority {
       this.files.join(buildRoot, 'aily-artifact-manifest.json'),
       MAX_MANIFEST_BYTES,
       signal,
-      allowMissing,
+      mode === 'discovery',
     );
 
     if (!bytes) return null;
 
-    let value: unknown;
-
     try {
-      value = JSON.parse(new TextDecoder().decode(bytes));
-    } catch {
-      throw new SimulatorHostProviderOperationError('operation-failed');
-    }
+      const manifest: unknown = JSON.parse(new TextDecoder().decode(bytes));
 
-    return validateSimulationArtifact(value);
+      return validateSimulationArtifact(manifest);
+    } catch (error) {
+      if (mode === 'discovery') {
+        logProjectArtifactReadFailure('context-manifest-invalid', error);
+
+        return null;
+      }
+
+      throw new SimulatorHostProviderOperationError('operation-failed', 'Project Artifact manifest is invalid.');
+    }
   }
 
   private async createReference(

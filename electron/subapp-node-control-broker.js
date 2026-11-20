@@ -3,7 +3,8 @@
 const { randomUUID } = require('node:crypto');
 const { normalizeProcessMessage } = require('./child-process-message-port');
 const { PROTOCOL } = require('./subapp-node-control-source');
-const TYPES = Object.freeze(Object.fromEntries(['attach', 'attached', 'request', 'result', 'cancel', 'detach', 'detached', 'dispose', 'disposed']
+
+const TYPES = Object.freeze(Object.fromEntries(['attach', 'attached', 'request', 'result', 'cancel', 'detach', 'detached', 'dispose', 'disposed', 'scene-changed']
     .map(name => [name, `aily-subapp-node-control.${name}`])));
 const MAX_BYTES = 1024 * 1024;
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9:_-]{1,96}$/.test(value);
@@ -179,6 +180,21 @@ class SubappNodeControlBroker {
         if (!record || record.lease.runtimeId !== streamId) return true;
         try {
             const frame = normalizeProcessMessage(input, record.maxBytes).message;
+
+            if (frame.type === TYPES['scene-changed']) {
+                if (!record.active || !record.delivered) return true;
+
+                this.current(record);
+
+                if (!exact(frame, ['type', 'version', 'runtimeId', 'connectionId', 'launchId']) || frame.version !== 1
+                    || frame.runtimeId !== record.runtimeId || typeof frame.launchId !== 'string'
+                    || !/^launch-v1-[a-f0-9]{64}$/.test(frame.launchId)) throw new Error('Invalid Scene change notification');
+
+                record.port.postMessage(frame);
+
+                return true;
+            }
+
             if (frame.version !== 1 || frame.runtimeId !== record.runtimeId || !validId(frame.requestId)) throw new Error('Invalid Node control result identity');
             const control = record.controls.get(frame.requestId);
             if (control) {
