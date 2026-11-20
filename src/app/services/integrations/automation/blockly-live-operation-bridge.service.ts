@@ -16,7 +16,8 @@ import { BuilderService, readPreparedBuildInput, requirePreparedBuildExecution }
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { AiOperationRegistryService } from './ai-operation-registry.service';
 import { SubappAgentBridgeService } from '@integration/subapps/public-api';
-import { isAilyLibraryPackageName, isAilyScopedPackageName, requireProjectProgramPublication } from '@shared/public-api';
+import { isAilyLibraryPackageName, isAilyScopedPackageName, requireProjectProgramPublication,
+  type ProjectStorageAttachment } from '@shared/public-api';
 import { boardPublicationRequest } from '../../domains/project/project-board-publication-request';
 import {
   selectSerialPort,
@@ -1073,6 +1074,8 @@ export class BlocklyLiveOperationBridgeService {
       operation: 'app_info',
       capabilities: { projectBuildReceipts: 1, projectForkReceipts: 1, projectRecoveryOpen: 1,
         projectProgramPublication: 1, projectLifecycle: 1, projectCreateSettlement: 1,
+        ...(window['projectLock']?.recordCreatedActive && this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
+          ? { projectCreateRecovery: 1 } : {}),
         projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1 },
       lifecycle: { version: 1, sourceProject: this.projectService.currentProjectPath || null },
       app: {
@@ -1479,11 +1482,20 @@ export class BlocklyLiveOperationBridgeService {
       () => this.electronService.currentRendererGeneration, payload.rendererGeneration);
     const operationKey = JSON.stringify([(payload.lifecycle as { sourceProject?: string | null }).sourceProject,
       ...['name', 'path', 'boardName', 'board', 'boardVersion', 'version', 'boardNickname', 'nickname',
-        'prefix', 'devmode', 'developmentMode'].map(key => params[key])]);
+        'prefix', 'devmode', 'developmentMode', 'recoverySessionId'].map(key => params[key])]);
+    const recordCreatedActive = window['projectLock']?.recordCreatedActive;
+    const recoverySessionId = params['recoverySessionId'];
+    const recordActivation = typeof recordCreatedActive === 'function' && typeof recoverySessionId === 'string'
+      ? async (projectPath: string, attachment: ProjectStorageAttachment) => {
+          const recorded = await recordCreatedActive({ projectPath, request, recoverySessionId, attachment });
+          if (recorded?.ok !== true) console.warn('Original create navigation could not be recorded:', recorded);
+          return recorded?.ok === true;
+        }
+      : undefined;
     const result = await receipts.run(request, async guard => {
       assertCurrent();
       return this.executeProjectCreate(params, undefined, guard, assertCurrent);
-    }, operationKey);
+    }, operationKey, recordActivation);
     return { ...result, activationCurrent: result.createReceipt.activationCommitted && isCurrentActivation() };
   }
 
@@ -1496,7 +1508,7 @@ export class BlocklyLiveOperationBridgeService {
       const opened = await this.projectService.projectOpen(project, {
         reason: 'chat-tool-create', interactive: false, lifecycleOwner: owner,
         createActivation: { signal: authority.signal, assertCurrent: check,
-          beginHandoff: authority.beginHandoff, markActivated: authority.markActivated },
+          beginHandoff: authority.beginHandoff, recordActivation: authority.recordActivation, markActivated: authority.markActivated },
       });
       if (opened) authority.markActivated();
       return opened;

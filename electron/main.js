@@ -26,7 +26,7 @@ const { createWindowStateController } = require('./window-state');
 const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
-const { createProjectCrashResume } = require('./project-crash-resume');
+const { createProjectCrashResume, readProjectCreateRecovery } = require('./project-crash-resume');
 const { startCliBridge } = require("./cli-bridge");
 const { routeLiveOperationProject, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
@@ -886,6 +886,26 @@ function summarizeAppProcessMetrics() {
 // === CLI Bridge：供外部 CLI 通过本地回环接口驱动主程序（附加能力） ===
 let cliBridge = null;
 let projectCrashResume = null;
+let projectNavigationStartupRestore = null;
+const dispatchedProjectCreates = new Map();
+const PROJECT_CREATE_RECOVERY_RETENTION_MS = 600_000;
+
+function retainDispatchedProjectCreate(payload, generation) {
+  const reference = readProjectCreateRecovery({ ...payload.params, originalInstanceId: cliBridge?.getInstanceId?.() });
+  const sourceProject = payload.lifecycle?.sourceProject;
+  const now = Date.now();
+  if (!reference || reference.createRequest.rendererGeneration !== generation
+    || reference.createRequest.deadlineAt <= now || reference.createRequest.deadlineAt > now + 310_000
+    || sourceProject !== null && (typeof sourceProject !== 'string' || !path.isAbsolute(sourceProject))) return;
+  for (const [id, candidate] of dispatchedProjectCreates) {
+    if (candidate.createRequest.deadlineAt + PROJECT_CREATE_RECOVERY_RETENTION_MS < now) dispatchedProjectCreates.delete(id);
+  }
+  const id = reference.createRequest.requestId;
+  if (dispatchedProjectCreates.size < 512 && !dispatchedProjectCreates.has(id)) {
+    dispatchedProjectCreates.set(id, { ...reference, sourceProject });
+  }
+}
+
 function projectCrashResumeController() {
   if (!projectCrashResume && process.env.AILY_APPDATA_PATH) {
     projectCrashResume = createProjectCrashResume({ stateDirectory: process.env.AILY_APPDATA_PATH,
@@ -923,6 +943,28 @@ function getOpenedProjectPathFromWindow() {
   }
 }
 
+function observeOriginalProjectCreate(operation, params) {
+  const acknowledge = operation === 'project_create_acknowledge';
+  const unconfirmed = { ok: true, operation, ...(acknowledge ? { acknowledged: false } : { activationCurrent: false }) };
+  const query = readProjectCreateRecovery(params);
+  if (!query || Object.keys(params).some(name => !['createRequest', 'recoverySessionId', 'originalInstanceId'].includes(name))) {
+    return { ok: false, operation, code: 'PROJECT_CREATE_RECOVERY_SCOPE_INVALID', commandDispatched: false };
+  }
+  const opened = getOpenedProjectPathFromWindow();
+  if (!isCurrentRendererGenerationReady() || !opened || !ownsProjectNavigation(opened)) return unconfirmed;
+  const navigation = projectCrashResumeController();
+  if (acknowledge) return { ok: true, operation, acknowledged: navigation?.acknowledgeCreation(opened, query)?.acknowledged === true };
+  const observed = navigation?.observeCreation(opened, query);
+  if (!observed?.ok || !observed.project || !observed.creation) return unconfirmed;
+  const { project, attachment, creation } = observed;
+  return { ok: true, operation, rendererGeneration, activationCurrent: true, projectType: 'blockly',
+    recovery: { version: 1, recoverySessionId: creation.recoverySessionId,
+      originalInstanceId: creation.originalInstanceId, sourceProject: creation.sourceProject },
+    createReceipt: { ...creation.createRequest, state: 'completed', activationCommitted: true,
+      createdProject: project, createdAttachment: attachment },
+    result: { ok: true, project, projectType: 'blockly' } };
+}
+
 function rendererCommandAvailability() {
   if (!mainWindow || !mainWindow.webContents || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
     return 'closed';
@@ -930,7 +972,7 @@ function rendererCommandAvailability() {
   return isCurrentRendererGenerationReady() ? 'ready' : '';
 }
 
-function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal, onDispatchedTimeout) {
+function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal, onDispatchedTimeout, onDispatch) {
   const deadline = Date.now() + timeoutMs;
   const startupDeadline = Date.now() + Math.min(Math.max(timeoutMs, 0), RENDERER_STARTUP_WAIT_MS);
 
@@ -1002,6 +1044,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
       return;
     }
     signal?.addEventListener('abort', onAbort, { once: true });
+    onDispatch?.(requestGeneration);
     mainWindow.webContents.send(channel, {
       ...payload,
       requestId,
@@ -1187,6 +1230,8 @@ async function handleCliBridgeCommand(action, payload) {
         return { ...identity, ownerStatus: { idle: status?.ok === true } };
       }
       if (['project_repair_bootstrap', 'project_repair_shutdown_admission', 'project_repair_adoption_admission'].includes(operation)) return { ok: false, code: 'PROJECT_REPAIR_BOOTSTRAP_PRIVATE', message: 'Repair bootstrap is an internal host operation.' };
+      if (operation === 'project_create_recover' || operation === 'project_create_acknowledge')
+        return observeOriginalProjectCreate(operation, payload?.params);
       const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow());
       const dir = route.path;
       const projectOptionalOperations = new Set([
@@ -1267,6 +1312,7 @@ async function handleCliBridgeCommand(action, payload) {
         liveOperationTimeoutMs,
         undefined,
         releasePreparation,
+        operation === 'project_create' ? generation => retainDispatchedProjectCreate(payload, generation) : undefined,
       );
       if ((operation === 'project_build_status' || operation === 'project_build' && payload?.params?.buildRequest)
         && !result?.buildReceipt && ['RENDERER_RESPONSE_TIMEOUT', 'RENDERER_REQUEST_CANCELLED',
@@ -1579,6 +1625,7 @@ function invalidateRendererGeneration(reason) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     void cloudBuildController?.invalidateOwner(mainWindow.webContents, rendererGeneration);
   }
+  dispatchedProjectCreates.clear();
   readyRendererGeneration = 0;
   console.info('[RendererLifecycle] unavailable', {
     generation: rendererGeneration,
@@ -3216,7 +3263,10 @@ app.on("ready", async () => {
   process.env.AILY_LIBRARY_HOST_PID = String(process.pid);
   if (!repairBootstrap && !pendingFileToOpen && !pendingRoute) {
     const interrupted = projectCrashResumeController()?.interruptedProject();
-    if (interrupted?.ok && interrupted.project) pendingFileToOpen = interrupted.project;
+    if (interrupted?.ok && interrupted.project) {
+      pendingFileToOpen = interrupted.project;
+      if (interrupted.creation) projectNavigationStartupRestore = interrupted;
+    }
   }
   createWindow();
   registerPowerMonitorLifecycle();
@@ -3553,12 +3603,34 @@ ipcMain.handle("project-lock-release", (event, data) => {
 
 // Navigation records identify the accepted project only. They never select a
 // program version, recover a transaction or open a copy. Reloads retain them.
+function ownsProjectNavigation(projectPath) {
+  return typeof projectPath === 'string' && path.isAbsolute(projectPath) && !!heldProjectLockNormalized
+    && projectLock.normalizeProjectPathLoose(projectPath) === projectLock.normalizeProjectPathLoose(heldProjectLockNormalized);
+}
+
 ipcMain.handle('project-navigation-active', (event, projectPath) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string'
-    || !path.isAbsolute(projectPath) || !heldProjectLockNormalized
-    || projectLock.normalizeProjectPathLoose(projectPath) !== projectLock.normalizeProjectPathLoose(heldProjectLockNormalized))
+  if (!mainWindow || event.sender !== mainWindow.webContents || !ownsProjectNavigation(projectPath))
     return { ok: false, reason: 'project-not-owned' };
-  return projectCrashResumeController()?.record(projectPath) ?? { ok: false, reason: 'navigation-storage-unavailable' };
+  const result = projectCrashResumeController()?.record(projectPath, { restore: projectNavigationStartupRestore });
+  if (result?.ok) projectNavigationStartupRestore = null;
+  return result ?? { ok: false, reason: 'navigation-storage-unavailable' };
+});
+ipcMain.handle('project-navigation-created-active', (event, { projectPath, request, recoverySessionId, attachment } = {}) => {
+  if (!getCurrentRendererOwner(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+    || !ownsProjectNavigation(projectPath)) return { ok: false, reason: 'project-not-owned' };
+  const claim = dispatchedProjectCreates.get(request?.requestId), original = claim?.createRequest;
+  const supplied = claim && readProjectCreateRecovery({ createRequest: request, recoverySessionId,
+    originalInstanceId: claim.originalInstanceId });
+  if (!supplied || recoverySessionId !== claim.recoverySessionId || original.rendererGeneration !== rendererGeneration
+    || original.deadlineAt !== supplied.createRequest.deadlineAt
+    || original.rendererGeneration !== supplied.createRequest.rendererGeneration
+    || original.deadlineAt + PROJECT_CREATE_RECOVERY_RETENTION_MS < Date.now()) return { ok: false, reason: 'original-create-not-authorized' };
+  const result = projectCrashResumeController()?.record(projectPath, { creation: claim, createdAttachment: attachment });
+  if (result?.ok) {
+    dispatchedProjectCreates.delete(request.requestId);
+    projectNavigationStartupRestore = null;
+  }
+  return result ?? { ok: false, reason: 'navigation-storage-unavailable' };
 });
 ipcMain.handle('project-navigation-clear', (event, projectPath) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string' || !path.isAbsolute(projectPath))

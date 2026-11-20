@@ -18,10 +18,12 @@ export interface ProjectCreateGuard {
   assertCurrent(): void;
   markCreated(project: string): void;
   beginHandoff(): void;
+  recordActivation?(): Promise<boolean>;
   markActivated(): void;
 }
 
 type CreateResult = Record<string, any> & { ok: boolean };
+type RecordCreateActivation = (project: string, attachment: ProjectStorageAttachment) => Promise<boolean>;
 type State = 'pending' | 'completed' | 'failed' | 'cancelled' | 'unknown';
 
 interface Entry {
@@ -83,7 +85,8 @@ export class ProjectCreateReceipts {
     return this.view(request, entry);
   }
 
-  async run(request: ProjectCreateRequest, operation: (guard: ProjectCreateGuard) => Promise<CreateResult>, operationKey?: string) {
+  async run(request: ProjectCreateRequest, operation: (guard: ProjectCreateGuard) => Promise<CreateResult>, operationKey?: string,
+    recordActivation?: RecordCreateActivation) {
     const existing = this.exact(request);
     if (this.entries.has(request.requestId)) {
       return existing?.operationKey === undefined || existing.operationKey === operationKey
@@ -109,6 +112,10 @@ export class ProjectCreateReceipts {
         catch { /* Keep the fact of creation even if its physical attachment is unavailable. */ }
       },
       beginHandoff: () => { guard.assertCurrent(); entry.handingOff = true; },
+      ...(recordActivation ? { recordActivation: async () => {
+        guard.assertCurrent();
+        return !!entry.createdProject && !!entry.createdAttachment && recordActivation(entry.createdProject, entry.createdAttachment);
+      } } : {}),
       markActivated: () => { guard.assertCurrent(); entry.activationCommitted = true; },
     };
     let onAbort!: () => void;

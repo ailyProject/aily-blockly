@@ -190,6 +190,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
   process.on('exit', cleanup);
 
   return {
+    getInstanceId: () => instanceId,
     close: () => {
       closed = true;
       cleanup();

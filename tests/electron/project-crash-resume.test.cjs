@@ -8,6 +8,7 @@ const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { createProjectCrashResume } = require('../../electron/project-crash-resume');
+const { rootAttachment } = require('../../electron/project-file-lock-owner');
 
 const root = path.resolve(__dirname, '../test-results', `project-crash-resume-${randomUUID()}`);
 fs.mkdirSync(root, { recursive: true });
@@ -28,6 +29,85 @@ function fixture(name) {
   });
   return { folder, stateDirectory, project, warnings, make };
 }
+
+function createClaim(sourceProject = null) {
+  return { createRequest: { version: 1, requestId: randomUUID(), rendererGeneration: 7, deadlineAt: Date.now() + 300_000 },
+    recoverySessionId: '01a1f768-6bb5-703d-9496-344d2845159f', originalInstanceId: randomUUID(), sourceProject };
+}
+
+test('the original create follows exact automatic restore across two ownership changes and is retired on project switch', () => {
+  const f = fixture('create-exact-restore'), original = owner(), first = f.make(original);
+  const source = path.join(f.folder, 'source'), other = path.join(f.folder, 'other');
+  fs.mkdirSync(source); fs.mkdirSync(other);
+  const creation = createClaim(source), attachment = rootAttachment(fs.realpathSync(f.project));
+  assert.equal(first.record(source).ok, true);
+  const recorded = first.record(f.project, { creation, createdAttachment: attachment });
+  assert.equal(recorded.ok, true); assert.equal(recorded.recoverySessionId, undefined, 'live creation does not suggest a startup session');
+  const secondOwner = owner(41002);
+  const live = f.make(secondOwner, { processState: () => true });
+  assert.equal(live.interruptedProject().reason, 'owner-active');
+  assert.equal(live.observeCreation(f.project, creation).project, null);
+  assert.equal(live.record(f.project).ok, false);
+
+  const second = f.make(secondOwner), restore = second.interruptedProject();
+  assert.deepEqual(restore.creation, creation);
+  assert.equal(second.observeCreation(f.project, creation).project, null, 'project must first be activated by the restarted owner');
+  assert.equal(second.record(f.project, { restore }).recoverySessionId, creation.recoverySessionId);
+  assert.deepEqual(second.observeCreation(f.project, creation).attachment, attachment);
+  assert.equal(second.record(f.project).recoverySessionId, undefined, 'same-owner navigation does not reissue the startup selection');
+
+  const third = f.make(owner(41003)), again = third.interruptedProject();
+  assert.deepEqual(again.creation, creation);
+  assert.equal(third.record(f.project, { restore: again }).recoverySessionId, creation.recoverySessionId);
+  for (const different of [{ ...creation, recoverySessionId: randomUUID() }, { ...creation, originalInstanceId: randomUUID() },
+    { ...creation, createRequest: { ...creation.createRequest, rendererGeneration: 8 } },
+    { ...creation, createRequest: { ...creation.createRequest, deadlineAt: creation.createRequest.deadlineAt + 1 } }]) {
+    assert.equal(third.observeCreation(f.project, different).project, null);
+  }
+  const otherProfile = f.make(owner(41004), { profileKey: 'other-desktop-profile' });
+  assert.equal(otherProfile.observeCreation(f.project, creation).project, null);
+  assert.equal(third.record(other).ok, true);
+  assert.equal(third.record(f.project).ok, true);
+  assert.equal(third.observeCreation(f.project, creation).project, null, 'ordinary navigation cannot revive a retired create receipt');
+});
+
+test('a same-path replacement or explicit startup cannot acquire the original create proof', () => {
+  const f = fixture('create-replacement'), original = owner(), first = f.make(original);
+  const creation = createClaim(), attachment = rootAttachment(fs.realpathSync(f.project));
+  assert.equal(first.record(f.project, { creation, createdAttachment: attachment }).ok, true);
+  const second = f.make(owner(41002)), restore = second.interruptedProject();
+  assert.deepEqual(restore.creation, creation);
+  const archived = path.join(f.folder, 'original');
+  fs.renameSync(f.project, archived); fs.mkdirSync(f.project);
+  fs.copyFileSync(path.join(archived, 'project.abi'), path.join(f.project, 'project.abi'));
+  assert.equal(first.observeCreation(f.project, creation).reason, 'attachment-mismatch');
+  assert.equal(first.record(f.project, { creation, createdAttachment: attachment }).ok, false);
+  assert.equal(second.record(f.project, { restore }).recoverySessionId, undefined);
+  assert.equal(second.observeCreation(f.project, creation).project, null);
+
+  const explicit = fixture('create-explicit-reopen'), starting = explicit.make(owner());
+  assert.equal(starting.record(explicit.project, { creation, createdAttachment: rootAttachment(fs.realpathSync(explicit.project)) }).ok, true);
+  const manuallyOpened = explicit.make(owner(41002));
+  assert.equal(manuallyOpened.record(explicit.project).recoverySessionId, undefined);
+  assert.equal(manuallyOpened.observeCreation(explicit.project, creation).project, null);
+});
+
+test('acknowledging one exact creation removes only its session hint and retains crash navigation', () => {
+  const f = fixture('create-acknowledge'), first = f.make(owner());
+  const other = path.join(f.folder, 'next-project'); fs.mkdirSync(other);
+  const creation = createClaim(), next = createClaim(f.project);
+  assert.equal(first.record(f.project, { creation, createdAttachment: rootAttachment(fs.realpathSync(f.project)) }).ok, true);
+  assert.equal(first.record(other, { creation: next, createdAttachment: rootAttachment(fs.realpathSync(other)) }).ok, true);
+  assert.equal(first.acknowledgeCreation(f.project, creation).acknowledged, false);
+  assert.equal(first.acknowledgeCreation(other, creation).acknowledged, false);
+  assert.deepEqual(first.observeCreation(other, next).creation, next);
+  assert.equal(first.acknowledgeCreation(other, next).acknowledged, true);
+  assert.equal(first.acknowledgeCreation(other, next).acknowledged, false);
+  assert.equal(first.observeCreation(other, next).project, null);
+  const later = f.make(owner(41002)).interruptedProject();
+  assert.equal(later.project, fs.realpathSync(other));
+  assert.equal(later.creation, undefined);
+});
 
 test('no previous record is inert; an exact interrupted project is returned without opening or changing it', () => {
   const f = fixture('interrupted'), first = f.make(owner());
@@ -122,13 +202,15 @@ test('metadata replacement/corruption and a linked project root do not authorize
   assert.equal(linked.ok, false, 'a caller must identify the physical project, not silently grant a linked attachment');
 });
 
-test('a genuinely killed recording Node leaves only navigation metadata and the next process can select the exact project', async t => {
+test('a genuinely killed recording Node leaves the exact create for the next main executor to adopt', async t => {
   const f = fixture('real-kill'), modulePath = require.resolve('../../electron/project-crash-resume');
+  const creation = createClaim(), attachment = rootAttachment(fs.realpathSync(f.project));
   const child = spawn(process.execPath, ['-e', `const api=require(process.argv[1]);
     const controller=api.createProjectCrashResume({stateDirectory:process.argv[2],profileKey:process.argv[3]});
-    const result=controller.record(process.argv[4]);if(!result.ok)throw Error(JSON.stringify(result));
+    const result=controller.record(process.argv[4],JSON.parse(process.argv[5]));if(!result.ok)throw Error(JSON.stringify(result));
     process.send({recorded:true});setInterval(()=>{},1000);`, modulePath, f.stateDirectory,
-    path.join(f.folder, 'chromium-profile'), f.project], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    path.join(f.folder, 'chromium-profile'), f.project, JSON.stringify({ creation, createdAttachment: attachment })],
+  { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   let stderr = ''; child.stderr.on('data', value => { stderr += value; });
   const exit = once(child, 'exit');
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exit; });
@@ -142,7 +224,11 @@ test('a genuinely killed recording Node leaves only navigation metadata and the 
   const resumed = observer.interruptedProject();
   assert.equal(resumed.project, fs.realpathSync(f.project));
   assert.equal(resumed.executor.hostPid, child.pid);
+  assert.deepEqual(resumed.creation, creation);
   assert.equal(observer.clear().cleared, false, 'the observer has not yet acquired/recorded this project');
+  assert.equal(observer.record(f.project, { restore: resumed }).recoverySessionId, creation.recoverySessionId);
+  assert.deepEqual(observer.observeCreation(f.project, creation).attachment, attachment);
+  assert.deepEqual(fs.readdirSync(f.project), ['project.abi']);
 });
 
 process.on('exit', () => console.log(`Project crash navigation artifacts: ${root}`));

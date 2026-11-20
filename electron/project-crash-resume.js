@@ -14,6 +14,27 @@ const positivePid = value => Number.isSafeInteger(value) && value > 0;
 const validCreation = value => typeof value === 'string' && /^(?:win32|linux):\d+$/.test(value);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(name => [name, canonical(value[name])])) : value;
+const uuid4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const sessionUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+
+function readProjectCreateRecovery(value) {
+  const request = value?.createRequest;
+  if (!request || typeof request !== 'object' || Array.isArray(request)
+    || Object.keys(request).some(name => !['version', 'requestId', 'rendererGeneration', 'deadlineAt'].includes(name))
+    || request.version !== 1 || typeof request.requestId !== 'string' || !uuid4.test(request.requestId)
+    || !positivePid(request.rendererGeneration) || !positivePid(request.deadlineAt)
+    || typeof value.recoverySessionId !== 'string' || !sessionUuid.test(value.recoverySessionId)
+    || typeof value.originalInstanceId !== 'string' || !uuid4.test(value.originalInstanceId)) return null;
+  const { version, requestId, rendererGeneration, deadlineAt } = request;
+  return { createRequest: { version, requestId, rendererGeneration, deadlineAt },
+    recoverySessionId: value.recoverySessionId, originalInstanceId: value.originalInstanceId };
+}
+
+function readCreation(value) {
+  const recovery = readProjectCreateRecovery(value);
+  if (!recovery || value.sourceProject !== null && (typeof value.sourceProject !== 'string' || !path.isAbsolute(value.sourceProject))) return null;
+  return { ...recovery, sourceProject: value.sourceProject };
+}
 
 /** Navigation metadata only. Returning a path grants no journal, write, lock,
  * candidate or recovery capability. The normal project-open path rechecks all of them. */
@@ -86,6 +107,7 @@ function createProjectCrashResume(options) {
       || typeof executor.instanceId !== 'string' || executor.instanceId.length < 8
       || executor.processIdentity !== null && !validCreation(executor.processIdentity)
       || executor.bootId !== null && typeof executor.bootId !== 'string'
+      || data.creation !== undefined && (!data.creation || !same(readCreation(data.creation), data.creation))
       || checksum !== hash(JSON.stringify(canonical(data)))) {
       throw fault('PROJECT_CRASH_RESUME_RECORD_INVALID', 'Navigation metadata has invalid identity or checksum.');
     }
@@ -100,6 +122,30 @@ function createProjectCrashResume(options) {
     if (!!current !== !!previous || current && (current.stat.dev !== previous.stat.dev || current.stat.ino !== previous.stat.ino
       || !current.bytes.equals(previous.bytes))) throw fault('PROJECT_CRASH_RESUME_RECORD_CHANGED', 'Navigation owner changed before settlement.');
   };
+
+  const write = (store, previous, data) => {
+    const temp = path.join(store.bucket, `active-${randomUUID()}.tmp`);
+    try {
+      const fd = files.openSync(temp, 'wx', 0o600);
+      try { files.writeFileSync(fd, JSON.stringify({ ...data, checksum: hash(JSON.stringify(canonical(data))) })); files.fsyncSync(fd); }
+      finally { files.closeSync(fd); }
+      assertCurrent(store, previous);
+      if (!same(rootAttachment(data.project, files), data.attachment))
+        throw fault('PROJECT_CRASH_RESUME_PROJECT_CHANGED', 'Project changed before navigation was recorded.');
+      files.renameSync(temp, store.file);
+    } finally { try { files.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+  };
+
+  const matchingCreation = (previous, project, query) => {
+    const original = readProjectCreateRecovery(query), record = previous?.record;
+    if (!original || !record?.creation || !same(readProjectCreateRecovery(record.creation), original)
+      || typeof project !== 'string' || !path.isAbsolute(project) || key(project) !== key(record.project)
+      || !same(record.executor, currentExecutor())) return { reason: 'unconfirmed' };
+    let attachment;
+    try { attachment = rootAttachment(record.project, files); } catch { /* An unavailable directory cannot attest to the original create. */ }
+    return same(attachment, record.attachment) ? { record } : { reason: 'attachment-mismatch' };
+  };
+
   const run = (create, action) => {
     let lease;
     try {
@@ -123,27 +169,45 @@ function createProjectCrashResume(options) {
   };
 
   return {
-    record(project) {
+    record(project, { creation, createdAttachment, restore } = {}) {
       return run(true, (store, previous) => {
         if (typeof project !== 'string' || !path.isAbsolute(project)) throw fault('PROJECT_CRASH_RESUME_PROJECT_INVALID', 'Expected an exact absolute project.');
         const physical = files.realpathSync(project);
         if (key(physical) !== key(project)) throw fault('PROJECT_CRASH_RESUME_PROJECT_INVALID', 'Linked project aliases do not grant a physical attachment.');
-        const attachment = rootAttachment(project, files), executor = currentExecutor();
+        const attachment = rootAttachment(physical, files), executor = currentExecutor();
         if (!attachment || attachment.identity.ino === '0') throw fault('PROJECT_CRASH_RESUME_PROJECT_INVALID', 'Project physical identity is unavailable.');
-        if (previous && !same(previous.record.executor, executor) && ownerState(previous.record.executor) !== 'exited')
+        const prior = previous?.record, sameOwner = prior && same(prior.executor, executor);
+        if (prior && !sameOwner && ownerState(prior.executor) !== 'exited')
           throw fault('PROJECT_CRASH_RESUME_OWNER_ACTIVE', 'The existing navigation owner is live or unverified.');
-        const data = { version: 1, profile, project: physical, attachment: { ...attachment, root: physical }, executor };
+        const activation = creation === undefined ? null : readCreation(creation);
+        if (creation !== undefined && (!activation || !same(createdAttachment, attachment)))
+          throw fault('PROJECT_CREATE_NAVIGATION_ATTACHMENT_CHANGED', 'The original creation does not match the active physical directory.');
+        const resumed = prior?.creation && restore?.reason === 'interrupted'
+          && same(restore.executor, prior.executor) && same(restore.creation, prior.creation)
+          && same(restore.attachment, prior.attachment);
+        const original = activation ?? (prior?.creation && same(prior.attachment, attachment) && (sameOwner || resumed) ? prior.creation : null);
+        const data = { version: 1, profile, project: physical, attachment, executor, ...(original ? { creation: original } : {}) };
         if (previous && same(canonical(previous.record), canonical(data))) return { ok: true, recorded: false, project: physical, reason: 'unchanged' };
-        const temp = path.join(store.bucket, `active-${randomUUID()}.tmp`);
-        try {
-          const fd = files.openSync(temp, 'wx', 0o600);
-          try { files.writeFileSync(fd, JSON.stringify({ ...data, checksum: hash(JSON.stringify(canonical(data))) })); files.fsyncSync(fd); }
-          finally { files.closeSync(fd); }
-          assertCurrent(store, previous);
-          if (!same(rootAttachment(project, files), attachment)) throw fault('PROJECT_CRASH_RESUME_PROJECT_CHANGED', 'Project changed before navigation was recorded.');
-          files.renameSync(temp, store.file);
-        } finally { try { files.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
-        return { ok: true, recorded: true, project: physical };
+        write(store, previous, data);
+        return { ok: true, recorded: true, project: physical,
+          ...(!activation && resumed && original ? { recoverySessionId: original.recoverySessionId } : {}) };
+      });
+    },
+    observeCreation(project, query) {
+      return run(false, (store, previous) => {
+        const { record, reason } = matchingCreation(previous, project, query);
+        if (!record) return { ok: true, project: null, reason };
+        assertCurrent(store, previous);
+        return { ok: true, project: record.project, attachment: record.attachment, creation: record.creation };
+      });
+    },
+    acknowledgeCreation(project, query) {
+      return run(false, (store, previous) => {
+        const { record } = matchingCreation(previous, project, query);
+        if (!record) return { ok: true, acknowledged: false };
+        const { creation: _acknowledged, ...navigation } = record;
+        write(store, previous, navigation);
+        return { ok: true, acknowledged: true };
       });
     },
     clear(project) {
@@ -165,10 +229,11 @@ function createProjectCrashResume(options) {
         try { attachment = rootAttachment(record.project, files); } catch { /* Preserve the record if the physical root is missing or unavailable. */ }
         if (!same(attachment, record.attachment)) return { ok: true, project: null, reason: 'attachment-mismatch' };
         assertCurrent(store, previous);
-        return { ok: true, project: record.project, attachment: record.attachment, executor: record.executor, reason: 'interrupted' };
+        return { ok: true, project: record.project, attachment: record.attachment, executor: record.executor,
+          ...(record.creation ? { creation: record.creation } : {}), reason: 'interrupted' };
       });
     },
   };
 }
 
-module.exports = { createProjectCrashResume };
+module.exports = { createProjectCrashResume, readProjectCreateRecovery };

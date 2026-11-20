@@ -1886,7 +1886,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       surfaceParams: launch.params,
       workspace,
       coderWorkspace: this.resolveHostCoderWorkspace(),
-      activeChatSessionId: isAilyChat ? (this.ailyChatSessionId || null) : null,
+      activeChatSessionId: isAilyChat
+        ? (this.ailyChatSessionId || (workspace && this.projectService.getRecoveredCreateSessionId(workspace)) || null)
+        : null,
       ...(isAilyChat ? { aiOperationStateScope: this.aiOperationStateScope } : {}),
       blockResources: isAilyChat && this.active ? this.createSelectedBlockResources() : [],
       capabilities: {
@@ -2036,6 +2038,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const sessionId = typeof payload.sessionId === 'string'
       ? payload.sessionId.trim().slice(0, 512)
       : '';
+    const workspace = this.resolveHostWorkspace();
+    if (sessionId && workspace) this.projectService.clearRecoveredCreateSessionId(workspace);
     if (sessionId === this.ailyChatSessionId) {
       this.pushChatSubappActivities();
       this.cdr.markForCheck();

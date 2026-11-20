@@ -133,6 +133,22 @@ test('cancellation before Main dispatch sends no lifecycle business request', as
   assert.equal(f.sent.length, 0);
 });
 
+test('Main assigns create navigation only at actual current-generation dispatch', async () => {
+  const create = mainRequestFixture(8), actual = [];
+  const dispatch = (generation) => {
+    assert.equal(create.sent.length, 0, 'the main process owns the claim before renderer execution');
+    actual.push(generation);
+  };
+  const send = (generation, signal) => create.requestMainWindow('request', 'response', {
+    operation: 'project_create', lifecycle: snapshot('/source', generation),
+  }, 100, signal, undefined, dispatch);
+  assert.equal((await send(7)).code, 'PROJECT_LIFECYCLE_CONTEXT_CHANGED');
+  assert.equal((await send(8, AbortSignal.abort())).errorCode, 'RENDERER_REQUEST_CANCELLED');
+  assert.deepEqual(actual, []);
+  assert.equal((await send(8)).ok, true);
+  assert.deepEqual(actual, [8]);
+});
+
 test('timed-out library preparation releases that request on its original renderer generation', async () => {
   const project = path.resolve('fixtures/library-preparation');
   const requestId = 'env1-baf84ee4-c9c0-4e8d-83d9-c4b20bc425e6';
@@ -360,6 +376,7 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   const originalProject = path.join('/projects', 'first'), nextProject = path.join('/projects', 'second');
   const saved = new Set(), locked = new Set(source ? [source] : []);
   const touchedSource = [], activated = [], recordedNavigation = [], lateWrites = [];
+  const recoverySessionId = '01a1f768-6bb5-703d-9496-344d2845159f', durableClaims = [];
   let enteredPreparation, finishPreparation, originalFinished;
   const entered = new Promise(resolve => { enteredPreparation = resolve; });
   const stalled = new Promise(resolve => { finishPreparation = resolve; });
@@ -383,6 +400,16 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
     release: async project => { locked.delete(project); return { ok: true }; },
     recordActive: async project => { recordedNavigation.push(project); return { ok: true }; },
   };
+  if (source) {
+    f.window.fs = { captureProjectAttachment: project => ({ version: 1, root: project,
+      identity: { dev: '1', ino: project === originalProject ? '10' : '11', birthtimeNs: '1' } }) };
+    f.window.projectLock.recordCreatedActive = async claim => {
+      assert.equal(f.domain.currentProjectPath, source, 'the proof precedes the renderer project switch');
+      assert.deepEqual(activated, []);
+      durableClaims.push(claim);
+      return { ok: true };
+    };
+  }
   Object.assign(f.domain, {
     electronService: { isElectron: true, exists: project => saved.has(project) },
     ensureProjectModeAllowed: async () => true,
@@ -424,7 +451,8 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   const request = () => ({ version: 1, requestId: randomUUID(), rendererGeneration: 7, deadlineAt: Date.now() + 10_000 });
   const call = (operation, createRequest, name) => f.bridge.executeOperation({
     operation, rendererGeneration: 7, lifecycle: snapshot(source || null),
-    params: { createRequest, ...(name ? { name, boardName: '@aily-project/board-test' } : {}) },
+    params: { createRequest, ...(name ? { name, boardName: '@aily-project/board-test',
+      ...(source ? { recoverySessionId } : {}) } : {}) },
   });
   const old = request();
   const first = call('project_create', old, 'first');
@@ -444,7 +472,7 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   assert.equal(f.domain.currentProjectPath, source);
   assert.deepEqual(touchedSource, []);
 
-  const second = await call('project_create', request(), 'second');
+  const newer = request(), second = await call('project_create', newer, 'second');
   assert.equal(second.createReceipt.state, 'completed');
   assert.equal(second.createReceipt.activationCommitted, true);
   finishPreparation();
@@ -453,7 +481,14 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   assert.deepEqual([...saved], [originalProject, nextProject]);
   assert.deepEqual(lateWrites, []);
   assert.deepEqual(activated, [nextProject]);
-  assert.deepEqual(recordedNavigation, [nextProject]);
+  assert.deepEqual(recordedNavigation, source ? [] : [nextProject]);
+  if (source) {
+    assert.equal(durableClaims.length, 1);
+    assert.equal(durableClaims[0].projectPath, nextProject);
+    assert.equal(durableClaims[0].attachment.identity.ino, '11');
+    assert.equal(durableClaims[0].recoverySessionId, recoverySessionId);
+    assert.equal(durableClaims[0].request.requestId, newer.requestId);
+  }
   assert.deepEqual(touchedSource, source ? ['close-graph', source, 'retire'] : []);
   assert.equal(f.domain.currentProjectPath, nextProject);
   assert.equal(f.domain.projectLifecycle.owners.size, 0);

@@ -151,7 +151,7 @@ interface ProjectOpenOptions {
   /** Recovery-copy navigation preserves the original source recovery view. */
   retainRecovery?: true;
   /** Internal create-only authority. The final activation checks before changing the view. */
-  createActivation?: { signal: AbortSignal; assertCurrent(): void; beginHandoff(): void; markActivated(): void };
+  createActivation?: { signal: AbortSignal; assertCurrent(): void; beginHandoff(): void; recordActivation?(): Promise<boolean>; markActivated(): void };
 }
 
 interface ProjectCreationOptions {
@@ -197,6 +197,7 @@ export class ProjectService {
   // 当前项目路径的订阅源
   private currentProjectPathSubject = new BehaviorSubject<string>('');
   currentProjectPath$ = this.currentProjectPathSubject.asObservable();
+  private recoveredCreateSession?: { project: string; sessionId: string };
 
   private readonly coderOperations = new Map<symbol, CoderProjectOperation>();
   readonly coderOperationSubject = new BehaviorSubject<CoderProjectOperation | null>(null);
@@ -1099,9 +1100,22 @@ export class ProjectService {
     if (path && this.getProjectMode(path) === 'coder') {
       this.registerCoderProject(path);
     }
+    if (this.recoveredCreateSession && !this.isSameProjectPath(path, this.recoveredCreateSession.project)) {
+      this.recoveredCreateSession = undefined;
+    }
     this.currentProjectPathSubject.next(path);
     if (!this.isCoderProjectContext) this.publishCoderWorkspaceContext();
     if (!this.isCoderProjectContext) this.publishCoderOperations();
+  }
+
+  getRecoveredCreateSessionId(project: string): string | undefined {
+    const binding = this.recoveredCreateSession;
+    return binding && this.isSameProjectPath(project, binding.project) && this.isSameProjectPath(project, this.currentProjectPath)
+      ? binding.sessionId : undefined;
+  }
+
+  clearRecoveredCreateSessionId(project: string): void {
+    if (this.getRecoveredCreateSessionId(project)) this.recoveredCreateSession = undefined;
   }
 
   get isProjectOpening(): boolean {
@@ -2548,6 +2562,9 @@ export class ProjectService {
       try {
         const navigation = await window['projectLock'].recordActive(projectPath);
         if (navigation?.ok !== true) console.warn('Project crash navigation could not be recorded:', navigation);
+        else if (typeof navigation.recoverySessionId === 'string') {
+          this.recoveredCreateSession = { project: projectPath, sessionId: navigation.recoverySessionId };
+        }
       } catch (error) { console.warn('Project crash navigation could not be recorded:', error); }
       this.assertProjectDependencySession(session);
     };
@@ -2561,9 +2578,20 @@ export class ProjectService {
       this.assertProjectDependencySession(session);
     }
 
+    let createNavigationRecorded = false;
     // 更新当前项目路径和包数据
     if (creation) {
-      try { creation.assertCurrent(); creation.markActivated(); }
+      try {
+        creation.assertCurrent();
+        if (abiIsExist && creation.recordActivation) {
+          // Once the exact handoff is durable, Stop must settle that request instead of revoking it.
+          creation.beginHandoff();
+          try { createNavigationRecorded = await creation.recordActivation(); }
+          catch (error) { console.warn('Original create navigation could not be recorded:', error); }
+          this.assertProjectDependencySession(session);
+        }
+        creation.markActivated();
+      }
       catch (error) {
         this.dependencyLifecycle.release(session);
         await releasePreparedTargetLock();
@@ -2579,7 +2607,7 @@ export class ProjectService {
       reason: activationReason,
       sessionResource: options.sessionResource ?? null,
     });
-    if (creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
+    if (creation && abiIsExist && !createNavigationRecorded && window['projectLock']?.recordActive) await recordNavigation();
 
     if (activationReason === 'reload' || activationReason === 'chat-tool-reload') {
       // Angular ignores navigation to the exact same route and query params. Move off the
