@@ -90,7 +90,8 @@ export function composeCandidateSplices(base: string, batches: AbsSourceEdits, e
 /** Exact refs only. Workspace heads, paths, and matching bodies never select a
  * revision here. Session/branch admission belongs to the SDK before dispatch. */
 export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], source: string,
-  originStore?: Pick<AbsBaselineStore, 'loadIntent' | 'readDerivedAbi' | 'inspectCommittedAncestor' | 'readAcceptedAuthorInput'>) {
+  originStore?: Pick<AbsBaselineStore, 'loadIntent' | 'readDerivedAbi' | 'inspectCommittedAncestor' | 'readAcceptedAuthorInput'>,
+  proveAcceptedInput: typeof acceptedInputFormattingEdits = acceptedInputFormattingEdits) {
   assertWorkingCandidateRef(ref);
   const read = (hash: string) => port.read(`history-objects/${hash}`);
   const seen = new Set<string>(), chain: CandidateRecord[] = [];
@@ -154,7 +155,7 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
       else if (item.derivation?.kind === 'fork') { if (body !== previous) fail('Fork source differs from its original revision.'); }
       else if (item.derivation?.kind === 'replace' && item.derivation.mapping === 'unresolved') {
         const bridge = exact ? readonlyStateReplacement(previous, body, allowedStates)
-          ?? (previous === baseAbs && body === stateOrigin?.acceptedInput ? acceptedInputFormattingEdits(baseline, body) : undefined) : undefined;
+          ?? (previous === baseAbs && body === stateOrigin?.acceptedInput ? proveAcceptedInput(baseline, body) : undefined) : undefined;
         if (bridge) { composeCandidateSplices(previous, [bridge], body); batches.push(bridge); }
         else if (body !== previous) exact = false;
       }

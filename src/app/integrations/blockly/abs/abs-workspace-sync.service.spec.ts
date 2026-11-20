@@ -232,7 +232,7 @@ describe('v2 actual workspace generation coordinator', () => {
       project: { logicalId: (await hashAbsText(capture.attachment.root)).slice(7), attachment: capture.attachment },
       scope: capture.scope, base, source: base.abs, derivation: { kind: 'capture' }, intent: { anchorId: 'user-entry-1' } };
     let origin = { version: 1 as const, id, revisionHash: (await put(absJson(original))).hash };
-    if (authored) origin = { ...origin, revisionHash: (await put(absJson({ ...original, parent: origin,
+    if (authored && authored.source !== capture.abs) origin = { ...origin, revisionHash: (await put(absJson({ ...original, parent: origin,
       source: await put(authored.source), derivation: { kind: 'replace', mapping: 'unresolved' } }))).hash };
     const initial = authored?.source ?? capture.abs;
     const start = initial.indexOf('TEXT="before"');
@@ -5038,6 +5038,61 @@ describe('v2 actual workspace generation coordinator', () => {
       const frozen = JSON.parse(disk.get(`history-objects/${ref.revisionHash}`)!);
       expect(disk.get(`history-objects/${frozen.source.hash}`)).toBe(source);
       expect(validation.workingCandidate).toEqual(ref); expect(validation.candidate.hash).toBe(await hashAbsText(source));
+      expect(gate.busy).toBeFalse();
+    });
+    it('continues tracked edits after structural and dropdown source normalization', async () => {
+      const replay = enableNative(), type = 'abs_author_conditional';
+      const conditional = { type, message0: '%1 %2', args0: [
+        { type: 'input_value', name: 'IF0' }, { type: 'input_statement', name: 'DO0' },
+      ], mutator: 'controls_if_mutator', previousStatement: null, nextStatement: null };
+      const settings = { type: 'abs_author_settings', message0: '%1', args0: [
+        { type: 'field_dropdown', name: 'RATE', options: [['Base', '115200'], ['Faster', '230400']] },
+      ] };
+      const reporter = { type: 'abs_author_value', message0: '', output: 'Number' };
+      for (const definition of [conditional, settings, reporter]) declare(definition);
+      replay.steps.push({ kind: 'definitions', definitions: [conditional, settings, reporter] }, {
+        kind: 'script', label: 'inferred structural provenance', source: `
+          Arduino.forBlock.abs_author_conditional = () => '';
+          Arduino.forBlock.abs_author_settings = () => '';
+          Arduino.forBlock.abs_author_value = () => ['7', 0];
+        `,
+      });
+      await baseline(); select();
+      const applyTracked = async (capture: Awaited<ReturnType<typeof service.captureWorkingCandidate>>, original: string,
+        edit: { start: number; end: number; text: string }) => {
+        const source = original.slice(0, edit.start) + edit.text + original.slice(edit.end);
+        const workingCandidate = await retainWorkingCandidate(capture, source, { source: original, edits: [edit] });
+        disk.set('project.abs', source);
+        const request = await service.bindWorkingCandidate(source, { version: 2, requestId: crypto.randomUUID(), workingCandidate,
+          candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } } as any);
+        const validation = await service.validateGeneration(source, request);
+        const result = await service.applyGeneration(source, validation.base.generation, {}, validation);
+        expect(result.publication.status).toBe('COMMITTED');
+        return source;
+      };
+      const initial = await service.captureWorkingCandidate(), state = initial.abs.indexOf('\n# @project-state:');
+      const author = await applyTracked(initial, initial.abs, { start: state, end: state, text: '\nabs_author_conditional()\n    @ELSE:\nabs_author_settings(115200)\n' });
+      const established = editor.workspace.getBlocksByType(type, false)[0];
+      expect(established.saveExtraState()).toEqual({ hasElse: true });
+      const successor = await service.captureWorkingCandidate();
+      expect(successor.abs).toContain('abs_author_conditional(null) @extra:{"hasElse":true}');
+      expect(successor.abs).toMatch(/abs_author_settings\((RATE=)?"115200"\)/);
+      const committed = (await new AbsBaselineStore(port, scope).inspectCommittedAncestor(successor.published!.generation))!.projection;
+      for (const changed of [
+        successor.abs.replace('@extra:{"hasElse":true}', '@extra:{"hasElse":false}'),
+        successor.abs.replace('abs_author_settings("115200")', 'abs_author_settings(230400)'),
+        successor.abs.replace('abs_author_conditional(null)', 'abs_author_conditional(UNKNOWN=null)'),
+      ]) {
+        expect(changed).not.toBe(successor.abs);
+        expect(acceptedInputFormattingEdits(committed, changed)).toBeUndefined();
+      }
+      const replaced = /math_number\([^)]*\)/.exec(author)!;
+      const edited = await applyTracked(successor, author, {
+        start: replaced.index, end: replaced.index + replaced[0].length, text: 'abs_author_value()',
+      });
+      expect(disk.get('project.abs')).toBe(edited);
+      expect(roots().getInputTargetBlock('VALUE').type).toBe('abs_author_value');
+      expect(editor.workspace.getBlockById(established.id)?.saveExtraState()).toEqual({ hasElse: true });
       expect(gate.busy).toBeFalse();
     });
     it('S3 source continuation rejects uncommitted or noncandidate input and corrupted accepted author hashes', async () => {

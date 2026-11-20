@@ -85,6 +85,7 @@ import { normalizeProjectDataDocument } from '@domain/project/public-api';
 import { captureAbsNativeValues } from './abs-native-resources';
 import { AbsNativeCandidateFailures } from './abs-native-candidate-failures';
 import { readWorkingCandidate, workingCandidateBinding } from './abs-working-candidate';
+import { acceptedInputFormattingEdits } from './abs-accepted-input-edits';
 import { mergeAbsStrictDocument } from './abs-strict-document-merge';
 import { readLegacyCandidateCapture } from './abs-legacy-candidate-capture';
 import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
@@ -1350,8 +1351,10 @@ export class AbsWorkspaceSyncService {
       const blockContract = (type: string, extra?: unknown, fields?: Readonly<Record<string, unknown>>) => custom.get(type, extra) ?? procedures.get(type, extra) ?? shapes.get(type, extra, fields);
       const expected = await store.captureDisk();
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover or explicitly abandon the pending generation first.');
+      const readDefinitions = context.definitions.withSynchronousRead ?? (<T>(read: () => T) => read());
       const fixed = binding?.workingCandidate ? await readWorkingCandidate(binding.workingCandidate,
-        await openAbsHostStorage(context.path, context.assertCurrent), context.scope, source, store) : undefined;
+        await openAbsHostStorage(context.path, context.assertCurrent), context.scope, source, store,
+        (baseline, input) => readDefinitions(() => acceptedInputFormattingEdits(baseline, input, shapes.get))) : undefined;
       const published = await store.readCommittedSnapshot(), committed = published?.projection ?? null;
       if (committed && !fixed) assertCurrentAbsProjection(committed);
       if (!fixed && !committed) throw new AbsSyncError('ABS_BASELINE_MISSING', 'An authoritative committed generation is required.');
@@ -1419,7 +1422,6 @@ export class AbsWorkspaceSyncService {
         assertAbsContractsCompatible(retained(baseline.contracts), retained(rollback.contracts), rollback.state);
       } else assertAbsContractsCompatible(baseline.contracts, rollback.contracts, rollback.state);
       assertPreparing();
-      const readDefinitions = context.definitions.withSynchronousRead ?? (<T>(read: () => T) => read());
       const functionSyntax = readDefinitions(() => custom.syntax(source, baseline.workspace));
       const reconcileOptions: AbsReconcileOptions = {
         withSynchronousRead: readDefinitions,
