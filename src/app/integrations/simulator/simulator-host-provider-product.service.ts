@@ -352,6 +352,29 @@ export class SimulatorHostProviderProductService {
         },
       }) : null;
 
+      const readWorkspaceSource = async (signal: AbortSignal) => {
+        if (coderSource) return coderSource.read(signal);
+        if (signal.aborted) throw new SimulatorHostProviderOperationError('cancelled');
+        if (!activeProject.readActiveBinding()) return null;
+
+        const revision = this.blockly.getWorkspaceContentRevision();
+        const code = this.blockly.getReusableGeneratedCode();
+
+        if (code === null) return null;
+
+        const sourceSha256 = await sha256Text(code);
+
+        if (signal.aborted) throw new SimulatorHostProviderOperationError('cancelled');
+
+        const isCurrent = () => (
+          !!activeProject.readActiveBinding()
+          && revision === this.blockly.getWorkspaceContentRevision()
+          && code === this.blockly.getReusableGeneratedCode()
+        );
+
+        return isCurrent() ? { sha256: sourceSha256, isCurrent } : null;
+      };
+
       const composition = new SimulatorBuildProductComposition({
         buildExecutionSlot: this.buildExecutionSlot,
         projectRoot,
@@ -362,8 +385,15 @@ export class SimulatorHostProviderProductService {
         activeProject,
         mainAgent: this.simulatorMainAgent,
         builderService: this.builder,
+        readWorkspaceSource,
+        isArtifactCurrent: async (artifact, signal) => {
+          if (coderSource) return coderSource.isArtifactCurrent(artifact, signal);
+
+          const source = await readWorkspaceSource(signal);
+
+          return source !== null && source.sha256 === artifact.build.source.sha256 && source.isCurrent();
+        },
         ...(coderSource ? {
-          isArtifactCurrent: (artifact, current) => coderSource.isArtifactCurrent(artifact, current),
           createExecution: (readers) => {
             if (!this.coder) throw new Error('Coder simulation builder is unavailable.');
 
@@ -371,36 +401,6 @@ export class SimulatorHostProviderProductService {
               activeProject, builder: this.coder, ...readers });
           },
         } : {}),
-        readWorkspaceSource: async (signal) => {
-          if (coderSource) return coderSource.read(signal);
-
-          if (signal.aborted) {
-            throw new SimulatorHostProviderOperationError('cancelled');
-          }
-
-          if (!activeProject.readActiveBinding()) return null;
-
-          const revision = this.blockly.getWorkspaceContentRevision();
-          const code = this.blockly.getReusableGeneratedCode();
-
-          if (code === null) return null;
-
-          const sourceSha256 = await sha256Text(code);
-
-          if (signal.aborted) {
-            throw new SimulatorHostProviderOperationError('cancelled');
-          }
-
-          // Hashing is asynchronous: never pair an old source with a changed
-          // project, generation revision, or active workspace edit lease.
-          const isCurrent = () => (
-            !!activeProject.readActiveBinding()
-            && revision === this.blockly.getWorkspaceContentRevision()
-            && code === this.blockly.getReusableGeneratedCode()
-          );
-
-          return isCurrent() ? { sha256: sourceSha256, isCurrent } : null;
-        },
       });
 
       cleanup.add(() => composition.close());

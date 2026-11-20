@@ -169,9 +169,14 @@ export class BuildSourceQueryService {
       const inspection = await this.injector.get(AbsWorkspaceSyncService).inspectGeneration();
       const diagnostics = inspection.diagnostics;
 
+      // Project mode uses the saved Blockly workspace. The ABS draft inspector
+      // only reports a workspace comparison in the ABS-controlled mode.
+      const projectMode = 'workspaceMode' in diagnostics && diagnostics.workspaceMode === 'project-v1';
+      const workspaceMatches = 'workspace' in diagnostics && diagnostics.workspace?.changedFromBaseline === false
+        && diagnostics.workspace.savedChangedFromBaseline === false;
+
       if (inspection.pending || diagnostics.status !== 'ready'
-        || !('workspace' in diagnostics) || diagnostics.workspace?.changedFromBaseline !== false
-        || diagnostics.workspace.savedChangedFromBaseline !== false
+        || (!projectMode && !workspaceMatches)
         || !facts.every(file => diagnostics.hashes[file.path === 'project.abi' ? 'abi' : file.path === 'project.abs' ? 'abs' : 'map'] === `sha256:${file.sha256}`)) {
         throw new Error('Reconcile the ABS draft and saved Blockly project before compiling its portable source boundary.');
       }

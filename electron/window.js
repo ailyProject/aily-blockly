@@ -1034,14 +1034,12 @@ function simulatorWindowBounds(ownerWindow) {
         : screen.getPrimaryDisplay();
     const minWidth = Math.min(1179, workArea.width);
     const minHeight = Math.min(806, workArea.height);
-    const width = Math.max(minWidth, Math.round(workArea.width * 0.92));
-    const height = Math.max(minHeight, Math.round(workArea.height * 0.92));
 
     return {
-        x: workArea.x + Math.round((workArea.width - width) / 2),
-        y: workArea.y + Math.round((workArea.height - height) / 2),
-        width,
-        height,
+        x: workArea.x + Math.round((workArea.width - minWidth) / 2),
+        y: workArea.y + Math.round((workArea.height - minHeight) / 2),
+        width: minWidth,
+        height: minHeight,
         minWidth,
         minHeight,
     };
