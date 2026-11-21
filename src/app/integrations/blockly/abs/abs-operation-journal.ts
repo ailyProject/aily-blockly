@@ -61,7 +61,10 @@ type ApplicationWriterSettlement = {
   version: 1; kind: 'application-writer-settlement'; project: string; requestId: string; operationId: string;
   snapshotHash: string; attachment: AbsProjectAttachment; executor: AbsStorageExecutor;
   oldWriter: AbsUnpublishedDocumentSave['oldWriter'];
-} & ({ handoffHash: string; reason?: never } | { reason: 'before-source-stage'; handoffHash?: never });
+} & ({ handoffHash: string; reason?: never }
+  | { reason: 'before-source-stage'; handoffHash?: never }
+  | LegacyWriterBasis);
+type LegacyWriterBasis = { reason: 'legacy-validated-writer'; legacyWriterHash: string; handoffHash?: never };
 export interface LocationOperation {
   operation: AbsOperationSnapshot; pointer: string; snapshot: string;
 }
@@ -323,26 +326,53 @@ export class AbsOperationJournal {
           handoff = await this.readHandoff(snapshot, snapshotHash, storage);
         }
       }
-      // The index can survive a failed pointer CAS. A marked writer cannot
-      // write source before its immutable stage, irrespective of the new head.
-      const beforeSourceStage = async () => {
-        if (snapshot.sourceStageVersion !== 1 || await storage.read(stageKey(operationId)) !== null) return false;
-        const pointer = await storage.read(currentKey);
-        return pointer === null || this.pointer(pointer).id !== operationId;
-      };
+      const pointer = handoff ? null : await storage.read(currentKey);
+      let basis: { handoffHash: string } | { reason: 'before-source-stage' } | LegacyWriterBasis;
+      if (handoff) basis = { handoffHash: handoff.hash };
+      else {
+        if (await storage.read(stageKey(operationId)) !== null) return null;
+        if (pointer !== null && this.pointer(pointer).id === operationId) return null;
+        // The index can survive a failed pointer CAS. A marked writer cannot
+        // write source before its immutable stage, irrespective of the new head.
+        if (snapshot.sourceStageVersion === 1) basis = { reason: 'before-source-stage' };
+        else {
+          const legacy = await this.legacyWriterBasis(requestId, indexed, oldWriter, retained !== null, storage);
+          if (!legacy) return null;
+          basis = legacy;
+        }
+      }
       guard();
       if (await storage.read(indexKey) !== indexText || !await this.hasNoResult(storage, operationId)
         || (handoff ? (await this.readHandoff(snapshot, snapshotHash, storage))?.hash !== handoff.hash
-          : !await beforeSourceStage())) return null;
+          : await storage.read(currentKey) !== pointer || await storage.read(stageKey(operationId)) !== null)) return null;
       const record: ApplicationWriterSettlement = { version: 1, kind: 'application-writer-settlement', project: this.project,
-        requestId, operationId, snapshotHash, attachment, executor, oldWriter,
-        ...(handoff ? { handoffHash: handoff.hash } : { reason: 'before-source-stage' as const }) };
+        requestId, operationId, snapshotHash, attachment, executor, oldWriter, ...basis };
       const bytes = absJson(record);
       if (text !== bytes && (text !== null || !await storage.replace(key, null, bytes))) throw conflict();
       return { version: 1 as const, kind: 'indexed-application-retired' as const, requestId, operationId,
         snapshotHash, attachment, executor, observer: { hostPid: observer.executor.hostPid },
         oldWriter, settlement: { recordHash: await hashAbsText(bytes) } };
     });
+  }
+
+  private async legacyWriterBasis(requestId: string, indexed: NonNullable<Awaited<ReturnType<AbsOperationJournal['indexedApplication']>>>,
+    oldWriter: AbsCurrentDocumentRecovery['oldWriter'], retained: boolean, storage: AbsSyncStorageAccess): Promise<LegacyWriterBasis | null> {
+    const { snapshot, validation, original: { executor } } = indexed;
+    const admissions = new OriginalRequestAdmissions(this.port, this.project);
+    const matchWriter = () => admissions.matchValidatedApplicationWriter(requestId, validation.candidate.hash, executor, storage);
+    const legacyWriterHash = await matchWriter();
+    const noRestoredProof = async () => await storage.read(restoredApplicationKey(snapshot.id)) === null;
+    if (!legacyWriterHash || !await noRestoredProof()) return null;
+    // A recorded proof survives later saves. Mint one only against the exact
+    // source preimage or its verified committed successor, under this lock.
+    if (!retained) {
+      const store = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, validation.base.scope);
+      if (await storage.read('prepared.json') !== null || !await store.hasCommittedPreimage(snapshot)
+        || absJson(await this.port.observeExecutor!(executor)) !== absJson(oldWriter)
+        || await storage.read('prepared.json') !== null) return null;
+    }
+    if (!await noRestoredProof() || legacyWriterHash !== await matchWriter()) return null;
+    return { reason: 'legacy-validated-writer', legacyWriterHash };
   }
 
   async findDocumentSave(request: NativeSaveIdentity, assertCurrent: () => void): Promise<NativeSaveOperationRef | null> {

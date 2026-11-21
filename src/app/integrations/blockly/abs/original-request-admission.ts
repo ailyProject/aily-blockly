@@ -154,6 +154,15 @@ export class OriginalRequestAdmissions {
       throw admissionFault('The original application belongs to a different validated writer or candidate.');
   }
 
+  /** Check the independent legacy reservation in the caller's original project lock. */
+  async matchValidatedApplicationWriter(requestId: string, candidateHash: string, executor: AbsStorageExecutor,
+    storage: AbsSyncStorageAccess): Promise<string | null> {
+    const retained = await this.applicationWriter(requestId, storage);
+    if (!retained || retained.writer.candidateHash !== candidateHash || absJson(retained.writer.executor) !== absJson(executor)
+      || await this.observe({ operation: 'abs_apply', requestId }, storage)) return null;
+    return hashAbsText(retained.text);
+  }
+
   async observeExitedApplicationWriter(requestId: string, originalTargetPid: number) {
     if (!this.port.observeExecutor) return null;
     const request = { operation: 'abs_apply' as const, requestId };

@@ -79,9 +79,19 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
     candidate: { hash: await kernel.hashAbsText(source), bytes: Buffer.byteLength(source) }, workspaceRevision: 1 };
   const original = { kind: 'abs-apply', document, disk,
     candidate: { source, hash: validation.candidate.hash, generation: validation.base.generation }, application: { requestId, validation } };
-  if (legacy === 'index-before-pointer') {
+  if (legacy === 'index-before-pointer' || legacy === 'legacy-index-before-pointer') {
+    const legacyIndex = legacy === 'legacy-index-before-pointer';
+    if (legacyIndex) await new kernel.OriginalRequestAdmissions(port, project).reserveApplication(requestId, validation.candidate.hash, guard);
     const before = await port.read('operation.json');
+    let legacySnapshotHash;
     const intercepted = { ...port, withLock: run => port.withLock(storage => run({ ...storage, replace: async (key, expected, content) => {
+      if (legacyIndex && content !== null && /^recoveries\/(?:operation-|request-)/.test(key)) {
+        const record = JSON.parse(content);
+        delete record.sourceStageVersion;
+        if (key.startsWith('recoveries/request-')) record.snapshotHash = legacySnapshotHash;
+        content = kernel.absJson(record);
+        if (key.startsWith('recoveries/operation-')) legacySnapshotHash = await kernel.hashAbsText(content);
+      }
       const written = await storage.replace(key, expected, content);
       if (written && key.startsWith('recoveries/request-') && content !== null) {
         assert.equal(await storage.read('operation.json'), before);

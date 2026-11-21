@@ -3,6 +3,7 @@
 export { AbsBaselineStore, absBaselineKey } from '../../../src/app/integrations/blockly/abs/abs-baseline-store';
 export { AbsOperationJournal } from '../../../src/app/integrations/blockly/abs/abs-operation-journal';
 export { AbsApplicationJournal } from '../../../src/app/integrations/blockly/abs/abs-application-journal';
+export { OriginalRequestAdmissions } from '../../../src/app/integrations/blockly/abs/original-request-admission';
 export { nativeSaveIdentity } from '../../../src/app/integrations/blockly/abs/abs-native-save-result';
 export { blockStatePublicationIdentity, nativeSaveIndexKey, nativeSaveSettlementKey } from '../../../src/app/integrations/blockly/abs/abs-native-save-protocol';
 export { observeNativePublication } from '../../../src/app/integrations/blockly/abs/abs-native-save-observation';

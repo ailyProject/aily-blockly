@@ -167,7 +167,7 @@ export class AbsApplicationJournal {
         ? await operations.inspectRestoredApplication(requestId, assertCurrent) : null;
       const writer = !recovery && operationId ? await operations.observeApplicationWriterSettlement(requestId, assertCurrent, originalTargetPid) : null;
       return { result: { ok: false, operation: 'abs_apply', project: this.project, code: writer ? 'ABS_APPLY_WRITER_RELEASED' : code,
-        publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false },
+        publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false },
         ...(recovery ? { currentDocumentRecovery: recovery } : {}), ...(writer ? { writerObservation: writer } : {}) } };
     };
     if (indexText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN');
