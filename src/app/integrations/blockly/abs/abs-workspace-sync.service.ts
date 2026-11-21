@@ -13,9 +13,9 @@ import { AbsOperationJournal, type NativeSaveOperationRef } from './abs-operatio
 import { assertWorkspaceMigrationWritable, prepareWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
 import { absWorkspaceProtocol } from './abs-workspace-protocol';
 import { AbsApplicationJournal } from './abs-application-journal';
-import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse, nativeSaveAdmissionResponse, nativeSaveWriterReleaseResponse } from './abs-native-save-result';
-import { nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
-import { blockStatePublicationIdentity, type NativeSaveResultFacts, type NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
+import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse } from './abs-native-save-result';
+import { observeNativePublication } from './abs-native-save-observation';
+import { blockStatePublicationIdentity, blockStatePublicationReference, type NativeSaveResultFacts, type NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
 import type { ProjectSaveRequest, ProjectSaveOutcome, ProjectSaveReceiptResponse } from '@domain/project/public-api';
 import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent, requireProjectProgramPublication } from '@shared/public-api';
 import { publishAbsRecoveryCopy, type AbsRecoveryCopyCapture } from './abs-recovery-copy';
@@ -176,26 +176,7 @@ export class AbsWorkspaceSyncService {
     const port = await openAbsHostStorage(path, guard);
     const project = port.attachment?.root ?? path;
     const identity = await nativeSaveIdentity(project, request);
-    const admission = nativeSaveAdmissionIdentity(identity);
-    const admissions = new OriginalRequestAdmissions(port, project);
-    if (admission) {
-      const rejected = await admissions.observe(admission);
-      if (rejected) return nativeSaveAdmissionResponse(rejected, request, port.executor, originalTargetPid);
-    }
-    const observed = await new AbsApplicationJournal(port, project).observeNativeSave(identity, guard);
-    if (admission && originalTargetPid !== undefined && observed.state !== 'completed') {
-      if (observed.state === 'not-found') {
-        const retired = viewRevision && await admissions.retireSupersededSave(identity, originalTargetPid, viewRevision);
-        if (retired) return nativeSaveAdmissionResponse(retired, request, port.executor, originalTargetPid);
-        const writer = await admissions.observeExitedSaveWriter(identity, originalTargetPid);
-        if (writer) return nativeSaveWriterReleaseResponse(project, request, { ...writer, observer: { hostPid: port.executor?.hostPid ?? null } });
-      } else if (observed.ref?.executor.hostPid === originalTargetPid) {
-        const writer = await new AbsOperationJournal(port, project).observeSaveWriterSettlement(observed.ref, guard);
-        if (writer) return nativeSaveWriterReleaseResponse(project, request, writer);
-      }
-    }
-    const response = nativeSaveObservationResponse(project, identity, observed, port.executor, originalTargetPid);
-    return response && request.input ? { ...response, saveReceipt: { ...response.saveReceipt, input: structuredClone(request.input) } } : response;
+    return observeNativePublication(port, project, identity, { originalTargetPid, viewRevision, input: request.input });
   }
 
   /** One native writer for the original request, including tidy's transform.
@@ -457,19 +438,17 @@ export class AbsWorkspaceSyncService {
       project: path, operation: 'abs_recovery', historyPublication: historyPublicationReference(request, identity) };
   }
 
-  async observeBlockState(input: unknown, originalTargetPid?: number): Promise<AbsObservedProgramPublication> {
+  async observeBlockState(input: unknown, originalTargetPid?: number,
+    path = this.project.currentProjectPath, viewRevision?: () => number): Promise<AbsObservedProgramPublication> {
     const request = readAbsBlockStateRequest(input);
     if (request.action !== 'update') throw new AbsSyncError('ABS_REQUEST_INVALID', 'State observation requires the original update request.');
-    const path = this.project.currentProjectPath, guard = () => {
-      if (!path || this.project.currentProjectPath !== path) throw new AbsSyncError('ABS_CONTEXT_STALE', 'The state observer project changed.');
-    };
-    const port = await openAbsHostStorage(path, guard), project = port.attachment?.root ?? path;
+    const port = await openAbsHostStorage(path, () => undefined), project = port.attachment?.root ?? path;
     const identity = await blockStatePublicationIdentity(project, request);
-    const observed = await new AbsApplicationJournal(port, project).observeNativeSave(identity, guard);
-    return { ...(nativeSaveObservationResponse(project, identity, observed, port.executor, originalTargetPid)
+    const observed = await observeNativePublication(port, project, identity, { originalTargetPid, viewRevision });
+    return { ...(observed
       ?? { ok: true, saveReceipt: { version: 2, requestId: identity.requestId, project, operation: 'blocks_set_state', state: 'unknown' },
-        code: 'ABS_BLOCK_STATE_PUBLICATION_NOT_FOUND' }), operation: 'abs_recovery', project: path,
-      statePublication: { version: 1, requestId: request.requestId, nativeRequestId: identity.requestId, inputDigest: identity.inputDigest } };
+        code: 'ABS_BLOCK_STATE_PUBLICATION_NOT_FOUND' }), operation: 'abs_recovery', project,
+      statePublication: blockStatePublicationReference(request, identity) };
   }
 
   private async prepareHistoryDocument(request: AbsHistoryPublicationRequest<HistoryEnvironmentPlan>, working: unknown,
@@ -1061,7 +1040,7 @@ export class AbsWorkspaceSyncService {
 
   /** Only explicit manual-disable/collapse intents. Ordinary ABS edits retain all
    * user state. IDs come from bounded inspection, never guessed from block order. */
-  setBlockState(input: unknown): Promise<any> {
+  setBlockState(input: unknown, markWriter?: () => void): Promise<any> {
     const request = readAbsBlockStateRequest(input);
     return this.run(async (context, lease, store) => {
       const assertCurrent = () => { context.assertCurrent(); lease.assertCurrent(); };
@@ -1107,7 +1086,7 @@ export class AbsWorkspaceSyncService {
       const publicationPort = await openAbsHostStorage(context.path, assertCurrent);
       const publicationProject = publicationPort.attachment?.root ?? context.path;
       const identity = await blockStatePublicationIdentity(publicationProject, request);
-      const statePublication = { version: 1, requestId: request.requestId, nativeRequestId: identity.requestId, inputDigest: identity.inputDigest };
+      const statePublication = blockStatePublicationReference(request, identity);
       const journal = new AbsOperationJournal(publicationPort, publicationProject);
       const applicationJournal = new AbsApplicationJournal(publicationPort, publicationProject);
       const withPublication = async (result: Record<string, any>, known?: Awaited<ReturnType<AbsApplicationJournal['observeNativeSave']>>) => {
@@ -1172,6 +1151,7 @@ export class AbsWorkspaceSyncService {
         }
         checkpoint = { journal, id: admitted.ref.operationId, native: { ref: admitted.ref, application: applicationJournal,
           blockState: evidence => ({ ...stateReceipt(evidence), output: evidence }) } };
+        markWriter?.();
         mutated = true;
         this.withViewChecks(() => operation.apply());
         assertAbsReadback(plan.workspace, captureState());
@@ -1265,7 +1245,7 @@ export class AbsWorkspaceSyncService {
           requiresReload: application === 'UNKNOWN', partial: application === 'UNKNOWN',
           ...(rollbackError ? { rollbackError: serializeAbsFailure(rollbackError) } : {}),
           recovery: 'Resume the original request in this project and preserve later edits.' };
-        return checkpoint && application === 'ROLLED_BACK'
+        return checkpoint && application !== 'UNKNOWN'
           ? withPublication({ ...failed, publication: { status: 'NOT_COMMITTED' }, projectSaved: false }) : failed;
       }
     }, request.action !== 'inspect');

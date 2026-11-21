@@ -50,8 +50,8 @@ export class AbsGenerationToolsService {
     this.sync.assertNativeRecoveryRequest(input['token'], input['requestId']);
   }
 
-  async blockState(input: Record<string, unknown>) {
-    try { return { ...await this.sync.setBlockState(input), operation: 'blocks_set_state' }; }
+  async blockState(input: Record<string, unknown>, markWriter?: () => void) {
+    try { return { ...await (markWriter ? this.sync.setBlockState(input, markWriter) : this.sync.setBlockState(input)), operation: 'blocks_set_state' }; }
     catch (error) {
       return { ok: false, operation: 'blocks_set_state', ...serializeAbsFailure(error),
         ...(error instanceof AbsApplicationFailure ? { publication: { status: 'NOT_COMMITTED' },
@@ -60,6 +60,22 @@ export class AbsGenerationToolsService {
         ...((error as any)?.application ? { application: (error as any).application } : {}),
         ...((error as any)?.projectSaved !== undefined ? { projectSaved: (error as any).projectSaved,
           generatedCodePublished: (error as any).generatedCodePublished === true, partial: (error as any).partial === true } : {}) };
+    }
+  }
+
+  async observeBlockState(path: string | undefined, input: Record<string, unknown>, viewRevision?: () => number) {
+    const operation = 'abs_recovery';
+    try {
+      assertGenerationRequest(input);
+      const pid = input['originalTargetPid'];
+      if (input['action'] !== 'observe_state' || typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid < 1
+        || Object.keys(input).some(key => !['version', 'requestId', 'action', 'state', 'originalTargetPid'].includes(key))) {
+        throw new AbsSyncError('ABS_REQUEST_INVALID', 'State observation requires the exact original request and executor.');
+      }
+      return { receipt: { version: 2, requestId: input['requestId'], action: 'observe_state' },
+        ...await this.sync.observeBlockState(input['state'], pid, path, viewRevision) };
+    } catch (error) {
+      return { ok: false, operation, project: path, candidateApplied: false, ...serializeAbsFailure(error) };
     }
   }
 
@@ -74,6 +90,7 @@ export class AbsGenerationToolsService {
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,
     activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string,
     archiveContext?: { project: string; assertCurrent: () => void; prepareRuntime?: () => Promise<void> }) {
+    if (operation === 'abs_recovery' && input['action'] === 'observe_state') return this.observeBlockState(requestedProject, input);
     const rejected = rejectAbsLiveRequest(operation, input);
     if (rejected) return rejected;
     let applyStarted = false;
@@ -103,7 +120,6 @@ export class AbsGenerationToolsService {
         }
         if (params['action'] === 'history_publish') return { ...reply, ...await this.sync.publishHistoryProgram(params) };
         if (params['action'] === 'history_observe') return { ...reply, ...await this.sync.observeHistoryProgram(params, params['originalTargetPid']) };
-        if (params['action'] === 'observe_state') return { ...reply, ...await this.sync.observeBlockState(params['state'], params['originalTargetPid']) };
         if (params['action'] === 'history_begin') return { ...reply, ok: true, ...await this.sync.beginHistoryNavigation() };
         if (['history_seal', 'history_release'].includes(params['action']) && typeof params['token'] === 'string') {
           if (params['action'] === 'history_seal') await this.sync.sealHistoryNavigation(params['token']);

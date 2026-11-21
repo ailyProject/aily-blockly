@@ -27,6 +27,7 @@ import {
   UploaderService,
 } from '@domain/device/public-api';
 import { AbsGenerationToolsService } from '../../../integrations/blockly/abs/abs-generation-tools.service';
+import { readAbsBlockStateRequest, type AbsBlockStateUpdateRequest } from '../../../integrations/blockly/abs/abs-block-state';
 import { sameAbsProjectDirectory } from '../../../integrations/blockly/abs/abs-project-path';
 import { checkAbsDocumentation } from '../../../integrations/blockly/abs/abs-documentation';
 import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
@@ -48,6 +49,8 @@ import { absJson } from '../../../integrations/blockly/abs/abs-identity-map';
 import { applicationRequestKey, nativeSaveAdmissionIdentity, observedApplicationAdmission, OriginalRequestAdmissions, originalAdmissionOutcome,
   type OriginalRequestAdmissionIdentity } from '../../../integrations/blockly/abs/original-request-admission';
 import { nativeSaveIdentity } from '../../../integrations/blockly/abs/abs-native-save-result';
+import { blockStatePublicationIdentity, blockStatePublicationReference } from '../../../integrations/blockly/abs/abs-native-save-protocol';
+import { observeNativePublication } from '../../../integrations/blockly/abs/abs-native-save-observation';
 import { inspectAbsBaselineRecovery, recoverAbsBaseline } from '../../../integrations/blockly/abs/abs-baseline-recovery';
 import { restoreAbsProjectCaches } from '../../../integrations/blockly/abs/abs-project-open';
 import { projectViewRecoveryFailure } from './project-view-recovery';
@@ -105,7 +108,7 @@ export class BlocklyLiveOperationBridgeService {
   private forkReceipts?: ProjectForkReceipts;
   private createReceipts?: ProjectCreateReceipts;
   private navigationReceipts?: ProjectNavigationReceipts;
-  private readonly pendingApplyAdmissions = new Set<string>();
+  private readonly pendingOriginalAdmissions = new Set<string>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -204,6 +207,8 @@ export class BlocklyLiveOperationBridgeService {
     if (payload.operation === 'project_fork') return forkProject(this.projectService, payload.path, payload.params || {});
     if (payload.operation === 'project_canvas_status') return this.observeCanvasVersion(payload);
     if (payload.operation === 'abs_admission_status') return this.observeApplicationAdmission(payload);
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_state')
+      return this.observeStatePublication(payload);
     if (payload.operation === 'project_navigation_workspace_mode') return this.observeClosedWorkspaceMode(payload);
     const blocklyProgram = this.projectService.getProjectMode(payload.path || this.projectService.currentProjectPath) !== 'coder';
     // Bind the original request before the live readiness and mutation gates.
@@ -221,6 +226,15 @@ export class BlocklyLiveOperationBridgeService {
       try { requireProjectProgramPublication(); }
       catch (error) { return { ok: false, operation: payload.operation, commandDispatched: false,
         code: (error as any)?.code, message: error instanceof Error ? error.message : String(error) }; }
+    }
+    if (blocklyProgram && payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update') {
+      let request: ReturnType<typeof readAbsBlockStateRequest>;
+      try {
+        request = readAbsBlockStateRequest(payload.params);
+      } catch (error) {
+        return { ...absPrecommitFailure('blocks_set_state', error), project: payload.path, commandDispatched: false };
+      }
+      if (request.action === 'update') return this.executeStateAdmission(payload, request);
     }
     if (blocklyProgram && window['fs']?.nativeSaveReceiptVersion === 2 && ['project_save', 'blocks_tidy'].includes(payload.operation || '')
       && !Object.hasOwn(payload.params || {}, 'saveRequest')) return { ok: false, code: 'PROJECT_SAVE_PROTOCOL_UPGRADE_REQUIRED',
@@ -457,8 +471,8 @@ export class BlocklyLiveOperationBridgeService {
       ok: false, operation: 'abs_apply', project, code: 'ABS_APPLY_OBSERVATION_PENDING',
       publication: { status: 'UNKNOWN' }, message: 'Observe the original application; it is still settling.',
     };
-    if (this.pendingApplyAdmissions.has(key)) return pending;
-    this.pendingApplyAdmissions.add(key);
+    if (this.pendingOriginalAdmissions.has(key)) return pending;
+    this.pendingOriginalAdmissions.add(key);
     try {
       const { port, settlementGuard } = await this.openAdmissionStorage(payload, project, scope?.guard);
       const identity = { operation: 'abs_apply' as const, requestId };
@@ -478,7 +492,53 @@ export class BlocklyLiveOperationBridgeService {
         return this.executeAdmittedOperation({ ...payload, path: project }, undefined, () => { scope.guard(); markWriter(); });
       });
     } finally {
-      this.pendingApplyAdmissions.delete(key);
+      this.pendingOriginalAdmissions.delete(key);
+    }
+  }
+
+  private observeStatePublication(payload: BlocklyLiveOperationPayload) {
+    const path = payload.path;
+    if (typeof path !== 'string' || !window['path']?.isAbsolute(path)) {
+      return { ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', candidateApplied: false };
+    }
+    return this.absGenerationTools.observeBlockState(path, payload.params ?? {}, () => this.projectService.projectViewRevision);
+  }
+
+  private async executeStateAdmission(payload: BlocklyLiveOperationPayload, request: AbsBlockStateUpdateRequest) {
+    const scope = await this.admissionGuard(payload.path);
+    const path = scope?.project ?? payload.path;
+    const refusal = { ok: false, operation: 'blocks_set_state', code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+      message: 'The original block state target is no longer open.' };
+    if (!path || !scope && !payload.originalAdmissionAttachment) return { ...refusal, commandDispatched: false };
+    const { port, settlementGuard } = await this.openAdmissionStorage(payload, path, scope?.guard);
+    const project = port.attachment?.root ?? path;
+    const nativeRequest = await blockStatePublicationIdentity(project, request);
+    const identity = nativeSaveAdmissionIdentity(nativeRequest)!;
+    const statePublication = blockStatePublicationReference(request, nativeRequest);
+    const key = project + '\0' + nativeRequest.requestId;
+    const pending = { ok: false, operation: 'blocks_set_state', project, statePublication,
+      code: 'ABS_BLOCK_STATE_PUBLICATION_PENDING', publication: { status: 'UNKNOWN' }, candidateApplied: false };
+    if (this.pendingOriginalAdmissions.has(key)) return pending;
+    this.pendingOriginalAdmissions.add(key);
+    try {
+      const admissions = new OriginalRequestAdmissions(port, project);
+      const read = () => observeNativePublication(port, project, nativeRequest, { originalTargetPid: port.executor?.hostPid ?? undefined });
+      const existing = await read();
+      if (existing) return { ...pending, ...existing, ...existing.result, operation: 'blocks_set_state' };
+      const result = await this.settleAdmissionFailure(admissions, identity, settlementGuard, async markWriter => {
+        if (!scope) return refusal;
+        scope.guard();
+        const writer = await admissions.reserveSave(nativeRequest, this.projectService.projectViewRevision, scope.guard);
+        if (!writer) return pending;
+        return this.executeAdmittedOperation({ ...payload, path }, undefined, () => { scope.guard(); markWriter(); });
+      });
+      if (result['admission']?.status !== 'NOT_STARTED') return result;
+      const observed = await read();
+      return observed
+        ? { ...pending, ...observed, ...observed.result, ...result, statePublication }
+        : pending;
+    } finally {
+      this.pendingOriginalAdmissions.delete(key);
     }
   }
 
@@ -550,12 +610,12 @@ export class BlocklyLiveOperationBridgeService {
     const key = path + '\0' + request.requestId;
     const pending = { ok: false, operation: payload.operation, project: path, code: 'PROJECT_SAVE_OBSERVATION_REQUIRED',
       publication: { status: 'UNKNOWN' } };
-    if (this.pendingApplyAdmissions.has(key)) return pending;
-    this.pendingApplyAdmissions.add(key);
+    if (this.pendingOriginalAdmissions.has(key)) return pending;
+    this.pendingOriginalAdmissions.add(key);
     try {
       return await this.executeSaveAdmission(payload, path, request);
     } finally {
-      this.pendingApplyAdmissions.delete(key);
+      this.pendingOriginalAdmissions.delete(key);
     }
   }
 
@@ -1139,7 +1199,7 @@ export class BlocklyLiveOperationBridgeService {
       case 'blocks_set_state':
         return payload.params?.['action'] === 'inspect'
           ? this.absGenerationTools.blockState(payload.params)
-          : this.runAbsOperation(() => this.absGenerationTools.blockState(payload.params || {}));
+          : this.runAbsOperation(() => this.absGenerationTools.blockState(payload.params || {}, markWriter));
       case 'project_media_import':
         return importProjectMedia(currentProject, payload.params as any, undefined,
           target => this.absGenerationTools.captureMediaImportTarget(target));

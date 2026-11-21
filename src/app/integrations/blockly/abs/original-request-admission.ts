@@ -4,7 +4,7 @@ import { assertNativeSaveIdentity, nativeSaveCapability, nativeSaveIndexKey } fr
 import type { NativeSaveIdentity } from './abs-native-save-protocol';
 import { AbsSyncError } from './abs-state';
 
-type AdmissionOperation = 'abs_apply' | 'project_save' | 'blocks_tidy';
+type AdmissionOperation = 'abs_apply' | 'project_save' | 'blocks_tidy' | 'blocks_set_state';
 
 export interface OriginalRequestAdmissionIdentity {
   requestId: string;
@@ -20,7 +20,7 @@ const nativeSaveWriterKey = async (requestId: string) =>
   `recoveries/save-writer-${(await hashAbsText(requestId)).slice(7)}.json`;
 
 export function nativeSaveAdmissionIdentity(request: NativeSaveIdentity): OriginalRequestAdmissionIdentity | undefined {
-  if (request.operation === 'project_save' || request.operation === 'blocks_tidy') {
+  if (request.operation === 'project_save' || request.operation === 'blocks_tidy' || request.operation === 'blocks_set_state') {
     return { requestId: request.requestId, operation: request.operation, inputDigest: request.inputDigest };
   }
 }
@@ -31,8 +31,9 @@ function admissionFault(message: string) {
 
 async function receiptKey(request: OriginalRequestAdmissionIdentity): Promise<string> {
   const application = request.operation === 'abs_apply';
-  if (typeof request.requestId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(request.requestId)
-    || !['abs_apply', 'project_save', 'blocks_tidy'].includes(request.operation)
+  const requestPattern = request.operation === 'blocks_set_state' ? /^pub2-[A-Za-z0-9-]{16,80}$/ : /^[A-Za-z0-9-]{16,80}$/;
+  if (typeof request.requestId !== 'string' || !requestPattern.test(request.requestId)
+    || !['abs_apply', 'project_save', 'blocks_tidy', 'blocks_set_state'].includes(request.operation)
     || (application ? request.inputDigest !== undefined : !/^sha256:[a-f0-9]{64}$/.test(request.inputDigest ?? ''))) {
     throw admissionFault('Invalid original request admission identity.');
   }
@@ -102,12 +103,20 @@ export class OriginalRequestAdmissions {
    * delayed envelope cannot acquire authority afterwards. */
   async retireSupersededSave(request: NativeSaveIdentity, originalTargetPid: number, revision: () => number | undefined) {
     const identity = nativeSaveAdmissionIdentity(request);
-    if (!identity || nativeSaveCapability(this.port).executor.hostPid !== originalTargetPid) return null;
+    if (!identity) return null;
+    const executor = nativeSaveCapability(this.port).executor;
+    if (executor.hostPid !== originalTargetPid) return null;
+    const reservedRevision = async (storage: Pick<AbsSyncStorageAccess, 'read'>) => {
+      const writer = await this.saveWriter(request, storage);
+      return writer && absJson(writer.record.executor) === absJson(executor) ? writer.record.viewRevision : null;
+    };
+    // An observation without an exact writer reservation must not open a lock
+    // or create any storage for an unrelated path.
+    if (await reservedRevision(this.port) === null) return null;
     return this.port.withLock(async storage => {
-      const retained = await this.saveWriter(request, storage);
+      const reserved = await reservedRevision(storage);
       const current = revision();
-      if (!retained || absJson(retained.record.executor) !== absJson(nativeSaveCapability(this.port).executor)
-        || typeof current !== 'number' || !Number.isSafeInteger(current) || current <= retained.record.viewRevision) return null;
+      if (reserved === null || typeof current !== 'number' || !Number.isSafeInteger(current) || current <= reserved) return null;
       const guard = () => {
         const next = revision();
         if (typeof next !== 'number' || !Number.isSafeInteger(next) || next < current)
@@ -193,6 +202,8 @@ export class OriginalRequestAdmissions {
   async observeExitedSaveWriter(request: NativeSaveIdentity, originalTargetPid: number) {
     const identity = nativeSaveAdmissionIdentity(request);
     if (!this.port.observeExecutor || !identity) return null;
+    const beforeLock = await this.saveWriter(request, this.port);
+    if (beforeLock?.record.executor.hostPid !== originalTargetPid) return null;
     return this.port.withLock(async storage => {
       const retained = await this.saveWriter(request, storage);
       if (!retained || retained.record.executor.hostPid !== originalTargetPid || await this.observe(identity, storage)

@@ -1358,6 +1358,8 @@ async function handleCliBridgeCommand(action, payload) {
       const route = routeLiveOperationProject(prepareSave || preparedBoardSave ? saveRequest.operation : operation,
         requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
       const dir = route.path;
+      if (saveWriterEnabled && operation === 'blocks_set_state' && route.originalPublication && !route.originalAdmissionAttachment)
+        return { ok: false, operation, commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE' };
       let nativeSaveWriter = suppliedSaveWriter, saveLifecycle;
       if (prepareSave || originalSave && saveWriterEnabled && !suppliedSaveWriter) {
         if (!route.originalAdmissionAttachment || originalSave && saveRequest.operation !== operation) {

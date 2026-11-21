@@ -54,6 +54,10 @@ export async function blockStatePublicationIdentity(project: string, request: Ab
   return { version: 2, requestId: `pub2-${request.requestId}`, operation: 'blocks_set_state',
     inputDigest: await hashAbsText(absJson({ version: 2, project: projectKey, operation: 'blocks_set_state', request })) };
 }
+
+export function blockStatePublicationReference(request: AbsBlockStateUpdateRequest, identity: NativeSaveIdentity) {
+  return { version: 1 as const, requestId: request.requestId, nativeRequestId: identity.requestId, inputDigest: identity.inputDigest };
+}
 export const nativeSaveError = (message: string, code = 'ABS_NATIVE_SAVE_OBSERVATION_INVALID') => new AbsSyncError(code, message);
 export function assertNativeSaveIdentity(value: NativeSaveIdentity): void {
   if (value?.version !== 2 || typeof value.requestId !== 'string' || !/^pub2-[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/.test(value.requestId)

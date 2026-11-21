@@ -1,4 +1,4 @@
-import type { ProjectSaveRequest, ProjectSaveReceiptResponse } from '@domain/project/public-api';
+import type { ProjectSaveRequest, ProjectSaveReceipt, ProjectSaveReceiptResponse } from '@domain/project/public-api';
 import type { AbsStorageExecutor } from './abs-baseline-store';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { absProjectionReceipt } from './abs-projection-receipt';
@@ -6,9 +6,11 @@ import { readProjectSaveInput } from '../../../services/shared/project-save-inpu
 import type { NativeSaveIdentity, NativeSaveObservation, NativeSaveResultFacts, NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
 import { originalAdmissionObservation, originalAdmissionOutcome, type OriginalRequestAdmissions } from './original-request-admission';
 
+type NativeSaveReceiptIdentity = Pick<ProjectSaveReceipt, 'requestId' | 'operation' | 'input'>;
+
 export function nativeSaveAdmissionResponse(
   record: NonNullable<Awaited<ReturnType<OriginalRequestAdmissions['observe']>>>,
-  request: ProjectSaveRequest, observer: AbsStorageExecutor | undefined, originalTargetPid?: number,
+  request: NativeSaveReceiptIdentity, observer: AbsStorageExecutor | undefined, originalTargetPid?: number,
 ): ProjectSaveReceiptResponse {
   const project = record.project, { requestId, operation, input } = request;
   const receipt = { version: 2 as const, requestId, project, operation, ...(input ? { input } : {}) };
@@ -21,7 +23,7 @@ export function nativeSaveAdmissionResponse(
 }
 
 export function nativeSaveWriterReleaseResponse(
-  project: string, request: ProjectSaveRequest, proof: NonNullable<ProjectSaveReceiptResponse['writerObservation']>,
+  project: string, request: NativeSaveReceiptIdentity, proof: NonNullable<ProjectSaveReceiptResponse['writerObservation']>,
 ): ProjectSaveReceiptResponse {
   const { requestId, operation, input } = request;
   return { ok: true, operation: 'project_save_status', code: 'PROJECT_SAVE_WRITER_UNAVAILABLE',

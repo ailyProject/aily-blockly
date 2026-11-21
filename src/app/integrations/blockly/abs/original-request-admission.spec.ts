@@ -3,10 +3,11 @@ import { ProjectService, type ProjectSaveRequest } from '@domain/project/public-
 import { SerialOperationQueue } from '@shared/public-api';
 import { BlocklyLiveOperationBridgeService } from '../../../services/integrations/automation/blockly-live-operation-bridge.service';
 import { AbsApplicationJournal } from './abs-application-journal';
+import { AbsGenerationToolsService } from './abs-generation-tools.service';
 import type { AbsSyncStoragePort } from './abs-baseline-store';
 import { hashAbsText } from './abs-identity-map';
 import { nativeSaveIdentity } from './abs-native-save-result';
-import { nativeSaveIndexKey } from './abs-native-save-protocol';
+import { blockStatePublicationIdentity, nativeSaveIndexKey } from './abs-native-save-protocol';
 import { AbsOperationJournal } from './abs-operation-journal';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
@@ -57,8 +58,10 @@ describe('original project admission settlement', () => {
       injector: { get: () => ({ observeProjectPublication: (path, request, pid) =>
         sync.observeNativeSave(path, request, pid, () => domain.projectViewRevision) }) },
     });
+    Object.assign(sync, { project: domain });
     const service = Object.create(BlocklyLiveOperationBridgeService.prototype);
-    Object.assign(service, { projectService: domain, boardSwitchInProgress: true, pendingApplyAdmissions: new Set(),
+    Object.assign(service, { projectService: domain, boardSwitchInProgress: true, pendingOriginalAdmissions: new Set(),
+      absGenerationTools: new AbsGenerationToolsService(sync),
       getProjectRuntimeStatus: () => ({ ready: false }), aiOperations: { setActive: jasmine.createSpy('owner') },
       executeAbsApply: jasmine.createSpy('apply writer'), executeProjectSave: jasmine.createSpy('save writer'),
       executeBlocksTidy: jasmine.createSpy('tidy writer') });
@@ -69,6 +72,96 @@ describe('original project admission settlement', () => {
     base: { generation: 'base', scope: { projectKey: project, pageId: 'page' }, abiHash: hash, absHash: hash, mapHash: hash },
     candidate: { hash, bytes: 9 }, workingCandidate: { version: 1, id: requestId, revisionHash: '2'.repeat(64) }, workspaceRevision: 1,
     libraryRuntimeFingerprint: '3'.repeat(64), validation: { scope: 'prepared-generation', ok: true } } });
+
+  const stateRequest = () => ({ version: 2 as const, requestId, action: 'update' as const,
+    expectedGeneration: 'prior-generation', changes: [{ blockId: 'existing-block', collapsed: true }] });
+  const stateObservation = (state: ReturnType<typeof stateRequest>, originalTargetPid = 101) => ({
+    operation: 'abs_recovery', path: project,
+    params: { version: 2, requestId: crypto.randomUUID(), action: 'observe_state', state, originalTargetPid },
+  });
+
+  it('reads an unknown or mismatched original state request without opening a publication lock', async () => {
+    const state = stateRequest(), identity = await blockStatePublicationIdentity(project, state);
+    const host = bridge();
+    port = { ...port, observeExecutor: async () => ({ version: 1, state: 'exited', reason: 'process-exited' }) };
+    const lock = spyOn(port, 'withLock').and.callThrough();
+    const absent = await host.execute(stateObservation(state));
+    expect(absent.saveReceipt.state).toBe('unknown');
+    expect(lock).not.toHaveBeenCalled();
+    expect(files.size).toBe(0);
+    await new OriginalRequestAdmissions(port, project).reserveSave(identity, 0, guard);
+    lock.calls.reset();
+    expect((await host.execute(stateObservation(state, 333))).saveReceipt.state).toBe('unknown');
+    expect((await host.execute(stateObservation({ ...state, expectedGeneration: 'other' }))).saveReceipt).toBeUndefined();
+    expect(lock).not.toHaveBeenCalled();
+  });
+
+  it('binds a state writer rejection during a competing ABS operation and reads it off-canvas', async () => {
+    const host = bridge(), state = stateRequest(), identity = await blockStatePublicationIdentity(project, state);
+    host.boardSwitchInProgress = false;
+    host.absApplyInProgress = true;
+    const writer = spyOn(host.absGenerationTools, 'blockState').and.throwError('unexpected state writer');
+    const first = await host.execute({ operation: 'blocks_set_state', path: project, params: state });
+    const reference = { version: 1, requestId, nativeRequestId: identity.requestId, inputDigest: identity.inputDigest };
+    expect(first).toEqual(jasmine.objectContaining({ ok: false, statePublication: reference,
+      code: 'abs_apply_in_progress', admission: { status: 'NOT_STARTED', requestId: identity.requestId },
+      saveReceipt: jasmine.objectContaining({ state: 'completed', requestId: identity.requestId }) }));
+    expect(writer).not.toHaveBeenCalled();
+    expect(await port.read(await nativeSaveIndexKey(identity.requestId))).toBeNull();
+    const before = [...files];
+    port = open('2', 222);
+    const cold = bridge();
+    cold.projectService.isProjectTransitionInProgress = () => true;
+    for (const active of ['/replacement-canvas', '']) {
+      cold.projectService.currentProjectPathSubject.next(active);
+      const observed = await cold.execute(stateObservation(state));
+      expect(observed).toEqual(jasmine.objectContaining({
+        operation: 'abs_recovery', project, statePublication: reference,
+        saveReceipt: jasmine.objectContaining({ state: 'completed', requestId: identity.requestId }),
+        result: jasmine.objectContaining({ publication: { status: 'NOT_COMMITTED' },
+          admission: { status: 'NOT_STARTED', requestId: identity.requestId } }),
+        publicationObservation: jasmine.objectContaining({ current: false, observer: { hostPid: 222 },
+          executor: jasmine.objectContaining({ hostPid: 101 }) }),
+      }));
+    }
+    expect((await cold.execute(stateObservation(state, 333))).result).toBeUndefined();
+    expect((await cold.execute(stateObservation({ ...state, expectedGeneration: 'another-generation' }))).result).toBeUndefined();
+    port = open('9', 222);
+    expect((await cold.execute(stateObservation(state))).result).toBeUndefined();
+    expect([...files]).toEqual(before);
+  });
+
+  for (const cut of ['before-index', 'after-index'] as const) {
+    it(`settles only the exited state writer beside a later native publication (${cut})`, async () => {
+      const state = stateRequest(), identity = await blockStatePublicationIdentity(project, state);
+      const snapshot = { document: {}, disk: { abi: null, abs: null, map: null } };
+      const original = port.executor!;
+      const admissions = new OriginalRequestAdmissions(port, project);
+      expect(await admissions.reserveSave(identity, 0, guard)).toBeTruthy();
+      const admitted = cut === 'after-index'
+        ? await new AbsOperationJournal(port, project).beginDocumentSave({ request: identity, ...snapshot }, guard)
+        : undefined;
+      const active = await bridge().execute(stateObservation(state));
+      expect(active.writerObservation).toBeUndefined();
+      port = { ...open('2', 222), observeExecutor: async () =>
+        ({ version: 1, state: 'exited', reason: 'process-exited' }) };
+      const next = new AbsOperationJournal(port, project);
+      if (admitted) await next.restored(admitted.ref.operationId, guard);
+      const newer = await nativeSaveIdentity(project, { operation: 'blocks_tidy', version: 2,
+        requestId: 'pub2-' + crypto.randomUUID() });
+      await next.beginDocumentSave({ request: newer, ...snapshot }, guard);
+      const pointer = await port.read('operation.json');
+      const result = await bridge().execute(stateObservation(state));
+      expect(result.saveReceipt).toEqual(jasmine.objectContaining({ state: 'unknown', requestId: identity.requestId }));
+      expect(result.writerObservation).toEqual(jasmine.objectContaining({
+        request: identity, executor: original, observer: { hostPid: 222 },
+        kind: admitted ? 'indexed-save-retired' : 'admitted-save',
+      }));
+      expect(result.result).toBeUndefined();
+      expect(await port.read('operation.json')).toBe(pointer);
+      expect((await bridge().execute(stateObservation(state, 333))).writerObservation).toBeUndefined();
+    });
+  }
 
   it('observes a pre-writer ABS rejection after losing the entire reply; the old ID cannot apply again', async () => {
     const host = bridge();

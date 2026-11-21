@@ -12,8 +12,9 @@ const parameterScopedProjects = new Set([
  * an implicit path would change the request rather than route it. Explicit
  * caller paths remain intact for the renderer's normal exact-project check. */
 function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve, params) {
-  const parameterScoped = parameterScopedProjects.has(operation);
-  const explicitPath = operation === 'abs_admission_status' && !path.isAbsolute(requestedPath || '') ? '' : requestedPath;
+  const stateObservation = operation === 'abs_recovery' && params?.action === 'observe_state';
+  const parameterScoped = stateObservation || parameterScopedProjects.has(operation);
+  const explicitPath = (stateObservation || operation === 'abs_admission_status') && !path.isAbsolute(requestedPath || '') ? '' : requestedPath;
   const project = explicitPath ? resolve(explicitPath) : parameterScoped ? '' : (currentProject || '');
   const originalPublication = isOriginalPublicationRequest(operation, params);
   const attachment = originalPublication ? originalPublicationAttachment(project, currentProject) : undefined;
@@ -60,6 +61,7 @@ function originalPublicationAttachment(requested, active) {
 
 function isOriginalPublicationRequest(operation, params) {
   return operation === 'abs_apply' && params?.version === 2
+    || operation === 'blocks_set_state' && params?.version === 2 && params.action === 'update'
     || ['project_save', 'blocks_tidy'].includes(operation) && params?.saveRequest?.version === 2;
 }
 

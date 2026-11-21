@@ -43,6 +43,22 @@ test('ABS admission status routes only the absolute original project regardless 
   });
 });
 
+test('state publication read routes to its original project without an attached canvas', async () => {
+  const operation = 'abs_recovery', project = path.resolve('state-show-original');
+  const params = { version: 2, action: 'observe_state' };
+  for (const active of ['different-current-project', '']) {
+    const host = mainRouteFixture(active);
+    await host.handleCliBridgeCommand('blockly-live-operation', { path: project, operation, params });
+    assert.equal(host.calls.length, 1);
+    assert.equal(host.calls[0].path, project);
+    assert.equal(host.calls[0].params, params);
+    assert.equal(host.calls[0].originalAdmissionAttachment, undefined);
+  }
+  assert.deepEqual(routeLiveOperationProject(operation, 'relative-project', '/current-project', path.resolve, params), {
+    path: '', parameterScoped: true,
+  });
+});
+
 test('ordinary workspace operations retain existing current-project fallback and requirement', () => {
   for (const operation of ['project_fork', 'abs_apply', 'abs_validate', 'project_save', 'project_build', 'unknown-operation']) {
     assert.deepEqual(routeLiveOperationProject(operation, undefined, '/isolated/current'), {
@@ -76,6 +92,7 @@ test('versioned publication routing captures only the current physical project a
     ['abs_apply', { version: 2 }],
     ['project_save', { saveRequest: { version: 2 } }],
     ['blocks_tidy', { saveRequest: { version: 2 } }],
+    ['blocks_set_state', { version: 2, action: 'update' }],
   ]) {
     assert.deepEqual(routeLiveOperationProject(operation, a, a, path.resolve, params).originalAdmissionAttachment, attachment);
     assert.equal(routeLiveOperationProject(operation, a, b, path.resolve, {
@@ -83,6 +100,7 @@ test('versioned publication routing captures only the current physical project a
     }).originalAdmissionAttachment, undefined);
   }
   assert.equal(routeLiveOperationProject('abs_apply', a, a, path.resolve, { version: 1 }).originalAdmissionAttachment, undefined);
+  assert.equal(routeLiveOperationProject('blocks_set_state', a, a, path.resolve, { version: 2, action: 'inspect' }).originalAdmissionAttachment, undefined);
   assert.equal(routeLiveOperationProject('project_build', a, a, path.resolve, { version: 2 }).originalAdmissionAttachment, undefined);
 });
 
