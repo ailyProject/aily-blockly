@@ -28,7 +28,7 @@ const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
 const { createProjectCrashResume, readProjectCreateRecovery } = require('./project-crash-resume');
 const { startCliBridge } = require("./cli-bridge");
-const { routeLiveOperationProject, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
+const { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
 const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
@@ -1150,11 +1150,12 @@ async function handleCliBridgeCommand(action, payload) {
     }
     case 'reload':
     case 'refresh': {
-      const dir = requestedPath ? path.resolve(requestedPath) : getOpenedProjectPathFromWindow();
+      const route = routeProjectReload(requestedPath, getOpenedProjectPathFromWindow(),
+        payload.lifecycle !== undefined && getBuildProduct() === 'blockly');
+      const dir = route.path;
       if (!dir) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
       if (!fs.existsSync(dir)) return { ok: false, message: `项目目录不存在: ${dir}` };
-      const current = getOpenedProjectPathFromWindow();
-      if (current && path.resolve(current) === dir) {
+      if (route.operation === 'project_reload') {
         const result = await requestMainWindow(
           'cli-bridge:blockly-live-operation',
           'cli-bridge:blockly-live-operation:response',
@@ -1171,6 +1172,8 @@ async function handleCliBridgeCommand(action, payload) {
             ? { ...result, message: `已重载项目(刷新库/积木): ${dir}`, project: dir }
             : result;
         }
+        if (!route.canFallbackToOpen) return { ok: false, operation: 'project_reload',
+          code: 'PROJECT_RELOAD_RESULT_UNCONFIRMED', message: 'The original project reload result could not be confirmed.' };
       }
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',

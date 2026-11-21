@@ -756,6 +756,10 @@ export class BlocklyLiveOperationBridgeService {
     const matchesProject = !requestedProject || await sameAbsProjectDirectory(requestedProject, currentProject,
       window['fs']?.realpathAsync, window['platform']?.isWindows === true);
     if (!matchesProject || currentProject !== this.projectService.currentProjectPath) {
+      if (payload.operation === 'project_reload') return {
+        ok: false, operation: 'project_reload', code: 'PROJECT_RELOAD_TARGET_MISMATCH', commandDispatched: false,
+        message: 'Reload requires the currently open project. Use the project-open operation to switch projects.',
+      };
       return {
         ok: false,
         ...buildNotStarted,

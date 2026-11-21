@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const test = require('node:test');
-const { routeLiveOperationProject } = require('../../electron/live-operation-project-routing');
+const { routeLiveOperationProject, routeProjectReload } = require('../../electron/live-operation-project-routing');
 
 for (const operation of ['project_fork_status', 'project_recovery_open', 'project_save_status']) {
   test(`${operation} keeps params.project authority after the active view has changed`, () => {
@@ -30,4 +30,16 @@ test('ordinary workspace operations retain existing current-project fallback and
     });
     assert.deepEqual(routeLiveOperationProject(operation, undefined, ''), { path: '', parameterScoped: false });
   }
+});
+
+test('a lifecycle-bound Blockly reload never routes a different path as open', () => {
+  const current = path.resolve('active'), requested = path.resolve('different');
+  for (const target of [undefined, current, requested]) {
+    assert.deepEqual(routeProjectReload(target, current, true), {
+      path: target || current, operation: 'project_reload', canFallbackToOpen: false,
+    });
+  }
+  assert.deepEqual(routeProjectReload(requested, current, false), {
+    path: requested, operation: 'project_open', canFallbackToOpen: true,
+  });
 });

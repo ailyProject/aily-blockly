@@ -17,6 +17,15 @@ function routeLiveOperationProject(operation, requestedPath, currentProject, res
   };
 }
 
+function routeProjectReload(requestedPath, currentProject, scoped, resolve = path.resolve) {
+  const target = requestedPath ? resolve(requestedPath) : currentProject;
+  return {
+    path: target,
+    operation: scoped || (currentProject && resolve(currentProject) === target) ? 'project_reload' : 'project_open',
+    canFallbackToOpen: !scoped,
+  };
+}
+
 function projectLifecycleRequestRejection(snapshot, rendererGeneration) {
   if (snapshot === undefined) return null;
   const valid = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
@@ -30,4 +39,4 @@ function projectLifecycleRequestRejection(snapshot, rendererGeneration) {
     message: 'The project lifecycle context changed before dispatch; observe this host again.' };
 }
 
-module.exports = { routeLiveOperationProject, projectLifecycleRequestRejection };
+module.exports = { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection };
