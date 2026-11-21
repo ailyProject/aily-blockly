@@ -146,7 +146,7 @@ interface ProjectOpenOptions {
   interactive?: boolean;
   /** In-process ownership only; never accepted from IPC/Agent parameters. */
   lifecycleOwner?: symbol;
-  onViewActivated?: (project: string | null, revision: number) => void;
+  onViewActivated?: (project: string | null, revision: number) => void | Promise<void>;
   /** Host-only exact journal authority. Never accepted from IPC/Agent options. */
   recoveryReopen?: { assertCurrent(): void };
   /** Recovery-copy navigation preserves the original source recovery view. */
@@ -2612,7 +2612,7 @@ export class ProjectService {
       this.beginBlocklyProjectLoad(projectPath);
     }
     this.currentProjectPath = projectPath;
-    options.onViewActivated?.(projectPath, this.projectViewRevision);
+    await options.onViewActivated?.(projectPath, this.projectViewRevision);
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
     this.projectActivationSubject.next({
       path: projectPath,
@@ -3424,7 +3424,7 @@ export class ProjectService {
   }
 
   async close(options: { save?: boolean; lifecycleOwner?: symbol;
-    onViewActivated?: (project: string | null, revision: number) => void } = {}) {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void> } = {}) {
     if (this.coderOperationsSubject.value.size) {
       this.message.warning('工程正在编译或上传');
       return false;
@@ -3556,7 +3556,7 @@ export class ProjectService {
     }
   }
 
-  private async closeInternal(paths: string[], onViewActivated?: (project: string | null, revision: number) => void) {
+  private async closeInternal(paths: string[], onViewActivated?: (project: string | null, revision: number) => void | Promise<void>) {
     if (this.currentProjectPath && window['projectLock']?.clearActive) {
       try { await window['projectLock'].clearActive(this.currentProjectPath); }
       catch (error) { console.warn('Project crash navigation could not be cleared:', error); }
@@ -3576,7 +3576,7 @@ export class ProjectService {
     this.coderProjectContexts.clear();
     this.publishCoderProjects();
     this.currentProjectPath = '';
-    onViewActivated?.(null, this.projectViewRevision);
+    await onViewActivated?.(null, this.projectViewRevision);
     this.loadingBlocklyProjectPath = '';
     this.loadedBlocklyProjectPath = '';
     this.blocklyProjectLoadFailure = null;

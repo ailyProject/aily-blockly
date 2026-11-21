@@ -145,6 +145,75 @@ test('copying old project bytes back to the same path does not preserve physical
   assert.deepEqual(fs.readFileSync(path.join(archived, 'project.abi')), fs.readFileSync(path.join(f.project, 'project.abi')));
 });
 
+test('restarted navigation reads the original terminal separately from the active view', () => {
+  const f = fixture('navigation-durable'), original = owner(), first = f.make(original);
+  const destination = path.join(f.folder, 'destination'); fs.mkdirSync(destination);
+  const reference = { version: 1, originalTargetPid: original.hostPid, originalInstanceId: original.instanceId,
+    sessionId: randomUUID(), navigationRequest: { version: 1, requestId: randomUUID(),
+      rendererGeneration: 7, deadlineAt: Date.now() + 300_000, operation: 'project_open',
+      sourceProject: f.project, targetProject: destination } };
+  assert.equal(first.record(f.project).ok, true);
+  assert.equal(first.record(destination).ok, true);
+  const attachment = rootAttachment(destination);
+  assert.equal(first.recordNavigation(reference, { state: 'open', project: destination, attachment },
+    rootAttachment(f.project)).ok, true);
+  assert.equal(first.finishNavigation(reference, { ok: true, project: destination, projectType: 'blockly' }).ok, true);
+  const next = f.make(owner(41002)), restore = next.interruptedProject();
+  assert.equal(restore.project, destination);
+  assert.equal(next.record(destination, { restore }).recoverySessionId, reference.sessionId);
+  const recovered = next.observeNavigation(destination, reference);
+  assert.equal(recovered.result.ok, true);
+  assert.equal(recovered.navigationReceipt.state, 'completed');
+  assert.equal(recovered.activationCurrent, true);
+  assert.equal(next.observeNavigation(destination, { ...reference, sessionId: randomUUID() }).navigationReceipt, undefined);
+  assert.ok(recovered.activationViewId);
+  next.record(f.project);
+  next.record(destination);
+  const superseded = next.observeNavigation(destination, reference);
+  assert.equal(superseded.result.ok, true);
+  assert.equal(superseded.navigationReceipt.state, 'completed');
+  assert.equal(superseded.activationCurrent, false);
+});
+
+test('a cold empty view only reopens the exact closed physical source from the original session', () => {
+  const f = fixture('navigation-durable-close'), original = owner(), first = f.make(original);
+  const reference = { version: 1, originalTargetPid: original.hostPid, originalInstanceId: original.instanceId,
+    sessionId: randomUUID(), navigationRequest: { version: 1, requestId: randomUUID(),
+      rendererGeneration: 7, deadlineAt: Date.now() + 300_000, operation: 'project_close',
+      sourceProject: f.project, targetProject: null } };
+  assert.equal(first.record(f.project).ok, true);
+  const attachment = rootAttachment(f.project);
+  assert.equal(first.clear(f.project).cleared, true);
+  assert.equal(first.recordNavigation(reference, { state: 'closed', project: null }, attachment).ok, true);
+  assert.equal(first.finishNavigation(reference, { ok: true, project: null }).ok, true);
+  first.suspend();
+  const next = f.make(owner(41002));
+  assert.equal(next.interruptedProject().project, null);
+  const observed = next.observeNavigation(null, reference);
+  assert.equal(observed.activationCurrent, true);
+  assert.equal(observed.navigationReceipt.state, 'completed');
+  assert.equal(next.canReopenFrom(reference, f.project), true);
+  assert.equal(next.canReopenFrom({ ...reference, originalInstanceId: randomUUID() }, f.project), false);
+  fs.renameSync(f.project, path.join(f.folder, 'different'));
+  fs.mkdirSync(f.project);
+  assert.equal(next.canReopenFrom(reference, f.project), false);
+});
+
+test('a completed creation remains observable after the active cursor is cleared or replaced', () => {
+  const f = fixture('create-observe-after-close'), original = owner(), first = f.make(original);
+  const creation = createClaim();
+  assert.equal(first.record(f.project, { creation, createdAttachment: rootAttachment(f.project) }).ok, true);
+  assert.equal(first.clear(f.project).cleared, true);
+  first.suspend();
+  const next = f.make(owner(41002));
+  const historical = next.observeOriginalCreation(null, creation);
+  assert.equal(historical.project, f.project);
+  assert.equal(historical.activationCurrent, false);
+  assert.equal(next.observeOriginalCreation(null, { ...creation, recoverySessionId: randomUUID() }).project, null);
+  const newIdentity = path.join(f.folder, 'former'); fs.renameSync(f.project, newIdentity); fs.mkdirSync(f.project);
+  assert.equal(next.observeOriginalCreation(null, creation).project, null);
+});
+
 test('profile buckets are independent; only the exact recording owner can clear its matching project', () => {
   const f = fixture('profile-clear'), original = owner(), a = f.make(original);
   assert.equal(a.record(f.project).ok, true);

@@ -636,7 +636,7 @@ export class BlocklyLiveOperationBridgeService {
 
   private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol,
     markWriter?: () => void,
-    onViewActivated?: (project: string | null, revision: number) => void): Promise<Record<string, any>> {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
     if (payload.operation === 'project_navigation_status'
       || ['project_open', 'project_close'].includes(payload.operation || '') && Object.hasOwn(payload.params || {}, 'navigationRequest')) {
       return this.executeProjectNavigationSettlement(payload);
@@ -1167,11 +1167,12 @@ export class BlocklyLiveOperationBridgeService {
       capabilities: { projectBuildReceipts: 1, projectForkReceipts: 1, projectRecoveryOpen: 1,
         projectProgramPublication: 1, projectLifecycle: 1, projectCreateSettlement: 1,
         ...(typeof window['fs']?.captureProjectAttachment === 'function' && this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
-          ? { projectNavigationSettlement: 1 } : {}),
+          ? { projectNavigationSettlement: 1, ...(window['projectLock']?.recordNavigation ? { projectNavigationRecovery: 1 } : {}) } : {}),
         ...(window['projectLock']?.recordCreatedActive && this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
           ? { projectCreateRecovery: 1 } : {}),
         projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1 },
       lifecycle: { version: 1, sourceProject: this.projectService.currentProjectPath || null },
+      projectViewRevision: this.projectService.projectViewRevision,
       app: {
         name: this.configService.getApplicationName(),
         version: this.electronService.applicationVersion,
@@ -1567,6 +1568,9 @@ export class BlocklyLiveOperationBridgeService {
     const request = readProjectNavigationRequest(params['navigationRequest'], value => !!path?.isAbsolute(value));
     const reopen = params['reopenFrom'] === undefined ? undefined
       : readProjectNavigationRequest(params['reopenFrom'], value => !!path?.isAbsolute(value));
+    const sessionId: unknown = params['navigationSessionId'];
+    const hasSession = typeof sessionId === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(sessionId);
+    const reopenProof = params['reopenProof'];
     const sameProject = (left: string, right: string) => {
       const a = path.normalize(left), b = path.normalize(right);
       return window['platform']?.isWindows ? a.toLowerCase() === b.toLowerCase() : a === b;
@@ -1574,13 +1578,16 @@ export class BlocklyLiveOperationBridgeService {
     const originalPath = request?.operation === 'project_open' ? request.targetProject : request?.sourceProject;
     if (!request || typeof captureAttachment !== 'function' || request.rendererGeneration !== payload.rendererGeneration
       || request.rendererGeneration !== this.electronService.currentRendererGeneration
-      || Object.keys(params).some(key => key !== 'navigationRequest' && (observing || key !== 'reopenFrom'))
+      || Object.keys(params).some(key => key !== 'navigationRequest'
+        && (observing || !['reopenFrom', 'navigationSessionId', 'reopenProof'].includes(key)))
+      || sessionId !== undefined && !hasSession
+      || reopenProof !== undefined && (!hasSession || reopenProof?.sessionId !== sessionId || !reopen)
       || payload.path && (!originalPath || !sameProject(originalPath, payload.path))
       || !observing && (this.configService.getPreferredChatAgentRuntimeMode() !== 'blockly'
         || request.operation !== payload.operation || request.sourceProject !== payload.lifecycle?.sourceProject
         || request.operation === 'project_open' && !payload.path)
       || params['reopenFrom'] !== undefined && (!reopen || request.operation !== 'project_open' || request.sourceProject !== null
-        || reopen.operation !== 'project_close' || reopen.rendererGeneration !== request.rendererGeneration)) {
+        || reopen.operation !== 'project_close' || !reopenProof && reopen.rendererGeneration !== request.rendererGeneration)) {
       return { ok: false, code: 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID', commandDispatched: false,
         message: 'The navigation request must match the original renderer, operation, and project scope.' };
     }
@@ -1593,15 +1600,27 @@ export class BlocklyLiveOperationBridgeService {
       () => this.electronService.currentRendererGeneration, payload.rendererGeneration);
     const admit = () => {
       assertCurrent();
-      if (request.deadlineAt <= Date.now() || reopen && !receipts.canReopenFrom(reopen, request.targetProject!)) {
+      if (request.deadlineAt <= Date.now() || reopen && !reopenProof && !receipts.canReopenFrom(reopen, request.targetProject!)) {
         const code = request.deadlineAt <= Date.now() ? 'PROJECT_NAVIGATION_EXPIRED' : 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED';
         throw Object.assign(new Error('The original navigation scope is no longer current.'), { code, commandDispatched: false });
       }
     };
-    return receipts.start(request, record => this.projectService.withProjectLifecycleAdmission(admit, owner => {
+    return receipts.start(request, record => this.projectService.withProjectLifecycleAdmission(admit, async owner => {
+      if (reopenProof) {
+        const allowed = await window['projectLock']?.canReopenNavigation(reopenProof, request.targetProject!);
+        assertCurrent();
+        if (!allowed) return { ok: false, operation: request.operation, code: 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED', commandDispatched: false };
+      }
       receipts.captureSource(request);
       return this.executeOperation({ ...payload, params: {} }, undefined, owner, undefined,
-        (project, revision) => record({ project, revision }));
+        async (project, revision) => {
+          record({ project, revision });
+          if (!hasSession || !window['projectLock']?.recordNavigation) return;
+          const activation = receipts.observe(request).navigationReceipt.activation;
+          if (!activation) return;
+          try { await window['projectLock'].recordNavigation({ requestId: request.requestId, activation }); }
+          catch (error) { console.warn('The original navigation proof could not be recorded:', error); }
+        });
     }));
   }
 
@@ -2097,7 +2116,7 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeProjectOpen(projectPath: string, lifecycleOwner?: symbol,
-    onViewActivated?: (project: string | null, revision: number) => void): Promise<Record<string, any>> {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
     const requestedProject = String(projectPath || '').trim();
     if (!requestedProject) {
       return { ok: false, operation: 'project_open', message: '缺少项目路径' };
@@ -2192,7 +2211,7 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeProjectClose(requestedPath?: string, lifecycleOwner?: symbol,
-    onViewActivated?: (project: string | null, revision: number) => void): Promise<Record<string, any>> {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
     const projectPath = this.projectService.currentProjectPath;
     if (!projectPath) {
       return { ok: true, operation: 'project_close', project: null, message: '当前没有打开的项目' };

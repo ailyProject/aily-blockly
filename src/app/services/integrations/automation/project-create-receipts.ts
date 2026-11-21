@@ -34,6 +34,7 @@ interface Entry {
   operationKey?: string;
   handingOff: boolean;
   activationCommitted: boolean;
+  activationRetained?: boolean;
   result?: CreateResult;
   state: State;
 }
@@ -114,7 +115,10 @@ export class ProjectCreateReceipts {
       beginHandoff: () => { guard.assertCurrent(); entry.handingOff = true; },
       ...(recordActivation ? { recordActivation: async () => {
         guard.assertCurrent();
-        return !!entry.createdProject && !!entry.createdAttachment && recordActivation(entry.createdProject, entry.createdAttachment);
+        entry.activationRetained = false;
+        if (entry.createdProject && entry.createdAttachment)
+          entry.activationRetained = await recordActivation(entry.createdProject, entry.createdAttachment);
+        return entry.activationRetained;
       } } : {}),
       markActivated: () => { guard.assertCurrent(); entry.activationCommitted = true; },
     };
@@ -165,6 +169,7 @@ export class ProjectCreateReceipts {
     return { ...(result ?? { ok: false }), createReceipt: { version: 1 as const,
       requestId: request.requestId, rendererGeneration: request.rendererGeneration, deadlineAt: request.deadlineAt, state,
       activationCommitted: entry?.activationCommitted ?? false,
+      ...(entry?.activationRetained !== undefined ? { activationRetained: entry.activationRetained } : {}),
       ...(entry?.createdAttachment ? { createdAttachment: entry.createdAttachment } : {}),
       ...(entry?.createdProject ? { createdProject: entry.createdProject } : {}) } };
   }

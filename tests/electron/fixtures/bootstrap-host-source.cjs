@@ -171,6 +171,7 @@ function mainRouteFixture(sourceProject = '/source', transport = async () => ({ 
     globals = {
       fs: { existsSync: () => true },
       path,
+      getBuildProduct: () => 'blockly',
       getOpenedProjectPathFromWindow: () => sourceProject,
       requestMainWindow: async (...args) => {
         calls.push(args[2]);
