@@ -37,6 +37,7 @@ describe('original project admission settlement', () => {
     window['path'] = { isAbsolute: (value: string) => value.startsWith('/') } as any;
     window['fs'] = { projectProgramPublicationVersion: 1, nativeSaveReceiptVersion: 2, projectSyncStorageVersion: 2,
       openProjectSyncStorage: async () => ({ attachment: port.attachment, executor: port.executor, read: port.read,
+        observeExecutor: port.observeExecutor,
         withLock: operation => port.withLock(locked => new Promise((resolve, reject) => {
           operation(locked, result => result.ok ? resolve(result.value) : reject(Object.assign(new Error(result.error.message), { code: result.error.code })));
         })),
@@ -226,6 +227,39 @@ describe('original project admission settlement', () => {
     const foreign = await cold.execute({ ...payload, params: { ...payload.params, originalTargetPid: 333 } });
     expect(foreign.publication.status).toBe('UNKNOWN');
     expect(foreign.admission).toBeUndefined();
+  });
+
+  it('releases the original validated ABS writer after exit without a terminal result or a write', async () => {
+    const admissions = new OriginalRequestAdmissions(port, project);
+    const original = port.executor;
+    await admissions.reserveApplication(requestId, hash, guard);
+    const retained = [...files];
+    let exited = false;
+    port = { ...open('2', 222), observeExecutor: async candidate => {
+      expect(candidate).toEqual(original);
+      return { version: 1, state: exited ? 'exited' : 'active', reason: exited ? 'process-exited' : 'process-matched' };
+    } };
+    const cold = bridge();
+    const payload = { operation: 'abs_admission_status', path: project,
+      params: { version: 2, requestId, originalTargetPid: original.hostPid } };
+    expect((await cold.execute(payload)).writerObservation).toBeUndefined();
+    exited = true;
+    const released = await cold.execute(payload);
+    expect(released).toEqual(jasmine.objectContaining({
+      ok: false, publication: { status: 'UNKNOWN' },
+      applicationObservation: jasmine.objectContaining({ resultKnown: false, current: false }),
+      writerObservation: jasmine.objectContaining({ executor: original, observer: { hostPid: 222 } }),
+    }));
+    expect(released.admission).toBeUndefined();
+    expect((await cold.execute({ operation: 'abs_apply', path: project, params: applyParams() })).publication.status).toBe('UNKNOWN');
+    expect(cold.executeAbsApply).not.toHaveBeenCalled();
+    const newerJournal = new AbsOperationJournal(port, project);
+    await expectAsync(newerJournal.begin({ kind: 'abs-apply', document: {}, disk: { abi: null, abs: null, map: null },
+      candidate: { hash, source: 'candidate', generation: 'base' }, application: { requestId, validation: applyParams().validation },
+    }, guard)).toBeRejectedWithError('The original application belongs to a different validated writer or candidate.');
+    expect([...files]).toEqual(retained);
+    files.set(await applicationRequestKey(requestId), 'registered writer');
+    expect((await cold.execute(payload)).writerObservation).toBeUndefined();
   });
 
   it('cannot settle another ABS writer, an absent original or a request with extra fields', async () => {

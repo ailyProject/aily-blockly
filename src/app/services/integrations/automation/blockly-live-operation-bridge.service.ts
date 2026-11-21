@@ -320,11 +320,12 @@ export class BlocklyLiveOperationBridgeService {
     } };
   }
 
-  /** Only the immutable pre-writer refusal is readable offscreen. A missing
-   * refusal says nothing about an ABS application or its current canvas. */
+  /** Read an exact original refusal or an exited, unindexed writer. Neither
+   * can certify a current canvas or authorize the original application. */
   private async observeApplicationAdmission(payload: BlocklyLiveOperationPayload) {
     const project = payload.path, { version, requestId, originalTargetPid } = payload.params ?? {};
-    const unknown = { ok: false, operation: 'abs_apply', project, publication: { status: 'UNKNOWN' } };
+    const unknown = { ok: false, operation: 'abs_apply', project, publication: { status: 'UNKNOWN' },
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false } };
     if (typeof project !== 'string' || !window['path']?.isAbsolute(project) || version !== 2
       || typeof requestId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(requestId)
       || originalTargetPid !== undefined && (!Number.isSafeInteger(originalTargetPid) || originalTargetPid <= 0)
@@ -333,12 +334,17 @@ export class BlocklyLiveOperationBridgeService {
     }
     try {
       const port = await openAbsHostStorage(project, () => {});
-      const record = await new OriginalRequestAdmissions(port, project).observe({ operation: 'abs_apply', requestId });
+      const admissions = new OriginalRequestAdmissions(port, project);
+      const record = await admissions.observe({ operation: 'abs_apply', requestId });
       if (record && (originalTargetPid === undefined || record.executor.hostPid === originalTargetPid))
         return observedApplicationAdmission(record, port.executor);
+      if (!record && originalTargetPid !== undefined) {
+        const writer = await admissions.observeExitedApplicationWriter(requestId, originalTargetPid);
+        if (writer) return { ...unknown, code: 'ABS_APPLY_WRITER_UNAVAILABLE',
+          writerObservation: { version: 1, ...writer, observer: { hostPid: port.executor?.hostPid ?? null } } };
+      }
     } catch { /* No verified refusal is available for this project. */ }
-    return { ...unknown, code: 'ABS_APPLY_OBSERVATION_UNKNOWN',
-      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false } };
+    return { ...unknown, code: 'ABS_APPLY_OBSERVATION_UNKNOWN' };
   }
 
   private async executeBoardEnvironmentSettlement(payload: BlocklyLiveOperationPayload, blocklyProgram: boolean) {
@@ -391,6 +397,8 @@ export class BlocklyLiveOperationBridgeService {
       const admissions = new OriginalRequestAdmissions(port, project);
       const priorAdmission = await admissions.observe(identity);
       if (priorAdmission) return observedApplicationAdmission(priorAdmission);
+      try { await admissions.assertApplicationWriter(requestId, payload.params?.['validation']?.candidate?.hash, port); }
+      catch { return pending; }
       if (await port.read(await applicationRequestKey(requestId)) !== null) {
         return scope ? (await new AbsApplicationJournal(port, project).observe(requestId, scope.guard)).result : pending;
       }
@@ -1304,8 +1312,9 @@ export class BlocklyLiveOperationBridgeService {
   private async executeAbsCandidateValidation(params: Record<string, any>) {
     const source = this.readAbsSource(params);
     const project = this.projectService.currentProjectPath;
+    const isCurrent = this.projectService.captureCurrentProjectGuard();
     let libraryRuntimeFingerprint: string | null = null;
-    const assertCurrent = () => { if (this.projectService.currentProjectPath !== project)
+    const assertCurrent = () => { if (!isCurrent())
       throw Object.assign(new Error('The candidate validation project changed.'), { code: 'ABS_CANDIDATE_ARCHIVE_CONTEXT_STALE' }); };
     const result = await this.absGenerationTools.execute('abs_validate', params, source, undefined, undefined, project,
       { project, assertCurrent, prepareRuntime: async () => {
@@ -1324,7 +1333,18 @@ export class BlocklyLiveOperationBridgeService {
     if (changed) return { ...changed, project: this.projectService.currentProjectPath,
       ...((result as any).candidateArchive ? { candidateArchive: (result as any).candidateArchive } : {}) };
 
-    return { ...result, receipt: { ...(result as any).receipt, libraryRuntimeFingerprint } };
+    const reserveWriter = Boolean(params['workingCandidate'] && window['fs']?.projectSyncStorageVersion === 2);
+    if (reserveWriter) {
+      const receipt = (result as any).receipt;
+      try {
+        const port = await openAbsHostStorage(project, assertCurrent);
+        await new OriginalRequestAdmissions(port, project).reserveApplication(receipt.requestId, receipt.candidate.hash, assertCurrent);
+      } catch (error) {
+        return { ...absPrecommitFailure('abs_validate', error), project };
+      }
+    }
+    return { ...result, ...(reserveWriter ? { applicationWriterReserved: true } : {}),
+      receipt: { ...(result as any).receipt, libraryRuntimeFingerprint } };
   }
 
   private retainNativeFailureRuntime(result: Record<string, any>, fingerprint: string) {

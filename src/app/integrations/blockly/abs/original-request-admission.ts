@@ -14,6 +14,8 @@ export interface OriginalRequestAdmissionIdentity {
 
 export const applicationRequestKey = async (requestId: string) =>
   `recoveries/request-${(await hashAbsText(requestId)).slice(7)}.json`;
+const applicationWriterKey = async (requestId: string) =>
+  `recoveries/application-writer-${(await hashAbsText(requestId)).slice(7)}.json`;
 
 export function nativeSaveAdmissionIdentity(request: NativeSaveIdentity): OriginalRequestAdmissionIdentity | undefined {
   if (request.operation === 'project_save' || request.operation === 'blocks_tidy') {
@@ -40,6 +42,9 @@ type AdmissionRecord = {
   version: 1; kind: 'not-started'; operationId: string; project: string;
   request: OriginalRequestAdmissionIdentity; code: string; message: string;
 } & ReturnType<typeof nativeSaveCapability>;
+
+type ApplicationWriter = { version: 1; kind: 'validated-writer'; project: string; requestId: string;
+  candidateHash: string } & ReturnType<typeof nativeSaveCapability>;
 
 /** A rejection and its original writer index are mutually exclusive under the
  * existing project storage lock. Absence provides no evidence of a rejection. */
@@ -68,6 +73,7 @@ export class OriginalRequestAdmissions {
       guard();
       const retained = await this.observe(request, storage);
       if (retained) return retained;
+      if (request.operation === 'abs_apply') await this.assertApplicationWriter(request.requestId, undefined, storage);
       if (await storage.read(await this.writerIndex(request)) !== null) return null;
       const record: AdmissionRecord = { version: 1, kind: 'not-started', operationId: crypto.randomUUID(),
         project: this.project, request, ...nativeSaveCapability(this.port), code: failure.code, message: failure.message };
@@ -77,6 +83,62 @@ export class OriginalRequestAdmissions {
       }
       return record;
     });
+  }
+
+  async reserveApplication(requestId: string, candidateHash: string, guard: () => void) {
+    const request = { operation: 'abs_apply' as const, requestId };
+    const key = await applicationWriterKey(requestId);
+    const context = nativeSaveCapability(this.port);
+    return this.port.withLock(async storage => {
+      guard();
+      if (!/^sha256:[a-f0-9]{64}$/.test(candidateHash) || await this.observe(request, storage)
+        || await storage.read(await applicationRequestKey(requestId)) !== null)
+        throw admissionFault('The original application has already been settled or admitted.');
+      const retained = await this.applicationWriter(requestId, storage);
+      const writer: ApplicationWriter = { version: 1, kind: 'validated-writer', project: context.attachment.root, requestId,
+        candidateHash, ...context };
+      if (retained ? absJson(retained.writer) !== absJson(writer) : !await storage.replace(key, null, absJson(writer)))
+        throw admissionFault('The original application has a different validated writer.');
+      guard();
+    });
+  }
+
+  /** A newer renderer cannot acquire an old prepared request even if the
+   * original transport returns late. Called under the first writer's lock. */
+  async assertApplicationWriter(requestId: string, candidateHash: string | undefined, storage: Pick<AbsSyncStorageAccess, 'read'>) {
+    const retained = await this.applicationWriter(requestId, storage);
+    if (retained && (candidateHash !== undefined && retained.writer.candidateHash !== candidateHash
+      || absJson(retained.writer.executor) !== absJson(nativeSaveCapability(this.port).executor)))
+      throw admissionFault('The original application belongs to a different validated writer or candidate.');
+  }
+
+  async observeExitedApplicationWriter(requestId: string, originalTargetPid: number) {
+    if (!this.port.observeExecutor) return null;
+    const request = { operation: 'abs_apply' as const, requestId };
+    const writerIndex = await applicationRequestKey(requestId);
+    return this.port.withLock(async storage => {
+      const retained = await this.applicationWriter(requestId, storage);
+      if (!retained || retained.writer.executor.hostPid !== originalTargetPid
+        || await this.observe(request, storage) || await storage.read(writerIndex) !== null) return null;
+      const oldWriter = await this.port.observeExecutor!(retained.writer.executor);
+      if (oldWriter.state !== 'exited' || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
+      return { oldWriter, intentHash: await hashAbsText(retained.text), attachment: retained.writer.attachment,
+        executor: retained.writer.executor };
+    });
+  }
+
+  private async applicationWriter(requestId: string, storage: Pick<AbsSyncStorageAccess, 'read'>) {
+    if (!/^[A-Za-z0-9-]{16,80}$/.test(requestId)) throw admissionFault('The original application identity is invalid.');
+    const text = await storage.read(await applicationWriterKey(requestId));
+    if (text === null) return null;
+    const writer = JSON.parse(text) as ApplicationWriter;
+    const attachment = nativeSaveCapability(this.port).attachment;
+    nativeSaveCapability(writer);
+    if (writer.version !== 1 || writer.kind !== 'validated-writer' || writer.project !== attachment.root
+      || writer.requestId !== requestId || !/^sha256:[a-f0-9]{64}$/.test(writer.candidateHash)
+      || absJson(writer.attachment) !== absJson(attachment))
+      throw admissionFault('The validated writer does not belong to the original request or project.');
+    return { text, writer };
   }
 
   private writerIndex(request: OriginalRequestAdmissionIdentity) {

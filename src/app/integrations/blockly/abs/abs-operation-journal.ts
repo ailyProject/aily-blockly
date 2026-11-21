@@ -149,9 +149,12 @@ export class AbsOperationJournal {
     const id = crypto.randomUUID();
     return this.port.withLock(async storage => {
       assertCurrent();
-      if (input.application && await new OriginalRequestAdmissions(this.port, this.project)
-        .observe({ operation: 'abs_apply', requestId: input.application.requestId }, storage))
-        throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED', 'The original apply request was rejected before starting.');
+      if (input.application) {
+        const admissions = new OriginalRequestAdmissions(this.port, this.project);
+        if (await admissions.observe({ operation: 'abs_apply', requestId: input.application.requestId }, storage))
+          throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED', 'The original apply request was rejected before starting.');
+        await admissions.assertApplicationWriter(input.application.requestId, input.candidate?.hash, storage);
+      }
       const previous = await storage.read(currentKey);
       if (previous !== null && this.pointer(previous).state === 'pending') throw conflict();
       const disk = await this.disk(storage);
