@@ -1,3 +1,5 @@
+import type { ProjectStorageAttachment } from '../../shared/project-sync-storage-bridge';
+
 const MAX_DEADLINE_MS = 310_000;
 const RETENTION_MS = 600_000;
 const MAX_RECEIPTS = 512;
@@ -26,6 +28,7 @@ interface Entry {
   request: ProjectCreateRequest;
   abort: AbortController;
   createdProject?: string;
+  createdAttachment?: ProjectStorageAttachment;
   operationKey?: string;
   handingOff: boolean;
   activationCommitted: boolean;
@@ -50,8 +53,23 @@ const cancelled = () => Object.assign(new Error('The original project creation e
 export class ProjectCreateReceipts {
   private readonly entries = new Map<string, Entry>();
 
+  constructor(private readonly captureAttachment?: (project: string) => ProjectStorageAttachment | undefined) {}
+
   observe(request: ProjectCreateRequest) {
     return this.view(request, this.exact(request));
+  }
+
+  isActivationCurrent(request: ProjectCreateRequest, active: string, sameProject: (a: string, b: string) => boolean): boolean {
+    const entry = this.exact(request);
+    if (!entry?.activationCommitted || !entry.createdProject || !sameProject(active, entry.createdProject)) return false;
+    if (!this.captureAttachment) return true; // Legacy preload has no physical identity observation.
+    const original = entry.createdAttachment;
+    if (!original) return false;
+    try {
+      const current = this.captureAttachment(entry.createdProject);
+      return !!current && current.version === original.version && sameProject(current.root, original.root)
+        && (['dev', 'ino', 'birthtimeNs'] as const).every(key => current.identity[key] === original.identity[key]);
+    } catch { return false; }
   }
 
   cancel(request: ProjectCreateRequest) {
@@ -84,7 +102,12 @@ export class ProjectCreateReceipts {
           throw cancelled();
         }
       },
-      markCreated: project => { entry.createdProject = project; },
+      markCreated: project => {
+        if (entry.createdProject !== undefined) return;
+        entry.createdProject = project;
+        try { entry.createdAttachment = this.captureAttachment?.(project); }
+        catch { /* Keep the fact of creation even if its physical attachment is unavailable. */ }
+      },
       beginHandoff: () => { guard.assertCurrent(); entry.handingOff = true; },
       markActivated: () => { guard.assertCurrent(); entry.activationCommitted = true; },
     };
@@ -135,6 +158,7 @@ export class ProjectCreateReceipts {
     return { ...(result ?? { ok: false }), createReceipt: { version: 1 as const,
       requestId: request.requestId, rendererGeneration: request.rendererGeneration, deadlineAt: request.deadlineAt, state,
       activationCommitted: entry?.activationCommitted ?? false,
+      ...(entry?.createdAttachment ? { createdAttachment: entry.createdAttachment } : {}),
       ...(entry?.createdProject ? { createdProject: entry.createdProject } : {}) } };
   }
 }

@@ -67,6 +67,26 @@ describe('original project creation settlement', () => {
     expect(receipts.observe(original)).toEqual(opened);
   });
 
+  it('retains the first created attachment and rejects an active replacement at the same path', async () => {
+    const project = '/projectA';
+    const originalAttachment = { version: 1 as const, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
+    let current = originalAttachment;
+    const receipts = new ProjectCreateReceipts(() => current);
+    const original = request();
+    const sameProject = (left: string, right: string) => left === right;
+    const opened = await receipts.run(original, async gate => {
+      gate.markCreated(project);
+      gate.markActivated();
+      expect(receipts.isActivationCurrent(original, project, sameProject)).toBeTrue();
+      current = { ...originalAttachment, identity: { ...originalAttachment.identity, ino: '4' } };
+      gate.markCreated(project);
+      return { ok: true, operation: 'project_create', project };
+    });
+    expect(opened.createReceipt.createdAttachment).toEqual(originalAttachment);
+    expect(opened.createReceipt.state).toBe('completed');
+    expect(receipts.isActivationCurrent(original, project, sameProject)).toBeFalse();
+  });
+
   it('holds source handoff ownership without reporting a target activation', async () => {
     const receipts = new ProjectCreateReceipts();
     const original = request(), handoff = deferred();

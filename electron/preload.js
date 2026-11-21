@@ -4,7 +4,7 @@ const { SerialPort } = require("serialport");
 const { createThrottledSerialPort, createRawSerialPort, listPorts } = require("./serial");
 const { exec } = require("child_process");
 const { createHash, randomUUID } = require("crypto");
-const { existsSync, statSync, createReadStream } = require("fs");
+const { existsSync, statSync, createReadStream, realpathSync } = require("fs");
 const { createInterface } = require("readline");
 const { isAbsolute } = require("path");
 const { tmpdir } = require("os");
@@ -14,7 +14,7 @@ const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { createNotificationApi } = require('./notification-preload');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
-const { storageExecutor } = require('./project-file-lock-owner');
+const { rootAttachment, storageExecutor } = require('./project-file-lock-owner');
 const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
@@ -737,6 +737,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
     nativeSaveReceiptVersion: 2,
     projectProgramPublicationVersion: 1,
+    captureProjectAttachment: (projectPath) => rootAttachment(realpathSync.native(projectPath)),
     openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
     selectProjectWorkspaceMode: (projectPath, input, assertCurrent) => selectProjectWorkspaceModeBridge(projectPath, input, assertCurrent),
     projectCopySourceVersion: 1,

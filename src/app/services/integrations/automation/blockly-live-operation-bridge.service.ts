@@ -1461,14 +1461,14 @@ export class BlocklyLiveOperationBridgeService {
       return { ok: false, code: 'PROJECT_CREATE_RECEIPT_SCOPE_INVALID', commandDispatched: false,
         message: 'Observe only the exact original creation in its renderer generation.' };
     }
-    const receipts = this.createReceipts ??= new ProjectCreateReceipts();
-    const isCurrentActivation = (receipt: ReturnType<ProjectCreateReceipts['observe']>['createReceipt']) =>
-      receipt.activationCommitted && !!receipt.createdProject
-        && this.normalizePath(this.projectService.currentProjectPath || '') === this.normalizePath(receipt.createdProject);
+    const captureAttachment = window['fs']?.captureProjectAttachment;
+    const receipts = this.createReceipts ??= new ProjectCreateReceipts(captureAttachment);
+    const isCurrentActivation = () => receipts.isActivationCurrent(request, this.projectService.currentProjectPath || '',
+      (a, b) => this.normalizePath(a) === this.normalizePath(b));
     if (payload.operation !== 'project_create') {
       const state = payload.operation === 'project_create_cancel' ? receipts.cancel(request) : receipts.observe(request);
       const project = state.createReceipt.createdProject;
-      const activationCurrent = isCurrentActivation(state.createReceipt);
+      const activationCurrent = isCurrentActivation();
       // The loopback discovery project must remain the actual active tab.
       return { ok: true, operation: payload.operation, createReceipt: state.createReceipt, activationCurrent,
         ...(activationCurrent && project ? { projectType: this.projectService.getProjectMode(project) } : {}),
@@ -1484,7 +1484,7 @@ export class BlocklyLiveOperationBridgeService {
       assertCurrent();
       return this.executeProjectCreate(params, undefined, guard, assertCurrent);
     }, operationKey);
-    return { ...result, activationCurrent: isCurrentActivation(result.createReceipt) };
+    return { ...result, activationCurrent: result.createReceipt.activationCommitted && isCurrentActivation() };
   }
 
   private openCreatedProject(project: string, lifecycleOwner?: symbol, authority?: ProjectCreateGuard, assertSource?: () => void): Promise<boolean> {
