@@ -1988,14 +1988,16 @@ export class ProjectService {
    * keeps its existing policy; this path neither saves nor discards edits. */
   async reopenRecoveredBlocklyProject(path: string, assertCurrent: () => void): Promise<{ project: string; activated: boolean }> {
     const source = this.currentProjectPath;
-    let reopening = false;
     const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
-    const check = () => {
+    const assertView = () => {
       assertCurrent();
       if (!source || path !== source || this.currentProjectPath !== source || this.getProjectMode(source) !== 'blockly') {
         fail('ABS_REOPEN_CONTEXT_STALE', 'Recovered project is not the exact active Blockly project.');
       }
-      if ((!reopening && this.isProjectOpening) || this.dependencyLifecycle.isBusy(source)
+    };
+    const check = () => {
+      assertView();
+      if (this.isProjectOpening || this.dependencyLifecycle.isBusy(source)
         || this.getCoderOperation(source) || this.application.hasActiveProjectMutation(source)
         || this.application.hasActiveBlocklyBuildOrUpload(source)) {
         fail('ABS_REOPEN_BUSY', 'A project task is still active; recovery did not save, discard or stop it.');
@@ -2011,9 +2013,8 @@ export class ProjectService {
         fail('ABS_REOPEN_LIBRARY_STATE_UNAVAILABLE', 'Recovery requires verified library-manager state.');
       }
       if (libraries.dirty || libraries.busy) fail('ABS_REOPEN_LIBRARY_CHANGES', 'Pending library edits are retained; reopen cannot discard them.');
-      reopening = true;
       const activated = await this.projectOpen(source, { reason: 'abs-journal-reopen', lifecycleOwner: lifecycle.token,
-        recoveryReopen: { assertCurrent: check } });
+        recoveryReopen: { assertCurrent: assertView } });
       // projectOpen already awaits normal editor load completion. Never call
       // the retired canvas guard after teardown; the coordinator verifies the
       // replacement activation and mirrors after this returns.
@@ -2586,7 +2587,6 @@ export class ProjectService {
       const idle = this.dependencyLifecycle.get(projectPath);
       if (idle) this.dependencyLifecycle.release(idle);
     } else if (previousProjectPath && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
-      options.recoveryReopen?.assertCurrent();
       try {
         await this.stopProjectCommands(previousProjectPath);
       } catch (error) {
@@ -2601,7 +2601,6 @@ export class ProjectService {
       const reconcilesHistory = activationReason === 'chat-tool-reload'
         && this.isSameProjectPath(previousProjectPath, projectPath);
       if (creation) await checkCreation();
-      options.recoveryReopen?.assertCurrent();
       if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, isSwitchingProject && !options.retainRecovery))) {
         if (isSwitchingProject) await window['projectLock']?.release(projectPath);
         return false;
@@ -2646,13 +2645,20 @@ export class ProjectService {
     };
     try {
       const guard = () => { this.assertProjectDependencySession(session); assertStartup(); };
+      const preparing = () => { guard(); recovery?.assertCurrent(); };
       if (!preparedSession && abiIsExist) {
-        guard();
-        await this.application.settleEnvironmentBeforeOpen?.(projectPath, guard, startupSignal);
-        guard();
+        preparing();
+        await this.application.settleEnvironmentBeforeOpen?.(projectPath, preparing, startupSignal);
+        preparing();
       }
-      if (!creation && !startup) this.beginBlocklyProjectLoad(projectPath);
+      if (!creation && !startup && !recovery) this.beginBlocklyProjectLoad(projectPath);
       if (!creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
+      if (recovery) {
+        // This is the last point before disposing the source editor. Its
+        // session token changes on purpose when the accepted reopen proceeds.
+        recovery.assertCurrent();
+        this.beginBlocklyProjectLoad(projectPath);
+      }
       if (abiIsExist && this.router.url.startsWith('/main/blockly-editor')) {
         // Dispose the reused editor before currentProjectPath changes.
         await this.router.navigate(['/main/guide'], { replaceUrl: true });
@@ -3270,7 +3276,8 @@ export class ProjectService {
         activationBlocked: snapshot.activationBlocked, recoveryArchive: archive.recoveryArchive,
         message: snapshot.activationBlocked.message };
       release = snapshot.freezeForActivation?.();
-      const activated = await this.projectOpen(path, { reason: 'reload', saveBeforeReload: false, lifecycleOwner: lease.token,
+      const activated = await this.projectOpen(path, { reason: assertCurrent ? 'abs-journal-reopen' : 'reload',
+        saveBeforeReload: false, lifecycleOwner: lease.token,
         ...(assertCurrent ? { recoveryReopen: { assertCurrent } } : {}) });
       const ready = activated === true && this.isSameProjectPath(path, this.currentProjectPath)
         && this.getBlocklyProjectLoadStatus(path).ready;
