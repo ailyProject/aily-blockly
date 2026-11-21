@@ -1586,6 +1586,8 @@ export class BlocklyLiveOperationBridgeService {
     const sessionId: unknown = params['navigationSessionId'];
     const hasSession = typeof sessionId === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(sessionId);
     const reopenProof = params['reopenProof'];
+    const proofRequest = reopenProof === undefined ? undefined
+      : readProjectNavigationRequest(reopenProof?.navigationRequest, value => !!path?.isAbsolute(value));
     const sameProject = (left: string, right: string) => {
       const a = path.normalize(left), b = path.normalize(right);
       return window['platform']?.isWindows ? a.toLowerCase() === b.toLowerCase() : a === b;
@@ -1596,7 +1598,11 @@ export class BlocklyLiveOperationBridgeService {
       || Object.keys(params).some(key => key !== 'navigationRequest'
         && (observing || !['reopenFrom', 'navigationSessionId', 'reopenProof'].includes(key)))
       || sessionId !== undefined && !hasSession
-      || reopenProof !== undefined && (!hasSession || reopenProof?.sessionId !== sessionId || !reopen)
+      || reopenProof !== undefined && (!hasSession || reopenProof?.sessionId !== sessionId || !proofRequest
+        || request.operation !== 'project_open' || request.sourceProject !== null || !proofRequest.sourceProject
+        || !sameProject(proofRequest.sourceProject, request.targetProject!)
+        || (reopen ? proofRequest.operation !== 'project_close' || proofRequest.requestId !== reopen.requestId
+          : proofRequest.operation !== 'project_open'))
       || payload.path && (!originalPath || !sameProject(originalPath, payload.path))
       || !observing && (this.configService.getPreferredChatAgentRuntimeMode() !== 'blockly'
         || request.operation !== payload.operation || request.sourceProject !== payload.lifecycle?.sourceProject

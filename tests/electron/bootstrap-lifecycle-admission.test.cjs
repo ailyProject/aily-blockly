@@ -44,6 +44,37 @@ function navigationFixture() {
   return { ...f, source, target, identities, request, send, observe };
 }
 
+test('a fresh open from the blank view accepts only the exact recovered source proof', async () => {
+  const f = navigationFixture(), sessionId = randomUUID();
+  const original = f.request('project_open', f.source, f.target);
+  const proof = { version: 1, originalTargetPid: 41000, originalInstanceId: randomUUID(), sessionId, navigationRequest: original };
+  f.domain.currentProjectPath = '';
+  let opens = 0, approved = false;
+  f.window.projectLock = { canReopenNavigation: async (received, target) => {
+    assert.equal(received, proof);
+    assert.equal(target, f.source);
+    return approved;
+  } };
+  f.domain.projectOpen = async (target, options) => {
+    opens++;
+    f.domain.currentProjectPath = target;
+    await options.onViewActivated(target, f.domain.projectViewRevision);
+    return true;
+  };
+  const send = (target, navigationSessionId = sessionId) => f.bridge.executeOperation({ operation: 'project_open',
+    path: target, rendererGeneration: f.generation, lifecycle: snapshot(null),
+    params: { navigationRequest: f.request('project_open', null, target), navigationSessionId, reopenProof: proof } });
+  assert.equal((await send(f.target)).code, 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID');
+  assert.equal((await send(f.source, randomUUID())).code, 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID');
+  assert.equal((await send(f.source)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  assert.equal(opens, 0);
+  approved = true;
+  const reopened = await send(f.source);
+  assert.equal(reopened.activationCurrent, true);
+  assert.equal(reopened.navigationReceipt.state, 'completed');
+  assert.equal(opens, 1);
+});
+
 test('ordinary open reports exact activation before editor readiness, then retains it after load failure and lost reply', async () => {
   const f = navigationFixture(), id = f.request('project_open', f.source, f.target);
   let opened = 0, markStarted, finish;

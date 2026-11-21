@@ -105,9 +105,10 @@ function bridgeFixture(sourceProject = '', generation = 7, testPorts = {}) {
     'src/app/services/domains/project/project.service.ts',
     'ProjectService',
     { window, normalizeProjectOpenPath: (value) => value },
-    ['withProjectLifecycleAdmission', 'acquireProjectLifecycle', 'projectOpen', 'projectOpenInternal'],
+    ['withProjectLifecycleAdmission', 'acquireProjectLifecycle', 'projectOpen', 'projectOpenInternal', 'beginExplicitNavigation'],
   );
   const domain = new Domain();
+  domain.projectNavigationIntentRevision = 0;
   domain.currentProjectPath = sourceProject;
   domain.projectLifecycle = new ProjectLifecycleGate();
   domain.dependencyLifecycle = { isStopping: () => false };

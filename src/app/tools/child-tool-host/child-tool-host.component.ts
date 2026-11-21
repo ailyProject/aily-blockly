@@ -239,6 +239,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       this.projectService.coderWorkspace$,
     ]).subscribe(() => {
       if (this.projectService.currentProjectPath) this.closedNavigationSession = null;
+      else if (this.projectService.closedRestartSessionHint) this.closedNavigationSession = this.projectService.closedRestartSessionHint;
       this.refreshAiOperationNotice();
       if (this.initialized) {
         this.syncHostContext(true);

@@ -435,6 +435,7 @@ for (const protocol of repairBootstrap ? [] : PROTOCOLS) {
 
 // 文件关联处理
 let pendingFileToOpen = null;
+const startupProjectOpen = require('./project-open-path').createProjectStartupOpen();
 let projectOpenRendererReady = false;
 ipcMain.on('project-open-ready', (event) => {
   if (mainWindow && event.sender === mainWindow.webContents) {
@@ -571,6 +572,7 @@ async function resolveProjectLockOrPrompt(projectDir, parentWindow) {
 function handleCommandLineArgs(argv, cwd = process.cwd()) {
   const projectPath = require('./project-open-path').projectDirectoryFromArgs(argv, cwd);
   if (projectPath) {
+    startupProjectOpen.invalidate();
     pendingFileToOpen = projectPath;
     return true;
   }
@@ -578,6 +580,8 @@ function handleCommandLineArgs(argv, cwd = process.cwd()) {
   // 处理路由参数
   const routeArg = argv.find(arg => arg.startsWith('--route='));
   if (routeArg) {
+    startupProjectOpen.invalidate();
+    if (pendingFileToOpen && typeof pendingFileToOpen !== 'string') pendingFileToOpen = null;
     pendingRoute = routeArg.replace('--route=', '');
     console.log('Found route parameter:', pendingRoute);
   }
@@ -887,7 +891,6 @@ function summarizeAppProcessMetrics() {
 // === CLI Bridge：供外部 CLI 通过本地回环接口驱动主程序（附加能力） ===
 let cliBridge = null;
 let projectCrashResume = null;
-let projectNavigationStartupRestore = null;
 const dispatchedProjectCreates = new Map();
 const dispatchedProjectNavigations = new Map();
 const PROJECT_CREATE_RECOVERY_RETENTION_MS = 600_000;
@@ -1024,7 +1027,9 @@ function observeOriginalProjectNavigation(operation, params) {
   if (!observed?.ok || !observed.navigationReceipt) return { ok: true, operation, activationCurrent: false, rendererGeneration };
   const { version, originalTargetPid, originalInstanceId, sessionId } = reference;
   const activationCurrent = observed.activationCurrent && ready && (!opened || ownsProjectNavigation(opened));
+  const activationDisposition = ready && (!opened || ownsProjectNavigation(opened)) ? observed.activationDisposition : 'unconfirmed';
   return { ok: true, operation, rendererGeneration, activationCurrent,
+    activationDisposition, ...(activationDisposition === 'superseded' && observed.resumeSource ? { resumeSource: observed.resumeSource } : {}),
     ...(activationCurrent && observed.activationViewId ? { activationViewId: observed.activationViewId } : {}),
     navigationRecovery: { version, originalTargetPid, originalInstanceId, sessionId },
     navigationReceipt: observed.navigationReceipt, result: observed.result };
@@ -2751,9 +2756,10 @@ async function updateMainWindowWithPendingData() {
 
   if (pendingFileToOpen) {
     if (!projectOpenRendererReady) return;
-    const dir = pendingFileToOpen;
+    const request = pendingFileToOpen;
     pendingFileToOpen = null;
-    mainWindow.webContents.send('open-project-from-file', dir);
+    if (typeof request !== 'string' && !startupProjectOpen.dispatch(request, rendererGeneration)) return;
+    mainWindow.webContents.send('open-project-from-file', request);
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
     return;
@@ -2874,12 +2880,8 @@ function createWindow() {
   // 根据是否有待打开的项目路径或路由参数来决定加载的页面
   let targetUrl = null;
 
-  if (pendingFileToOpen) {
-    const routePath = `main/guide?openProject=${encodeURIComponent(pendingFileToOpen)}`;
-    console.log('Loading with project path:', routePath);
-    targetUrl = `#/${routePath}`;
-    pendingFileToOpen = null;
-  } else if (pendingRoute) {
+  // File opens use one receiver even on startup, after the renderer subscribes.
+  if (!pendingFileToOpen && pendingRoute) {
     // 构建路由URL
     let routePath = pendingRoute;
 
@@ -3410,8 +3412,7 @@ app.on("ready", async () => {
   if (!repairBootstrap && !pendingFileToOpen && !pendingRoute) {
     const interrupted = projectCrashResumeController()?.interruptedProject();
     if (interrupted?.ok && interrupted.project) {
-      pendingFileToOpen = interrupted.project;
-      if (interrupted.creation || interrupted.navigation) projectNavigationStartupRestore = interrupted;
+      pendingFileToOpen = startupProjectOpen.stage(interrupted);
     }
   }
   createWindow();
@@ -3644,12 +3645,9 @@ app.on('open-file', (event, filePath) => {
     console.log('macOS open-file:', filePath);
     console.log('Project directory:', projectDir);
 
-    if (mainWindow && mainWindow.webContents) {
-      pendingFileToOpen = projectDir;
-      void updateMainWindowWithPendingData();
-    } else {
-      pendingFileToOpen = projectDir;
-    }
+    startupProjectOpen.invalidate();
+    pendingFileToOpen = projectDir;
+    if (mainWindow && mainWindow.webContents) void updateMainWindowWithPendingData();
   }
 });
 
@@ -3754,11 +3752,24 @@ function ownsProjectNavigation(projectPath) {
     && projectLock.normalizeProjectPathLoose(projectPath) === projectLock.normalizeProjectPathLoose(heldProjectLockNormalized);
 }
 
-ipcMain.handle('project-navigation-active', (event, projectPath) => {
+ipcMain.on('project-navigation-startup-cancel', (event) => {
+  if (mainWindow && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame)
+    startupProjectOpen.invalidate();
+});
+ipcMain.handle('project-navigation-startup-check', (event, projectPath, ticket) => (
+  !!mainWindow && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame
+  && startupProjectOpen.isCurrent(ticket, projectPath, rendererGeneration)
+));
+ipcMain.handle('project-navigation-active', (event, projectPath, startupTicket) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || !ownsProjectNavigation(projectPath))
     return { ok: false, reason: 'project-not-owned' };
-  const result = projectCrashResumeController()?.record(projectPath, { restore: projectNavigationStartupRestore });
-  if (result?.ok) projectNavigationStartupRestore = null;
+  let restore;
+  if (startupTicket !== undefined) {
+    if (event.senderFrame !== mainWindow.webContents.mainFrame
+      || !(restore = startupProjectOpen.consume(startupTicket, projectPath, rendererGeneration)))
+      return { ok: false, reason: 'startup-superseded' };
+  } else startupProjectOpen.invalidate();
+  const result = projectCrashResumeController()?.record(projectPath, { restore });
   return result ?? { ok: false, reason: 'navigation-storage-unavailable' };
 });
 ipcMain.handle('project-navigation-created-active', (event, { projectPath, request, recoverySessionId, attachment } = {}) => {
@@ -3777,7 +3788,7 @@ ipcMain.handle('project-navigation-created-active', (event, { projectPath, reque
   if (['EIO', 'EPERM', 'EBUSY', 'PROJECT_CRASH_RESUME_BUSY'].includes(result?.code)) result = save();
   if (result?.ok) {
     dispatchedProjectCreates.delete(request.requestId);
-    projectNavigationStartupRestore = null;
+    startupProjectOpen.invalidate();
   }
   return result ?? { ok: false, reason: 'navigation-storage-unavailable' };
 });
@@ -3803,10 +3814,15 @@ ipcMain.handle('project-navigation-can-reopen', (event, { proof, project } = {})
   !!getCurrentRendererOwner(event.sender) && event.senderFrame === mainWindow.webContents.mainFrame && !getOpenedProjectPathFromWindow()
   && projectCrashResumeController()?.canReopenFrom(proof, project) === true
 ));
-ipcMain.handle('project-navigation-clear', (event, projectPath) => {
+ipcMain.handle('project-navigation-clear', (event, projectPath, options) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string' || !path.isAbsolute(projectPath))
     return { ok: false, reason: 'project-not-owned' };
-  return projectCrashResume?.clear(projectPath) ?? { ok: true, cleared: false };
+  if ((options?.retainInterruptedSource || options?.expectedViewId) && event.senderFrame !== mainWindow.webContents.mainFrame)
+    return { ok: false, reason: 'project-not-owned' };
+  if (options?.expectedViewId && projectCrashResume?.viewIdentity(projectPath) !== options.expectedViewId)
+    return { ok: true, cleared: false, reason: 'different-view' };
+  return projectCrashResume?.clear(projectPath, { retainInterruptedSource: options?.retainInterruptedSource === true })
+    ?? { ok: true, cleared: false };
 });
 
 ipcMain.handle("project-lock-focus", (event, data) => {

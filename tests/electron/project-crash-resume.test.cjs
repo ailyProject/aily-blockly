@@ -201,6 +201,64 @@ test('a cold empty view only reopens the exact closed physical source from the o
   assert.equal(next.closedSessionHint(), null);
 });
 
+function interruptedOpen(name) {
+  const f = fixture(name), original = owner(), first = f.make(original);
+  const destination = path.join(f.folder, 'destination'); fs.mkdirSync(destination);
+  const reference = { version: 1, originalTargetPid: original.hostPid, originalInstanceId: original.instanceId,
+    sessionId: randomUUID(), navigationRequest: { version: 1, requestId: randomUUID(),
+      rendererGeneration: 7, deadlineAt: Date.now() + 300_000, operation: 'project_open',
+      sourceProject: f.project, targetProject: destination } };
+  assert.equal(first.record(f.project).ok, true);
+  assert.equal(first.recordNavigation(reference, null, rootAttachment(f.project)).ok, true);
+  assert.equal(first.record(destination).ok, true);
+  assert.equal(first.recordNavigation(reference, { state: 'open', project: destination, attachment: rootAttachment(destination) },
+    rootAttachment(f.project)).ok, true);
+  const next = f.make(owner(41002));
+  const restore = next.interruptedProject();
+  assert.equal(next.record(destination, { restore }).recoverySessionId, reference.sessionId);
+  return { f, next, reference, destination };
+}
+
+test('closing an unfinished restart activation retains only its original session source', async () => {
+  const { f, next, reference, destination } = interruptedOpen('close-unfinished-restart');
+  const recovered = next.observeNavigation(destination, reference);
+  assert.equal(recovered.activationDisposition, 'current');
+  assert.equal(recovered.navigationReceipt.state, 'pending');
+  assert.equal(next.clear(destination, { retainInterruptedSource: true }).cleared, true);
+  const observation = next.observeNavigation(null, reference);
+  assert.equal(observation.activationDisposition, 'superseded');
+  assert.equal(observation.navigationReceipt.state, 'pending', 'manual close cannot decide the old tool result');
+  assert.equal(observation.result, undefined);
+  assert.deepEqual(observation.resumeSource, { project: f.project });
+  assert.equal(next.canReopenFrom(reference, f.project), true);
+  assert.equal(next.canReopenFrom(reference, destination), false);
+  assert.equal(next.canReopenFrom({ ...reference, sessionId: randomUUID() }, f.project), false);
+  assert.deepEqual(next.closedSessionHint(), { project: f.project, sessionId: reference.sessionId });
+  const restarted = f.make(owner(41003));
+  assert.equal(restarted.interruptedProject().project, null, 'the user closed the canvas and did not request a replay');
+  assert.equal(restarted.canReopenFrom(reference, f.project), true);
+  const reader = await restarted.observeClosedWorkspaceProtocol(f.project, reference, () => 3,
+    async project => ({ ok: true, project, protocol: { workspaceMode: 'project-v1' } }));
+  assert.equal(reader.ok, true);
+  assert.equal(restarted.record(destination).ok, true);
+  assert.equal(restarted.clear(destination, { retainInterruptedSource: true }).cleared, true);
+  assert.equal(restarted.observeNavigation(null, reference).resumeSource, undefined);
+  assert.equal(restarted.closedSessionHint(), null);
+  assert.equal(restarted.canReopenFrom(reference, f.project), false);
+});
+
+test('a new project supersedes unfinished activation and cannot inherit the original source', () => {
+  const { f, next, reference, destination } = interruptedOpen('switch-unfinished-restart');
+  const selected = path.join(f.folder, 'selected'); fs.mkdirSync(selected);
+  assert.equal(next.record(selected).ok, true);
+  const historical = next.observeNavigation(selected, reference);
+  assert.equal(historical.activationDisposition, 'superseded');
+  assert.equal(historical.navigationReceipt.state, 'pending');
+  assert.equal(historical.resumeSource, undefined);
+  assert.equal(next.observeNavigation(destination, reference).activationDisposition, 'unconfirmed');
+  assert.equal(next.canReopenFrom(reference, f.project), false);
+});
+
 test('a completed creation remains observable after the active cursor is cleared or replaced', () => {
   const f = fixture('create-observe-after-close'), original = owner(), first = f.make(original);
   const creation = createClaim();

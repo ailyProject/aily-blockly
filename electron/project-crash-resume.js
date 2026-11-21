@@ -130,9 +130,11 @@ function createProjectCrashResume(options) {
     const data = stored.record;
     const executor = data.executor, attachment = data.attachment;
     const physical = data.closed === true ? data.navigation?.navigationRequest?.sourceProject : data.project;
+    const closedOperation = data.closedRecovery === true ? 'project_open' : 'project_close';
     if (!absolute(physical) || !validAttachment(attachment, physical)
-      || (data.closed === true ? data.project !== null || data.navigation?.navigationRequest?.operation !== 'project_close'
+      || (data.closed === true ? data.project !== null || data.navigation?.navigationRequest?.operation !== closedOperation
         : data.navigation && data.navigation.navigationRequest?.operation !== 'project_open')
+      || data.closedRecovery !== undefined && (data.closedRecovery !== true || data.closed !== true)
       || executor?.version !== 1 || !positivePid(executor.hostPid) || executor.hostPid !== executor.storagePid
       || typeof executor.instanceId !== 'string' || executor.instanceId.length < 8
       || executor.processIdentity !== null && !validCreation(executor.processIdentity)
@@ -215,6 +217,13 @@ function createProjectCrashResume(options) {
     if (cursor.closed) return project === null && ownsCursor(cursor, executor);
     return same(cursor.executor, executor) && sameProject(cursor.project, project);
   };
+  const retainedClosedSource = (cursor, reference, stored) => {
+    const { sourceAttachment, activation } = stored?.record ?? {};
+    if (!cursor?.closedRecovery || !same(cursor.navigation, reference) || !ownsCursor(cursor, currentExecutor())
+      || !same(cursor.attachment, sourceAttachment) || !testAttachment(sourceAttachment)
+      || activation?.state !== 'open' || !testAttachment(activation.attachment)) return;
+    return { project: sourceAttachment.root };
+  };
   const inspectNavigation = (store, cursor, project, reference) => {
     const stored = getNavigation(store, reference);
     if (!stored) return { ok: true, activationCurrent: false };
@@ -223,8 +232,14 @@ function createProjectCrashResume(options) {
       ? { ok: true, operation: 'project_close', project: null } : undefined);
     const attachment = activation?.state === 'open' ? activation.attachment : sourceAttachment;
     if (attachment && !testAttachment(attachment)) return { ok: true, activationCurrent: false, reason: 'attachment-mismatch' };
-    const activationCurrent = !!activation && matchesView(cursor, project, reference, attachment);
-    return { ok: true, activationCurrent, ...(activationCurrent ? { activationViewId: cursor.viewId } : {}),
+    const activationCurrent = !!activation && !cursor?.closedRecovery && matchesView(cursor, project, reference, attachment);
+    const resumeSource = project === null ? retainedClosedSource(cursor, reference, stored) : undefined;
+    const replaced = !!activation && !same(cursor?.navigation, reference) && !!cursor?.viewId
+      && testAttachment(cursor.attachment) && (project === null && cursor.closed && ownsCursor(cursor, currentExecutor())
+        || sameProject(cursor.project, project) && same(cursor.executor, currentExecutor()));
+    const activationDisposition = activationCurrent ? 'current' : replaced || resumeSource ? 'superseded' : 'unconfirmed';
+    return { ok: true, activationCurrent, activationDisposition, ...(activationCurrent ? { activationViewId: cursor.viewId } : {}),
+      ...(resumeSource ? { resumeSource } : {}),
       navigationReceipt: { ...reference.navigationRequest, state: result ? result.ok ? 'completed' : 'failed' : 'pending',
         ...(activation ? { activation } : {}), ...(sourceAttachment ? { sourceAttachment } : {}) },
       ...(result ? { result } : {}) };
@@ -271,12 +286,14 @@ function createProjectCrashResume(options) {
           && same(restore.attachment, prior.attachment);
         const original = activation ?? (prior?.creation && same(prior.attachment, attachment) && (sameOwner || resumed) ? prior.creation : null);
         const navigationResumed = prior?.navigation && restore?.reason === 'interrupted'
-          && same(restore.navigation, prior.navigation) && same(restore.executor, prior.executor);
+          && same(restore.navigation, prior.navigation) && same(restore.executor, prior.executor)
+          && same(restore.attachment, prior.attachment);
         const sameView = !prior?.closed && same(prior?.attachment, attachment);
         const navigation = !activation && sameView && (sameOwner || navigationResumed) ? prior.navigation : undefined;
         const viewId = sameView && sameOwner && !activation ? prior.viewId ?? randomUUID() : randomUUID();
         const data = { version: 1, profile, project: physical, attachment, executor, viewId,
           ...(original ? { creation: original } : {}), ...(navigation ? { navigation } : {}),
+          ...(navigation && (navigationResumed || sameOwner && prior.resumedNavigation === true) ? { resumedNavigation: true } : {}),
           ...(navigation && prior.navigationAcknowledged === true ? { navigationAcknowledged: true } : {}) };
         if (previous && same(previous.record, data)) {
           if (activation) rememberCreation(store, data);
@@ -365,9 +382,10 @@ function createProjectCrashResume(options) {
     },
     canReopenFrom(value, project) {
       const reference = readProjectNavigationRecovery(value);
-      if (!reference || reference.navigationRequest.operation !== 'project_close'
-        || !sameProject(project, reference.navigationRequest.sourceProject)) return false;
+      if (!reference || !sameProject(project, reference.navigationRequest.sourceProject)) return false;
       const observed = this.observeNavigation(null, reference);
+      if (reference.navigationRequest.operation === 'project_open')
+        return observed.activationDisposition === 'superseded' && sameProject(observed.resumeSource?.project, project);
       return observed.activationCurrent === true && observed.navigationReceipt?.state === 'completed';
     },
     async observeClosedWorkspaceProtocol(project, value, currentView, read) {
@@ -389,8 +407,9 @@ function createProjectCrashResume(options) {
         const cursor = previous?.record;
         if (!cursor?.closed || !cursor.navigation) return { ok: true, hint: null };
         const observed = inspectNavigation(store, cursor, null, cursor.navigation);
-        return { ok: true, hint: observed.activationCurrent && observed.navigationReceipt?.state === 'completed'
-          ? { project: cursor.attachment.root, sessionId: cursor.navigation.sessionId } : null };
+        const project = observed.resumeSource?.project ?? (observed.activationCurrent && observed.navigationReceipt?.state === 'completed'
+          ? cursor.attachment.root : null);
+        return { ok: true, hint: project ? { project, sessionId: cursor.navigation.sessionId } : null };
       }).hint ?? null;
     },
     observeOriginalCreation(project, query) {
@@ -434,13 +453,24 @@ function createProjectCrashResume(options) {
         return { ok: true, acknowledged: true };
       });
     },
-    clear(project) {
+    clear(project, { retainInterruptedSource = false } = {}) {
       return run(false, (store, previous) => {
         if (!previous) return { ok: true, cleared: false, reason: 'no-record' };
-        if (!same(previous.record.executor, currentExecutor())) return { ok: true, cleared: false, reason: 'different-owner' };
-        if (project !== undefined && (typeof project !== 'string' || !path.isAbsolute(project) || key(project) !== key(previous.record.project)))
+        const { record } = previous, executor = currentExecutor();
+        if (!same(record.executor, executor)) return { ok: true, cleared: false, reason: 'different-owner' };
+        if (project !== undefined && !sameProject(project, record.project))
           return { ok: true, cleared: false, reason: 'different-project' };
-        rememberCreation(store, previous.record);
+        rememberCreation(store, record);
+        if (retainInterruptedSource && record.resumedNavigation && !record.navigationAcknowledged && !record.closed) {
+          const stored = getNavigation(store, record.navigation)?.record;
+          const attachment = stored?.sourceAttachment;
+          if (stored && !stored.result && stored.activation?.state === 'open' && same(stored.activation.attachment, record.attachment)
+            && testAttachment(record.attachment) && testAttachment(attachment)) {
+            write(store, previous, { version: 1, profile, project: null, attachment, executor,
+              viewId: randomUUID(), navigation: record.navigation, closed: true, closedRecovery: true });
+            return { ok: true, cleared: true, closedSession: { project: attachment.root, sessionId: record.navigation.sessionId } };
+          }
+        }
         assertCurrent(store, previous); files.unlinkSync(store.file);
         return { ok: true, cleared: true };
       });
