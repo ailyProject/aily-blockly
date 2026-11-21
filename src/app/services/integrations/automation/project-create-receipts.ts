@@ -133,7 +133,7 @@ export class ProjectCreateReceipts {
     const result = state === 'cancelled' ? { ok: false, code: 'PROJECT_CREATE_CANCELLED', message: cancelled().message }
       : entry?.result;
     return { ...(result ?? { ok: false }), createReceipt: { version: 1 as const,
-      requestId: request.requestId, rendererGeneration: request.rendererGeneration, state,
+      requestId: request.requestId, rendererGeneration: request.rendererGeneration, deadlineAt: request.deadlineAt, state,
       activationCommitted: entry?.activationCommitted ?? false,
       ...(entry?.createdProject ? { createdProject: entry.createdProject } : {}) } };
   }
