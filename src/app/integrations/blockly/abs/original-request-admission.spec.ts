@@ -208,6 +208,26 @@ describe('original project admission settlement', () => {
     expect([...files]).toEqual(retained);
   });
 
+  it('keeps a cross-restart ABS refusal tied to its original writer and the observing host', async () => {
+    const admissions = new OriginalRequestAdmissions(port, project);
+    await admissions.reject({ operation: 'abs_apply', requestId },
+      { code: 'PROJECT_ADMISSION_CONTEXT_STALE', message: 'Original route changed' }, guard);
+    const original = port.executor;
+    port = open('2', 222);
+    const cold = bridge();
+    cold.projectService.currentProjectPathSubject.next('/replacement-canvas');
+    const payload = { operation: 'abs_admission_status', path: project,
+      params: { version: 2, requestId, originalTargetPid: original.hostPid } };
+    const verified = await cold.execute(payload);
+    expect(verified.publicationObservation).toEqual(jasmine.objectContaining({
+      operation: 'abs_apply', requestId, executor: original, observer: { hostPid: 222 }, current: false, durable: true,
+    }));
+    expect(verified.applicationObservation.resultKnown).toBeTrue();
+    const foreign = await cold.execute({ ...payload, params: { ...payload.params, originalTargetPid: 333 } });
+    expect(foreign.publication.status).toBe('UNKNOWN');
+    expect(foreign.admission).toBeUndefined();
+  });
+
   it('cannot settle another ABS writer, an absent original or a request with extra fields', async () => {
     const cold = bridge();
     cold.projectService.currentProjectPathSubject.next('/replacement-canvas');

@@ -1,4 +1,4 @@
-import type { AbsSyncStorageAccess, AbsSyncStoragePort } from './abs-baseline-store';
+import type { AbsStorageExecutor, AbsSyncStorageAccess, AbsSyncStoragePort } from './abs-baseline-store';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { nativeSaveCapability, nativeSaveIndexKey } from './abs-native-save-protocol';
 import type { NativeSaveIdentity } from './abs-native-save-protocol';
@@ -92,8 +92,14 @@ export function originalAdmissionOutcome(record: AdmissionRecord) {
     ...(operation === 'abs_apply' ? { application: { status: 'NOT_STARTED' as const, requestId } } : {}) };
 }
 
-export function observedApplicationAdmission(record: AdmissionRecord) {
+export function originalAdmissionObservation(record: AdmissionRecord, observer?: AbsStorageExecutor) {
+  return { version: 1 as const, durable: true, requestId: record.request.requestId, operation: record.request.operation,
+    operationId: record.operationId, attachment: record.attachment, executor: record.executor,
+    observer: { hostPid: observer?.hostPid ?? null }, current: false };
+}
+
+export function observedApplicationAdmission(record: AdmissionRecord, observer?: AbsStorageExecutor) {
   return { ...originalAdmissionOutcome(record), applicationObservation: {
     version: 1, requestId: record.request.requestId, observationOnly: true, resultKnown: true, current: false,
-  } };
+  }, ...(observer ? { publicationObservation: originalAdmissionObservation(record, observer) } : {}) };
 }

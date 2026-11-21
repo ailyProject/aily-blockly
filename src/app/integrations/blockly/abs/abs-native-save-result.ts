@@ -4,7 +4,7 @@ import { absJson, hashAbsText } from './abs-identity-map';
 import { absProjectionReceipt } from './abs-projection-receipt';
 import { readProjectSaveInput } from '../../../services/shared/project-save-input';
 import type { NativeSaveIdentity, NativeSaveObservation, NativeSaveResultFacts, NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
-import { originalAdmissionOutcome, type OriginalRequestAdmissions } from './original-request-admission';
+import { originalAdmissionObservation, originalAdmissionOutcome, type OriginalRequestAdmissions } from './original-request-admission';
 
 export function nativeSaveAdmissionResponse(
   record: NonNullable<Awaited<ReturnType<OriginalRequestAdmissions['observe']>>>,
@@ -17,8 +17,7 @@ export function nativeSaveAdmissionResponse(
   };
   return { ok: true, operation: 'project_save_status', saveReceipt: { ...receipt, state: 'completed' },
     result: { ...originalAdmissionOutcome(record), projectSaved: false, generatedCodePublished: false, partial: false },
-    publicationObservation: { version: 1, durable: true, requestId, operation, operationId: record.operationId,
-      attachment: record.attachment, executor: record.executor, observer: { hostPid: observer?.hostPid ?? null }, current: false } };
+    publicationObservation: originalAdmissionObservation(record, observer) };
 }
 
 /** The input digest describes the original command, never a later GUI capture. */

@@ -323,17 +323,19 @@ export class BlocklyLiveOperationBridgeService {
   /** Only the immutable pre-writer refusal is readable offscreen. A missing
    * refusal says nothing about an ABS application or its current canvas. */
   private async observeApplicationAdmission(payload: BlocklyLiveOperationPayload) {
-    const project = payload.path, { version, requestId } = payload.params ?? {};
+    const project = payload.path, { version, requestId, originalTargetPid } = payload.params ?? {};
     const unknown = { ok: false, operation: 'abs_apply', project, publication: { status: 'UNKNOWN' } };
     if (typeof project !== 'string' || !window['path']?.isAbsolute(project) || version !== 2
       || typeof requestId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(requestId)
-      || Object.keys(payload.params ?? {}).some(key => !['version', 'requestId'].includes(key))) {
+      || originalTargetPid !== undefined && (!Number.isSafeInteger(originalTargetPid) || originalTargetPid <= 0)
+      || Object.keys(payload.params ?? {}).some(key => !['version', 'requestId', 'originalTargetPid'].includes(key))) {
       return { ...unknown, code: 'ABS_ADMISSION_STATUS_INVALID' };
     }
     try {
       const port = await openAbsHostStorage(project, () => {});
       const record = await new OriginalRequestAdmissions(port, project).observe({ operation: 'abs_apply', requestId });
-      if (record) return observedApplicationAdmission(record);
+      if (record && (originalTargetPid === undefined || record.executor.hostPid === originalTargetPid))
+        return observedApplicationAdmission(record, port.executor);
     } catch { /* No verified refusal is available for this project. */ }
     return { ...unknown, code: 'ABS_APPLY_OBSERVATION_UNKNOWN',
       applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false } };
