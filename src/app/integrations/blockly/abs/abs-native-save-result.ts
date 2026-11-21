@@ -17,7 +17,7 @@ export function nativeSaveAdmissionResponse(
   };
   return { ok: true, operation: 'project_save_status', saveReceipt: { ...receipt, state: 'completed' },
     result: { ...originalAdmissionOutcome(record), projectSaved: false, generatedCodePublished: false, partial: false },
-    publicationObservation: originalAdmissionObservation(record, observer) };
+    publicationObservation: { ...originalAdmissionObservation(record, observer), operation } };
 }
 
 /** The input digest describes the original command, never a later GUI capture. */
