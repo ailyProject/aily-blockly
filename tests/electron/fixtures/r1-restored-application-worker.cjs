@@ -79,9 +79,10 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
     candidate: { hash: await kernel.hashAbsText(source), bytes: Buffer.byteLength(source) }, workspaceRevision: 1 };
   const original = { kind: 'abs-apply', document, disk,
     candidate: { source, hash: validation.candidate.hash, generation: validation.base.generation }, application: { requestId, validation } };
-  if (legacy === 'index-before-pointer' || legacy === 'legacy-index-before-pointer') {
-    const legacyIndex = legacy === 'legacy-index-before-pointer';
-    if (legacyIndex) await new kernel.OriginalRequestAdmissions(port, project).reserveApplication(requestId, validation.candidate.hash, guard);
+  if (['index-before-pointer', 'legacy-index-before-pointer', 'legacy-index-without-writer'].includes(legacy)) {
+    const legacyIndex = legacy !== 'index-before-pointer';
+    if (legacy === 'legacy-index-before-pointer')
+      await new kernel.OriginalRequestAdmissions(port, project).reserveApplication(requestId, validation.candidate.hash, guard);
     const before = await port.read('operation.json');
     let legacySnapshotHash;
     const intercepted = { ...port, withLock: run => port.withLock(storage => run({ ...storage, replace: async (key, expected, content) => {

@@ -467,7 +467,7 @@ test('an unmarked validated writer retires after the exact preimage was saved by
   assert.equal(await ctx.port.read(writerKey), writer);
 });
 
-test('an unmarked index cannot retire without its exact source and independent writer evidence', async () => {
+test('an unmarked index rejects inconsistent source or a mismatched validated writer', async () => {
   const ctx = await fixture('legacy-index-before-pointer'); await ctx.stop();
   const { operationId, requestId, executor } = ctx.original;
   const retire = () => ctx.journal.observeApplicationWriterSettlement(requestId, guard, executor.hostPid);
@@ -494,6 +494,84 @@ test('an unmarked index cannot retire without its exact source and independent w
   } finally { fs.writeFileSync(abiPath, abi); }
   assert.equal(await ctx.port.read(`recoveries/application-retired-${operationId}.json`), null);
   assert.equal((await retire()).kind, 'indexed-application-retired', 'The verified unchanged source is an alternative to a successor save');
+});
+
+test('an unmarked index without a reservation retires only its exited writer and consumes the original request', async () => {
+  const ctx = await fixture('legacy-index-without-writer');
+  const { operationId, requestId, executor } = ctx.original;
+  const requestHash = (await kernel.hashAbsText(requestId)).slice(7);
+  const indexKey = `recoveries/request-${requestHash}.json`;
+  const snapshotKey = `recoveries/operation-${operationId}.json`;
+  const indexText = await ctx.port.read(indexKey), snapshotText = await ctx.port.read(snapshotKey);
+  const snapshot = JSON.parse(snapshotText), writerKey = `recoveries/application-writer-${requestHash}.json`;
+  assert.equal(await ctx.port.read(writerKey), null);
+  assert.equal(JSON.parse(indexText).sourceStageVersion, undefined);
+  assert.equal(snapshot.sourceStageVersion, undefined);
+  assert.equal(JSON.parse(indexText).snapshotHash, await kernel.hashAbsText(snapshotText));
+  const observer = await openProjectSyncStorage(ctx.project, guard, { timeoutMs: 100 });
+  try {
+    assert.equal((await observer.observeExecutor(executor)).state, 'active');
+    await assert.rejects(new kernel.AbsOperationJournal(observer, ctx.project)
+      .observeApplicationWriterSettlement(requestId, guard, executor.hostPid), { code: 'PROJECT_FILE_BUSY' });
+  } finally { await ctx.stop(); }
+  const uncertainPort = { ...ctx.port, observeExecutor: async () => ({ version: 1, state: 'unknown', reason: 'process-unavailable' }) };
+  assert.equal(await new kernel.AbsOperationJournal(uncertainPort, ctx.project)
+    .observeApplicationWriterSettlement(requestId, guard, executor.hostPid), null);
+
+  const saved = await publishSuccessorSave(ctx.project, ctx.port, 'saved-after-unreserved-original');
+  const retired = await observeAdvancedWriter(ctx, saved);
+  assert.equal(retired.reason, 'legacy-index-exited-writer');
+  assert.equal(retired.legacyWriterHash, undefined);
+  assert.equal(retired.handoffHash, undefined);
+  const original = { kind: snapshot.kind, document: snapshot.document, candidate: snapshot.candidate,
+    application: snapshot.application, disk: saved.disk };
+  const folder = path.join(ctx.project, '.aily/abs-sync/recoveries');
+  const files = fs.readdirSync(folder);
+  await assert.rejects(ctx.journal.begin(original, guard), { code: 'ABS_APPLY_REQUEST_ALREADY_RECORDED' });
+  await assert.rejects(new kernel.OriginalRequestAdmissions(ctx.port, ctx.project)
+    .reserveApplication(requestId, snapshot.candidate.hash, guard), { code: 'PROJECT_ADMISSION_RECEIPT_INVALID' });
+  assert.deepEqual(fs.readdirSync(folder), files, 'Replay cannot create another snapshot');
+  assert.equal(await ctx.port.read(indexKey), indexText);
+  assert.equal(await ctx.port.read(snapshotKey), snapshotText);
+  assert.equal(await ctx.port.read(writerKey), null);
+  assert.equal(JSON.parse(await ctx.port.read('operation.json')).id, saved.ref.operationId);
+  assert.deepEqual(await new kernel.AbsBaselineStore(ctx.port, { projectKey: ctx.project, pageId: 'main' }).captureDisk(), saved.disk);
+});
+
+test('a missing reservation does not let an unmarked index bypass contradictory source or ownership evidence', async () => {
+  const ctx = await fixture('legacy-index-without-writer'); await ctx.stop();
+  const { operationId, requestId, executor } = ctx.original;
+  const retire = () => ctx.journal.observeApplicationWriterSettlement(requestId, guard, executor.hostPid);
+  const testPath = name => path.join(ctx.project, '.aily/abs-sync', name);
+  const requestHash = (await kernel.hashAbsText(requestId)).slice(7);
+  const writerPath = testPath(`recoveries/application-writer-${requestHash}.json`);
+  const snapshotText = await ctx.port.read(`recoveries/operation-${operationId}.json`);
+  for (const key of [`recoveries/application-${operationId}.json`, 'prepared.json', `recoveries/application-commit-${operationId}.json`]) {
+    const file = testPath(key);
+    try {
+      fs.writeFileSync(file, '{}', { flag: 'wx' });
+      assert.equal(await retire(), null, key);
+    } finally { fs.unlinkSync(file); }
+  }
+  const pointer = testPath('operation.json');
+  try {
+    fs.writeFileSync(pointer, JSON.stringify({ version: 1, id: operationId, hash: await kernel.hashAbsText(snapshotText), state: 'pending' }), { flag: 'wx' });
+    assert.equal(await retire(), null);
+  } finally { fs.unlinkSync(pointer); }
+  try {
+    fs.writeFileSync(writerPath, JSON.stringify({ version: 1, kind: 'validated-writer', project: ctx.project, requestId,
+      attachment: ctx.port.attachment, executor, candidateHash: await kernel.hashAbsText('unrelated') }), { flag: 'wx' });
+    assert.equal(await retire(), null, 'A mismatched writer is present, not missing');
+    fs.writeFileSync(writerPath, '{}');
+    await assert.rejects(retire());
+  } finally { fs.unlinkSync(writerPath); }
+  const abiPath = path.join(ctx.project, 'project.abi'), abi = fs.readFileSync(abiPath);
+  try {
+    fs.appendFileSync(abiPath, '\n');
+    assert.equal(await retire(), null);
+  } finally { fs.writeFileSync(abiPath, abi); }
+  assert.equal(await ctx.port.read(`recoveries/application-retired-${operationId}.json`), null);
+  assert.equal((await retire()).kind, 'indexed-application-retired');
 });
 
 test('a metadata repair interrupted again keeps the original ABS writer proof through a newer save', async () => {

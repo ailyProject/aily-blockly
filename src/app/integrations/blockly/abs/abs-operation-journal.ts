@@ -64,7 +64,8 @@ type ApplicationWriterSettlement = {
 } & ({ handoffHash: string; reason?: never }
   | { reason: 'before-source-stage'; handoffHash?: never }
   | LegacyWriterBasis);
-type LegacyWriterBasis = { reason: 'legacy-validated-writer'; legacyWriterHash: string; handoffHash?: never };
+type LegacyWriterBasis = { reason: 'legacy-validated-writer'; legacyWriterHash: string; handoffHash?: never }
+  | { reason: 'legacy-index-exited-writer'; legacyWriterHash?: never; handoffHash?: never };
 export interface LocationOperation {
   operation: AbsOperationSnapshot; pointer: string; snapshot: string;
 }
@@ -76,6 +77,8 @@ const retiredApplicationKey = (id: string) => `recoveries/application-retired-${
 const stageKey = (id: string) => `recoveries/application-${id}.json`;
 const hashNullable = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
 const conflict = () => new AbsSyncError('ABS_OPERATION_CONFLICT', 'A different document operation is retained; inspect it before replacing its recovery snapshot.');
+const applicationAlreadyIndexed = () => new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED',
+  'This exact apply request is retained. Observe its result; it cannot apply the candidate twice.');
 const exitedApplicationWriter = (value?: AbsStorageExecutorObservation): value is AbsCurrentDocumentRecovery['oldWriter'] =>
   value?.version === 1 && value.state === 'exited' && ['system-restarted', 'process-exited', 'process-reused'].includes(value.reason);
 
@@ -359,10 +362,10 @@ export class AbsOperationJournal {
     oldWriter: AbsCurrentDocumentRecovery['oldWriter'], retained: boolean, storage: AbsSyncStorageAccess): Promise<LegacyWriterBasis | null> {
     const { snapshot, validation, original: { executor } } = indexed;
     const admissions = new OriginalRequestAdmissions(this.port, this.project);
-    const matchWriter = () => admissions.matchValidatedApplicationWriter(requestId, validation.candidate.hash, executor, storage);
-    const legacyWriterHash = await matchWriter();
+    const readWriter = () => admissions.inspectIndexedApplicationWriter(requestId, validation.candidate.hash, executor, storage);
+    const writer = await readWriter();
     const noRestoredProof = async () => await storage.read(restoredApplicationKey(snapshot.id)) === null;
-    if (!legacyWriterHash || !await noRestoredProof()) return null;
+    if (!writer || !await noRestoredProof()) return null;
     // A recorded proof survives later saves. Mint one only against the exact
     // source preimage or its verified committed successor, under this lock.
     if (!retained) {
@@ -371,8 +374,12 @@ export class AbsOperationJournal {
         || absJson(await this.port.observeExecutor!(executor)) !== absJson(oldWriter)
         || await storage.read('prepared.json') !== null) return null;
     }
-    if (!await noRestoredProof() || legacyWriterHash !== await matchWriter()) return null;
-    return { reason: 'legacy-validated-writer', legacyWriterHash };
+    if (!await noRestoredProof() || writer.validatedWriterHash !== (await readWriter())?.validatedWriterHash) return null;
+    // The immutable original index consumes this request before any writer can
+    // move the operation pointer. Without a reservation, the exact exited writer
+    // and verified preimage authorize revocation only, leaving the result unknown.
+    return writer.validatedWriterHash === null ? { reason: 'legacy-index-exited-writer' }
+      : { reason: 'legacy-validated-writer', legacyWriterHash: writer.validatedWriterHash };
   }
 
   async findDocumentSave(request: NativeSaveIdentity, assertCurrent: () => void): Promise<NativeSaveOperationRef | null> {
@@ -423,11 +430,15 @@ export class AbsOperationJournal {
     const id = crypto.randomUUID();
     return this.port.withLock(async storage => {
       assertCurrent();
+      let requestKey: string | undefined;
       if (input.application) {
+        const { requestId } = input.application;
         const admissions = new OriginalRequestAdmissions(this.port, this.project);
-        if (await admissions.observe({ operation: 'abs_apply', requestId: input.application.requestId }, storage))
+        if (await admissions.observe({ operation: 'abs_apply', requestId }, storage))
           throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED', 'The original apply request was rejected before starting.');
-        await admissions.assertApplicationWriter(input.application.requestId, input.candidate?.hash, storage);
+        requestKey = await applicationRequestKey(requestId);
+        if (await storage.read(requestKey) !== null) throw applicationAlreadyIndexed();
+        await admissions.assertApplicationWriter(requestId, input.candidate?.hash, storage);
       }
       const previous = await this.previousOperation(storage, assertCurrent);
       const disk = await this.disk(storage);
@@ -440,12 +451,10 @@ export class AbsOperationJournal {
       const text = absJson(record), hash = await hashAbsText(text);
       assertCurrent();
       if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
-      if (record.application) {
-        const key = await applicationRequestKey(record.application.requestId);
-        if (!await storage.replace(key, null, absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,
+      if (requestKey !== undefined && record.application) {
+        if (!await storage.replace(requestKey, null, absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,
           requestId: record.application.requestId,
-          ...(record.sourceStageVersion ? { sourceStageVersion: record.sourceStageVersion } : {}) }))) throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED',
-            'This exact apply request is retained. Observe its result; it cannot apply the candidate twice.');
+          ...(record.sourceStageVersion ? { sourceStageVersion: record.sourceStageVersion } : {}) }))) throw applicationAlreadyIndexed();
       }
       assertCurrent();
       if (!await storage.replace(currentKey, previous === null ? null : await hashAbsText(previous),
