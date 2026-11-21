@@ -10,7 +10,7 @@ import type { HistoryEnvironmentPlan } from '../history-environment';
 import { settleLinkedProjectEnvironment } from '../environment-settlement';
 import { observeRuntimePublication } from './abs-runtime-publication-observation';
 import { AbsOperationJournal, type NativeSaveOperationRef } from './abs-operation-journal';
-import { assertWorkspaceMigrationWritable, captureWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
+import { assertWorkspaceMigrationWritable, prepareWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
 import { absWorkspaceProtocol } from './abs-workspace-protocol';
 import { AbsApplicationJournal } from './abs-application-journal';
 import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse, nativeSaveAdmissionResponse } from './abs-native-save-result';
@@ -378,7 +378,7 @@ export class AbsWorkspaceSyncService {
         working = this.editor.captureProjectSnapshot(lease);
         check = this.atRevision(context.assertCurrent, lease, working);
       }
-      const migration = await captureWorkspaceMigrationProof(port, working, guard); guard();
+      const migration = await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard)); guard();
       return { ...protocol, migration };
     }, false, true, false, false, true);
   }

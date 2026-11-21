@@ -3,6 +3,10 @@ import { generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
 import { AbsOperationJournal } from './abs-operation-journal';
+import { recoverAbsLocationMetadata } from './abs-baseline-recovery';
+import { sameAbsProjectDirectory } from './abs-project-path';
+
+const nullableHash = (text: string | null) => text === null ? Promise.resolve(null) : hashAbsText(text);
 
 export async function assertWorkspaceMigrationWritable(port: Pick<AbsSyncStoragePort, 'read'>) {
   const text = await port.read('history-workspace.json');
@@ -28,18 +32,60 @@ export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
     if (!snapshot || snapshot.abi === null || !await store.matchesAcceptedDisk(snapshot, { ...disk, abs: snapshot.projection.abs })
       || committed === null || prepared !== null || await new AbsOperationJournal(scoped, port.attachment.root).inspect())
       throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
-    const nullable = (text: string | null) => text === null ? Promise.resolve(null) : hashAbsText(text);
     const accepted = (await generationEvidence(snapshot.projection, snapshot.abi)).binding;
-    const expected = { abiHash: await nullable(disk.abi), absHash: await nullable(disk.abs), mapHash: await nullable(disk.map),
+    const expected = { abiHash: await nullableHash(disk.abi), absHash: await nullableHash(disk.abs), mapHash: await nullableHash(disk.map),
       committedHash: await hashAbsText(committed), preparedHash: null };
     if (snapshot.pointerHash !== expected.committedHash) throw new AbsSyncError('ABS_BASELINE_STALE', 'The accepted head changed during migration preparation.');
     assertCurrent();
     return { version: 1 as const, attachment: port.attachment,
-      modeBefore: { text: mode, hash: await nullable(mode) },
+      modeBefore: { text: mode, hash: await nullableHash(mode) },
       accepted: { version: 1 as const, attachment: port.attachment, accepted, committedHash: expected.committedHash },
       host: { expected, workingRevision: working.revision, workingDocumentHash: await hashAbsText(absJson(working.document)),
         author: { hash: expected.absHash, bytes: disk.abs === null ? null : new TextEncoder().encode(disk.abs).byteLength } } };
   });
+}
+
+/** Rebind only an otherwise verified saved generation before issuing its proof.
+ * Fence every recovery write against the observed original inputs. */
+export async function prepareWorkspaceMigrationProof(port: AbsSyncStoragePort,
+  working: { revision: number; document: unknown }, assertCurrent: () => void) {
+  const original = await captureWorkspaceMigrationProof(port, working, assertCurrent);
+  const { root } = original.attachment, binding = original.accepted.accepted;
+  const windows = /^[A-Za-z]:[/\\]|^\\\\/.test(root);
+  if (await sameAbsProjectDirectory(binding.scope.projectKey, root, undefined, windows)) return original;
+
+  const scope = { projectKey: root, pageId: binding.scope.pageId };
+  const expected = original.host.expected;
+  const recoveryPort: AbsSyncStoragePort = { ...port, withLock: operation => port.withLock(async storage => {
+    const scoped = { ...port, read: key => storage.read(key) };
+    await assertWorkspaceMigrationWritable(scoped);
+    if (await storage.read('workspace-mode.json') !== original.modeBefore.text || await storage.read('prepared.json') !== null
+      || await nullableHash(await storage.read('committed.json')) !== expected.committedHash
+      || await nullableHash(await storage.read('project.abi')) !== expected.abiHash
+      || await nullableHash(await storage.read('project.abs')) !== expected.absHash
+      || await nullableHash(await storage.read('project.abs.map.json')) !== expected.mapHash
+      || await new AbsOperationJournal(scoped, root).inspect()) {
+      throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_OBSERVATION_STALE', 'Migration location repair no longer matches the observed project.');
+    }
+    assertCurrent();
+    return operation(storage);
+  }) };
+  await recoverAbsLocationMetadata(recoveryPort, scope, assertCurrent);
+  const repaired = await captureWorkspaceMigrationProof(port, working, assertCurrent);
+  const rebound = repaired.accepted.accepted;
+  if (!await sameAbsProjectDirectory(rebound.scope.projectKey, root, undefined, windows)
+    || absJson(repaired.attachment) !== absJson(original.attachment) || repaired.modeBefore.hash !== original.modeBefore.hash
+    || rebound.scope.pageId !== binding.scope.pageId || rebound.abiHash !== binding.abiHash || rebound.absHash !== binding.absHash) {
+    throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration could not verify the accepted program at its current project location.');
+  }
+  if (absJson(repaired.host.author) !== absJson(original.host.author)) {
+    const draft = await new AbsBaselineStore(port, scope).readArchivedDraft(rebound.generation);
+    if (draft.baseGeneration !== binding.generation || draft.hash !== original.host.author.hash || draft.bytes !== original.host.author.bytes) {
+      throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration could not verify the original author draft was retained.');
+    }
+  }
+  assertCurrent();
+  return repaired;
 }
 
 /** The renderer verifies semantic accepted bytes; native selection separately

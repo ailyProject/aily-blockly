@@ -4833,6 +4833,17 @@ describe('v2 actual workspace generation coordinator', () => {
 
   describe('S4 default project authoring readiness', () => {
     const savedCanvas = () => disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+    const foreignBaseline = async () => {
+      const foreign = { ...scope, projectKey: 'D:/original' }, store = new AbsBaselineStore(port, foreign);
+      const document = editor.captureProjectSnapshot().document, abi = absJson(document), generation = 's4-foreign';
+      const projection = await createAbsProjection(composeBlocklyPage(document, foreign.pageId), { document,
+        scope: foreign, generation, baselineRef: absBaselineKey(generation), savedAbiHash: await hashAbsText(abi) });
+      await store.stage({ projection, mode: 'import', abi, inputAbs: projection.abs, expected: await store.captureDisk() });
+      await store.commit(generation, () => {}, async (text, hash, storage) => {
+        expect(await storage.replace('project.abi', hash, text)).toBeTrue();
+      });
+      return { document, abi, generation, source: projection.abs };
+    };
     it('bootstraps only a pristine saved canvas through the existing publisher before preparing migration', async () => {
       savedCanvas(); const originalAbi = disk.get('project.abi'), root = roots();
       const prepared = await service.prepareWorkspaceModeMigration();
@@ -4878,6 +4889,58 @@ describe('v2 actual workspace generation coordinator', () => {
       await expectAsync(service.prepareWorkspaceModeMigration()).toBeRejectedWithError('injected write failure');
       expect(disk.has('workspace-mode.json')).toBeFalse(); expect(disk.has('project.abs')).toBeFalse();
       expect(gate.busy).toBeFalse();
+    });
+    it('rebinds a verified moved project before its first proof and keeps the exact original draft', async () => {
+      const original = await foreignBaseline(), draft = '\uFEFF' + original.source + '\r\n# retained draft\r\n';
+      const originalGeneration = disk.get(absBaselineKey(original.generation));
+      disk.set('project.abs', draft);
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue(); expect(prepared.migrationDeferred).toBeUndefined();
+      const binding = prepared.migration.accepted.accepted;
+      expect(binding.scope).toEqual(scope); expect(binding.generation).not.toBe(original.generation);
+      expect(prepared.migration.host.expected.committedHash).toBe(await hashAbsText(disk.get('committed.json')!));
+      expect(prepared.migration.host.workingDocumentHash).toBe(await hashAbsText(absJson(original.document)));
+      const store = new AbsBaselineStore(port, scope), retained = await store.readArchivedDraft(binding.generation);
+      expect(retained.baseGeneration).toBe(original.generation); expect(retained.abs).toBe(draft);
+      expect(retained.hash).toBe(await hashAbsText(draft));
+      expect(disk.get(absBaselineKey(original.generation))).toBe(originalGeneration);
+      expect(disk.get('project.abi')).toBe(original.abi); expect(disk.has('workspace-mode.json')).toBeFalse();
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+
+      const after = [...disk];
+      expect(await service.prepareWorkspaceModeMigration()).toEqual(prepared);
+      expect([...disk]).toEqual(after);
+    });
+    it('does not rebind a moved project with an unverified saved program or a prepared History migration', async () => {
+      const original = await foreignBaseline();
+      disk.set('project.abi', original.abi.replace('"TEXT":"before"', '"TEXT":"elsewhere"'));
+      const competing = [...disk];
+      await expectAsync(service.prepareWorkspaceModeMigration())
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_CONFLICT' }));
+      expect([...disk]).toEqual(competing);
+
+      disk.set('project.abi', original.abi);
+      disk.set('history-workspace.json', absJson({ executionMigration: { phase: 'prepared' } }));
+      const pending = [...disk];
+      await expectAsync(service.prepareWorkspaceModeMigration())
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_PENDING' }));
+      expect([...disk]).toEqual(pending);
+    });
+    it('leaves a newer author draft untouched when the migration observation changes before recovery', async () => {
+      const original = await foreignBaseline(), competing = original.source + '\n# concurrent author draft';
+      const expected = [...disk];
+      const fs = window['fs'], open = fs.openProjectSyncStorage.bind(fs);
+      let locks = 0;
+      fs.openProjectSyncStorage = async (path, check) => {
+        const access = await open(path, check);
+        return { ...access, withLock: operation => {
+          if (++locks === 2) disk.set('project.abs', competing);
+          return access.withLock(operation);
+        } };
+      };
+      await expectAsync(service.prepareWorkspaceModeMigration())
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_OBSERVATION_STALE' }));
+      expect([...disk]).toEqual(expected.map(([key, text]) => [key, key === 'project.abs' ? competing : text]));
     });
   });
 
