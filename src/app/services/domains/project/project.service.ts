@@ -1063,7 +1063,8 @@ export class ProjectService {
 
   private projectActivationSubject = new Subject<ProjectActivationEvent>();
   projectActivation$ = this.projectActivationSubject.asObservable();
-  private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease; startupRestore?: string } | null = null;
+  private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease;
+    startupRestore?: string; startupPreparation?: AbortController } | null = null;
   private projectNavigationIntentRevision = 0;
   private closedRestartSession?: { project: string; sessionId: string };
   private readonly projectLifecycle = new ProjectLifecycleGate();
@@ -2058,11 +2059,13 @@ export class ProjectService {
     }
     catch (error) { this.message.warning((error as Error).message); return false; }
     let session: ProjectDependencySession | undefined;
-    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }).catch(error => {
+    const startupPreparation = startupRestore ? new AbortController() : undefined;
+    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }, startupPreparation?.signal).catch(error => {
       if (startupRestore && (error as { code?: string })?.code === 'PROJECT_STARTUP_OPEN_SUPERSEDED') return false;
+      if (startupPreparation?.signal.aborted && error === startupPreparation.signal.reason) return false;
       throw error;
     });
-    const task = { path: projectPath, paths, promise, lease, startupRestore };
+    const task = { path: projectPath, paths, promise, lease, startupRestore, startupPreparation };
     this.projectOpenTask = task;
     const release = () => {
       task.lease.release();
@@ -2094,7 +2097,9 @@ export class ProjectService {
 
   private beginExplicitNavigation(): number {
     if (!this.projectNavigationIntentRevision) window['projectLock']?.cancelStartupRestore?.();
-    return ++this.projectNavigationIntentRevision;
+    const revision = ++this.projectNavigationIntentRevision;
+    this.projectOpenTask?.startupPreparation?.abort();
+    return revision;
   }
 
   async rebuildBlocklyRuntimeAfterLibraryChange(projectPath = this.currentProjectPath, assertOwner?: () => void): Promise<void> {
@@ -2354,7 +2359,8 @@ export class ProjectService {
     });
   }
 
-  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}, onPreparation?: (session: ProjectDependencySession) => void): Promise<boolean> {
+  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {},
+    onPreparation?: (session: ProjectDependencySession) => void, startupSignal?: AbortSignal): Promise<boolean> {
     const previousProjectPath = this.currentProjectPath;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
     const isSwitchingProject = !!previousProjectPath
@@ -2629,7 +2635,7 @@ export class ProjectService {
       const guard = () => { this.assertProjectDependencySession(session); assertStartup(); };
       if (!preparedSession && abiIsExist) {
         guard();
-        await this.application.settleEnvironmentBeforeOpen?.(projectPath, guard);
+        await this.application.settleEnvironmentBeforeOpen?.(projectPath, guard, startupSignal);
         guard();
       }
       if (!creation && !startup) this.beginBlocklyProjectLoad(projectPath);

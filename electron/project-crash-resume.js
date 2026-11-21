@@ -12,6 +12,10 @@ const key = value => process.platform === 'win32' ? path.resolve(value).toLowerC
 const fault = (code, message) => Object.assign(new Error(message), { code });
 const positivePid = value => Number.isSafeInteger(value) && value > 0;
 const validCreation = value => typeof value === 'string' && /^(?:win32|linux):\d+$/.test(value);
+const identifiedExecutor = value => value?.version === 1 && positivePid(value.hostPid) && value.hostPid === value.storagePid
+  && typeof value.instanceId === 'string' && value.instanceId.length >= 8
+  && (value.processIdentity === null || validCreation(value.processIdentity))
+  && (value.bootId === null || typeof value.bootId === 'string');
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(name => [name, canonical(value[name])])) : value;
 const uuid4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -66,10 +70,7 @@ function createProjectCrashResume(options) {
   let storageIdentity;
   const currentExecutor = () => {
     const value = typeof options.executor === 'function' ? options.executor() : options.executor || storageExecutor();
-    if (value?.version !== 1 || !positivePid(value.hostPid) || value.hostPid !== value.storagePid
-      || typeof value.instanceId !== 'string' || value.instanceId.length < 8
-      || value.processIdentity !== null && !validCreation(value.processIdentity)
-      || value.bootId !== null && typeof value.bootId !== 'string') {
+    if (!identifiedExecutor(value)) {
       throw fault('PROJECT_CRASH_RESUME_EXECUTOR_INVALID', 'Only the identified main executor may record crash navigation.');
     }
     return { version: 1, hostPid: value.hostPid, storagePid: value.storagePid,
@@ -135,12 +136,17 @@ function createProjectCrashResume(options) {
       || (data.closed === true ? data.project !== null || data.navigation?.navigationRequest?.operation !== closedOperation
         : data.navigation && data.navigation.navigationRequest?.operation !== 'project_open')
       || data.closedRecovery !== undefined && (data.closedRecovery !== true || data.closed !== true)
-      || executor?.version !== 1 || !positivePid(executor.hostPid) || executor.hostPid !== executor.storagePid
-      || typeof executor.instanceId !== 'string' || executor.instanceId.length < 8
-      || executor.processIdentity !== null && !validCreation(executor.processIdentity)
-      || executor.bootId !== null && typeof executor.bootId !== 'string'
+      || !identifiedExecutor(executor)
       || data.creation !== undefined && (!data.creation || !same(readCreation(data.creation), data.creation))
       || data.navigation !== undefined && !same(readProjectNavigationRecovery(data.navigation), data.navigation)
+      || data.retainedNavigation !== undefined && (data.closed
+        || data.retainedNavigation?.navigationRequest?.operation !== 'project_open'
+        || !same(readProjectNavigationRecovery(data.retainedNavigation), data.retainedNavigation))
+      || data.pendingNavigation !== undefined && (data.closed
+        || data.pendingNavigation?.navigationRequest?.operation !== 'project_open'
+        || !same(readProjectNavigationRecovery(data.pendingNavigation), data.pendingNavigation)
+        || data.pendingNavigation.originalTargetPid !== executor.hostPid
+        || !sameProject(data.pendingNavigation.navigationRequest.sourceProject, data.project))
       || data.viewId !== undefined && !uuid4.test(data.viewId)) {
       throw fault('PROJECT_CRASH_RESUME_RECORD_INVALID', 'Navigation metadata has invalid identity or checksum.');
     }
@@ -209,7 +215,34 @@ function createProjectCrashResume(options) {
     if (!reference) return null;
     const file = navigationFile(store, reference.navigationRequest.requestId), stored = readFile(file);
     if (!stored || !same(stored.record.reference, reference)) return null;
+    const { executor, activationSuperseded, executorExited, activation } = stored.record;
+    if (executor !== undefined && (!identifiedExecutor(executor) || executor.hostPid !== reference.originalTargetPid)
+      || activationSuperseded !== undefined && (activationSuperseded !== true || !activation)
+      || executorExited !== undefined && executorExited !== true) return null;
     return { ...stored, file };
+  };
+  const retireActivation = (store, cursor) => {
+    const stored = getNavigation(store, cursor?.navigation);
+    const activation = stored?.record.activation;
+    if (!activation || stored.record.activationSuperseded || cursor.closedRecovery) return;
+    const attachment = activation.state === 'open' ? activation.attachment : stored.record.sourceAttachment;
+    if (!same(cursor.attachment, attachment) || !testAttachment(attachment)) return;
+    // Revoke the prior activation inside the navigation lock before selecting
+    // another view. Its business result remains independently writable.
+    writeFile(store, stored, { ...stored.record, activationSuperseded: true }, stored.file,
+      () => assertPhysical(attachment));
+  };
+  const retireExecutor = (store, stored) => {
+    const { executor, executorExited, reference } = stored.record;
+    if (executorExited) return;
+    const observer = currentExecutor();
+    // Legacy intents named their original PID but lacked the boot/process
+    // identity. A positively absent PID proves exit; a reused PID does not.
+    const exited = executor ? !same(executor, observer) && ownerState(executor) === 'exited'
+      : observer.hostPid !== reference.originalTargetPid && processState(reference.originalTargetPid) === false;
+    if (!exited) return;
+    writeFile(store, stored, { ...stored.record, executorExited: true }, stored.file);
+    stored.record.executorExited = true;
   };
   const matchesView = (cursor, project, reference, attachment) => {
     if (!cursor || !same(cursor.navigation, reference) || !same(cursor.attachment, attachment)) return false;
@@ -218,10 +251,10 @@ function createProjectCrashResume(options) {
     return same(cursor.executor, executor) && sameProject(cursor.project, project);
   };
   const retainedClosedSource = (cursor, reference, stored) => {
-    const { sourceAttachment, activation } = stored?.record ?? {};
+    const { sourceAttachment, activation, executorExited } = stored?.record ?? {};
     if (!cursor?.closedRecovery || !same(cursor.navigation, reference) || !ownsCursor(cursor, currentExecutor())
       || !same(cursor.attachment, sourceAttachment) || !testAttachment(sourceAttachment)
-      || activation?.state !== 'open' || !testAttachment(activation.attachment)) return;
+      || (activation ? activation.state !== 'open' || !testAttachment(activation.attachment) : !executorExited)) return;
     return { project: sourceAttachment.root };
   };
   const inspectNavigation = (store, cursor, project, reference) => {
@@ -232,14 +265,19 @@ function createProjectCrashResume(options) {
       ? { ok: true, operation: 'project_close', project: null } : undefined);
     const attachment = activation?.state === 'open' ? activation.attachment : sourceAttachment;
     if (attachment && !testAttachment(attachment)) return { ok: true, activationCurrent: false, reason: 'attachment-mismatch' };
-    const activationCurrent = !!activation && !cursor?.closedRecovery && matchesView(cursor, project, reference, attachment);
+    retireExecutor(store, stored);
+    const { activationSuperseded, executorExited } = stored.record;
+    const activationCurrent = !!activation && !activationSuperseded && !cursor?.closedRecovery && matchesView(cursor, project, reference, attachment);
     const resumeSource = project === null ? retainedClosedSource(cursor, reference, stored) : undefined;
     const replaced = !!activation && !same(cursor?.navigation, reference) && !!cursor?.viewId
       && testAttachment(cursor.attachment) && (project === null && cursor.closed && ownsCursor(cursor, currentExecutor())
         || sameProject(cursor.project, project) && same(cursor.executor, currentExecutor()));
-    const activationDisposition = activationCurrent ? 'current' : replaced || resumeSource ? 'superseded' : 'unconfirmed';
+    const activationDisposition = activationCurrent ? 'current' : activationSuperseded || replaced || (resumeSource && activation)
+      ? 'superseded' : 'unconfirmed';
+    const retiredReason = activationSuperseded ? 'activation-superseded' : executorExited ? 'executor-exited' : undefined;
     return { ok: true, activationCurrent, activationDisposition, ...(activationCurrent ? { activationViewId: cursor.viewId } : {}),
       ...(resumeSource ? { resumeSource } : {}),
+      ...(retiredReason ? { writerDisposition: { version: 1, state: 'retired', reason: retiredReason } } : {}),
       navigationReceipt: { ...reference.navigationRequest, state: result ? result.ok ? 'completed' : 'failed' : 'pending',
         ...(activation ? { activation } : {}), ...(sourceAttachment ? { sourceAttachment } : {}) },
       ...(result ? { result } : {}) };
@@ -268,7 +306,7 @@ function createProjectCrashResume(options) {
   };
 
   return {
-    record(project, { creation, createdAttachment, restore } = {}) {
+    record(project, { creation, createdAttachment, restore, explicit = false } = {}) {
       return run(true, (store, previous) => {
         if (typeof project !== 'string' || !path.isAbsolute(project)) throw fault('PROJECT_CRASH_RESUME_PROJECT_INVALID', 'Expected an exact absolute project.');
         const physical = files.realpathSync(project);
@@ -289,10 +327,23 @@ function createProjectCrashResume(options) {
           && same(restore.navigation, prior.navigation) && same(restore.executor, prior.executor)
           && same(restore.attachment, prior.attachment);
         const sameView = !prior?.closed && same(prior?.attachment, attachment);
-        const navigation = !activation && sameView && (sameOwner || navigationResumed) ? prior.navigation : undefined;
-        const viewId = sameView && sameOwner && !activation ? prior.viewId ?? randomUUID() : randomUUID();
+        const navigation = !activation && !explicit && sameView && (sameOwner || navigationResumed) ? prior.navigation : undefined;
+        let retainedNavigation = prior?.retainedNavigation;
+        if (prior?.navigation && !navigation && prior.resumedNavigation && !prior.navigationAcknowledged
+          && !getNavigation(store, prior.navigation)?.record.result) retainedNavigation ??= prior.navigation;
+        if (prior?.pendingNavigation && !sameOwner) {
+          const interrupted = getNavigation(store, prior.pendingNavigation);
+          if (interrupted && !interrupted.record.activation && !interrupted.record.result
+            && same(interrupted.record.executor, prior.executor)) {
+            retireExecutor(store, interrupted);
+            if (interrupted.record.executorExited) retainedNavigation ??= prior.pendingNavigation;
+          }
+        }
+        const viewId = sameView && sameOwner && !activation && !explicit ? prior.viewId ?? randomUUID() : randomUUID();
         const data = { version: 1, profile, project: physical, attachment, executor, viewId,
           ...(original ? { creation: original } : {}), ...(navigation ? { navigation } : {}),
+          ...(!activation && retainedNavigation ? { retainedNavigation } : {}),
+          ...(!activation && sameOwner && sameView && !explicit && prior.pendingNavigation ? { pendingNavigation: prior.pendingNavigation } : {}),
           ...(navigation && (navigationResumed || sameOwner && prior.resumedNavigation === true) ? { resumedNavigation: true } : {}),
           ...(navigation && prior.navigationAcknowledged === true ? { navigationAcknowledged: true } : {}) };
         if (previous && same(previous.record, data)) {
@@ -300,6 +351,7 @@ function createProjectCrashResume(options) {
           return { ok: true, recorded: false, project: physical, reason: 'unchanged', activationViewId: viewId };
         }
         rememberCreation(store, prior);
+        if (!same(prior?.navigation, navigation)) retireActivation(store, prior);
         write(store, previous, data);
         if (activation) rememberCreation(store, data);
         return { ok: true, recorded: true, project: physical, activationViewId: viewId,
@@ -318,12 +370,18 @@ function createProjectCrashResume(options) {
         const file = navigationFile(store, request.requestId), old = readFile(file), previous = old?.record;
         if (old && (!same(previous.reference, reference) || !same(previous.sourceAttachment, sourceAttachment)))
           throw fault('PROJECT_NAVIGATION_REQUEST_REUSED', 'The original navigation identity changed.');
-        if (previous?.result || previous?.activation && (!activation || !same(previous.activation, activation)))
+        if (previous?.result || previous?.activationSuperseded || previous?.executorExited
+          || previous?.activation && (!activation || !same(previous.activation, activation)))
           return { ok: false, code: 'PROJECT_NAVIGATION_REQUEST_REUSED' };
-        const data = { version: 1, profile, reference, ...(sourceAttachment ? { sourceAttachment } : {}),
+        const data = { version: 1, profile, reference, executor, ...(sourceAttachment ? { sourceAttachment } : {}),
           ...(activation ? { activation } : {}) };
         if (!activation) {
           if (!previous) writeFile(store, old, data, file);
+          const active = cursor?.record;
+          if (request.operation === 'project_open' && active && !active.closed && same(active.executor, executor)
+            && sameProject(active.project, request.sourceProject) && same(active.attachment, sourceAttachment)
+            && !same(active.pendingNavigation, reference))
+            write(store, cursor, { ...active, pendingNavigation: reference });
           return { ok: true };
         }
         const open = request.operation === 'project_open' && activation.state === 'open';
@@ -341,6 +399,7 @@ function createProjectCrashResume(options) {
         if (!previous?.activation) writeFile(store, old, data, file, () => assertPhysical(attachment));
         if (same(active?.navigation, reference)) return { ok: true, activationViewId: active.viewId };
         rememberCreation(store, active);
+        retireActivation(store, active);
         const viewId = randomUUID();
         write(store, cursor, { version: 1, profile, project, attachment, executor, viewId, navigation: reference,
           ...(!open ? { closed: true } : {}) });
@@ -385,7 +444,7 @@ function createProjectCrashResume(options) {
       if (!reference || !sameProject(project, reference.navigationRequest.sourceProject)) return false;
       const observed = this.observeNavigation(null, reference);
       if (reference.navigationRequest.operation === 'project_open')
-        return observed.activationDisposition === 'superseded' && sameProject(observed.resumeSource?.project, project);
+        return observed.writerDisposition?.state === 'retired' && sameProject(observed.resumeSource?.project, project);
       return observed.activationCurrent === true && observed.navigationReceipt?.state === 'completed';
     },
     async observeClosedWorkspaceProtocol(project, value, currentView, read) {
@@ -461,14 +520,17 @@ function createProjectCrashResume(options) {
         if (project !== undefined && !sameProject(project, record.project))
           return { ok: true, cleared: false, reason: 'different-project' };
         rememberCreation(store, record);
-        if (retainInterruptedSource && record.resumedNavigation && !record.navigationAcknowledged && !record.closed) {
-          const stored = getNavigation(store, record.navigation)?.record;
+        retireActivation(store, record);
+        const recovery = record.retainedNavigation ?? (record.resumedNavigation && !record.navigationAcknowledged ? record.navigation : undefined);
+        if (retainInterruptedSource && recovery && !record.closed) {
+          const stored = getNavigation(store, recovery)?.record;
           const attachment = stored?.sourceAttachment;
-          if (stored && !stored.result && stored.activation?.state === 'open' && same(stored.activation.attachment, record.attachment)
-            && testAttachment(record.attachment) && testAttachment(attachment)) {
+          if (stored && !stored.result && (stored.activation?.state === 'open'
+            ? stored.activationSuperseded && testAttachment(stored.activation.attachment)
+            : stored.executorExited) && testAttachment(record.attachment) && testAttachment(attachment)) {
             write(store, previous, { version: 1, profile, project: null, attachment, executor,
-              viewId: randomUUID(), navigation: record.navigation, closed: true, closedRecovery: true });
-            return { ok: true, cleared: true, closedSession: { project: attachment.root, sessionId: record.navigation.sessionId } };
+              viewId: randomUUID(), navigation: recovery, closed: true, closedRecovery: true });
+            return { ok: true, cleared: true, closedSession: { project: attachment.root, sessionId: recovery.sessionId } };
           }
         }
         assertCurrent(store, previous); files.unlinkSync(store.file);

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { createProjectCrashResume } = require('../../electron/project-crash-resume');
@@ -255,8 +255,89 @@ test('a new project supersedes unfinished activation and cannot inherit the orig
   assert.equal(historical.activationDisposition, 'superseded');
   assert.equal(historical.navigationReceipt.state, 'pending');
   assert.equal(historical.resumeSource, undefined);
-  assert.equal(next.observeNavigation(destination, reference).activationDisposition, 'unconfirmed');
+  const repeated = next.observeNavigation(destination, reference);
+  assert.equal(repeated.activationDisposition, 'superseded', 'a different reader view cannot undo retirement');
+  assert.equal(repeated.activationCurrent, false);
   assert.equal(next.canReopenFrom(reference, f.project), false);
+});
+
+test('the original interrupted source survives switch and close without reusing the old activation', () => {
+  const { f, next, reference, destination } = interruptedOpen('switch-close-unfinished-restart');
+  const selected = path.join(f.folder, 'selected'); fs.mkdirSync(selected);
+  const draft = path.join(f.project, 'project.abs');
+  fs.writeFileSync(draft, 'retained exact draft');
+  assert.equal(next.record(selected).ok, true);
+  assert.equal(next.observeNavigation(selected, reference).resumeSource, undefined);
+  assert.equal(next.clear(selected, { retainInterruptedSource: true }).cleared, true);
+  const blank = next.observeNavigation(null, reference);
+  assert.equal(blank.activationDisposition, 'superseded');
+  assert.equal(blank.activationCurrent, false);
+  assert.deepEqual(blank.writerDisposition, { version: 1, state: 'retired', reason: 'activation-superseded' });
+  assert.equal(blank.navigationReceipt.state, 'pending');
+  assert.equal(blank.result, undefined);
+  assert.deepEqual(blank.resumeSource, { project: f.project });
+  assert.deepEqual(next.closedSessionHint(), { project: f.project, sessionId: reference.sessionId });
+  const latest = f.make(owner(41003));
+  assert.equal(latest.canReopenFrom(reference, f.project), true);
+  assert.equal(latest.canReopenFrom(reference, destination), false);
+  assert.equal(latest.canReopenFrom({ ...reference, sessionId: randomUUID() }, f.project), false);
+  assert.equal(latest.record(selected).ok, true);
+  assert.equal(latest.clear(selected, { retainInterruptedSource: true }).cleared, true);
+  const historical = latest.observeNavigation(null, reference);
+  assert.deepEqual(historical.writerDisposition, blank.writerDisposition);
+  assert.equal(historical.activationDisposition, 'superseded');
+  assert.equal(historical.resumeSource, undefined, 'leaving the retained blank view must not recreate its authority');
+  assert.equal(fs.readFileSync(draft, 'utf8'), 'retained exact draft');
+});
+
+test('an original navigation without activation retires independently when its executor exits', () => {
+  const f = fixture('intent-executor-exit'), original = owner(), first = f.make(original);
+  const targetProject = path.join(f.folder, 'destination'); fs.mkdirSync(targetProject);
+  const reference = { version: 1, originalTargetPid: original.hostPid, originalInstanceId: original.instanceId,
+    sessionId: randomUUID(), navigationRequest: { version: 1, requestId: randomUUID(),
+      rendererGeneration: 7, deadlineAt: Date.now() + 300_000, operation: 'project_open',
+      sourceProject: f.project, targetProject } };
+  assert.equal(first.record(f.project).ok, true);
+  assert.equal(first.recordNavigation(reference, null, rootAttachment(f.project)).ok, true);
+  const olderLive = f.make(owner(41002), { processState: () => true });
+  assert.equal(olderLive.observeNavigation(f.project, reference).writerDisposition, undefined);
+  const next = f.make(owner(41002));
+  const exited = next.observeNavigation(f.project, reference);
+  assert.equal(exited.navigationReceipt.state, 'pending');
+  assert.equal(exited.navigationReceipt.activation, undefined);
+  assert.equal(exited.result, undefined);
+  assert.deepEqual(exited.writerDisposition, { version: 1, state: 'retired', reason: 'executor-exited' });
+  assert.equal(next.observeNavigation(null, { ...reference, sessionId: randomUUID() }).writerDisposition, undefined);
+  assert.deepEqual(olderLive.observeNavigation(f.project, reference).writerDisposition, exited.writerDisposition,
+    'a previously proven exit must survive future process observation changes');
+  assert.equal(next.record(targetProject).ok, true);
+  assert.equal(next.clear(targetProject, { retainInterruptedSource: true }).cleared, true);
+  assert.equal(next.observeNavigation(null, reference).activationDisposition, 'unconfirmed');
+  assert.deepEqual(next.observeNavigation(null, reference).resumeSource, { project: f.project });
+  assert.equal(next.canReopenFrom(reference, f.project), true);
+});
+
+test('a legacy navigation intent retires when its original PID is positively absent', () => {
+  const f = fixture('legacy-intent-executor-exit'), original = owner(), first = f.make(original);
+  const targetProject = path.join(f.folder, 'destination'); fs.mkdirSync(targetProject);
+  const requestId = randomUUID(), reference = { version: 1, originalTargetPid: original.hostPid,
+    originalInstanceId: original.instanceId, sessionId: randomUUID(), navigationRequest: { version: 1, requestId,
+      rendererGeneration: 7, deadlineAt: Date.now() + 300_000, operation: 'project_open',
+      sourceProject: f.project, targetProject } };
+  assert.equal(first.record(f.project).ok, true);
+  assert.equal(first.recordNavigation(reference, null, rootAttachment(f.project)).ok, true);
+  const profiles = path.join(f.stateDirectory, 'project-crash-resume');
+  const file = path.join(profiles, fs.readdirSync(profiles)[0], `navigation-${requestId}.json`);
+  const { executor: _newFormat, checksum: _hash, ...legacy } = JSON.parse(fs.readFileSync(file));
+  const ordered = JSON.stringify(legacy, (_key, value) => value && typeof value === 'object'
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
+  fs.writeFileSync(file, JSON.stringify({ ...legacy, checksum: createHash('sha256').update(ordered).digest('hex') }));
+  const reused = f.make(owner(41002), { processState: () => true, processIdentity: () => 'win32:99999' });
+  assert.equal(reused.observeNavigation(f.project, reference).writerDisposition, undefined);
+  const absent = f.make(owner(41002)).observeNavigation(f.project, reference);
+  assert.equal(absent.navigationReceipt.state, 'pending');
+  assert.deepEqual(absent.writerDisposition, { version: 1, state: 'retired', reason: 'executor-exited' });
+  assert.equal(absent.resumeSource, undefined);
 });
 
 test('a completed creation remains observable after the active cursor is cleared or replaced', () => {

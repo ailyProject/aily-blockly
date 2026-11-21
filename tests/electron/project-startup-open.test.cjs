@@ -3,8 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 const { createProjectStartupOpen } = require('../../electron/project-open-path');
-const { bridgeFixture } = require('./fixtures/bootstrap-host-source.cjs');
+const { bridgeFixture, sourceClass } = require('./fixtures/bootstrap-host-source.cjs');
 
 const restored = path.resolve('restored');
 const explicit = path.resolve('explicit');
@@ -88,5 +89,73 @@ for (const project of [explicit, restored]) {
     assert.deepEqual(loading, [project]);
     assert.equal(current.project, project);
     assert.equal(domain.recoveredCreateSession, undefined);
+  });
+}
+
+for (const action of ['close', 'switch', 'switch-twice', 'same-project']) {
+  test(`cold environment observation releases its original owner before ${action}`, async () => {
+    const { domain, window } = bridgeFixture('');
+    const startup = createProjectStartupOpen(), request = startup.stage(record);
+    assert.equal(startup.dispatch(request, 3), true);
+    const entered = Promise.withResolvers(), oldReply = Promise.withResolvers();
+    const releases = [], retired = [], activations = [], closes = [];
+    let oldPreparation = true;
+    const Closed = sourceClass('src/app/services/domains/project/project.service.ts', 'ProjectService', { window }, ['close']);
+    domain.close = Closed.prototype.close;
+    Object.assign(domain, {
+      coderOperationsSubject: { value: new Map() },
+      electronService: { isElectron: true, exists: () => true },
+      ensureProjectModeAllowed: async () => true,
+      rememberDependencyBackend: session => session,
+      assertProjectDependencySession: () => {},
+      dependencyLifecycle: {
+        isStopping: () => false, get: () => undefined, beginPreparation: target => ({ target }),
+        finishPreparation: () => {}, release: session => retired.push(session.target),
+      },
+      router: { url: '/main/guide', navigate: async () => true },
+      beginBlocklyProjectLoad: () => {},
+      waitForProjectOpenCompletion: async () => {},
+      projectActivationSubject: { next: event => activations.push(event.path) },
+      stopProjectCommands: async () => {},
+      discardLibraryChanges: async () => {},
+      closeInternal: async () => { closes.push(true); return true; },
+      application: {
+        hasActiveProjectMutation: () => false,
+        async settleEnvironmentBeforeOpen(target, guard, signal) {
+          if (target !== restored || !oldPreparation) return;
+          oldPreparation = false;
+          entered.resolve();
+          if (!signal) return oldReply.promise;
+          const cancelled = Promise.withResolvers();
+          signal.addEventListener('abort', () => cancelled.reject(signal.reason), { once: true });
+          await Promise.race([oldReply.promise, cancelled.promise]);
+          guard();
+        },
+      },
+    });
+    window.projectLock = {
+      checkStartupRestore: (target, ticket) => startup.isCurrent(ticket, target, 3),
+      cancelStartupRestore: () => startup.invalidate(),
+      tryAcquire: async () => ({ ok: true }),
+      release: async target => releases.push(target),
+      recordActive: async (target, ticket) => {
+        if (ticket) assert.equal(startup.consume(ticket, target, 3), record);
+        return { ok: true, activationViewId: 'chosen' };
+      },
+    };
+    const restoring = domain.projectOpen(restored, { startupRestore: request.startupTicket });
+    await entered.promise;
+    const first = action === 'close' ? domain.close() : domain.projectOpen(action === 'same-project' ? restored : explicit);
+    const chosen = action === 'switch-twice' ? path.resolve('latest') : action === 'same-project' ? restored : explicit;
+    const latest = action === 'switch-twice' ? domain.projectOpen(chosen) : first;
+    try {
+      assert.equal(await Promise.race([latest, delay(250, 'waiting')]), true);
+      assert.equal(await restoring, false);
+      if (latest !== first) assert.equal(await first, false);
+      assert.deepEqual(retired, [restored]);
+      assert.deepEqual(releases, [restored]);
+      assert.deepEqual(activations, action === 'close' ? [] : [chosen]);
+      assert.deepEqual(closes, action === 'close' ? [true] : []);
+    } finally { oldReply.resolve(); }
   });
 }

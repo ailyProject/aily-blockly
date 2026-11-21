@@ -1029,7 +1029,8 @@ function observeOriginalProjectNavigation(operation, params) {
   const activationCurrent = observed.activationCurrent && ready && (!opened || ownsProjectNavigation(opened));
   const activationDisposition = ready && (!opened || ownsProjectNavigation(opened)) ? observed.activationDisposition : 'unconfirmed';
   return { ok: true, operation, rendererGeneration, activationCurrent,
-    activationDisposition, ...(activationDisposition === 'superseded' && observed.resumeSource ? { resumeSource: observed.resumeSource } : {}),
+    activationDisposition, ...(observed.writerDisposition ? { writerDisposition: observed.writerDisposition } : {}),
+    ...(ready && !opened && observed.resumeSource ? { resumeSource: observed.resumeSource } : {}),
     ...(activationCurrent && observed.activationViewId ? { activationViewId: observed.activationViewId } : {}),
     navigationRecovery: { version, originalTargetPid, originalInstanceId, sessionId },
     navigationReceipt: observed.navigationReceipt, result: observed.result };
@@ -3809,7 +3810,7 @@ ipcMain.handle('project-navigation-active', (event, projectPath, startupTicket) 
       || !(restore = startupProjectOpen.consume(startupTicket, projectPath, rendererGeneration)))
       return { ok: false, reason: 'startup-superseded' };
   } else startupProjectOpen.invalidate();
-  const result = projectCrashResumeController()?.record(projectPath, { restore });
+  const result = projectCrashResumeController()?.record(projectPath, { restore, explicit: startupTicket === undefined });
   return result ?? { ok: false, reason: 'navigation-storage-unavailable' };
 });
 ipcMain.handle('project-navigation-created-active', (event, { projectPath, request, recoverySessionId, attachment } = {}) => {

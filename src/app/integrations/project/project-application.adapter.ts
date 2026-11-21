@@ -34,7 +34,7 @@ import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.servi
 import { openAbsHostStorage } from '../blockly/abs/abs-host-storage';
 import { settleAbsProjectTransaction } from '../blockly/abs/abs-project-restart';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
-import { settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
+import { observeOpenEnvironment, settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
 import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
 import { captureBuildSource } from '../../utils/build-publication.utils';
 
@@ -63,14 +63,17 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     return this.blocklyEditorProjectService.publishEnvironmentMutation(project, mutate, request);
   }
 
-  async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void): Promise<void> {
+  async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void, startupSignal?: AbortSignal): Promise<void> {
     // Dependency preparation shares the file lock and refuses an interrupted
     // source transaction even when it has no linked dependency environment.
     if (window['fs']?.projectSyncStorageVersion === 2) {
-      const storage = await openAbsHostStorage(project, assertCurrent);
-      await settleAbsProjectTransaction(storage, storage.attachment?.root ?? project, assertCurrent);
+      const storage = await observeOpenEnvironment(() => openAbsHostStorage(project, assertCurrent), startupSignal);
+      const observed = startupSignal
+        ? { ...storage, read: (key: string) => observeOpenEnvironment(() => storage.read(key), startupSignal) }
+        : storage;
+      await settleAbsProjectTransaction(observed, storage.attachment?.root ?? project, assertCurrent);
     }
-    await settleLinkedProjectEnvironment(project, assertCurrent);
+    await settleLinkedProjectEnvironment(project, assertCurrent, undefined, startupSignal);
   }
 
   async openCoderBoardSelector(projectPath: string): Promise<void> {

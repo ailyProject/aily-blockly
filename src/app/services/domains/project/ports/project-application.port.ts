@@ -83,7 +83,7 @@ export interface ProjectApplicationPort {
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
   /** Host-owned callback only, admitted by the existing durable document publisher. */
   publishBlocklyEnvironmentMutation?(projectPath: string, mutate: (publication: unknown) => Promise<any>, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome>;
-  settleEnvironmentBeforeOpen?(projectPath: string, assertCurrent: () => void): Promise<void>;
+  settleEnvironmentBeforeOpen?(projectPath: string, assertCurrent: () => void, startupSignal?: AbortSignal): Promise<void>;
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean>;
   materializeCoderProjectLibraries(projectPath: string): Promise<void>;
 }
