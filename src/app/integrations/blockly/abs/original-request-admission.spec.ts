@@ -8,7 +8,7 @@ import { hashAbsText } from './abs-identity-map';
 import { nativeSaveIdentity } from './abs-native-save-result';
 import { AbsOperationJournal } from './abs-operation-journal';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
-import { nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
+import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
 
 describe('original project admission settlement', () => {
   const project = '/admission-test';
@@ -185,5 +185,47 @@ describe('original project admission settlement', () => {
       params: { ...params, originalTargetPid: 101 } });
     expect(observed.saveReceipt.state).toBe('unknown');
     expect(observed.result).toBeUndefined();
+  });
+
+  it('reads the original ABS refusal while a different or no project is active', async () => {
+    const admissions = new OriginalRequestAdmissions(port, project);
+    await admissions.reject({ operation: 'abs_apply', requestId }, { code: 'PROJECT_ADMISSION_CONTEXT_STALE', message: 'Original route changed' }, guard);
+    const retained = [...files];
+    const cold = bridge();
+    const request = { operation: 'abs_admission_status', path: project, params: { version: 2, requestId } };
+    for (const active of ['/replacement-canvas', '']) {
+      cold.projectService.currentProjectPathSubject.next(active);
+      expect(await cold.execute(request)).toEqual(jasmine.objectContaining({
+        code: 'PROJECT_ADMISSION_CONTEXT_STALE', operation: 'abs_apply', project,
+        admission: { status: 'NOT_STARTED', requestId }, publication: { status: 'NOT_COMMITTED' },
+        applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false },
+      }));
+    }
+    port = open('9', 222);
+    const copy = await cold.execute(request);
+    expect(copy.publication.status).toBe('UNKNOWN');
+    expect(copy.admission).toBeUndefined();
+    expect([...files]).toEqual(retained);
+  });
+
+  it('cannot settle another ABS writer, an absent original or a request with extra fields', async () => {
+    const cold = bridge();
+    cold.projectService.currentProjectPathSubject.next('/replacement-canvas');
+    const payload = { operation: 'abs_admission_status', path: project, params: { version: 2, requestId } };
+    await expectAsync(cold.execute(payload)).toBeResolvedTo(jasmine.objectContaining({ publication: { status: 'UNKNOWN' } }));
+    files.set(await applicationRequestKey(requestId), 'A writer already owns this request. Do not read its result here.');
+    const snapshot = [...files];
+    const writer = await cold.execute(payload);
+    expect(writer.publication.status).toBe('UNKNOWN');
+    expect(writer.admission).toBeUndefined();
+    const openStorage = spyOn(window['fs'], 'openProjectSyncStorage').and.callThrough();
+    for (const request of [{ ...payload, path: '' }, { ...payload, path: 'relative' },
+      { ...payload, params: { ...payload.params, abs: 'arbitrary source' } }]) {
+      const rejected = await cold.execute(request);
+      expect(rejected.code).toBe('ABS_ADMISSION_STATUS_INVALID');
+      expect(rejected.admission).toBeUndefined();
+    }
+    expect(openStorage).not.toHaveBeenCalled();
+    expect([...files]).toEqual(snapshot);
   });
 });

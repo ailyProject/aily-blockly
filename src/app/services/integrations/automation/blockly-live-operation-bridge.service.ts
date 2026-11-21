@@ -188,6 +188,7 @@ export class BlocklyLiveOperationBridgeService {
     // Deny legacy copy requests before allocating a receipt or destination.
     // File permission approval cannot authorize an internal recovery clone.
     if (payload.operation === 'project_fork') return forkProject(this.projectService, payload.path, payload.params || {});
+    if (payload.operation === 'abs_admission_status') return this.observeApplicationAdmission(payload);
     const blocklyProgram = this.projectService.getProjectMode(payload.path || this.projectService.currentProjectPath) !== 'coder';
     // Bind the original request before the live readiness and mutation gates.
     // Invalid protocol messages cannot acquire an admission record.
@@ -317,6 +318,25 @@ export class BlocklyLiveOperationBridgeService {
     return { project, guard: () => {
       if (!current()) throw Object.assign(new Error('The original request project changed during admission.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
     } };
+  }
+
+  /** Only the immutable pre-writer refusal is readable offscreen. A missing
+   * refusal says nothing about an ABS application or its current canvas. */
+  private async observeApplicationAdmission(payload: BlocklyLiveOperationPayload) {
+    const project = payload.path, { version, requestId } = payload.params ?? {};
+    const unknown = { ok: false, operation: 'abs_apply', project, publication: { status: 'UNKNOWN' } };
+    if (typeof project !== 'string' || !window['path']?.isAbsolute(project) || version !== 2
+      || typeof requestId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(requestId)
+      || Object.keys(payload.params ?? {}).some(key => !['version', 'requestId'].includes(key))) {
+      return { ...unknown, code: 'ABS_ADMISSION_STATUS_INVALID' };
+    }
+    try {
+      const port = await openAbsHostStorage(project, () => {});
+      const record = await new OriginalRequestAdmissions(port, project).observe({ operation: 'abs_apply', requestId });
+      if (record) return observedApplicationAdmission(record);
+    } catch { /* No verified refusal is available for this project. */ }
+    return { ...unknown, code: 'ABS_APPLY_OBSERVATION_UNKNOWN',
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false } };
   }
 
   private async executeBoardEnvironmentSettlement(payload: BlocklyLiveOperationPayload, blocklyProgram: boolean) {

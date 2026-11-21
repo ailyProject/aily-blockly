@@ -27,6 +27,22 @@ test('board settlement never infers its original attachment from the active proj
   assert.equal(routeLiveOperationProject(operation, requested, '/isolated/current').path, requested);
 });
 
+test('ABS admission status routes only the absolute original project regardless of the active view', async () => {
+  const operation = 'abs_admission_status', project = path.resolve('explicit-original');
+  const params = { version: 2, requestId: '00000000-0000-4000-8000-000000000abc' };
+  for (const active of ['different-current-project', '']) {
+    const host = mainRouteFixture(active);
+    await host.handleCliBridgeCommand('blockly-live-operation', { path: project, operation, params });
+    assert.equal(host.calls.length, 1);
+    assert.equal(host.calls[0].path, project);
+    assert.equal(host.calls[0].params, params);
+    assert.equal(host.calls[0].originalAdmissionAttachment, undefined);
+  }
+  assert.deepEqual(routeLiveOperationProject('abs_admission_status', 'relative-source', '/current-project'), {
+    path: '', parameterScoped: true,
+  });
+});
+
 test('ordinary workspace operations retain existing current-project fallback and requirement', () => {
   for (const operation of ['project_fork', 'abs_apply', 'abs_validate', 'project_save', 'project_build', 'unknown-operation']) {
     assert.deepEqual(routeLiveOperationProject(operation, undefined, '/isolated/current'), {
