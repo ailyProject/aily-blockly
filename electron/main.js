@@ -928,7 +928,13 @@ function retainDispatchedNavigation(payload, generation) {
   const id = navigationRequest.requestId;
   if (dispatchedProjectNavigations.has(id) || dispatchedProjectNavigations.size >= 512)
     return { ok: false, code: 'PROJECT_NAVIGATION_REQUEST_REUSED', commandDispatched: false };
-  const sourceAttachment = source ? require('./project-file-lock-owner').rootAttachment(source) : undefined;
+  let sourceAttachment;
+  if (source) {
+    try { sourceAttachment = require('./project-file-lock-owner').rootAttachment(source); }
+    catch { return { ok: false, code: 'PROJECT_NAVIGATION_SOURCE_CHANGED', commandDispatched: false }; }
+    if (!sourceAttachment)
+      return { ok: false, code: 'PROJECT_NAVIGATION_SOURCE_CHANGED', commandDispatched: false };
+  }
   const retained = projectCrashResumeController()?.recordNavigation(reference, null, sourceAttachment);
   if (!retained?.ok) return { ok: false, code: retained?.code || 'PROJECT_NAVIGATION_STORAGE_UNAVAILABLE', commandDispatched: false };
   dispatchedProjectNavigations.set(id, { reference, sourceAttachment });
@@ -3760,9 +3766,17 @@ ipcMain.handle('project-navigation-record-original', (event, { requestId, activa
   const claim = dispatchedProjectNavigations.get(requestId);
   if (!claim || claim.reference.navigationRequest.rendererGeneration !== rendererGeneration)
     return { ok: false, reason: 'original-navigation-not-authorized' };
-  return projectCrashResumeController()?.recordNavigation(claim.reference, activation, claim.sourceAttachment)
-    ?? { ok: false, reason: 'navigation-storage-unavailable' };
+  const navigation = projectCrashResumeController();
+  const recorded = navigation?.recordNavigation(claim.reference, activation, claim.sourceAttachment);
+  if (recorded?.ok && activation?.state === 'closed') {
+    const hint = navigation.closedSessionHint();
+    if (hint) event.sender.send('project-navigation-closed', hint);
+  }
+  return recorded ?? { ok: false, reason: 'navigation-storage-unavailable' };
 });
+ipcMain.handle('project-navigation-closed-session', event => (mainWindow && !mainWindow.isDestroyed()
+  && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame
+  && !getOpenedProjectPathFromWindow() ? projectCrashResumeController()?.closedSessionHint() ?? null : null));
 ipcMain.handle('project-navigation-can-reopen', (event, { proof, project } = {}) => (
   !!getCurrentRendererOwner(event.sender) && event.senderFrame === mainWindow.webContents.mainFrame && !getOpenedProjectPathFromWindow()
   && projectCrashResumeController()?.canReopenFrom(proof, project) === true

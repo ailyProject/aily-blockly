@@ -370,6 +370,15 @@ function createProjectCrashResume(options) {
       const observed = this.observeNavigation(null, reference);
       return observed.activationCurrent === true && observed.navigationReceipt?.state === 'completed';
     },
+    closedSessionHint() {
+      return run(false, (store, previous) => {
+        const cursor = previous?.record;
+        if (!cursor?.closed || !cursor.navigation) return { ok: true, hint: null };
+        const observed = inspectNavigation(store, cursor, null, cursor.navigation);
+        return { ok: true, hint: observed.activationCurrent && observed.navigationReceipt?.state === 'completed'
+          ? { project: cursor.attachment.root, sessionId: cursor.navigation.sessionId } : null };
+      }).hint ?? null;
+    },
     observeOriginalCreation(project, query) {
       return run(false, (store, previous) => {
         const original = readProjectCreateRecovery(query);

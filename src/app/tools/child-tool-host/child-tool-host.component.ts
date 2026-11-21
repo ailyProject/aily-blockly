@@ -155,6 +155,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
   private projectPathSubscription: Subscription | null = null;
+  private closedNavigationSession: { project: string; sessionId: string } | null = null;
+  private closedNavigationListenerCleanup: (() => void) | null = null;
   private serialPortSubscription: Subscription | null = null;
   private standaloneSerialPort: HostSerialPort | null = null;
   private blockSelectionSubscription: Subscription | null = null;
@@ -236,6 +238,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       this.projectService.currentProjectPath$,
       this.projectService.coderWorkspace$,
     ]).subscribe(() => {
+      if (this.projectService.currentProjectPath) this.closedNavigationSession = null;
       this.refreshAiOperationNotice();
       if (this.initialized) {
         this.syncHostContext(true);
@@ -402,6 +405,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   ngOnInit(): void {
     this.initialized = true;
+    this.closedNavigationListenerCleanup = window['ipcRenderer']?.on?.('project-navigation-closed',
+      (_event, hint) => this.ngZone.run(() => {
+        if (!this.isAilyChatTool() || this.resolveHostWorkspace()) return;
+        this.closedNavigationSession = hint ?? null;
+        this.syncHostContext(true);
+      })) ?? null;
     this.subappCatalogSubscription = this.subappManager.state$.subscribe(() => {
       this.syncSubappRestartRequirement();
       this.pushChatSubappActivities();
@@ -433,6 +442,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.closedNavigationListenerCleanup?.();
+    this.closedNavigationListenerCleanup = null;
     this.serialPortSubscription?.unsubscribe();
     this.langSubscription?.unsubscribe();
     this.langSubscription = null;
@@ -761,6 +772,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.config = config;
     this.resolvedToolId = config.id;
+    if (this.isAilyChatTool() && !this.resolveHostWorkspace()) {
+      const revision = this.projectService.projectViewRevision;
+      const hint = await window['projectLock']?.closedNavigationSession?.().catch(() => null);
+      if (this.resolvedToolId === config.id && this.projectService.projectViewRevision === revision && !this.resolveHostWorkspace())
+        this.closedNavigationSession = hint ?? null;
+    }
     this.refreshAiOperationNotice();
     const catalogItemAtOpen = this.subappManager.state.apps.find(item => item.toolId === config.id);
     this.deferPreparedUpdateOnInitialLaunch = catalogItemAtOpen?.installed === true
@@ -1889,6 +1906,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       activeChatSessionId: isAilyChat
         ? (this.ailyChatSessionId || (workspace && this.projectService.getRecoveredCreateSessionId(workspace)) || null)
         : null,
+      ...(isAilyChat ? { closedNavigationSession: !workspace && developmentModeContext.developmentMode === 'blockly'
+        ? this.closedNavigationSession : null } : {}),
       ...(isAilyChat ? { aiOperationStateScope: this.aiOperationStateScope } : {}),
       blockResources: isAilyChat && this.active ? this.createSelectedBlockResources() : [],
       capabilities: {

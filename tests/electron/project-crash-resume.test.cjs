@@ -189,6 +189,7 @@ test('a cold empty view only reopens the exact closed physical source from the o
   first.suspend();
   const next = f.make(owner(41002));
   assert.equal(next.interruptedProject().project, null);
+  assert.deepEqual(next.closedSessionHint(), { project: attachment.root, sessionId: reference.sessionId });
   const observed = next.observeNavigation(null, reference);
   assert.equal(observed.activationCurrent, true);
   assert.equal(observed.navigationReceipt.state, 'completed');
@@ -197,6 +198,7 @@ test('a cold empty view only reopens the exact closed physical source from the o
   fs.renameSync(f.project, path.join(f.folder, 'different'));
   fs.mkdirSync(f.project);
   assert.equal(next.canReopenFrom(reference, f.project), false);
+  assert.equal(next.closedSessionHint(), null);
 });
 
 test('a completed creation remains observable after the active cursor is cleared or replaced', () => {

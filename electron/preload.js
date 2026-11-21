@@ -480,6 +480,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     recordCreatedActive: (proof) => ipcRenderer.invoke('project-navigation-created-active', proof),
     recordNavigation: (proof) => ipcRenderer.invoke('project-navigation-record-original', proof),
     canReopenNavigation: (proof, project) => ipcRenderer.invoke('project-navigation-can-reopen', { proof, project }),
+    closedNavigationSession: () => ipcRenderer.invoke('project-navigation-closed-session'),
     clearActive: (projectPath) => ipcRenderer.invoke('project-navigation-clear', projectPath),
     focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
   },
