@@ -51,12 +51,25 @@ interface SaveSettlementRecord {
   snapshotHash: string; reason: SaveSettlementKind; oldWriter: AbsUnpublishedDocumentSave['oldWriter'];
   unpublished?: { pointer: string; saved: AbsUnpublishedDocumentSave['saved'] };
 }
+interface RestoredOperationHandoff {
+  version: 1; kind: 'restored-operation-handoff'; project: string; operationPointer: string;
+  stagedHash: string | null; saved: AbsUnpublishedDocumentSave['saved'];
+}
+interface ApplicationWriterSettlement {
+  version: 1; kind: 'application-writer-settlement'; project: string; requestId: string; operationId: string;
+  snapshotHash: string; attachment: AbsProjectAttachment; executor: AbsStorageExecutor;
+  oldWriter: AbsUnpublishedDocumentSave['oldWriter']; handoffHash: string;
+}
 export interface LocationOperation {
   operation: AbsOperationSnapshot; pointer: string; snapshot: string;
 }
 const currentKey = 'operation.json';
 const snapshotKey = (id: string) => `recoveries/operation-${id}.json`;
 export const restoredApplicationKey = (id: string) => `recoveries/application-restored-${id}.json`;
+const handoffKey = (id: string) => `recoveries/operation-handoff-${id}.json`;
+const retiredApplicationKey = (id: string) => `recoveries/application-retired-${id}.json`;
+const stageKey = (id: string) => `recoveries/application-${id}.json`;
+const hashNullable = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
 const conflict = () => new AbsSyncError('ABS_OPERATION_CONFLICT', 'A different document operation is retained; inspect it before replacing its recovery snapshot.');
 const exitedApplicationWriter = (value?: AbsStorageExecutorObservation): value is AbsCurrentDocumentRecovery['oldWriter'] =>
   value?.version === 1 && value.state === 'exited' && ['system-restarted', 'process-exited', 'process-reused'].includes(value.reason);
@@ -81,37 +94,15 @@ export class AbsOperationJournal {
     if (pointerText === null) return null;
     const pointer = this.pointer(pointerText);
     if (pointer.id !== ref.operationId || pointer.hash !== original.snapshotHash || pointer.state === 'completed') return null;
-    const disk = await this.disk(storage), source = original.snapshot.disk;
-    if (disk.abi !== source.abi || disk.map !== source.map) return null;
-    const draftChanged = disk.abs !== source.abs;
-    const accepted = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' });
-    const unchanged = async () => {
-      guard();
-      return await storage.read(currentKey) === pointerText
-        && absJson(await this.disk(storage)) === absJson(disk)
-        && await storage.read('committed.json') === original.snapshot.committed
-        && (!draftChanged || await accepted.workspaceMode(storage) === 'project-v1')
-        && await storage.read('prepared.json') === null
-        && await storage.read(`recoveries/application-commit-${ref.operationId}.json`) === null
-        && await storage.read(`recoveries/application-result-${ref.operationId}.json`) === null;
-    };
-    if (!await unchanged()) return null;
+    const source = await this.unpublishedSource(storage, pointerText, original.snapshot, guard);
+    if (!source) return null;
     const oldWriter = await this.port.observeExecutor!(ref.executor);
-    if (oldWriter.state !== 'exited' || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
-    if (draftChanged) {
-      const committed = await accepted.readCommittedSnapshot();
-      if (!committed || committed.projection.map.scope.projectKey !== this.project
-        || !await accepted.matchesAcceptedDisk(committed, disk)) return null;
-    }
-    const hash = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
-    const saved = { abiHash: await hash(disk.abi), absHash: await hash(disk.abs),
-      mapHash: await hash(disk.map), committedHash: await hash(original.snapshot.committed),
-      operationPointerHash: await hashAbsText(pointerText) };
-    if (!await unchanged() || absJson(await this.port.observeExecutor!(ref.executor)) !== absJson(oldWriter)) return null;
+    if (!exitedApplicationWriter(oldWriter) || !await source.unchanged()
+      || absJson(await this.port.observeExecutor!(ref.executor)) !== absJson(oldWriter)) return null;
     guard();
     return { version: 1, kind: 'source-not-published', requestId: ref.request.requestId, operationId: ref.operationId,
       attachment: context.attachment, originalExecutor: ref.executor, observerExecutor: context.executor,
-      oldWriter: oldWriter as AbsUnpublishedDocumentSave['oldWriter'], snapshotHash: original.snapshotHash, saved };
+      oldWriter, snapshotHash: original.snapshotHash, saved: source.saved };
   }
 
   /** Release only the old writer. An immutable record outlives the current
@@ -128,8 +119,7 @@ export class AbsOperationJournal {
     const original = await readNativeSaveRequest({ ...context, read: key => storage.read(key) }, this.project, ref.request);
     if (!original || absJson(original.ref) !== absJson(ref)) return null;
     const id = ref.operationId, key = nativeSaveSettlementKey(id);
-    if (await storage.read(`recoveries/application-commit-${id}.json`) !== null
-      || await storage.read(`recoveries/application-result-${id}.json`) !== null) return null;
+    if (!await this.hasNoResult(storage, id)) return null;
     const retained = await storage.read(key);
     let text = retained;
     let record: SaveSettlementRecord;
@@ -139,21 +129,24 @@ export class AbsOperationJournal {
         || absJson(record.ref) !== absJson(ref) || record.snapshotHash !== original.snapshotHash
         || !exitedApplicationWriter(record.oldWriter)
         || (record.reason !== 'source-not-published' && record.reason !== 'before-source-stage')) throw conflict();
-      if (record.reason === 'before-source-stage' && await storage.read(`recoveries/application-${id}.json`) !== null) return null;
+      if (record.reason === 'before-source-stage' && await storage.read(stageKey(id)) !== null) return null;
     } else {
       const oldWriter = await this.port.observeExecutor(ref.executor);
       if (!exitedApplicationWriter(oldWriter)) return null;
+      const handoff = await this.readHandoff(original.snapshot, original.snapshotHash, storage);
       const pointer = await storage.read(currentKey);
-      const unpublished = pointer !== null ? await this.inspectUnpublishedSaveLocked(ref, guard, storage) : null;
+      const live = !handoff && pointer !== null ? await this.inspectUnpublishedSaveLocked(ref, guard, storage) : null;
+      const unpublished = handoff ? { pointer: handoff.record.operationPointer, saved: handoff.record.saved }
+        : live ? { pointer: pointer!, saved: live.saved } : undefined;
       // The original stage is written once, before any source publish. On
       // older records without that declared protocol also require the exact
       // original file preimage; a missing current pointer alone proves nothing.
-      if (!unpublished && (await storage.read(`recoveries/application-${id}.json`) !== null
+      if (!unpublished && (await storage.read(stageKey(id)) !== null
         || original.sourceStageVersion !== 1 && (absJson(await this.disk(storage)) !== absJson(original.snapshot.disk)
           || await storage.read('committed.json') !== original.snapshot.committed || await storage.read('prepared.json') !== null))) return null;
       record = { version: 1, kind: 'save-writer-settlement', project: this.project, ref, snapshotHash: original.snapshotHash,
         reason: unpublished ? 'source-not-published' : 'before-source-stage', oldWriter,
-        ...(unpublished ? { unpublished: { pointer: pointer!, saved: unpublished.saved } } : {}) };
+        ...(unpublished ? { unpublished } : {}) };
       text = absJson(record);
       guard();
       if (!await storage.replace(key, null, text)) throw conflict();
@@ -164,7 +157,7 @@ export class AbsOperationJournal {
       settlement: { kind: record.reason, recordHash: await hashAbsText(text!) } };
   }
 
-  /** Seal the original proof before a restored pointer can be overwritten. */
+  /** Preserve the current fast path for a native writer already confirmed exited. */
   private async retainSaveBeforeAdvancing(pointer: OperationPointer, guard: () => void, storage: AbsSyncStorageAccess) {
     if (!this.port.observeExecutor) return;
     const text = await storage.read(snapshotKey(pointer.id));
@@ -173,6 +166,144 @@ export class AbsOperationJournal {
     if (snapshot.kind !== 'document-save' || !snapshot.nativeSave || !snapshot.attachment || !snapshot.executor) return;
     await this.settleSaveWriter({ operationId: pointer.id, request: snapshot.nativeSave,
       attachment: snapshot.attachment, executor: snapshot.executor }, guard, storage);
+  }
+
+  // Snapshot the original source boundary under the publication lock. ABS may
+  // contain a separate author's draft, which stays untouched in project-v1.
+  private async unpublishedSource(storage: AbsSyncStorageAccess, pointer: string,
+    snapshot: AbsOperationSnapshot, guard: () => void) {
+    const disk = await this.disk(storage), staged = await storage.read(stageKey(snapshot.id));
+    if (disk.abi !== snapshot.disk.abi || disk.map !== snapshot.disk.map) return null;
+    const draftChanged = disk.abs !== snapshot.disk.abs;
+    const accepted = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' });
+    const unchanged = async () => {
+      guard();
+      return await storage.read(currentKey) === pointer
+        && absJson(await this.disk(storage)) === absJson(disk)
+        && await storage.read('committed.json') === snapshot.committed
+        && await storage.read(stageKey(snapshot.id)) === staged
+        && (!draftChanged || await accepted.workspaceMode(storage) === 'project-v1')
+        && await storage.read('prepared.json') === null && await this.hasNoResult(storage, snapshot.id);
+    };
+    if (!await unchanged()) return null;
+    if (draftChanged) {
+      const committed = await accepted.readCommittedSnapshot();
+      if (!committed || committed.projection.map.scope.projectKey !== this.project
+        || !await accepted.matchesAcceptedDisk(committed, disk)) return null;
+    }
+    const saved = { abiHash: await hashNullable(disk.abi), absHash: await hashNullable(disk.abs),
+      mapHash: await hashNullable(disk.map), committedHash: await hashNullable(snapshot.committed),
+      operationPointerHash: await hashAbsText(pointer) };
+    return { saved, staged, unchanged };
+  }
+
+  private async hasNoResult(storage: Pick<AbsSyncStorageAccess, 'read'>, id: string) {
+    return await storage.read(`recoveries/application-commit-${id}.json`) === null
+      && await storage.read(`recoveries/application-result-${id}.json`) === null;
+  }
+
+  private async indexedApplication(requestId: string, storage: Pick<AbsSyncStorageAccess, 'read'>) {
+    const indexKey = await applicationRequestKey(requestId), indexText = await storage.read(indexKey);
+    if (indexText === null) return null;
+    const index = JSON.parse(indexText);
+    if (index.version !== 1 || index.project !== this.project || index.requestId !== requestId
+      || !/^[a-f0-9-]{36}$/.test(index.operationId) || !/^sha256:[a-f0-9]{64}$/.test(index.snapshotHash)) throw conflict();
+    const snapshotText = await storage.read(snapshotKey(index.operationId));
+    if (snapshotText === null || await hashAbsText(snapshotText) !== index.snapshotHash) throw conflict();
+    const snapshot = JSON.parse(snapshotText) as AbsOperationSnapshot;
+    if (snapshot.kind !== 'abs-apply' || snapshot.version !== 1 || snapshot.project !== this.project
+      || snapshot.id !== index.operationId || snapshot.application?.requestId !== requestId || !snapshot.candidate || !snapshot.document
+      || !snapshot.disk || Object.keys(snapshot.disk).sort().join(',') !== 'abi,abs,map'
+      || !Object.values(snapshot.disk).every(value => value === null || typeof value === 'string')
+      || snapshot.committed !== null && typeof snapshot.committed !== 'string') throw conflict();
+    if (!snapshot.attachment || !snapshot.executor) return null;
+    const original = nativeSaveCapability(snapshot), observer = nativeSaveCapability(this.port);
+    if (absJson(original.attachment) !== absJson(observer.attachment)) return null;
+    const validation: any = snapshot.application.validation;
+    assertGenerationValidation(validation);
+    if (validation.requestId !== requestId || validation.candidate.hash !== snapshot.candidate.hash
+      || validation.candidate.bytes !== new TextEncoder().encode(snapshot.candidate.source).byteLength
+      || await hashAbsText(snapshot.candidate.source) !== snapshot.candidate.hash
+      || validation.base.generation !== snapshot.candidate.generation || validation.base.scope.projectKey !== this.project) throw conflict();
+    return { indexKey, indexText, snapshotText, snapshot, snapshotHash: index.snapshotHash as string, original, validation };
+  }
+
+  /** Retain evidence before advancing a restored pointer, independently of
+   * GUI readback and whether the original process can be observed yet. */
+  private async retainHandoff(pointerText: string, guard: () => void, storage: AbsSyncStorageAccess) {
+    const pointer = this.pointer(pointerText);
+    if (pointer.state !== 'restored' || !this.port.attachment || !this.port.executor || !this.port.observeExecutor
+      || !await this.hasNoResult(storage, pointer.id)) return;
+    const text = await storage.read(snapshotKey(pointer.id));
+    if (text === null || await hashAbsText(text) !== pointer.hash) throw conflict();
+    const snapshot = JSON.parse(text) as AbsOperationSnapshot;
+    if (snapshot.kind === 'document-save' && snapshot.nativeSave && nativeSaveAdmissionIdentity(snapshot.nativeSave)) {
+      const original = await readNativeSaveRequest({ ...nativeSaveCapability(this.port), read: key => storage.read(key) },
+        this.project, snapshot.nativeSave);
+      if (!original || original.ref.operationId !== pointer.id || original.snapshotHash !== pointer.hash) return;
+    } else if (snapshot.kind === 'abs-apply' && snapshot.application) {
+      const original = await this.indexedApplication(snapshot.application.requestId, storage);
+      if (!original || original.snapshot.id !== pointer.id || original.snapshotHash !== pointer.hash) return;
+    } else return;
+    if (await this.readHandoff(snapshot, pointer.hash, storage)) return;
+    const source = await this.unpublishedSource(storage, pointerText, snapshot, guard);
+    if (!source || snapshot.kind === 'abs-apply' && source.staged !== null
+      && !await this.matchesRestoredStage(storage, snapshot, source.staged)) return;
+    const record: RestoredOperationHandoff = { version: 1, kind: 'restored-operation-handoff', project: this.project,
+      operationPointer: pointerText, stagedHash: await hashNullable(source.staged), saved: source.saved };
+    const serialized = absJson(record), key = handoffKey(pointer.id), existing = await storage.read(key);
+    if (!await source.unchanged()) return;
+    if (existing !== serialized && (existing !== null || !await storage.replace(key, null, serialized))) throw conflict();
+  }
+
+  private async readHandoff(snapshot: AbsOperationSnapshot, snapshotHash: string, storage: AbsSyncStorageAccess) {
+    const text = await storage.read(handoffKey(snapshot.id));
+    if (text === null || !await this.hasNoResult(storage, snapshot.id)) return null;
+    const record = JSON.parse(text) as RestoredOperationHandoff, pointer = this.pointer(record.operationPointer);
+    if (record.version !== 1 || record.kind !== 'restored-operation-handoff' || record.project !== this.project
+      || pointer.state !== 'restored' || pointer.id !== snapshot.id || pointer.hash !== snapshotHash
+      || record.stagedHash !== await hashNullable(await storage.read(stageKey(snapshot.id)))
+      || record.saved.operationPointerHash !== await hashAbsText(record.operationPointer)
+      || record.saved.abiHash !== await hashNullable(snapshot.disk.abi)
+      || record.saved.mapHash !== await hashNullable(snapshot.disk.map)
+      || record.saved.committedHash !== await hashNullable(snapshot.committed)
+      || record.saved.absHash !== null && !/^sha256:[a-f0-9]{64}$/.test(record.saved.absHash)) throw conflict();
+    return { record, hash: await hashAbsText(text) };
+  }
+
+  /** Exact original writer retirement, with no current canvas or apply result. */
+  async observeApplicationWriterSettlement(requestId: string, guard: () => void, originalTargetPid?: number) {
+    if (!this.port.attachment || !this.port.executor || !this.port.observeExecutor
+      || await this.port.read(await applicationRequestKey(requestId)) === null) return null;
+    const observer = nativeSaveCapability(this.port);
+    return this.port.withLock(async storage => {
+      guard();
+      const indexed = await this.indexedApplication(requestId, storage);
+      if (!indexed || originalTargetPid !== undefined && indexed.original.executor.hostPid !== originalTargetPid) return null;
+      const { indexKey, indexText, snapshot, snapshotHash, original: { attachment, executor } } = indexed;
+      const operationId = snapshot.id, key = retiredApplicationKey(operationId);
+      const text = await storage.read(key), retained = text === null ? null : JSON.parse(text) as ApplicationWriterSettlement;
+      const oldWriter = retained ? retained.oldWriter : await this.port.observeExecutor!(executor);
+      if (!exitedApplicationWriter(oldWriter)) return null;
+      let handoff = await this.readHandoff(snapshot, snapshotHash, storage);
+      if (!handoff) {
+        const pointer = await storage.read(currentKey);
+        if (pointer === null || this.pointer(pointer).id !== operationId) return null;
+        await this.retainHandoff(pointer, guard, storage);
+        handoff = await this.readHandoff(snapshot, snapshotHash, storage);
+      }
+      if (!handoff) return null;
+      guard();
+      if (await storage.read(indexKey) !== indexText || !await this.hasNoResult(storage, operationId)
+        || (await this.readHandoff(snapshot, snapshotHash, storage))?.hash !== handoff.hash) return null;
+      const record: ApplicationWriterSettlement = { version: 1, kind: 'application-writer-settlement', project: this.project,
+        requestId, operationId, snapshotHash, attachment, executor, oldWriter, handoffHash: handoff.hash };
+      const bytes = absJson(record);
+      if (text !== bytes && (text !== null || !await storage.replace(key, null, bytes))) throw conflict();
+      return { version: 1 as const, kind: 'indexed-application-retired' as const, requestId, operationId,
+        snapshotHash, attachment, executor, observer: { hostPid: observer.executor.hostPid },
+        oldWriter, settlement: { recordHash: await hashAbsText(bytes) } };
+    });
   }
 
   async findDocumentSave(request: NativeSaveIdentity, assertCurrent: () => void): Promise<NativeSaveOperationRef | null> {
@@ -286,41 +417,19 @@ export class AbsOperationJournal {
     const observer = nativeSaveCapability(this.port);
     return this.port.withLock<AbsCurrentDocumentRecovery | null>(async storage => {
       assertCurrent();
-      const indexKey = await applicationRequestKey(requestId);
-      const indexText = await storage.read(indexKey);
-      if (indexText === null) return null;
-      const index = JSON.parse(indexText);
-      if (index.version !== 1 || index.project !== this.project || index.requestId !== requestId
-        || !/^[a-f0-9-]{36}$/.test(index.operationId) || !/^sha256:[a-f0-9]{64}$/.test(index.snapshotHash)) throw conflict();
-      const recoveryKey = restoredApplicationKey(index.operationId);
+      const indexed = await this.indexedApplication(requestId, storage);
+      if (!indexed) return null;
+      const { indexKey, indexText, snapshotText, snapshot: record, snapshotHash, original, validation } = indexed;
+      const recoveryKey = restoredApplicationKey(record.id);
       const recoveryText = await storage.read(recoveryKey);
       const retained = recoveryText === null ? null : JSON.parse(recoveryText) as RestoredApplicationRecord;
       if (!retained && !readback) return null;
       const pointerText = retained ? retained.operationPointer : await storage.read(currentKey);
       if (pointerText === null) return null;
       const pointer = this.pointer(pointerText);
-      if (pointer.id !== index.operationId || pointer.hash !== index.snapshotHash || pointer.state !== 'restored') return null;
-      const snapshotText = await storage.read(snapshotKey(pointer.id));
-      if (snapshotText === null || await hashAbsText(snapshotText) !== index.snapshotHash) throw conflict();
-      const record = JSON.parse(snapshotText) as AbsOperationSnapshot;
-      if (record.kind !== 'abs-apply' || record.version !== 1 || record.project !== this.project || record.id !== pointer.id
-        || record.application?.requestId !== requestId || !record.document || !record.candidate
-        || !record.disk || Object.keys(record.disk).sort().join(',') !== 'abi,abs,map'
-        || !Object.values(record.disk).every(value => value === null || typeof value === 'string')
-        || record.committed !== null && typeof record.committed !== 'string') throw conflict();
-      // Legacy records remain inspectable but cannot acquire new recovery authority.
-      if (!record.attachment || !record.executor) return null;
-      const original = nativeSaveCapability({ attachment: record.attachment, executor: record.executor });
-      if (absJson(original.attachment) !== absJson(observer.attachment)) return null;
-      const validation: any = record.application.validation;
-      assertGenerationValidation(validation);
-      if (validation.requestId !== requestId || validation.candidate.hash !== record.candidate.hash
-        || validation.candidate.bytes !== new TextEncoder().encode(record.candidate.source).length
-        || await hashAbsText(record.candidate.source) !== record.candidate.hash
-        || validation.base.generation !== record.candidate.generation
-        || validation.base.scope.projectKey !== this.project) throw conflict();
+      if (pointer.id !== record.id || pointer.hash !== snapshotHash || pointer.state !== 'restored') return null;
       if (record.disk.abi === null || record.disk.abs === null || record.disk.map === null || record.committed === null) return null;
-      const stageKey = `recoveries/application-${pointer.id}.json`, staged = await storage.read(stageKey);
+      const applicationStage = stageKey(pointer.id), staged = await storage.read(applicationStage);
       // Keep the original proof bound to its snapshot. Verify and preserve a
       // separate author draft only when sealing the durable project-v1 record.
       const readbackDisk = retained ? record.disk : await this.disk(storage);
@@ -340,13 +449,12 @@ export class AbsOperationJournal {
         assertCurrent();
         if (await storage.read(indexKey) !== indexText || await storage.read(recoveryKey) !== recoveryText
           || await storage.read(snapshotKey(pointer.id)) !== snapshotText
-          || await storage.read(stageKey) !== staged
+          || await storage.read(applicationStage) !== staged
           || (!historical && (await storage.read(currentKey) !== pointerText || !await draftIsIndependent()
             || absJson(await this.disk(storage)) !== absJson(readbackDisk)
             || await storage.read('committed.json') !== record.committed || await storage.read('prepared.json') !== null))) return false;
-        for (const key of [`recoveries/application-commit-${pointer.id}.json`,
-          `recoveries/application-result-${pointer.id}.json`]) if (await storage.read(key) !== null) return false;
-        assertCurrent(); return true;
+        assertCurrent();
+        return this.hasNoResult(storage, pointer.id);
       };
       if (!await unchanged(!!retained)) return null;
       const oldWriter = retained ? retained.recovery?.oldWriter : await this.port.observeExecutor!(original.executor);
@@ -365,12 +473,12 @@ export class AbsOperationJournal {
         if (!exitedApplicationWriter(finalWriter) && !unavailable) return null;
       } else if (absJson(finalWriter) !== absJson(oldWriter)) return null;
       const recovery: RestoredApplicationRecord['recovery'] = { version: 1, scope: 'restored-working-document', state: 'restored', requestId, operationId: pointer.id,
-        snapshotHash: index.snapshotHash, operationPointerHash: await hashAbsText(pointerText),
+        snapshotHash, operationPointerHash: await hashAbsText(pointerText),
         documentHash: await hashAbsText(absJson(record.document)), attachment: observer.attachment,
         originalExecutor: original.executor, observerExecutor: recoveryObserver,
         saved: { abiHash: await hashAbsText(record.disk.abi), absHash: await hashAbsText(record.disk.abs),
           mapHash: await hashAbsText(record.disk.map), committedHash: await hashAbsText(record.committed) },
-        candidate: { hash: record.candidate.hash, bytes: validation.candidate.bytes,
+        candidate: { hash: validation.candidate.hash, bytes: validation.candidate.bytes,
           intentGeneration: validation.intentGeneration ?? validation.base.generation },
         oldWriter, candidateApplied: false, originalPublication: 'UNKNOWN' };
       const marker: RestoredApplicationRecord = { version: 1, kind: 'restored-working-document', project: this.project,
@@ -575,7 +683,10 @@ export class AbsOperationJournal {
     if (previous === null) return null;
     const pointer = this.pointer(previous);
     if (pointer.state === 'pending') throw conflict();
-    if (pointer.state === 'restored') await this.retainSaveBeforeAdvancing(pointer, assertCurrent, storage);
+    if (pointer.state === 'restored') {
+      await this.retainHandoff(previous, assertCurrent, storage);
+      await this.retainSaveBeforeAdvancing(pointer, assertCurrent, storage);
+    }
     return previous;
   }
 

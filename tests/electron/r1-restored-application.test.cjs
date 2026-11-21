@@ -290,4 +290,79 @@ test('cold recovery settles exact pre-ABI staging without granting an applicatio
   } finally { if (children.has(ctx.child)) await ctx.stop(); }
 });
 
+test('a second process interruption leaves only old indexed ABS writer proof after the next save', async () => {
+  const ctx = await fixture('staged-before-abi');
+  await ctx.stop();
+  const interrupted = await worker(ctx.project, 'recover-before-readback');
+  await interrupted.stop();
+  const port = await openProjectSyncStorage(ctx.project, guard);
+  const journal = new kernel.AbsOperationJournal(port, ctx.project);
+  const disk = await new kernel.AbsBaselineStore(port, { projectKey: ctx.project, pageId: 'main' }).captureDisk();
+  const old = ctx.original;
+  const nextId = await journal.begin({ kind: 'document-save', document: JSON.parse(disk.abi), disk }, guard);
+  await journal.finishUnchangedSave(nextId, disk, guard);
+
+  const pointer = await port.read('operation.json');
+  const later = new kernel.AbsApplicationJournal(await openProjectSyncStorage(ctx.project, guard), ctx.project);
+  for (const target of [undefined, old.executor.hostPid]) {
+    const { result } = await later.observe(old.requestId, guard, target);
+    assert.equal(result.publication.status, 'UNKNOWN');
+    assert.equal(result.currentDocumentRecovery, undefined);
+    assert.equal(result.publicationObservation, undefined);
+    assert.deepEqual(result.applicationObservation, { version: 1, requestId: old.requestId, current: false });
+    const proof = result.writerObservation;
+    assert.equal(proof.kind, 'indexed-application-retired');
+    assert.equal(proof.operationId, old.operationId);
+    assert.deepEqual(proof.executor, old.executor);
+    assert.equal(proof.oldWriter.state, 'exited');
+    assert.equal(proof.settlement.recordHash, await kernel.hashAbsText(await port.read(`recoveries/application-retired-${old.operationId}.json`)));
+  }
+  await assert.rejects(later.observe(old.requestId, guard, process.pid), { code: 'ABS_APPLY_OBSERVATION_INVALID' });
+  assert.equal(await port.read(`recoveries/application-restored-${old.operationId}.json`), null);
+  assert.equal(await port.read('operation.json'), pointer);
+  assert.deepEqual(await new kernel.AbsBaselineStore(port, { projectKey: ctx.project, pageId: 'main' }).captureDisk(), disk);
+  assert.ok(JSON.parse(await port.read(`recoveries/operation-${old.operationId}.json`)).candidate.source);
+});
+
+test('an unavailable exit probe keeps staged state evidence available after a distinct request advances', async () => {
+  const f = await fixture('native-state-before-abi', true);
+  await f.stop();
+  const { ref, identity, executor } = f.original;
+  assert.equal((await f.port.observeExecutor(executor)).state, 'exited');
+  let exitProbes = 0;
+  const port = { ...f.port, observeExecutor: async original => {
+    assert.deepEqual(original, executor);
+    exitProbes++;
+    return { version: 1, state: 'unknown', reason: 'identity-unavailable' };
+  } };
+  const journal = new kernel.AbsOperationJournal(port, f.project);
+  const restored = await kernel.recoverAbsProjectOperation(port, f.project, guard);
+  assert.equal(restored.operationId, ref.operationId);
+  await journal.restored(restored.operationId, guard);
+  const disk = await new kernel.AbsBaselineStore(port, { projectKey: f.project, pageId: 'main' }).captureDisk();
+  const draft = '# Independent author draft while the exit probe is unavailable\n';
+  fs.writeFileSync(path.join(f.project, 'project.abs'), draft);
+  const nextDisk = { ...disk, abs: draft };
+  const nextId = await journal.begin({ kind: 'document-save', document: JSON.parse(disk.abi), disk: nextDisk }, guard);
+  await journal.finishUnchangedSave(nextId, nextDisk, guard);
+  assert.ok(exitProbes >= 2);
+  assert.equal(await port.read(kernel.nativeSaveSettlementKey(ref.operationId)), null);
+  const handoff = JSON.parse(await port.read(`recoveries/operation-handoff-${ref.operationId}.json`));
+  assert.equal(handoff.saved.absHash, await kernel.hashAbsText(draft));
+  assert.equal(JSON.parse(handoff.operationPointer).id, ref.operationId);
+
+  const finalPort = await openProjectSyncStorage(f.project, guard);
+  const options = { originalTargetPid: executor.hostPid };
+  const old = await kernel.observeNativePublication(finalPort, f.project, identity, options);
+  assert.equal(old.saveReceipt.state, 'unknown');
+  assert.equal(old.publicationObservation, undefined);
+  assert.deepEqual(old.writerObservation.executor, executor);
+  assert.equal(old.writerObservation.kind, 'indexed-save-retired');
+  assert.equal(old.writerObservation.settlement.kind, 'source-not-published');
+  assert.equal(JSON.parse(await finalPort.read('operation.json')).id, nextId);
+  assert.equal(await finalPort.read('project.abs'), draft);
+  assert.equal((await kernel.observeNativePublication(finalPort, f.project, identity, options)).writerObservation.settlement.recordHash,
+    old.writerObservation.settlement.recordHash);
+});
+
 after(async () => { for (const child of children) child.kill('SIGKILL'); console.log('R1_RESTORED_OUTPUT=' + root); });

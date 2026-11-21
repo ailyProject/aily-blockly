@@ -419,7 +419,8 @@ export class BlocklyLiveOperationBridgeService {
       if (!record && originalTargetPid !== undefined) {
         if (await port.read(await applicationRequestKey(requestId)) !== null) {
           const { result } = await new AbsApplicationJournal(port, project).observe(requestId, () => {}, originalTargetPid);
-          if (result.publicationObservation?.executor.hostPid === originalTargetPid) return result;
+          if (result.publicationObservation?.executor.hostPid === originalTargetPid
+            || result.writerObservation?.executor.hostPid === originalTargetPid) return result;
         }
         const writer = await admissions.observeExitedApplicationWriter(requestId, originalTargetPid);
         if (writer) return { ...unknown, code: 'ABS_APPLY_WRITER_UNAVAILABLE',

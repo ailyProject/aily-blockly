@@ -453,6 +453,39 @@ describe('original project admission settlement', () => {
     expect([...files]).toEqual(retained);
   });
 
+  it('answers detached ABS writer retirement without claiming the replacement canvas or source', async () => {
+    const abs = 'candidate', hash = await hashAbsText(abs), original = port.executor!;
+    const validation = applyParams().validation;
+    validation.candidate.hash = hash;
+    const disk = { abi: null, abs: null, map: null };
+    const journal = new AbsOperationJournal(port, project);
+    const old = await journal.begin({ kind: 'abs-apply', document: {}, disk,
+      candidate: { hash, source: abs, generation: 'base' }, application: { requestId, validation } }, guard);
+    await journal.restored(old, guard);
+    port = { ...open('2', 222), observeExecutor: async executor => {
+      expect(executor).toEqual(original);
+      return { version: 1, state: 'exited', reason: 'process-exited' };
+    } };
+    await new AbsOperationJournal(port, project).begin({ kind: 'runtime-rebuild', document: {}, disk }, guard);
+    const pointer = await port.read('operation.json');
+    const cold = bridge();
+    cold.projectService.currentProjectPathSubject.next('/replacement-canvas');
+    const payload = { operation: 'abs_admission_status', path: project,
+      params: { version: 2, requestId, originalTargetPid: original.hostPid } };
+    const reply = await cold.execute(payload);
+    expect(reply).toEqual(jasmine.objectContaining({ ok: false, code: 'ABS_APPLY_WRITER_RELEASED',
+      publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false },
+      writerObservation: jasmine.objectContaining({ kind: 'indexed-application-retired', requestId, operationId: old,
+        executor: original, observer: { hostPid: 222 } }),
+    }));
+    expect(reply.publicationObservation).toBeUndefined();
+    expect(reply.currentDocumentRecovery).toBeUndefined();
+    expect((await cold.execute({ ...payload, params: { ...payload.params, originalTargetPid: 333 } })).writerObservation).toBeUndefined();
+    expect(await port.read('operation.json')).toBe(pointer);
+    expect(JSON.parse((await port.read(`recoveries/operation-${old}.json`))!).candidate.source).toBe(abs);
+    expect(cold.executeAbsApply).not.toHaveBeenCalled();
+  });
+
   for (const indexed of [false, true]) {
     it(`observes exact exited save occupancy with ${indexed ? 'an unchanged indexed snapshot' : 'no writer index'}`, async () => {
       const host = bridge();

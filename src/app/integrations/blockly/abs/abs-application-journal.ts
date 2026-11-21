@@ -162,11 +162,13 @@ export class AbsApplicationJournal {
     }
     const indexText = await this.port.read(await applicationRequestKey(requestId));
     const unknown = async (code: string, operationId?: string) => {
+      const operations = new AbsOperationJournal(this.port, this.project);
       const recovery = originalTargetPid === undefined && operationId && await this.port.read(restoredApplicationKey(operationId)) !== null
-        ? await new AbsOperationJournal(this.port, this.project).inspectRestoredApplication(requestId, assertCurrent) : null;
-      return { result: { ok: false, operation: 'abs_apply', project: this.project, code,
+        ? await operations.inspectRestoredApplication(requestId, assertCurrent) : null;
+      const writer = !recovery && operationId ? await operations.observeApplicationWriterSettlement(requestId, assertCurrent, originalTargetPid) : null;
+      return { result: { ok: false, operation: 'abs_apply', project: this.project, code: writer ? 'ABS_APPLY_WRITER_RELEASED' : code,
         publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false },
-        ...(recovery ? { currentDocumentRecovery: recovery } : {}) } };
+        ...(recovery ? { currentDocumentRecovery: recovery } : {}), ...(writer ? { writerObservation: writer } : {}) } };
     };
     if (indexText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN');
     const index = JSON.parse(indexText);

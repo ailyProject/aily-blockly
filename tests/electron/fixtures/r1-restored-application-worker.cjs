@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { openProjectSyncStorage } = require('../../../electron/project-sync-storage');
@@ -8,19 +9,42 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
   const port = await openProjectSyncStorage(project, guard);
   const journal = new kernel.AbsOperationJournal(legacy === 'legacy' ? { read: key => port.read(key), withLock: run => port.withLock(run) } : port, project);
   const waitForKill = () => new Promise(() => { process.on('message', () => {}); });
-  if (legacy === 'recover-original') {
+  if (legacy === 'recover-original' || legacy === 'recover-before-readback') {
     const original = await journal.inspect();
     const restored = await kernel.recoverAbsProjectOperation(port, project, guard);
     assert.deepEqual(restored.document, original.document);
     await journal.restored(restored.operationId, guard);
-    await journal.recordRestoredApplication(restored.operationId, guard, async document => assert.deepEqual(document, original.document));
+    if (legacy === 'recover-original') await journal.recordRestoredApplication(restored.operationId, guard,
+      async document => assert.deepEqual(document, original.document));
     const proof = await port.read(`recoveries/application-restored-${restored.operationId}.json`);
-    assert.ok(proof);
+    if (legacy === 'recover-original') assert.ok(proof); else assert.equal(proof, null);
     process.send({ event: 'ready', proof, executor: port.executor });
     await waitForKill();
     return;
   }
   const store = new kernel.AbsBaselineStore(port, { projectKey: project, pageId: 'main' });
+  if (legacy === 'native-state-before-abi') {
+    const before = input.baseProjection.document, document = structuredClone(before);
+    const previous = before.pages[0].content.blocks.blocks[0], block = document.pages[0].content.blocks.blocks[0];
+    block.collapsed = !previous.collapsed;
+    const state = { version: 2, requestId: randomUUID(), action: 'update', expectedGeneration: 'r0-base',
+      changes: [{ blockId: block.id, collapsed: block.collapsed }] };
+    const identity = await kernel.blockStatePublicationIdentity(project, state);
+    const expected = await store.captureDisk(), abi = JSON.stringify(document), generation = 'native-state-before-abi';
+    const { ref } = await journal.beginDocumentSave({ request: identity, document: before, disk: expected }, guard);
+    const projection = await kernel.createAbsProjection(kernel.composeBlocklyPage(document, 'main'), { document, generation,
+      scope: { projectKey: project, pageId: 'main' }, baselineRef: kernel.absBaselineKey(generation), savedAbiHash: await kernel.hashAbsText(kernel.absJson(document)) });
+    const evidence = await kernel.generationEvidence(projection, abi), inputAbiHash = await kernel.hashAbsText(expected.abi);
+    await store.stage({ abi, mode: 'import', inputAbs: projection.abs, projection, expected }, input.expectedPointerHash);
+    await new kernel.AbsApplicationJournal(port, project).stageNativeSave({ ref, evidence, inputAbiHash, blockState: {
+      ...state, inputAbiHash, output: evidence, beforeStates: [{ blockId: block.id, collapsed: previous.collapsed === true }],
+      states: [{ blockId: block.id, collapsed: block.collapsed }] } }, guard);
+    await store.commit(generation, guard, async () => {
+      process.send({ event: 'ready', ref, identity, executor: port.executor });
+      await waitForKill();
+    });
+    return;
+  }
   if (legacy === 'advanced-intent') {
     await store.stage(input.next, input.expectedPointerHash);
     const published = await store.commit(input.next.projection.map.generation, guard, async (text, expected, access) => {
