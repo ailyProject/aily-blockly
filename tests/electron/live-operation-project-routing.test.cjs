@@ -68,6 +68,20 @@ test('ordinary workspace operations retain existing current-project fallback and
   }
 });
 
+test('explicit recovery Stop keeps its original absolute project after navigation', async () => {
+  const operation = 'abs_recovery', project = path.resolve('recovery-source'), current = path.resolve('replacement-view');
+  const params = { version: 2, action: 'cancel_project', requestId: 'exact-recovery-id' };
+  const host = mainRouteFixture(current);
+  await host.handleCliBridgeCommand('blockly-live-operation', { path: project, operation, params });
+  assert.equal(host.calls[0].path, project);
+  assert.equal(host.calls[0].params, params);
+  for (const missing of [undefined, 'relative-source']) {
+    assert.deepEqual(routeLiveOperationProject(operation, missing, current, path.resolve, params), {
+      path: '', parameterScoped: true,
+    });
+  }
+});
+
 test('a lifecycle-bound Blockly reload never routes a different path as open', () => {
   const current = path.resolve('active'), requested = path.resolve('different');
   for (const target of [undefined, current, requested]) {

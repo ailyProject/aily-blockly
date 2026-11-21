@@ -13,8 +13,10 @@ const parameterScopedProjects = new Set([
  * caller paths remain intact for the renderer's normal exact-project check. */
 function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve, params) {
   const stateObservation = operation === 'abs_recovery' && params?.action === 'observe_state';
-  const parameterScoped = stateObservation || parameterScopedProjects.has(operation);
-  const explicitPath = (stateObservation || operation === 'abs_admission_status') && !path.isAbsolute(requestedPath || '') ? '' : requestedPath;
+  const recoveryCancellation = operation === 'abs_recovery' && params?.action === 'cancel_project';
+  const parameterScoped = stateObservation || recoveryCancellation || parameterScopedProjects.has(operation);
+  const explicitPath = (stateObservation || recoveryCancellation || operation === 'abs_admission_status')
+    && !path.isAbsolute(requestedPath || '') ? '' : requestedPath;
   const project = explicitPath ? resolve(explicitPath) : parameterScoped ? '' : (currentProject || '');
   const originalPublication = isOriginalPublicationRequest(operation, params);
   const attachment = originalPublication ? originalPublicationAttachment(project, currentProject) : undefined;

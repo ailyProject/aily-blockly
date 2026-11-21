@@ -43,6 +43,7 @@ import {
   isAilyLibraryPackageName,
   isAilyScopedPackageName,
   requireProjectProgramPublication,
+  type ProjectStorageAttachment,
 } from '@shared/public-api';
 import {
   CODER_TEMPLATE_DIRECTORY,
@@ -76,7 +77,8 @@ import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './proj
 import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRecoveryTargetReload } from './project-recovery-targets';
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
 import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, type ProjectSaveReceiptResponse } from './project-save-receipts';
-import { ProjectRecoveryRequests } from './project-recovery-request';
+import { ProjectRecoveryRequests, sameRecoveryAttachment } from './project-recovery-request';
+import { openProjectRecoveryBackup } from './project-recovery-backup';
 import { withCurrentProjectRecoveryStatus } from './project-recovery-status';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
@@ -138,6 +140,13 @@ export interface CoderWorkspaceContext {
   activeProject: string;
 }
 
+interface ProjectRecoveryOwner {
+  path: string;
+  attachment?: ProjectStorageAttachment;
+  stopped: boolean;
+  task?: Promise<Record<string, any>>;
+}
+
 interface ProjectOpenOptions {
   reason?: ProjectActivationReason;
   saveBeforeReload?: boolean;
@@ -188,7 +197,8 @@ export interface BlocklyProjectLoadStatus {
 export class ProjectService {
   private independentRepairNormalization?: { project: string; transitions: Record<string, any>[] };
   private recoveryTargets?: ProjectRecoveryTargets;
-  private failedLoadRecoveries?: Map<string, { path: string; task: Promise<Record<string, any>> }>;
+  private failedLoadRecoveries?: Map<string, ProjectRecoveryOwner>;
+  private pendingRecoveryStops?: Map<string, { attachment: ProjectStorageAttachment; until: number }>;
   private get savedRecoveryTargets(): ProjectRecoveryTargets { return this.recoveryTargets ??= new ProjectRecoveryTargets(); }
 
   stateSubject = new BehaviorSubject<ProjectState>('default');
@@ -2015,6 +2025,7 @@ export class ProjectService {
   // 打开项目
   async projectOpen(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}) {
     options.createActivation?.assertCurrent();
+    options.recoveryReopen?.assertCurrent();
     const selectedSketch = /\.ino$/i.test(projectPath) ? projectPath : undefined;
     projectPath = normalizeProjectOpenPath(projectPath);
     const startupRestore = options.startupRestore;
@@ -2397,7 +2408,7 @@ export class ProjectService {
 
     const recovery = activationReason === 'abs-journal-reopen' ? options.recoveryReopen : undefined;
     if (activationReason === 'abs-journal-reopen' && !recovery) throw new Error('Journal reopen requires in-process recovery authority.');
-    recovery?.assertCurrent();
+    options.recoveryReopen?.assertCurrent();
 
     // Coder tabs keep their iframe and in-flight operations. Activating another
     // project only changes the host projection; it does not save or recreate editors.
@@ -2575,6 +2586,7 @@ export class ProjectService {
       const idle = this.dependencyLifecycle.get(projectPath);
       if (idle) this.dependencyLifecycle.release(idle);
     } else if (previousProjectPath && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
+      options.recoveryReopen?.assertCurrent();
       try {
         await this.stopProjectCommands(previousProjectPath);
       } catch (error) {
@@ -2589,6 +2601,7 @@ export class ProjectService {
       const reconcilesHistory = activationReason === 'chat-tool-reload'
         && this.isSameProjectPath(previousProjectPath, projectPath);
       if (creation) await checkCreation();
+      options.recoveryReopen?.assertCurrent();
       if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, isSwitchingProject && !options.retainRecovery))) {
         if (isSwitchingProject) await window['projectLock']?.release(projectPath);
         return false;
@@ -3016,10 +3029,12 @@ export class ProjectService {
   /** Same-project recovery owns its own exact request. A lost response can only
    * observe that request; it cannot replay navigation or apply an AI candidate. */
   recoverFailedBlocklyProject(requestId: string, observe = false,
-    recoverReadyProject?: () => Promise<Record<string, any>>,
-    prepareRecovery?: () => Promise<void>): Promise<Record<string, any>> {
-    const path = this.currentProjectPath;
-    if (!/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
+    recoverReadyProject?: (assertCurrent: () => void) => Promise<Record<string, any>>,
+    prepareRecovery?: (assertCurrent: () => void) => Promise<void>,
+    originalProject?: string): Promise<Record<string, any>> {
+    const path = observe && originalProject ? originalProject : this.currentProjectPath;
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,96}$/.test(requestId) || !path)
+      return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
     const currentResult = (task: Promise<Record<string, any>>) => task.then(result => {
       const sameProject = this.currentProjectPath === path;
       const status = this.getBlocklyProjectLoadStatus(path);
@@ -3033,52 +3048,51 @@ export class ProjectService {
     });
     const receipts = this.failedLoadRecoveries ??= new Map();
     const original = receipts.get(requestId);
-    if (original) return original.path === path ? currentResult(original.task) : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    if (original?.task) return this.isSameProjectPath(original.path, path) ? currentResult(original.task) :
+      Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    const owner: ProjectRecoveryOwner = { path, stopped: false };
+    const view = this.projectViewRevision, session = projectDataRuntime.getSessionToken(), generation = this.electronService?.currentRendererGeneration;
+    const current = () => {
+      const pendingStop = this.pendingRecoveryStops?.get(requestId);
+      if (owner.stopped || pendingStop && pendingStop.until > Date.now() && sameRecoveryAttachment(owner.attachment, pendingStop.attachment))
+        throw Object.assign(new Error('The original recovery was stopped.'), { code: 'PROJECT_RECOVERY_CANCELLED' });
+      if (this.currentProjectPath !== path || this.projectViewRevision !== view
+        || projectDataRuntime.getSessionToken() !== session || this.electronService?.currentRendererGeneration !== generation)
+        throw Object.assign(new Error('The original recovery view is no longer current.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+      const capture = window['fs']?.captureProjectAttachment;
+      if (owner.attachment && capture) {
+        let attached = false;
+        try { attached = sameRecoveryAttachment(owner.attachment, capture(path)); }
+        catch { /* A missing path cannot retain the original physical authority. */ }
+        if (!attached) throw Object.assign(new Error('The original recovery attachment changed.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+      }
+    };
+    if (!observe) receipts.set(requestId, owner);
     const task = (async () => {
       const receipt = { version: 2, requestId, action: 'recover_project', candidateApplied: false };
-      const current = () => {
-        if (this.currentProjectPath !== path) throw new Error('The original recovery project is no longer current.');
-      };
-      const journal = new ProjectRecoveryRequests(path, current);
+      const journal = new ProjectRecoveryRequests(path, observe ? () => {} : current);
       let owned = false;
       const unknown = () => ({ ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'unknown',
         code: 'PROJECT_RECOVERY_REQUEST_UNKNOWN', candidateApplied: false,
         loadStatus: this.getBlocklyProjectLoadStatus(path),
         message: 'The original recovery has no completed receipt. Inspect the current project; no recovery was replayed.' });
       try {
-        const previous = await journal.observe(requestId);
+        if (!observe) owner.attachment = (await openProjectRecoveryBackup(path, current)).attachment;
+        const previous = await journal.observe(requestId, observe && !this.isSameProjectPath(path, this.currentProjectPath));
         if (previous.result) return { ...previous.result, recoveryObservation: { durable: true, resultKnown: true } };
-        if (observe || previous.started || !await journal.begin(requestId)) return unknown();
+        if (observe || previous.started || !await journal.begin(requestId, attachment => {
+          if (owner.attachment && !sameRecoveryAttachment(owner.attachment, attachment))
+            throw Object.assign(new Error('The original recovery attachment changed.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+        })) return unknown();
         owned = true;
-        await prepareRecovery?.();
+        await prepareRecovery?.(current);
         current();
-        const result = await (async () => {
-        if (recoverReadyProject) {
-          const result = await recoverReadyProject();
-          return { ...result, operation: 'abs_recovery', project: path, receipt, recoveryState: result['ready'] ? 'completed' : 'failed', candidateApplied: false };
-        }
-        this.assertSavedRecoveryContext(path);
-        // A fresh, byte-bound repair admission is independent from persistent
-        // lineage. It is valid for this current failed activation only.
-        let saved = await this.savedRecoveryTargets.inspect(path, () => this.assertSavedRecoveryContext(path));
-        if (!saved) {
-          const check = () => this.assertSavedRecoveryContext(path);
-          const fragment = await this.application.captureBlocklyRecoveryFragment?.(path) ?? { error: 'Partial view capture is unavailable.' };
-          const snapshot = await captureProjectDiskRecovery(path, check, fragment);
-          try {
-            const outcome = await snapshot.publish(path);
-            if (snapshot.activationBlocked) throw new Error(snapshot.activationBlocked.message);
-            await this.savedRecoveryTargets.remember({ ...outcome, project: path, sourceProject: path, activated: false }, check);
-          } finally { snapshot.dispose(); }
-          saved = await this.savedRecoveryTargets.inspect(path, check);
-        }
-        if (!saved) throw new Error('No complete current saved document could be verified.');
-        const result = await this.reloadSavedRecoveryTarget(path);
-        return { ...result, operation: 'abs_recovery', receipt, recoveryState: result.ready ? 'completed' : 'failed', candidateApplied: false,
-          ...(result.ready ? {} : { code: 'PROJECT_RECOVERY_LOAD_FAILED', message: result.loadStatus?.error ?? result.message ?? 'The same project is not ready.' }) };
-        })();
-        await journal.complete(requestId, result);
-        return result;
+        const outcome = await (recoverReadyProject ? recoverReadyProject(current) : this.recoverSavedBlocklyView(path, current));
+        const result = { ...outcome, operation: 'abs_recovery', project: path, receipt,
+          recoveryState: outcome['ready'] ? 'completed' : 'failed', candidateApplied: false };
+        try { await journal.complete(requestId, result); }
+        catch { return { ...unknown(), code: 'PROJECT_RECOVERY_RECEIPT_UNCERTAIN' }; }
+        return { ...result, recoveryObservation: { durable: true, resultKnown: true } };
       } catch (error) {
         const result = { ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'failed', candidateApplied: false,
           code: typeof (error as any)?.code === 'string' ? (error as any).code : 'PROJECT_RECOVERY_LOAD_FAILED',
@@ -3087,11 +3101,70 @@ export class ProjectService {
           try { await journal.complete(requestId, result); }
           catch { return { ...unknown(), code: 'PROJECT_RECOVERY_RECEIPT_UNCERTAIN' }; }
         }
-        return result;
+        return owned ? { ...result, recoveryObservation: { durable: true, resultKnown: true } } : result;
       }
     })();
-    if (!observe) receipts.set(requestId, { path, task });
+    if (!observe) {
+      owner.task = task;
+      void task.then(() => { if (receipts.get(requestId) === owner) receipts.delete(requestId); });
+    }
     return currentResult(task);
+  }
+
+  private async recoverSavedBlocklyView(path: string, assertCurrent: () => void): Promise<Record<string, any>> {
+    const check = () => { assertCurrent(); this.assertSavedRecoveryContext(path); };
+    check();
+    // Fresh byte-bound repair admission belongs to this failed activation.
+    let saved = await this.savedRecoveryTargets.inspect(path, check);
+    if (!saved) {
+      check();
+      const fragment = await this.application.captureBlocklyRecoveryFragment?.(path) ?? { error: 'Partial view capture is unavailable.' };
+      const snapshot = await captureProjectDiskRecovery(path, check, fragment);
+      try {
+        const outcome = await snapshot.publish(path);
+        if (snapshot.activationBlocked) throw new Error(snapshot.activationBlocked.message);
+        await this.savedRecoveryTargets.remember({ ...outcome, project: path, sourceProject: path, activated: false }, check);
+      } finally { snapshot.dispose(); }
+      saved = await this.savedRecoveryTargets.inspect(path, check);
+    }
+    if (!saved) throw new Error('No complete current saved document could be verified.');
+    check();
+    const result = await this.reloadSavedRecoveryTarget(path, assertCurrent);
+    return result.ready ? { ...result } : { ...result, code: 'PROJECT_RECOVERY_LOAD_FAILED',
+      message: result.loadStatus?.error ?? result.message ?? 'The same project is not ready.' };
+  }
+
+  async cancelFailedBlocklyProject(path: string, requestId: string): Promise<Record<string, any>> {
+    const response = { operation: 'abs_recovery', project: path };
+    const refused = { ...response, ok: false, code: 'PROJECT_RECOVERY_CONTEXT_STALE' };
+    if (!path || typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return refused;
+    const eligible = () => {
+      const original = this.failedLoadRecoveries?.get(requestId);
+      return original ? this.isSameProjectPath(original.path, path) : this.isSameProjectPath(this.currentProjectPath, path);
+    };
+    if (!eligible()) return refused;
+    const { attachment } = await openProjectRecoveryBackup(path, () => {});
+    if (!attachment || !eligible()) return refused;
+    let owner = this.failedLoadRecoveries?.get(requestId);
+    if (!owner) {
+      const original = await new ProjectRecoveryRequests(path, () => {}).observe(requestId);
+      if (original.started) return { ...response, ok: true, recoveryCancellation: { requestId, accepted: false } };
+      if (!eligible()) return refused;
+      owner = this.failedLoadRecoveries?.get(requestId);
+    }
+    if (owner?.attachment && !sameRecoveryAttachment(owner.attachment, attachment)) return refused;
+    const pending = this.pendingRecoveryStops ??= new Map();
+    const now = Date.now();
+    for (const [id, stop] of pending) if (stop.until <= now) pending.delete(id);
+    const prior = pending.get(requestId);
+    if (prior && !sameRecoveryAttachment(prior.attachment, attachment)) return refused;
+    // Retain a short exact fence if Stop crossed the dispatch on its way to
+    // this Host. It grants no write or terminal receipt authority.
+    if (pending.size >= 128 && !pending.has(requestId) && !owner?.attachment) return refused;
+    if (pending.size < 128 || pending.has(requestId))
+      pending.set(requestId, { attachment, until: now + 30000 });
+    if (owner?.attachment) owner.stopped = true;
+    return { ...response, ok: true, recoveryCancellation: { requestId, accepted: true } };
   }
 
   /** Native bootstrap is available only in the exact same-build child created
@@ -3164,8 +3237,10 @@ export class ProjectService {
 
   /** Reload the exact current saved source after fresh byte-bound admission;
    * persistent history never replaces this per-operation verification. */
-  async reloadSavedRecoveryTarget(path = this.currentProjectPath): Promise<SavedRecoveryTargetReload> {
+  async reloadSavedRecoveryTarget(path = this.currentProjectPath, assertCurrent?: () => void): Promise<SavedRecoveryTargetReload> {
+    assertCurrent?.();
     const before = await this.inspectSavedRecoveryTarget(path);
+    assertCurrent?.();
     if (!before) throw Object.assign(new Error('No current saved-recovery admission exists; inspect and recover this same project from verified current content.'),
       { code: 'PROJECT_RECOVERY_TARGET_UNVERIFIED' });
     if (before.unsavedLibraryChanges) throw new Error('Pending library-manager edits remain; recovery does not discard or save them implicitly.');
@@ -3175,6 +3250,7 @@ export class ProjectService {
       const primary = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');
       if (`sha256:${await sha256Hex(primary)}` !== before.abiHash) throw new Error('Recovery target bytes changed before reload.');
       const check = () => {
+        assertCurrent?.();
         this.assertSavedRecoveryContext(path);
         if (window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== primary) {
           throw Object.assign(new Error('The recovery primary changed during partial capture. Preserve the newer document and inspect again.'),
@@ -3189,11 +3265,13 @@ export class ProjectService {
         ?? { error: 'The partial native capture API is unavailable.' };
       check(); snapshot = await captureProjectDiskRecovery(path, check, fragment);
       const archive = await snapshot.publish(path);
+      check();
       if (snapshot.activationBlocked) return { ok: false, project: path, ready: false,
         activationBlocked: snapshot.activationBlocked, recoveryArchive: archive.recoveryArchive,
         message: snapshot.activationBlocked.message };
       release = snapshot.freezeForActivation?.();
-      const activated = await this.projectOpen(path, { reason: 'reload', saveBeforeReload: false, lifecycleOwner: lease.token });
+      const activated = await this.projectOpen(path, { reason: 'reload', saveBeforeReload: false, lifecycleOwner: lease.token,
+        ...(assertCurrent ? { recoveryReopen: { assertCurrent } } : {}) });
       const ready = activated === true && this.isSameProjectPath(path, this.currentProjectPath)
         && this.getBlocklyProjectLoadStatus(path).ready;
       const afterAbi = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');

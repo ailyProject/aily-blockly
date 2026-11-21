@@ -773,7 +773,8 @@ export class BlocklyLiveOperationBridgeService {
     const recoveryInspection = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'inspect';
     const candidateBackup = payload.operation === 'abs_recovery'
       && ['preserve_candidate', 'read_candidate'].includes(payload.params?.['action']);
-    const runtimeRecovery = payload.operation === 'abs_recovery' && ['recover_runtime', 'recover_project', 'observe_apply'].includes(payload.params?.['action']);
+    const runtimeRecovery = payload.operation === 'abs_recovery'
+      && ['recover_runtime', 'recover_project', 'observe_apply', 'cancel_project'].includes(payload.params?.['action']);
     const recoveryPath = payload.path || this.projectService.currentProjectPath;
     // A navigation can already own the target even though its editor failed or
     // is still loading. Advertise only the verified on-disk engine in that case.
@@ -874,6 +875,22 @@ export class BlocklyLiveOperationBridgeService {
         project: this.projectService.currentProjectPath,
         inProgress: this.absApplyInProgress,
       };
+    }
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'cancel_project') {
+      const { path, params } = payload;
+      if (params['version'] !== 2 || !path || !window['path']?.isAbsolute(path)
+        || Object.keys(params).some(key => !['version', 'action', 'requestId'].includes(key))) {
+        return { ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID' };
+      }
+      return this.projectService.cancelFailedBlocklyProject(path, params['requestId']);
+    }
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project' && payload.params?.['observe'] === true) {
+      const active = this.projectService.currentProjectPath, original = payload.path;
+      if (original && !window['path']?.isAbsolute(original)) return { ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID' };
+      const matches = original && active && await sameAbsProjectDirectory(original, active,
+        window['fs']?.realpathAsync, window['platform']?.isWindows === true);
+      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], true, undefined, undefined,
+        matches ? active : original);
     }
     const inspection = ['project_load_status', 'app_info', 'search_boards_libraries'].includes(payload.operation || '')
       || payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_apply';
@@ -995,11 +1012,17 @@ export class BlocklyLiveOperationBridgeService {
     }
     const requestedProject = payload.path;
     const currentProject = this.projectService.currentProjectPath;
+    const recoveryView = this.projectService.projectViewRevision;
     if (!currentProject) {
       return { ok: false, ...buildNotStarted, message: '当前主程序未打开项目' };
     }
     const matchesProject = !requestedProject || await sameAbsProjectDirectory(requestedProject, currentProject,
       window['fs']?.realpathAsync, window['platform']?.isWindows === true);
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project'
+      && (recoveryView !== this.projectService.projectViewRevision || payload.rendererGeneration !== undefined
+        && payload.rendererGeneration !== this.electronService.currentRendererGeneration)) {
+      return { ok: false, operation: 'abs_recovery', project: currentProject, code: 'PROJECT_RECOVERY_CONTEXT_STALE' };
+    }
     if (!matchesProject || currentProject !== this.projectService.currentProjectPath) {
       if (payload.operation === 'project_reload') return {
         ok: false, operation: 'project_reload', code: 'PROJECT_RELOAD_TARGET_MISMATCH', commandDispatched: false,
@@ -1053,13 +1076,9 @@ export class BlocklyLiveOperationBridgeService {
       } catch (error) { return { ok: false, operation: 'abs_apply', project: source, code: (error as any)?.code ?? 'ABS_APPLY_OBSERVATION_UNKNOWN',
         publication: { status: 'UNKNOWN' }, message: error instanceof Error ? error.message : String(error) }; }
     }
-    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project' && payload.params?.['observe'] === true) {
-      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], true);
-    }
     if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project'
       && this.getProjectRuntimeStatus(currentProject).ready) {
-      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], false, async () => {
-        const check = () => { if (this.projectService.currentProjectPath !== currentProject) throw new Error('The recovery project changed.'); };
+      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], false, async check => {
         check();
         if (this.projectService.isProjectOpening || this.projectService.isProjectTransitionInProgress(currentProject)
           || this.aiOperations.hasBlocking(currentProject)) throw Object.assign(new Error('An active project owner must finish before recovery.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
@@ -1096,16 +1115,16 @@ export class BlocklyLiveOperationBridgeService {
       if (!editorReady) {
         if (isBlocklyProject && payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project') {
           const params = payload.params || {};
-          if (params['observe'] === true) return this.projectService.recoverFailedBlocklyProject(params['requestId'], true);
           const source = this.projectService.currentProjectPath;
-          const check = () => {
-            if (this.projectService.currentProjectPath !== source || this.projectService.isProjectOpening
-              || this.projectService.isProjectTransitionInProgress(source) || this.aiOperations.hasBlocking(source)) {
-              throw Object.assign(new Error('The failed project changed or has an active owner.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
-            }
-          };
           try {
-            return await this.projectService.recoverFailedBlocklyProject(params['requestId'], false, undefined, async () => {
+            return await this.projectService.recoverFailedBlocklyProject(params['requestId'], false, undefined, async assertCurrent => {
+              const check = () => {
+                assertCurrent();
+                if (this.projectService.isProjectOpening || this.projectService.isProjectTransitionInProgress(source)
+                  || this.aiOperations.hasBlocking(source)) {
+                  throw Object.assign(new Error('The failed project has an active owner.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
+                }
+              };
               check();
               const port = await openAbsHostStorage(source, check);
               await settleAbsProjectTransaction(port, source, check);
