@@ -4856,6 +4856,38 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(roots()).toBe(root); expect(root.isDeletable()).toBeFalse(); expect(root.data).toBe('opaque');
       expect(gate.busy).toBeFalse();
     });
+    it('uses the acknowledged native load when first migration sees the same legacy ABI bytes', async () => {
+      const loaded = editor.captureProjectSnapshot().document;
+      const legacy = absJson({ ...loaded, metadata: 'legacy normalized during load' });
+      disk.set('project.abi', legacy);
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, legacy, loaded);
+      spyOn(editor, 'normalizeProjectAbi').and.callFake(input => {
+        if (input.metadata === 'legacy normalized during load') throw new Error('Legacy disk identities require load conversion.');
+        return input;
+      });
+
+      const ready = await service.prepareWorkspaceModeMigration();
+      expect(ready.ok).toBeTrue();
+      expect('migration' in ready).toBeTrue();
+      const accepted = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(absJson(JSON.parse(accepted!.abi!))).toBe(absJson(loaded));
+      expect(disk.get('project.abi')).toBe(accepted!.abi!);
+      expect(disk.has('workspace-mode.json')).toBeFalse();
+    });
+    it('does not bootstrap a different Working view from an acknowledged legacy load', async () => {
+      const loaded = editor.captureProjectSnapshot().document, legacy = absJson({ ...loaded, metadata: 'legacy' });
+      disk.set('project.abi', legacy);
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, legacy, loaded);
+      roots().setFieldValue('unsaved after opening', 'TEXT');
+      const before = [...disk];
+      const reply: any = await service.prepareWorkspaceModeMigration();
+      expect(reply.migrationDeferred).toEqual({ version: 1, reason: 'saved-working-differs' });
+      expect([...disk]).toEqual(before);
+    });
     it('defers existing source projections and a dirty canvas without changing their original files', async () => {
       savedCanvas();
       for (const [key, bytes] of [['project.abs', '# preserved original draft'], ['project.abs.map.json', '{"old":"map"}']]) {
@@ -4909,6 +4941,27 @@ describe('v2 actual workspace generation coordinator', () => {
 
       const after = [...disk];
       expect(await service.prepareWorkspaceModeMigration()).toEqual(prepared);
+      expect([...disk]).toEqual(after);
+    });
+    it('prepares a copied project-v1 without replaying engine selection or replacing its author draft', async () => {
+      const original = await foreignBaseline(), draft = '\uFEFF' + original.source + '\r\n# copied author draft\r\n';
+      const mode = absJson({ version: 1, mode: 'project-v1' });
+      disk.set('workspace-mode.json', mode); disk.set('project.abs', draft);
+      const unresolved = await absWorkspaceProtocol(scope.projectKey, { version: 1 }, () => {}, port);
+      expect((unresolved as any).code).toBe('ABS_WORKSPACE_MODE_UNINITIALIZED');
+
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue();
+      expect(prepared.protocol.workspaceModeBinding.accepted.scope).toEqual(scope);
+      expect(prepared.migration).toBeUndefined();
+      expect(disk.get('workspace-mode.json')).toBe(mode);
+      expect(disk.get('project.abi')).toBe(original.abi);
+      expect(disk.get('project.abs')).toBe(draft);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+
+      const after = [...disk];
+      const fromAlias = await absWorkspaceProtocol('D:/original-alias', { version: 1 }, () => {}, port);
+      expect(fromAlias).toEqual(prepared);
       expect([...disk]).toEqual(after);
     });
     it('does not rebind a moved project with an unverified saved program or a prepared History migration', async () => {

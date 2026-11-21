@@ -235,6 +235,18 @@ export class _ProjectService {
     } catch { return undefined; }
   }
 
+  /** Only the exact bytes acknowledged by native load may stand for its
+   * normalized document. Re-reading a legacy file can allocate new identities. */
+  hasUnsavedChangesAtLoadedAbi(project: string, diskText: string, document: BlocklyProjectDocument): boolean | undefined {
+    const context = this.captureSaveContext(project);
+    context.assertCurrent();
+    const scope = this.cleanScope();
+    if (this.cleanState.readSavedAbiRecipe(scope) !== diskText) return undefined;
+    const known = this.cleanState.compare(scope, diskText, this.blocklyService.getProjectAbiForSave(document));
+    context.assertCurrent();
+    return known;
+  }
+
   /** Pair the prepared source with the acknowledged hydrated save. Native capture verifies the saved bytes independently. */
   async compareSavedBuildDocument(project: string, documentText: string) {
     try {

@@ -5,6 +5,7 @@ import { AbsSyncError } from './abs-state';
 import { AbsOperationJournal } from './abs-operation-journal';
 import { recoverAbsLocationMetadata } from './abs-baseline-recovery';
 import { sameAbsProjectDirectory } from './abs-project-path';
+import type { AbsWorkspaceMode } from './abs-workspace-mode';
 
 const nullableHash = (text: string | null) => text === null ? Promise.resolve(null) : hashAbsText(text);
 
@@ -18,17 +19,17 @@ export async function assertWorkspaceMigrationWritable(port: Pick<AbsSyncStorage
 }
 
 export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
-  working: { revision: number; document: unknown }, assertCurrent: () => void) {
+  working: { revision: number; document: unknown }, assertCurrent: () => void, mode: AbsWorkspaceMode = 'overlay-v1') {
   return port.withLock(async storage => {
     assertCurrent();
     if (!port.attachment) throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the original physical project attachment.');
     const scoped = { ...port, read: key => storage.read(key) };
     const store = new AbsBaselineStore(scoped, { projectKey: port.attachment.root, pageId: '' });
-    if (await store.workspaceMode(storage) !== 'overlay-v1')
-      throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Only the original overlay engine can prepare a mode migration.');
+    if (await store.workspaceMode(storage) !== mode)
+      throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'The engine changed before workspace readiness could be verified.');
     const snapshot = await store.readCommittedSnapshot(), disk = await store.captureDisk(storage);
     const committed = await storage.read('committed.json'), prepared = await storage.read('prepared.json');
-    const mode = await storage.read('workspace-mode.json');
+    const modeMarker = await storage.read('workspace-mode.json');
     if (!snapshot || snapshot.abi === null || !await store.matchesAcceptedDisk(snapshot, { ...disk, abs: snapshot.projection.abs })
       || committed === null || prepared !== null || await new AbsOperationJournal(scoped, port.attachment.root).inspect())
       throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
@@ -38,7 +39,7 @@ export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
     if (snapshot.pointerHash !== expected.committedHash) throw new AbsSyncError('ABS_BASELINE_STALE', 'The accepted head changed during migration preparation.');
     assertCurrent();
     return { version: 1 as const, attachment: port.attachment,
-      modeBefore: { text: mode, hash: await nullableHash(mode) },
+      modeBefore: { text: modeMarker, hash: await nullableHash(modeMarker) },
       accepted: { version: 1 as const, attachment: port.attachment, accepted, committedHash: expected.committedHash },
       host: { expected, workingRevision: working.revision, workingDocumentHash: await hashAbsText(absJson(working.document)),
         author: { hash: expected.absHash, bytes: disk.abs === null ? null : new TextEncoder().encode(disk.abs).byteLength } } };
@@ -48,8 +49,8 @@ export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
 /** Rebind only an otherwise verified saved generation before issuing its proof.
  * Fence every recovery write against the observed original inputs. */
 export async function prepareWorkspaceMigrationProof(port: AbsSyncStoragePort,
-  working: { revision: number; document: unknown }, assertCurrent: () => void) {
-  const original = await captureWorkspaceMigrationProof(port, working, assertCurrent);
+  working: { revision: number; document: unknown }, assertCurrent: () => void, mode: AbsWorkspaceMode = 'overlay-v1') {
+  const original = await captureWorkspaceMigrationProof(port, working, assertCurrent, mode);
   const { root } = original.attachment, binding = original.accepted.accepted;
   const windows = /^[A-Za-z]:[/\\]|^\\\\/.test(root);
   if (await sameAbsProjectDirectory(binding.scope.projectKey, root, undefined, windows)) return original;
@@ -71,7 +72,7 @@ export async function prepareWorkspaceMigrationProof(port: AbsSyncStoragePort,
     return operation(storage);
   }) };
   await recoverAbsLocationMetadata(recoveryPort, scope, assertCurrent);
-  const repaired = await captureWorkspaceMigrationProof(port, working, assertCurrent);
+  const repaired = await captureWorkspaceMigrationProof(port, working, assertCurrent, mode);
   const rebound = repaired.accepted.accepted;
   if (!await sameAbsProjectDirectory(rebound.scope.projectKey, root, undefined, windows)
     || absJson(repaired.attachment) !== absJson(original.attachment) || repaired.modeBefore.hash !== original.modeBefore.hash

@@ -354,6 +354,12 @@ export class AbsWorkspaceSyncService {
       const guard = () => { check(); };
       const port = await openAbsHostStorage(context.path, guard);
       const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard, port); guard();
+      if (await store.workspaceMode() === 'project-v1') {
+        if (protocol.ok || !('code' in protocol) || protocol.code !== 'ABS_WORKSPACE_MODE_UNINITIALIZED') return protocol;
+        await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard, 'project-v1'));
+        guard();
+        return absWorkspaceProtocol(context.path, { version: 1 }, guard, port);
+      }
       if (!protocol.ok) return protocol;
       const accepted = await store.readCommittedSnapshot();
       const pending = await store.inspectPending(), journal = await new AbsOperationJournal(port, context.path).inspect(); guard();
@@ -365,7 +371,8 @@ export class AbsWorkspaceSyncService {
         const disk = await store.captureDisk(); guard();
         const reason = disk.abi === null ? 'saved-program-unavailable'
           : disk.abs !== null || disk.map !== null ? 'source-projection-present'
-          : absJson(this.editor.normalizeProjectAbi(JSON.parse(disk.abi))) !== absJson(this.editor.normalizeProjectAbi(working.document))
+          : (this.project.hasUnsavedChangesAtLoadedAbi(context.path, disk.abi, working.document)
+            ?? (absJson(this.editor.normalizeProjectAbi(JSON.parse(disk.abi))) !== absJson(this.editor.normalizeProjectAbi(working.document))))
             ? 'saved-working-differs' : undefined;
         if (reason) return deferred(reason);
         // Only a pristine saved canvas can establish its first accepted state.
