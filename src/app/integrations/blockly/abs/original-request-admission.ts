@@ -85,7 +85,15 @@ export class OriginalRequestAdmissions {
 }
 
 export function originalAdmissionOutcome(record: AdmissionRecord) {
-  return { ok: false, project: record.project, operation: record.request.operation, code: record.code,
-    message: record.message, admission: { status: 'NOT_STARTED' as const, requestId: record.request.requestId },
-    publication: { status: 'NOT_COMMITTED' as const }, requiresReload: false, candidateApplied: false };
+  const { operation, requestId } = record.request;
+  return { ok: false, project: record.project, operation, code: record.code,
+    message: record.message, admission: { status: 'NOT_STARTED' as const, requestId },
+    publication: { status: 'NOT_COMMITTED' as const }, requiresReload: false, candidateApplied: false,
+    ...(operation === 'abs_apply' ? { application: { status: 'NOT_STARTED' as const, requestId } } : {}) };
+}
+
+export function observedApplicationAdmission(record: AdmissionRecord) {
+  return { ...originalAdmissionOutcome(record), applicationObservation: {
+    version: 1, requestId: record.request.requestId, observationOnly: true, resultKnown: true, current: false,
+  } };
 }

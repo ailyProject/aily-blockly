@@ -44,7 +44,8 @@ import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-s
 import { recoverAbsProjectOperation, settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
 import { AbsApplicationJournal } from '../../../integrations/blockly/abs/abs-application-journal';
 import { AbsOperationJournal } from '../../../integrations/blockly/abs/abs-operation-journal';
-import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions, originalAdmissionOutcome,
+import { absJson } from '../../../integrations/blockly/abs/abs-identity-map';
+import { applicationRequestKey, nativeSaveAdmissionIdentity, observedApplicationAdmission, OriginalRequestAdmissions, originalAdmissionOutcome,
   type OriginalRequestAdmissionIdentity } from '../../../integrations/blockly/abs/original-request-admission';
 import { nativeSaveIdentity } from '../../../integrations/blockly/abs/abs-native-save-result';
 import { inspectAbsBaselineRecovery, recoverAbsBaseline } from '../../../integrations/blockly/abs/abs-baseline-recovery';
@@ -65,6 +66,7 @@ type BlocklyLiveOperationPayload = {
   requestId?: string;
   rendererGeneration?: number;
   lifecycle?: ProjectLifecycleSnapshot;
+  originalAdmissionAttachment?: ProjectStorageAttachment;
   path?: string;
   operation?: string;
   params?: Record<string, any>;
@@ -196,7 +198,9 @@ export class BlocklyLiveOperationBridgeService {
       if (rejection) return { ...rejection, project: this.projectService.currentProjectPath };
       return this.executeApplyAdmission(payload, applyId);
     }
-    if (blocklyProgram && publishesProjectProgram(payload)) {
+    const nativeSaveAdmission = blocklyProgram && window['fs']?.projectSyncStorageVersion === 2
+      && ['project_save', 'blocks_tidy'].includes(payload.operation || '') && payload.params?.['saveRequest']?.version === 2;
+    if (blocklyProgram && !nativeSaveAdmission && publishesProjectProgram(payload)) {
       try { requireProjectProgramPublication(); }
       catch (error) { return { ok: false, operation: payload.operation, commandDispatched: false,
         code: (error as any)?.code, message: error instanceof Error ? error.message : String(error) }; }
@@ -237,9 +241,9 @@ export class BlocklyLiveOperationBridgeService {
         const admitted = { ...payload, path: project, params: {} };
         return await this.projectService.startProjectSaveReceipt(project, request, () => {
           if (request.version !== 2) return this.executeAdmittedOperation(admitted);
-          if (!blocklyProgram || window['fs']?.projectSyncStorageVersion !== 2) return this.executeAdmittedOperation(admitted, request);
+          if (!nativeSaveAdmission) return this.executeAdmittedOperation(admitted, request);
           return this.executeSaveAdmission(admitted, project, request);
-        });
+        }, nativeSaveAdmission ? failure => this.executeSaveAdmission(admitted, project, request, failure) : undefined);
       } catch (error) {
         return { ok: false, operation: payload.operation, project, code: (error as any)?.code || 'PROJECT_SAVE_RECEIPT_FAILED',
           observation: { resultKnown: false, operationCancelled: false },
@@ -348,44 +352,68 @@ export class BlocklyLiveOperationBridgeService {
 
   private async executeApplyAdmission(payload: BlocklyLiveOperationPayload, requestId: string): Promise<Record<string, any>> {
     const scope = await this.admissionGuard(payload.path);
-    if (!scope) {
-      // Reject the stale route without reading or recording a different project's storage.
-      return { ok: false, operation: 'abs_apply', code: 'PROJECT_ADMISSION_CONTEXT_STALE',
-        message: 'The original application target is no longer open in this host.' };
-    }
-    const { project, guard } = scope, key = project + '\0' + requestId;
-    if (this.pendingApplyAdmissions.has(key)) return {
+    const rejected = { ok: false, operation: 'abs_apply', code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+      message: 'The original application target is no longer open in this host.' };
+    const project = scope?.project ?? payload.path;
+    if (!project || (!scope && !payload.originalAdmissionAttachment)) return rejected;
+    const key = project + '\0' + requestId;
+    const pending = {
       ok: false, operation: 'abs_apply', project, code: 'ABS_APPLY_OBSERVATION_PENDING',
       publication: { status: 'UNKNOWN' }, message: 'Observe the original application; it is still settling.',
     };
+    if (this.pendingApplyAdmissions.has(key)) return pending;
     this.pendingApplyAdmissions.add(key);
     try {
-      const port = await openAbsHostStorage(project, guard);
+      const { port, settlementGuard } = await this.openAdmissionStorage(payload, project, scope?.guard);
       const identity = { operation: 'abs_apply' as const, requestId };
       const admissions = new OriginalRequestAdmissions(port, project);
-      if (await admissions.observe(identity) || await port.read(await applicationRequestKey(requestId)) !== null) {
-        return (await new AbsApplicationJournal(port, project).observe(requestId, guard)).result;
+      const priorAdmission = await admissions.observe(identity);
+      if (priorAdmission) return observedApplicationAdmission(priorAdmission);
+      if (await port.read(await applicationRequestKey(requestId)) !== null) {
+        return scope ? (await new AbsApplicationJournal(port, project).observe(requestId, scope.guard)).result : pending;
       }
-      guard();
-      return await this.settleAdmissionFailure(admissions, identity, guard, markWriter => {
+      return await this.settleAdmissionFailure(admissions, identity, settlementGuard, markWriter => {
+        if (!scope) return Promise.resolve(rejected);
+        scope.guard();
         try { requireProjectProgramPublication(); }
         catch (error) { return Promise.resolve(absPrecommitFailure('abs_apply', error)); }
-        return this.executeAdmittedOperation({ ...payload, path: project }, undefined, markWriter);
+        return this.executeAdmittedOperation({ ...payload, path: project }, undefined, () => { scope.guard(); markWriter(); });
       });
     } finally {
       this.pendingApplyAdmissions.delete(key);
     }
   }
 
-  private async executeSaveAdmission(payload: BlocklyLiveOperationPayload, path: string, request: ProjectSaveRequest) {
-    const scope = await this.admissionGuard(path);
-    if (!scope) return { ok: false, operation: request.operation, code: 'PROJECT_ADMISSION_CONTEXT_STALE',
-      message: 'The original save target is no longer open in this host.' };
-    const { project, guard } = scope;
-    const port = await openAbsHostStorage(project, guard), root = port.attachment?.root ?? project;
+  private async executeSaveAdmission(payload: BlocklyLiveOperationPayload, path: string, request: ProjectSaveRequest,
+    refusal?: { code: string; message: string }) {
+    const scope = refusal ? undefined : await this.admissionGuard(path);
+    const rejected = { ok: false, operation: request.operation, ...(refusal ?? {
+      code: 'PROJECT_ADMISSION_CONTEXT_STALE', message: 'The original save target is no longer open in this host.' }) };
+    if (!scope && !payload.originalAdmissionAttachment) return rejected;
+    const project = scope?.project ?? path;
+    const { port, settlementGuard } = await this.openAdmissionStorage(payload, project, scope?.guard);
+    const root = port.attachment?.root ?? project;
     const identity = nativeSaveAdmissionIdentity(await nativeSaveIdentity(root, request))!;
-    return this.settleAdmissionFailure(new OriginalRequestAdmissions(port, root), identity, guard,
-      markWriter => this.executeAdmittedOperation(payload, request, markWriter));
+    return this.settleAdmissionFailure(new OriginalRequestAdmissions(port, root), identity, settlementGuard, markWriter => {
+      if (!scope) return Promise.resolve(rejected);
+      scope.guard();
+      requireProjectProgramPublication();
+      return this.executeAdmittedOperation(payload, request, () => { scope.guard(); markWriter(); });
+    });
+  }
+
+  private async openAdmissionStorage(payload: BlocklyLiveOperationPayload, project: string, activeGuard: (() => void) | undefined) {
+    // The main process supplies the original physical scope before forwarding
+    // the command. The native lock still guards that exact storage throughout
+    // settlement. Only the writer continues to require the active canvas.
+    const attachment = payload.originalAdmissionAttachment;
+    const settlementGuard = attachment ? () => undefined : activeGuard;
+    if (!settlementGuard) throw new Error('Original admission settlement requires a project guard.');
+    const port = await openAbsHostStorage(project, settlementGuard);
+    if (attachment && absJson(attachment) !== absJson(port.attachment)) throw Object.assign(
+      new Error('The original physical project changed before admission settlement.'),
+      { code: 'PROJECT_ADMISSION_ATTACHMENT_CHANGED' });
+    return { port, settlementGuard };
   }
 
   private async settleAdmissionFailure(admissions: OriginalRequestAdmissions, identity: OriginalRequestAdmissionIdentity,
@@ -406,8 +434,7 @@ export class BlocklyLiveOperationBridgeService {
     const retained = await admissions.reject(identity, { code, message }, guard);
     if (!retained) return { ok: false, operation: identity.operation, code: 'PROJECT_ADMISSION_OBSERVATION_REQUIRED',
       message: 'The original operation has an execution record. Observe its result.' };
-    return { ...result, ...originalAdmissionOutcome(retained),
-      ...(application ? { application: { status: 'NOT_STARTED', requestId: identity.requestId } } : {}) };
+    return { ...result, ...originalAdmissionOutcome(retained) };
   }
 
   /** A complete disk fork need not destroy an unserialisable source renderer.

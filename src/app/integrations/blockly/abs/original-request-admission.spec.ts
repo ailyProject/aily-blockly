@@ -61,13 +61,14 @@ describe('original project admission settlement', () => {
     return service;
   };
 
+  const applyParams = () => ({ version: 2, requestId, abs: 'candidate', validation: { version: 2, requestId,
+    base: { generation: 'base', scope: { projectKey: project, pageId: 'page' }, abiHash: hash, absHash: hash, mapHash: hash },
+    candidate: { hash, bytes: 9 }, workingCandidate: { version: 1, id: requestId, revisionHash: '2'.repeat(64) }, workspaceRevision: 1,
+    libraryRuntimeFingerprint: '3'.repeat(64), validation: { scope: 'prepared-generation', ok: true } } });
+
   it('observes a pre-writer ABS rejection after losing the entire reply; the old ID cannot apply again', async () => {
     const host = bridge();
-    const candidate = { version: 1, id: requestId, revisionHash: '2'.repeat(64) };
-    const params = { version: 2, requestId, abs: 'candidate', validation: { version: 2, requestId,
-      base: { generation: 'base', scope: { projectKey: project, pageId: 'page' }, abiHash: hash, absHash: hash, mapHash: hash },
-      candidate: { hash, bytes: 9 }, workingCandidate: candidate, workspaceRevision: 1,
-      libraryRuntimeFingerprint: '3'.repeat(64), validation: { scope: 'prepared-generation', ok: true } } };
+    const params = applyParams();
     await host.execute({ operation: 'abs_apply', path: project, params });
     expect(host.executeAbsApply).not.toHaveBeenCalled();
     expect([...files.keys()]).toEqual([jasmine.stringMatching(/^recoveries\/admission-/)]);
@@ -128,5 +129,61 @@ describe('original project admission settlement', () => {
     expect((await writer.beginDocumentSave({ ...snapshot, request: identity }, guard)).created).toBeTrue();
     expect(await admissions.reject(original, { code: 'REJECTED', message: 'Rejected' }, guard)).toBeNull();
     expect(await admissions.observe(original)).toBeNull();
+  });
+
+  it('keeps an admitted route rejection observable after the active canvas moves', async () => {
+    const host = bridge();
+    const originalAttachment = port.attachment;
+    host.projectService.currentProjectPathSubject.next('/replacement-canvas');
+    host.boardSwitchInProgress = false;
+    const refused = await host.execute({ operation: 'abs_apply', path: project, params: applyParams(), originalAdmissionAttachment: originalAttachment });
+    expect(host.executeAbsApply).not.toHaveBeenCalled();
+    expect(refused.admission).withContext(JSON.stringify(refused)).toEqual({ status: 'NOT_STARTED', requestId });
+    expect([...files.keys()]).toEqual([jasmine.stringMatching(/^recoveries\/admission-/)]);
+    port = open('2', 222);
+    const restarted = await bridge().execute({ operation: 'abs_recovery', path: project,
+      params: { version: 2, action: 'observe_apply', requestId } });
+    expect(restarted).toEqual(jasmine.objectContaining({
+      code: 'PROJECT_ADMISSION_CONTEXT_STALE', project,
+      admission: { status: 'NOT_STARTED', requestId },
+      applicationObservation: jasmine.objectContaining({ requestId, resultKnown: true, current: false }),
+    }));
+  });
+
+  it('settles the original native save when the queued context expires before its writer', async () => {
+    const host = bridge();
+    host.boardSwitchInProgress = false;
+    const originalAttachment = port.attachment;
+    let contextChecks = 0;
+    host.projectService.saveContext = () => [host, ++contextChecks > 1, 'blockly'];
+    const original: ProjectSaveRequest = { version: 2, operation: 'project_save', requestId: 'pub2-' + requestId, waitMs: 1000 };
+    const params = { project, saveRequest: original };
+    await host.execute({ path: project, operation: 'project_save', params, originalAdmissionAttachment: originalAttachment });
+    expect(host.executeProjectSave).not.toHaveBeenCalled();
+    expect([...files.keys()]).toEqual([jasmine.stringMatching(/^recoveries\/admission-/)]);
+    port = open('2', 222);
+    const observed = await bridge().execute({ operation: 'project_publication_status', path: project,
+      params: { ...params, originalTargetPid: 101 } });
+    expect(observed.saveReceipt.state).toBe('completed');
+    expect(observed.result).toEqual(jasmine.objectContaining({ code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE', project,
+      admission: { status: 'NOT_STARTED', requestId: original.requestId }, projectSaved: false }));
+    expect(observed.publicationObservation.executor.hostPid).toBe(101);
+  });
+
+  it('has no admission authority when the original path was replaced by another physical directory', async () => {
+    const host = bridge();
+    const originalAttachment = port.attachment;
+    const original: ProjectSaveRequest = { version: 2, operation: 'project_save', requestId: 'pub2-' + requestId, waitMs: 1000 };
+    const params = { project, saveRequest: original };
+    host.projectService.currentProjectPathSubject.next('/replacement-canvas');
+    port = open('9', 101);
+    const first = await host.execute({ path: project, operation: 'project_save', params, originalAdmissionAttachment: originalAttachment });
+    expect(host.executeProjectSave).not.toHaveBeenCalled();
+    expect(first.commandDispatched).toBeUndefined();
+    expect([...files.keys()]).toEqual([]);
+    const observed = await bridge().execute({ operation: 'project_publication_status', path: project,
+      params: { ...params, originalTargetPid: 101 } });
+    expect(observed.saveReceipt.state).toBe('unknown');
+    expect(observed.result).toBeUndefined();
   });
 });

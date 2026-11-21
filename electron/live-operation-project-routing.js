@@ -1,4 +1,6 @@
 const path = require('node:path');
+const fs = require('node:fs');
+const { rootAttachment } = require('./project-file-lock-owner');
 
 const parameterScopedProjects = new Set([
   'project_fork_status', 'project_recovery_open', 'project_save_status', 'project_publication_status',
@@ -9,11 +11,16 @@ const parameterScopedProjects = new Set([
  * currently active canvas may already be the recovered target, so using it as
  * an implicit path would change the request rather than route it. Explicit
  * caller paths remain intact for the renderer's normal exact-project check. */
-function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve) {
+function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve, params) {
   const parameterScoped = parameterScopedProjects.has(operation);
+  const project = requestedPath ? resolve(requestedPath) : parameterScoped ? '' : (currentProject || '');
+  const originalPublication = isOriginalPublicationRequest(operation, params);
+  const attachment = originalPublication ? originalPublicationAttachment(project, currentProject) : undefined;
   return {
-    path: requestedPath ? resolve(requestedPath) : parameterScoped ? '' : (currentProject || ''),
+    path: project,
     parameterScoped,
+    ...(originalPublication ? { originalPublication: true } : {}),
+    ...(attachment ? { originalAdmissionAttachment: attachment } : {}),
   };
 }
 
@@ -37,6 +44,22 @@ function projectLifecycleRequestRejection(snapshot, rendererGeneration) {
   return { ok: false, code: valid ? 'PROJECT_LIFECYCLE_CONTEXT_CHANGED' : 'PROJECT_LIFECYCLE_CONTEXT_INVALID',
     commandDispatched: false, stateChanged: false, candidateApplied: false, requiresUserAction: false,
     message: 'The project lifecycle context changed before dispatch; observe this host again.' };
+}
+
+/** The renderer may settle a refusal after navigation, but only on the
+ * physical project the main process verified while routing the command. */
+function originalPublicationAttachment(requested, active) {
+  if (!requested || !active) return undefined;
+  try {
+    const original = fs.realpathSync.native(requested), current = fs.realpathSync.native(active);
+    const compare = value => process.platform === 'win32' ? value.toLowerCase() : value;
+    if (compare(original) === compare(current)) return rootAttachment(original);
+  } catch { /* No original attachment is proven. */ }
+}
+
+function isOriginalPublicationRequest(operation, params) {
+  return operation === 'abs_apply' && params?.version === 2
+    || ['project_save', 'blocks_tidy'].includes(operation) && params?.saveRequest?.version === 2;
 }
 
 module.exports = { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection };

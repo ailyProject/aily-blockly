@@ -10,7 +10,7 @@ import { nativeSaveCapability } from './abs-native-save-protocol';
 import type { NativeSaveIdentity, NativeSaveOperationRef, NativeSaveStageInput, NativeSaveResultFacts } from './abs-native-save-protocol';
 import type { AbsSyncStorageAccess } from './abs-baseline-store';
 import { AbsOperationJournal, restoredApplicationKey, type AbsOperationSnapshot } from './abs-operation-journal';
-import { applicationRequestKey, OriginalRequestAdmissions, originalAdmissionOutcome } from './original-request-admission';
+import { applicationRequestKey, observedApplicationAdmission, OriginalRequestAdmissions } from './original-request-admission';
 
 const stageKey = (id: string) => `recoveries/application-${id}.json`;
 const proofKey = (id: string) => `recoveries/application-commit-${id}.json`;
@@ -156,8 +156,7 @@ export class AbsApplicationJournal {
     const admission = await new OriginalRequestAdmissions(this.port, this.project).observe({ operation: 'abs_apply', requestId });
     if (admission) {
       assertCurrent();
-      return { result: { ...originalAdmissionOutcome(admission), application: { status: 'NOT_STARTED', requestId },
-        applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } } };
+      return { result: observedApplicationAdmission(admission) };
     }
     const indexText = await this.port.read(await applicationRequestKey(requestId));
     const unknown = async (code: string, operationId?: string) => {

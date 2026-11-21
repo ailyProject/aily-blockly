@@ -1241,7 +1241,7 @@ async function handleCliBridgeCommand(action, payload) {
       if (['project_repair_bootstrap', 'project_repair_shutdown_admission', 'project_repair_adoption_admission'].includes(operation)) return { ok: false, code: 'PROJECT_REPAIR_BOOTSTRAP_PRIVATE', message: 'Repair bootstrap is an internal host operation.' };
       if (operation === 'project_create_recover' || operation === 'project_create_acknowledge')
         return observeOriginalProjectCreate(operation, payload?.params);
-      const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow());
+      const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
       const dir = route.path;
       const projectOptionalOperations = new Set([
         'search_boards_libraries',
@@ -1309,6 +1309,9 @@ async function handleCliBridgeCommand(action, payload) {
           lifecycle: { version: 1, rendererGeneration: generation, sourceProject: dir || null },
         }, 5000)
         : undefined;
+      let rendererSendStarted = false;
+      const onDispatch = operation === 'project_create' ? generation => retainDispatchedProjectCreate(payload, generation)
+        : route.originalPublication ? () => { rendererSendStarted = true; } : undefined;
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
@@ -1316,13 +1319,16 @@ async function handleCliBridgeCommand(action, payload) {
           path: dir || '',
           operation,
           params: payload && payload.params,
+          ...(route.originalAdmissionAttachment ? { originalAdmissionAttachment: route.originalAdmissionAttachment } : {}),
           ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
         },
         liveOperationTimeoutMs,
         undefined,
         releasePreparation,
-        operation === 'project_create' ? generation => retainDispatchedProjectCreate(payload, generation) : undefined,
+        onDispatch,
       );
+      if (route.originalPublication && !rendererSendStarted && result?.ok === false)
+        return { ...result, commandDispatched: false };
       if ((operation === 'project_build_status' || operation === 'project_build' && payload?.params?.buildRequest)
         && !result?.buildReceipt && ['RENDERER_RESPONSE_TIMEOUT', 'RENDERER_REQUEST_CANCELLED',
           'RENDERER_UNAVAILABLE', 'RENDERER_NOT_READY'].includes(result?.errorCode)) {

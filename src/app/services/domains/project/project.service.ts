@@ -2734,9 +2734,10 @@ export class ProjectService {
 
   /** The observer may disconnect; the admitted task still owns its real save. */
   startProjectSaveReceipt(path: string, request: ProjectSaveRequest,
-    run: () => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
+    run: () => Promise<Record<string, any>>,
+    rejectBeforeWriter?: (failure: { code: string; message: string }) => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
     const context = this.saveContext(path);
-    return this.projectSaveReceipts.start(path, request, context, this.guardSaveContext(path, context, run));
+    return this.projectSaveReceipts.start(path, request, context, this.guardSaveContext(path, context, run, rejectBeforeWriter));
   }
 
   getProjectSaveReceipt(path: string, request: ProjectSaveRequest): Promise<ProjectSaveReceiptResponse> {
@@ -2752,12 +2753,16 @@ export class ProjectService {
       await this.application.observeProjectPublication?.(project, original, originalTargetPid) ?? null);
   }
 
-  private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>) {
+  private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>,
+    rejectBeforeWriter?: (failure: { code: string; message: string }) => Promise<Record<string, any>>) {
     return async () => {
       const current = this.saveContext(path);
-      if (current[1] === true || context.some((value, i) => value !== current[i])) throw Object.assign(
-        new Error('The original save project session changed before execution. No save was started.'),
-        { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE' });
+      if (current[1] === true || context.some((value, i) => value !== current[i])) {
+        const failure = { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE',
+          message: 'The original save project session changed before execution. No save was started.' };
+        if (rejectBeforeWriter) return rejectBeforeWriter(failure);
+        throw Object.assign(new Error(failure.message), { code: failure.code });
+      }
       return run();
     };
   }
