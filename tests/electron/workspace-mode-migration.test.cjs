@@ -5,7 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { projectFileHash: hash } = require('../../electron/project-file-access');
 const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
-const { selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge } = require('../../electron/project-workspace-mode');
+const { observeProjectWorkspaceMigration, selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge } = require('../../electron/project-workspace-mode');
 
 async function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-mode-migration-'));
@@ -24,7 +24,8 @@ async function fixture(t) {
   const documentHash = hash('actual Working document');
   const record = { version: 1, from: 'overlay-v1', to: 'project-v1', attachment: old.attachment,
     modeBefore: { text: null, hash: null }, authorSnapshotId: 'a'.repeat(64), overlaySnapshots: [], candidateRefs: {}, draftObjects: [],
-    accepted: { version: 1, attachment: old.attachment, accepted: { generation: 'accepted' }, committedHash: expected.committedHash },
+    accepted: { version: 1, attachment: old.attachment, accepted: { generation: 'accepted', scope: { projectKey: old.attachment.root, pageId: 'main' },
+      abiHash: expected.abiHash, mapHash: expected.mapHash, absHash: hash('# accepted author\n') }, committedHash: expected.committedHash },
     host: { expected, workingRevision: 4, workingDocumentHash: documentHash, author: { hash: expected.absHash, bytes: 15 } },
     authorPlan: [], retiredTurns: [] };
   const prepare = value => {
@@ -36,6 +37,29 @@ async function fixture(t) {
   };
   return { root, old, expected, record, write, prepare, input: prepare(record) };
 }
+
+test('detached migration status proves only the selected original without writing a lock, mode or project file', async t => {
+  const f = await fixture(t), input = { version: 1, recordHash: f.input.recordHash };
+  const mode = path.join(f.root, '.aily/workspace-mode.json');
+  assert.equal((await observeProjectWorkspaceMigration(f.root, input)).ok, false);
+  assert.equal(fs.existsSync(mode), false);
+  assert.equal(fs.existsSync(path.join(f.root, '.aily/project-files.guard')), false);
+  await selectProjectWorkspaceMode(f.root, f.input, () => {});
+  f.write('project.abs', '# authorPlan already changed draft bytes before disconnect');
+  const before = new Map(['project.abi', 'project.abs', 'project.abs.map.json', '.aily/workspace-mode.json',
+    '.aily/abs-sync/committed.json', '.workspace-history/workspace.json'].map(file => [file, fs.readFileSync(path.join(f.root, file))]));
+  const observation = await observeProjectWorkspaceMigration(f.root, input);
+  assert.equal(observation.ok, true);
+  assert.equal(observation.operation, 'abs_workspace_migration_status');
+  assert.equal(observation.project, f.old.attachment.root);
+  assert.deepEqual(observation.migrationReceipt, { version: 1, recordHash: input.recordHash, from: 'overlay-v1', to: 'project-v1', selected: true, reused: true });
+  assert.deepEqual(observation.protocol.workspaceModeBinding, f.record.accepted);
+  for (const [file, bytes] of before) assert.deepEqual(fs.readFileSync(path.join(f.root, file)), bytes);
+  assert.equal((await observeProjectWorkspaceMigration(f.root, { ...input, recordHash: 'f'.repeat(64) })).ok, false);
+  assert.equal((await observeProjectWorkspaceMigration(f.root, { ...input, workingRevision: 0 })).ok, false);
+  f.write('project.abi', '{"changed":true}');
+  assert.equal((await observeProjectWorkspaceMigration(f.root, input)).ok, false);
+});
 
 test('native migration selects only the prepared physical project, keeps all author files, revokes old storage and observes a restart', async t => {
   const f = await fixture(t), original = ['project.abi', 'project.abs', 'project.abs.map.json'].map(file => [file, fs.readFileSync(path.join(f.root, file))]);

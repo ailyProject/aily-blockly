@@ -27,6 +27,7 @@ const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
 const { createProjectCrashResume, readProjectCreateRecovery } = require('./project-crash-resume');
+const { observeProjectWorkspaceMigration } = require('./project-workspace-mode');
 const { startCliBridge } = require("./cli-bridge");
 const { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
@@ -1241,6 +1242,8 @@ async function handleCliBridgeCommand(action, payload) {
       if (['project_repair_bootstrap', 'project_repair_shutdown_admission', 'project_repair_adoption_admission'].includes(operation)) return { ok: false, code: 'PROJECT_REPAIR_BOOTSTRAP_PRIVATE', message: 'Repair bootstrap is an internal host operation.' };
       if (operation === 'project_create_recover' || operation === 'project_create_acknowledge')
         return observeOriginalProjectCreate(operation, payload?.params);
+      if (operation === 'abs_workspace_migration_status' && getBuildProduct() === 'blockly')
+        return observeProjectWorkspaceMigration(requestedPath, payload?.params);
       const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
       const dir = route.path;
       const projectOptionalOperations = new Set([
