@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { fork } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const { buildSync } = require('esbuild');
 const { before, after, test } = require('node:test');
 const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
@@ -363,6 +364,102 @@ test('an unavailable exit probe keeps staged state evidence available after a di
   assert.equal(await finalPort.read('project.abs'), draft);
   assert.equal((await kernel.observeNativePublication(finalPort, f.project, identity, options)).writerObservation.settlement.recordHash,
     old.writerObservation.settlement.recordHash);
+});
+
+async function publishSuccessorSave(project, port, generation) {
+  const scope = { projectKey: project, pageId: 'main' };
+  const store = new kernel.AbsBaselineStore(port, scope), operations = new kernel.AbsOperationJournal(port, project);
+  const previous = await port.read('committed.json'), disk = await store.captureDisk(), document = JSON.parse(disk.abi);
+  const request = await kernel.nativeSaveIdentity(project, { version: 2, requestId: 'pub2-' + randomUUID(), operation: 'project_save' });
+  const { ref } = await operations.beginDocumentSave({ request, document, disk }, guard);
+  document.pages[0].content.blocks.blocks[0].fields.VALUE = 140;
+  const abi = JSON.stringify(document);
+  const projection = await kernel.createAbsProjection(kernel.composeBlocklyPage(document, 'main'), { document, generation,
+    scope, baselineRef: kernel.absBaselineKey(generation), savedAbiHash: await kernel.hashAbsText(kernel.absJson(document)) });
+  const evidence = await kernel.generationEvidence(projection, abi);
+  const applications = new kernel.AbsApplicationJournal(port, project);
+  await store.stage({ projection, mode: 'import', inputAbs: projection.abs, abi, expected: disk }, await kernel.hashAbsText(previous));
+  await applications.stageNativeSave({ ref, evidence, inputAbiHash: await kernel.hashAbsText(disk.abi) }, guard);
+  const result = await store.commit(generation, guard, async (text, expected, storage) => {
+    assert.equal(await storage.replace('project.abi', expected, text), true);
+  });
+  assert.equal(result.status, 'COMMITTED');
+  assert.ok(await applications.sealNativeSave(ref, guard));
+  await operations.finish(ref.operationId, guard);
+  return { ref, disk: await store.captureDisk() };
+}
+
+async function observeAdvancedWriter(ctx, saved) {
+  const { requestId, operationId, executor } = ctx.original;
+  const port = await openProjectSyncStorage(ctx.project, guard);
+  const applications = new kernel.AbsApplicationJournal(port, ctx.project);
+  const read = async () => (await applications.observe(requestId, guard, executor.hostPid)).result;
+  const result = await read();
+  assert.equal(result.publication.status, 'UNKNOWN');
+  assert.equal(result.currentDocumentRecovery, undefined);
+  assert.equal(result.publicationObservation, undefined);
+  const proof = result.writerObservation;
+  assert.equal(proof?.kind, 'indexed-application-retired');
+  assert.equal(proof.operationId, operationId);
+  assert.deepEqual(proof.executor, executor);
+  assert.equal(proof.oldWriter.state, 'exited');
+  assert.equal((await read()).writerObservation.settlement.recordHash, proof.settlement.recordHash);
+  await assert.rejects(applications.observe(requestId, guard, process.pid), { code: 'ABS_APPLY_OBSERVATION_INVALID' });
+  assert.equal(JSON.parse(await port.read('operation.json')).id, saved.ref.operationId);
+  const current = await kernel.observeNativePublication(port, ctx.project, saved.ref.request, { originalTargetPid: saved.ref.executor.hostPid });
+  assert.equal(current.result.publication.status, 'COMMITTED');
+  assert.deepEqual(await new kernel.AbsBaselineStore(port, { projectKey: ctx.project, pageId: 'main' }).captureDisk(), saved.disk);
+  return JSON.parse(await port.read(`recoveries/application-retired-${operationId}.json`));
+}
+
+test('an indexed original interrupted before the ABS pointer can retire after a newer save', async () => {
+  const ctx = await fixture('index-before-pointer'); await ctx.stop();
+  assert.equal(await kernel.recoverAbsProjectOperation(ctx.port, ctx.project, guard), null);
+  const saved = await publishSuccessorSave(ctx.project, ctx.port, 'saved-after-original-index');
+  const proof = await observeAdvancedWriter(ctx, saved);
+  assert.equal(proof.reason, 'before-source-stage');
+  assert.equal(proof.handoffHash, undefined);
+  const { operationId, requestId, executor } = ctx.original;
+  const folder = path.join(ctx.project, '.aily/abs-sync/recoveries');
+  const stage = path.join(folder, `application-${operationId}.json`);
+  fs.writeFileSync(stage, '{}', { flag: 'wx' });
+  try {
+    assert.equal(await ctx.journal.observeApplicationWriterSettlement(requestId, guard, executor.hostPid), null);
+  } finally { fs.unlinkSync(stage); }
+  const indexPath = path.join(folder, `request-${(await kernel.hashAbsText(requestId)).slice(7)}.json`);
+  const indexed = fs.readFileSync(indexPath, 'utf8'), changedIndex = JSON.parse(indexed);
+  delete changedIndex.sourceStageVersion;
+  try {
+    fs.writeFileSync(indexPath, JSON.stringify(changedIndex));
+    await assert.rejects(ctx.journal.observeApplicationWriterSettlement(requestId, guard, executor.hostPid), { code: 'ABS_OPERATION_CONFLICT' });
+  } finally { fs.writeFileSync(indexPath, indexed); }
+});
+
+test('a metadata repair interrupted again keeps the original ABS writer proof through a newer save', async () => {
+  const ctx = await fixture('staged-before-abi'); await ctx.stop();
+  const repair = await worker(ctx.project, 'recover-metadata-before-reanchor'); await repair.stop();
+  const port = await openProjectSyncStorage(ctx.project, guard), operations = new kernel.AbsOperationJournal(port, ctx.project);
+  const restored = await kernel.recoverAbsProjectOperation(port, ctx.project, guard);
+  assert.equal(restored.operationId, ctx.original.operationId);
+  assert.deepEqual(restored.document, ctx.original.document);
+  assert.equal(JSON.parse(await port.read('operation.json')).sourceCommitted, repair.original.committed);
+  await operations.restored(restored.operationId, guard);
+  const before = await port.read('project.abi');
+  const saved = await publishSuccessorSave(ctx.project, port, 'saved-after-metadata-recovery');
+  assert.notEqual(saved.disk.abi, before);
+  const proof = await observeAdvancedWriter(ctx, saved);
+  const handoff = await port.read(`recoveries/operation-handoff-${ctx.original.operationId}.json`);
+  assert.equal(proof.handoffHash, await kernel.hashAbsText(handoff));
+  assert.equal(JSON.parse(handoff).metadataAnchor.committedHash, await kernel.hashAbsText(repair.original.committed));
+  assert.ok(JSON.parse(await port.read(`recoveries/operation-${ctx.original.operationId}.json`)).candidate.source);
+  const file = path.join(ctx.project, '.aily/abs-sync/recoveries', `operation-handoff-${ctx.original.operationId}.json`);
+  const changed = JSON.parse(handoff);
+  changed.metadataAnchor.mapHash = 'sha256:' + '0'.repeat(64);
+  try {
+    fs.writeFileSync(file, JSON.stringify(changed));
+    await assert.rejects(operations.observeApplicationWriterSettlement(ctx.original.requestId, guard, ctx.original.executor.hostPid),
+      { code: 'ABS_OPERATION_CONFLICT' });
+  } finally { fs.writeFileSync(file, handoff); }
 });
 
 after(async () => { for (const child of children) child.kill('SIGKILL'); console.log('R1_RESTORED_OUTPUT=' + root); });

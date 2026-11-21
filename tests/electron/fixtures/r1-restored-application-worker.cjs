@@ -9,6 +9,20 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
   const port = await openProjectSyncStorage(project, guard);
   const journal = new kernel.AbsOperationJournal(legacy === 'legacy' ? { read: key => port.read(key), withLock: run => port.withLock(run) } : port, project);
   const waitForKill = () => new Promise(() => { process.on('message', () => {}); });
+  if (legacy === 'recover-metadata-before-reanchor') {
+    const restored = await kernel.recoverAbsProjectOperation(port, project, guard);
+    await journal.restored(restored.operationId, guard);
+    const previous = await port.read('committed.json');
+    const baselineKey = kernel.absBaselineKey(JSON.parse(previous).generation);
+    const baseline = path.join(project, '.aily/abs-sync', baselineKey);
+    // A damaged private baseline is the input to the actual metadata repair.
+    fs.renameSync(baseline, path.join(project, 'r1-damaged-baseline-fixture.json'));
+    const result = await kernel.recoverAbsBaseline(port, project, guard);
+    assert.equal(result.changed, true);
+    process.send({ event: 'ready', previous, committed: await port.read('committed.json') });
+    await waitForKill();
+    return;
+  }
   if (legacy === 'recover-original' || legacy === 'recover-before-readback') {
     const original = await journal.inspect();
     const restored = await kernel.recoverAbsProjectOperation(port, project, guard);
@@ -63,8 +77,23 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
     ...(legacy === 'advanced-intent' ? { concurrentEdits: 'request-priority', intentGeneration: input.baseProjection.map.generation,
       sourceEdits: [[{ start, end: start + 3, text: '102' }]] } : {}),
     candidate: { hash: await kernel.hashAbsText(source), bytes: Buffer.byteLength(source) }, workspaceRevision: 1 };
-  const operationId = await journal.begin({ kind: 'abs-apply', document, disk,
-    candidate: { source, hash: validation.candidate.hash, generation: validation.base.generation }, application: { requestId, validation } }, guard);
+  const original = { kind: 'abs-apply', document, disk,
+    candidate: { source, hash: validation.candidate.hash, generation: validation.base.generation }, application: { requestId, validation } };
+  if (legacy === 'index-before-pointer') {
+    const before = await port.read('operation.json');
+    const intercepted = { ...port, withLock: run => port.withLock(storage => run({ ...storage, replace: async (key, expected, content) => {
+      const written = await storage.replace(key, expected, content);
+      if (written && key.startsWith('recoveries/request-') && content !== null) {
+        assert.equal(await storage.read('operation.json'), before);
+        const index = JSON.parse(content);
+        process.send({ event: 'ready', requestId, operationId: index.operationId, executor: port.executor });
+        await waitForKill();
+      }
+      return written;
+    } })) };
+    return new kernel.AbsOperationJournal(intercepted, project).begin(original, guard);
+  }
+  const operationId = await journal.begin(original, guard);
   const ready = () => process.send({ event: 'ready', requestId, operationId, document, executor: port.executor, attachment: port.attachment });
   if (legacy === 'staged-before-abi') {
     await store.stage(input.next, input.expectedPointerHash);

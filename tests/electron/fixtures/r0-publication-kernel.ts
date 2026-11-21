@@ -8,6 +8,7 @@ export { blockStatePublicationIdentity, nativeSaveIndexKey, nativeSaveSettlement
 export { observeNativePublication } from '../../../src/app/integrations/blockly/abs/abs-native-save-observation';
 export { settleOriginalBoardEnvironment } from '../../../src/app/integrations/blockly/environment-settlement';
 export { recoverAbsProjectOperation } from '../../../src/app/integrations/blockly/abs/abs-project-restart';
+export { recoverAbsBaseline } from '../../../src/app/integrations/blockly/abs/abs-baseline-recovery';
 export { absJson, hashAbsText, createAbsProjection } from '../../../src/app/integrations/blockly/abs/abs-identity-map';
 export { generationEvidence } from '../../../src/app/integrations/blockly/abs/abs-generation-protocol';
 export { ProjectSaveReceipts } from '../../../src/app/services/domains/project/project-save-receipts';
