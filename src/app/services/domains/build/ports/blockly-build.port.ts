@@ -7,6 +7,7 @@ export interface BlocklyBuildInput {
   projectPath: string;
   graphSemanticRevision?: string;
   requestId?: string;
+  preprocessOnly?: boolean;
   clearCache?: boolean;
 }
 

@@ -63,29 +63,33 @@ function readOptional(read, ...args) {
     try { return read(...args); } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
 }
 
-function isUnindexedPreprocess(store, record) {
+function ownsStandalonePreprocess(store, record) {
     if (readOptional(fs.lstatSync, store.pointer)) {
         const current = json(store.pointer);
         if (current?.version !== 1 || !UUID.test(current.id) || current.id === record.id) return false;
     }
     const requests = readOptional(directory, store.parent, 'requests', false);
-    return !(requests && readOptional(fs.lstatSync, path.join(requests, `${hash(record.buildRequestId)}.json`)));
+    const index = requests && readOptional(json, path.join(requests, `${hash(record.buildRequestId)}.json`));
+    return record.explicitPreprocess === true
+        ? index?.version === 1 && index.operation === 'preprocess' && index.id === record.id && index.buildRequestId === record.buildRequestId
+        : !index;
 }
 
 function retirePreprocessInputs(store, id) {
     try {
         if (!UUID.test(id)) return;
         const folder = directory(store.parent, id, false), filename = path.join(folder, 'execution.json');
-        const isTerminal = record => record?.version === 1 && record.id === id && record.operation === 'preprocess'
-            && TERMINAL_STATUSES.includes(record.status) && !record.preprocessInputsRetired;
-        if (!isTerminal(json(filename))) return;
+        const canRetire = record => record?.version === 1 && record.id === id && record.operation === 'preprocess'
+            && !record.preprocessInputsRetired && (TERMINAL_STATUSES.includes(record.status) || record.explicitPreprocess === true);
+        if (!canRetire(json(filename))) return;
         executionTransition({ folder }, () => {
             const record = json(filename);
-            if (!isTerminal(record) || !/^[a-f0-9]{64}$/.test(record.inputDigest)
+            if (!canRetire(record) || !/^[a-f0-9]{64}$/.test(record.inputDigest)
                 || typeof record.buildRequestId !== 'string' || !REQUEST_ID.test(record.buildRequestId)) return;
-            if (readOutcome({ folder, record })?.status !== record.status) return;
+            const outcome = readOutcome({ folder, record });
+            if (!outcome || (outcome.status !== record.status && outcome.status !== 'cancelled')) return;
 
-            if (!isUnindexedPreprocess(store, record)) return;
+            if (!ownsStandalonePreprocess(store, record)) return;
 
             // A copied archive may describe a different absolute project location.
             // Use the local physical directory and its actual leases, never that old path.
@@ -102,7 +106,7 @@ function retirePreprocessInputs(store, id) {
                     idle.assertIdle();
                     fs.rmSync(input, { recursive: true });
                 }
-                write(filename, { ...record, preprocessInputsRetired: true });
+                write(filename, { ...record, status: outcome.status, preprocessInputsRetired: true });
             } finally { idle.release(); }
         });
     } catch { /* Retain ambiguous or busy executions and retry on a future build. */ }
@@ -235,16 +239,30 @@ function prepareBuildExecution(config, workspace, operation = 'compile') {
         || !['compile', 'preprocess'].includes(operation)) fail('Invalid execution request.');
     const store = storage(config.currentProjectPath, true);
     if (JSON.parse(fs.readFileSync(path.join(store.root, 'package.json'), 'utf8')).type === 'coder') fail('Coder execution uses its own build contract.');
-    const id = randomUUID(), folder = directory(store.parent, id), root = directory(folder, 'project');
+    const explicitPreprocess = operation === 'preprocess' && config.explicitPreprocess === true;
+    const id = randomUUID(), buildRequestId = config.buildRequestId || id;
+    if (typeof buildRequestId !== 'string' || !REQUEST_ID.test(buildRequestId) || (explicitPreprocess && !config.buildRequestId))
+        fail('Invalid build request identity.');
+    const index = operation === 'compile' || explicitPreprocess
+        ? path.join(directory(store.parent, 'requests'), `${hash(buildRequestId)}.json`) : null;
+    const assertIndexAvailable = () => {
+        const previous = readOptional(json, index);
+        if (previous && (operation !== 'compile' || previous.operation === 'preprocess'
+            || !UUID.test(config.executionRetryOf) || previous.id !== config.executionRetryOf)) {
+            throw Object.assign(new Error('BUILD_EXECUTION_EXISTS: Inspect the existing request instead of starting it twice.'),
+                { code: 'BUILD_EXECUTION_EXISTS', buildRequestId });
+        }
+    };
+    if (index) assertIndexAvailable();
+    const folder = directory(store.parent, id), root = directory(folder, 'project');
     const inputDigest = snapshot(config, root, true);
     if (snapshot(config, root, false) !== inputDigest) fail('Project inputs changed during execution capture.');
     applyGeneratorInputs(root, config);
     const execution = { version: 1, id, logicalProjectPath: store.root, inputDigest,
-        buildRequestId: config.buildRequestId || id, operation,
+        buildRequestId, operation, ...(explicitPreprocess ? { explicitPreprocess } : {}),
         ...(fs.existsSync(path.join(root, 'project.abi'))
             ? { abiHash: `sha256:${hash(fs.readFileSync(path.join(root, 'project.abi')))}` } : {}),
         ...(config.executionRetryOf ? { retryOf: config.executionRetryOf } : {}) };
-    if (typeof execution.buildRequestId !== 'string' || !REQUEST_ID.test(execution.buildRequestId)) fail('Invalid build request identity.');
     const prepared = { ...config, currentProjectPath: root, partitionFilePath: path.join(root, 'partitions.csv'), execution };
     delete prepared.sourceCapture;
     delete prepared.savedBuildComparison;
@@ -255,14 +273,10 @@ function prepareBuildExecution(config, workspace, operation = 'compile') {
     }
     write(path.join(folder, 'execution.json'), { ...execution, status: 'prepared', sourceCapture: prepared.sourceCapture });
     write(path.join(folder, 'config.json'), prepared);
-    if (operation === 'compile') locked(store, () => {
-        const index = path.join(directory(store.parent, 'requests'), `${hash(execution.buildRequestId)}.json`);
-        if (fs.existsSync(index) && (!UUID.test(execution.retryOf) || json(index).id !== execution.retryOf)) {
-            throw Object.assign(new Error('BUILD_EXECUTION_EXISTS: Inspect the existing request instead of starting it twice.'),
-                { code: 'BUILD_EXECUTION_EXISTS', buildRequestId: execution.buildRequestId });
-        }
-        write(index, { version: 1, id, buildRequestId: execution.buildRequestId });
-        write(store.pointer, { version: 1, id, buildRequestId: execution.buildRequestId });
+    if (index) locked(store, () => {
+        assertIndexAvailable();
+        write(index, { version: 1, id, buildRequestId, ...(explicitPreprocess ? { operation } : {}) });
+        if (operation === 'compile') write(store.pointer, { version: 1, id, buildRequestId });
     });
     return prepared;
 }
@@ -274,6 +288,7 @@ function recordFor(config) {
     if (!samePath(fs.realpathSync(config.currentProjectPath), root)) fail('Execution path does not belong to its request.');
     const record = json(path.join(folder, 'execution.json'));
     if (record.id !== execution.id || record.inputDigest !== execution.inputDigest || record.buildRequestId !== execution.buildRequestId
+        || record.operation !== execution.operation || record.explicitPreprocess !== execution.explicitPreprocess
         || record.abiHash !== execution.abiHash
         || JSON.stringify(record.buildSnapshot) !== JSON.stringify(execution.buildSnapshot)
         || !samePath(record.logicalProjectPath, store.root) || JSON.stringify(record.sourceCapture) !== JSON.stringify(config.sourceCapture)) fail('Execution binding changed.');
@@ -354,7 +369,7 @@ function abandonPreparedPreprocess(config) {
         const { record: current } = recordFor(config);
         if (current.version !== 1 || current.operation !== 'preprocess' || current.status !== 'prepared' || current.owner
             || typeof current.buildRequestId !== 'string' || !REQUEST_ID.test(current.buildRequestId)
-            || !isUnindexedPreprocess(value.store, current)) return false;
+            || !ownsStandalonePreprocess(value.store, current)) return false;
         const idle = inspectBuildWorkspaceIdle(value.root);
         try {
             idle.assertIdle();
@@ -471,7 +486,7 @@ function historicalBuildReference(record, folder) {
         && typeof capture.sourceSha256 === 'string' && SHA256.test(capture.sourceSha256) && digest === hash(JSON.stringify(capture))
         && capture.projectLocationSha256 === hash(process.platform === 'win32' ? sourceRoot.toLowerCase() : sourceRoot)
         ? capture.sourceSha256 : undefined;
-    return { version: 1, operation: 'compile', executionId: id, buildRequestId, inputDigest,
+    return { version: 1, operation: record.operation, executionId: id, buildRequestId, inputDigest,
         ...(sourceSha256 ? { sourceSha256 } : {}) };
 }
 
@@ -485,7 +500,9 @@ function inspectBuildExecution(projectPath, buildRequestId) {
         if (index.version !== 1 || index.buildRequestId !== buildRequestId || !UUID.test(index.id)) return null;
         const folder = directory(store.parent, index.id, false);
         const record = json(path.join(folder, 'execution.json'));
-        if (record.version !== 1 || record.operation !== 'compile' || record.id !== index.id
+        const operation = index.operation ?? 'compile';
+        if (record.version !== 1 || !['compile', 'preprocess'].includes(operation) || record.operation !== operation
+            || (operation === 'preprocess' && record.explicitPreprocess !== true) || record.id !== index.id
             || record.buildRequestId !== buildRequestId || typeof record.inputDigest !== 'string' || !SHA256.test(record.inputDigest)
             || !samePath(record.logicalProjectPath, store.root)) return null;
         let current;
@@ -493,7 +510,7 @@ function inspectBuildExecution(projectPath, buildRequestId) {
         const outcome = readOutcome({ folder, record });
         if (!outcome && !['prepared', 'running'].includes(record.status)) return null;
         let status = outcome?.status ?? record.status, ownerState;
-        const isCurrent = current?.id === record.id && current.buildRequestId === buildRequestId;
+        const isCurrent = operation === 'compile' && current?.id === record.id && current.buildRequestId === buildRequestId;
         const resolved = status === 'completed' && isCurrent ? resolveBuildExecution(projectPath) : null;
         const selected = resolved?.buildRequestId === buildRequestId
             && samePath(resolved.currentProjectPath, path.join(folder, 'project')) ? resolved : null;
@@ -515,16 +532,16 @@ function inspectBuildExecution(projectPath, buildRequestId) {
         }
         const buildLog = outcome && readBuildLogReference(store, projectPath, buildRequestId);
         if (JSON.stringify(json(indexPath)) !== JSON.stringify(index)) return null;
-        return { version: 1, executionId: record.id, buildRequestId, status, inputDigest: record.inputDigest,
+        return { version: 1, operation, executionId: record.id, buildRequestId, status, inputDigest: record.inputDigest,
             ...(record.buildSnapshot ? { buildSnapshot: record.buildSnapshot } : {}),
-            ...(record.abiHash ? { buildInput: { version: 1, executionId: record.id, buildRequestId,
+            ...(operation === 'compile' && record.abiHash ? { buildInput: { version: 1, executionId: record.id, buildRequestId,
                 inputDigest: record.inputDigest, abiHash: record.abiHash } } : {}),
             ...(outcome ? { buildHistory: historicalBuildReference(record, folder) } : {}),
             ...(buildLog ? { buildLog } : {}),
             ...(ownerState ? { ownerState } : {}),
             nextAction: status === 'running' && ownerState === 'live' ? 'observe-original'
                 : ['prepared', 'interrupted', 'unconfirmed'].includes(status) ? 'new-execution-required'
-                : status === 'completed' && !selected ? 'rebuild-current-inputs' : 'terminal',
+                : operation === 'compile' && status === 'completed' && !selected ? 'rebuild-current-inputs' : 'terminal',
             current: isCurrent, ...(selected ? { result: selected } : {}) };
     } catch { return null; }
 }

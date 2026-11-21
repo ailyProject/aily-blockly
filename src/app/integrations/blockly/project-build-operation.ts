@@ -8,20 +8,9 @@ export async function runProjectBuild(
   projectPath: string,
 ): Promise<HostToolResult> {
   try {
-    if (input.preprocessOnly) {
-      if (input.clearCache) await builderService.triggerPreprocessWithCacheClear(projectPath, 'host_live_operation');
-      else builderService.triggerPreprocess('host_live_operation');
-      return {
-        is_error: false,
-        content: JSON.stringify({
-          success: true,
-          message: '预编译已触发；该操作异步执行。',
-        }),
-      };
-    }
-
     const result = await builderService.build(undefined, {
       source: 'ai',
+      ...(input.preprocessOnly ? { preprocessOnly: true } : {}),
       requestId: input.requestId,
       expectedProjectPath: projectPath,
       clearCache: input.clearCache,
@@ -31,7 +20,7 @@ export async function runProjectBuild(
       metadata: { buildResult: result },
       content: JSON.stringify({
         success: true,
-        message: '编译成功。',
+        message: input.preprocessOnly ? '预处理成功。' : '编译成功。',
       }),
     };
   } catch (error: any) {
@@ -48,14 +37,18 @@ export async function runProjectBuild(
     const sourceFailure = staleSource?.code === 'BUILD_SOURCE_STALE'
       ? { code: staleSource.code, sourceReason: staleSource.sourceReason }
       : {};
+    const operation = input.preprocessOnly ? '预处理' : '编译';
+    const status = error?.buildOutcome === 'not-started' ? '未开始'
+      : input.preprocessOnly && error?.buildOutcome === 'unknown' ? '结果未确认' : '失败';
     return {
       is_error: true,
       metadata: { buildOutcome: error?.buildOutcome, ...sourceFailure,
-        buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr, buildLog: error?.buildLog } },
+        buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr,
+          buildLog: error?.buildLog, ...(error?.buildHistory ? { buildHistory: error.buildHistory } : {}) } },
       content: JSON.stringify({
         success: false,
         ...sourceFailure,
-        message: `${error?.buildOutcome === 'not-started' ? '编译未开始' : '编译失败'}: ${buildResult?.text || error?.message || String(error)}`,
+        message: `${operation}${status}: ${buildResult?.text || error?.message || String(error)}`,
       }),
     };
   }
