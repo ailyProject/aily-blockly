@@ -2,6 +2,7 @@ import type { DeclarativeBlockSnapshot } from '../../../editors/blockly-editor/s
 import { captureAbsDeclarativeContracts } from './abs-declarative-contracts';
 import { captureAbsCustomFunctions } from './abs-custom-functions';
 import { captureAbsVariableDeclarations } from './abs-declaration-intents';
+import { readDeclaredAbsFieldShape } from './abs-declared-field-shape';
 
 /** Discovery is advice, never an apply receipt. No instance, serializer or generator callbacks. */
 export function captureAbsBlockCapabilities(snapshot: DeclarativeBlockSnapshot, nativeValidation = false) {
@@ -16,9 +17,12 @@ export function captureAbsBlockCapabilities(snapshot: DeclarativeBlockSnapshot, 
     const procedure = snapshot.procedure?.(type);
     if (procedure) return { type, level: 'reshape' as const, contract: 'bundled-procedures-v1', procedure };
     const shape = shapes.get(type);
-    if (!shape) return nativeValidation
-      ? { type, level: 'validate' as const, contract: 'native-sync-v1', reason: 'candidate-validation-required' }
-      : { type, level: 'preserve-only' as const, reason: 'no-prepared-shape-contract' };
+    if (!shape) {
+      if (!nativeValidation) return { type, level: 'preserve-only' as const, reason: 'no-prepared-shape-contract' };
+      const declaredFieldShape = readDeclaredAbsFieldShape(snapshot.get(type));
+      return { type, level: 'validate' as const, contract: 'native-sync-v1', reason: 'candidate-validation-required',
+        ...(declaredFieldShape ? { declaredFieldShape } : {}) };
+    }
     // Defaults can contain large payloads; discovery needs field constraints and connection kinds only.
     const { defaults, ...constraints } = shape;
     if (shape.mutation) return { type, level: 'reshape' as const, contract: 'structural-mutator-v1', shape: constraints };
