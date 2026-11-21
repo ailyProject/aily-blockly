@@ -310,7 +310,7 @@ test('a second process interruption leaves only old indexed ABS writer proof aft
     assert.equal(result.publication.status, 'UNKNOWN');
     assert.equal(result.currentDocumentRecovery, undefined);
     assert.equal(result.publicationObservation, undefined);
-    assert.deepEqual(result.applicationObservation, { version: 1, requestId: old.requestId, current: false });
+    assert.deepEqual(result.applicationObservation, { version: 1, requestId: old.requestId, observationOnly: true, resultKnown: false, current: false });
     const proof = result.writerObservation;
     assert.equal(proof.kind, 'indexed-application-retired');
     assert.equal(proof.operationId, old.operationId);

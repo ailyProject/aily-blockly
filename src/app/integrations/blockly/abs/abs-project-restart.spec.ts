@@ -121,13 +121,21 @@ describe('same-project durable operation recovery', () => {
   });
   it('keeps a competing writer before the moved-view archive instead of adopting it as the migration source', async () => {
     await (await save('saved')).commit(); await operation();
-    const external = JSON.stringify(document('concurrent complete source')), before = [...files]; let raced = false;
-    const racing: AbsSyncStoragePort = { read: key => port.read(key), withLock: operation => {
-      if (!raced) { raced = true; files.set('project.abi', external); }
-      return port.withLock(operation);
-    } };
+    const external = JSON.stringify(document('concurrent complete source')), before = [...files];
+    let inspectedSource = false, raced = false;
+    const racing: AbsSyncStoragePort = {
+      read: key => {
+        if (key === 'committed.json') inspectedSource = true;
+        return port.read(key);
+      },
+      withLock: operation => {
+        if (inspectedSource && !raced) { raced = true; files.set('project.abi', external); }
+        return port.withLock(operation);
+      },
+    };
     await expectAsync(recoverAbsProjectOperation(racing, 'moved-same-project', () => {}))
       .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_OPERATION_CONFLICT' }));
+    expect(raced).toBeTrue();
     expect(files.get('project.abi')).toBe(external);
     expect([...files].filter(([key]) => key !== 'project.abi')).toEqual(before.filter(([key]) => key !== 'project.abi'));
   });

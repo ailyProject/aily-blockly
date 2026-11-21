@@ -12,13 +12,13 @@ const movedOperation = (retained: LocationOperation | null, port: AbsSyncStorage
     && absJson(retained.operation.attachment) !== absJson(port.attachment)));
 const unprovenCopy = () => new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN',
   'The copied transaction and the saved source or original writer could not be verified. All versions were retained.');
+const digest = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
 const matchesLocationAuthor = async (current: NonNullable<Awaited<ReturnType<AbsBaselineStore['readCommittedSnapshot']>>>, abs: string | null) =>
   abs === current.projection.abs || abs !== null && current.workspaceMode === 'project-v1'
   && current.authorSource?.hash === await hashAbsText(abs);
 
-async function settleCopiedTransaction(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
+async function inspectCopiedTransaction(port: AbsSyncStoragePort, project: string) {
   const observed = new Map<string, string | null>();
-  const digest = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
   const read = async (key: string) => {
     const value = await port.read(key);
     const hash = await digest(value);
@@ -45,50 +45,72 @@ async function settleCopiedTransaction(port: AbsSyncStoragePort, project: string
   });
   if (!recovery || source.application && !await new AbsOperationJournal(inspection, source.project)
       .matchesCopiedApplication(retained, recovery.generation, pageId)) throw unprovenCopy();
-  assertCurrent();
-  await port.retireCopiedLock({ original, expected: Object.fromEntries(observed) });
-  return {
-    recovery,
-    store: new AbsBaselineStore({ ...port, withLock: operation => port.withLock(async storage => {
-      for (const [key, hash] of observed) if (await digest(await storage.read(key)) !== hash) throw unprovenCopy();
-      assertCurrent();
-      return operation(storage);
-    }) }, scope),
-  };
+  return { original, expected: Object.fromEntries(observed), recovery };
 }
 
-/** Finish only the transaction whose actual ABI was already committed. An
- * unstarted transaction is abandoned; candidate input is never replayed. */
-export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
-  if (await port.read('prepared.json') === null) return;
-  const retained = await new AbsOperationJournal(port, project).inspectLocation();
-  const moved = movedOperation(retained, port, project);
-  let recovery: AbsJournalRecovery | null;
-  try { recovery = await new AbsBaselineStore(port, { projectKey: project, pageId: '' }).inspectJournalRecovery(); }
-  catch (error) {
-    if (!moved || (error as { code?: string })?.code !== 'PROJECT_FILE_LOCK_CHANGED') throw error;
-    recovery = null;
-  }
-  // A second interruption may already have a new target-local metadata
-  // generation. Recovery still uses its own scope; the old request stays historical.
-  const copied = moved && (!recovery || recovery.scope.projectKey !== project || retained?.operation.project === project)
-    ? await settleCopiedTransaction(port, project, assertCurrent) : null;
-  if (!moved && retained?.operation.nativeSave) {
-    const original = retained.operation;
-    const ref = await new AbsOperationJournal(port, original.project).findDocumentSave(original.nativeSave!, assertCurrent);
-    if (!ref) throw new AbsSyncError('ABS_NATIVE_SAVE_OBSERVATION_INVALID', 'The interrupted native publication has no original admission.');
-  }
-  recovery = copied?.recovery ?? recovery;
+type CopiedTransaction = Awaited<ReturnType<typeof inspectCopiedTransaction>>;
+
+async function verifyCopiedTransaction(port: AbsSyncStoragePort, { expected }: CopiedTransaction) {
+  for (const [key, hash] of Object.entries(expected)) if (await digest(await port.read(key)) !== hash) throw unprovenCopy();
+}
+
+async function settlePreparedJournal(port: AbsSyncStoragePort, recovery: AbsJournalRecovery, assertCurrent: () => void) {
   assertCurrent();
-  if (!recovery) throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', 'The interrupted save conflicts with current files. All versions were retained.');
-  if (!copied && recovery.scope.projectKey !== project) throw new AbsSyncError('ABS_SCOPE_INVALID', 'An interrupted transaction belongs to another project; its identity was not rebound.');
-  const store = copied?.store ?? new AbsBaselineStore(port, recovery.scope);
+  const store = new AbsBaselineStore(port, recovery.scope);
   if (recovery.action === 'abandon') await store.abandon(recovery.generation, recovery.token);
   else {
     const result = await store.recover(assertCurrent, recovery);
     if (result?.status !== 'COMMITTED') throw new AbsSyncError('ABS_RESTORE_INCOMPLETE', result?.error ?? 'The saved document transaction has not converged.');
   }
   assertCurrent();
+}
+
+/** Finish only the transaction whose actual ABI was already committed. An
+ * unstarted transaction is abandoned; candidate input is never replayed. */
+export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
+  let entered = false;
+  const settleUnderLock = (copied?: CopiedTransaction) => port.withLock(async storage => {
+    entered = true;
+    assertCurrent();
+    // An earlier writer or recovery may already have cleared this journal.
+    if (await storage.read('prepared.json') === null) return;
+    // Reuse the exact journal checks and CAS with the lock already held.
+    const locked: AbsSyncStoragePort = { ...port, read: key => storage.read(key), withLock: action => action(storage) };
+    if (copied) {
+      await verifyCopiedTransaction(locked, copied);
+      return settlePreparedJournal(locked, copied.recovery, assertCurrent);
+    }
+    const journal = new AbsOperationJournal(locked, project);
+    const retained = await journal.inspectLocation();
+    const moved = movedOperation(retained, locked, project);
+    const recovery = await new AbsBaselineStore(locked, { projectKey: project, pageId: '' }).inspectJournalRecovery();
+    // A second interruption may already have a new target-local metadata
+    // generation. Recovery still uses its own scope; the old request stays historical.
+    if (moved && (!recovery || recovery.scope.projectKey !== project || retained?.operation.project === project)) {
+      const proof = await inspectCopiedTransaction(locked, project);
+      await verifyCopiedTransaction(locked, proof);
+      return settlePreparedJournal(locked, proof.recovery, assertCurrent);
+    }
+    if (!moved && retained?.operation.nativeSave) {
+      const ref = await journal.findDocumentSave(retained.operation.nativeSave, assertCurrent);
+      if (!ref) throw new AbsSyncError('ABS_NATIVE_SAVE_OBSERVATION_INVALID', 'The interrupted native publication has no original admission.');
+    }
+    assertCurrent();
+    if (!recovery) throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', 'The interrupted save conflicts with current files. All versions were retained.');
+    if (recovery.scope.projectKey !== project) throw new AbsSyncError('ABS_SCOPE_INVALID', 'An interrupted transaction belongs to another project; its identity was not rebound.');
+    await settlePreparedJournal(locked, recovery, assertCurrent);
+  });
+  try { await settleUnderLock(); }
+  catch (error) {
+    if (entered || (error as { code?: string })?.code !== 'PROJECT_FILE_LOCK_CHANGED' || !port.retireCopiedLock) throw error;
+    // A foreign marker must be proven before the normal target lock can be acquired.
+    if (await port.read('prepared.json') === null) return;
+    if (!movedOperation(await new AbsOperationJournal(port, project).inspectLocation(), port, project)) throw error;
+    const copied = await inspectCopiedTransaction(port, project);
+    assertCurrent();
+    await port.retireCopiedLock({ original: copied.original, expected: copied.expected });
+    await settleUnderLock(copied);
+  }
 }
 
 /** Cold-start recovery returns the complete *previous view*. It never applies
