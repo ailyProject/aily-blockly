@@ -12,6 +12,7 @@ function isProjectWriterTransient(relativePath) {
   const normalized = relativePath.split(path.sep).join('/');
   const name = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
   return name === '.aily/project-files.write.lock'
+    || /^\.aily\/\.project-files\.write\.lock\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/.test(name)
     || name === '.aily/project-open.lock'
     || name === '.aily/build-executions'
     || BUILD_WORKSPACE_OWNER_FILES.has(name)
