@@ -349,18 +349,21 @@ export class AbsOperationJournal {
         assertCurrent(); return true;
       };
       if (!await unchanged(!!retained)) return null;
-      const writer = await this.port.observeExecutor!(original.executor);
-      if (!exitedApplicationWriter(writer)) return null;
-      if (staged !== null && !await this.matchesRestoredStage(storage, record, staged)) return null;
-      const oldWriter = retained ? retained.recovery?.oldWriter : writer;
+      const oldWriter = retained ? retained.recovery?.oldWriter : await this.port.observeExecutor!(original.executor);
       if (!exitedApplicationWriter(oldWriter)) return null;
+      if (staged !== null && !await this.matchesRestoredStage(storage, record, staged)) return null;
       const recoveryObserver = retained ? nativeSaveCapability({ attachment: observer.attachment, executor: retained.recovery.observerExecutor }).executor
         : observer.executor;
       if (!retained) await readback!(record.document);
       assertCurrent();
       if (!await unchanged(!!retained)) return null;
       const finalWriter = await this.port.observeExecutor!(original.executor);
-      if (!exitedApplicationWriter(finalWriter) || !retained && absJson(finalWriter) !== absJson(writer)) return null;
+      if (retained) {
+        // A transient probe failure cannot undo a sealed exit and Working readback.
+        const unavailable = finalWriter?.version === 1 && finalWriter.state === 'unknown'
+          && (finalWriter.reason === 'identity-unavailable' || finalWriter.reason === 'process-unavailable');
+        if (!exitedApplicationWriter(finalWriter) && !unavailable) return null;
+      } else if (absJson(finalWriter) !== absJson(oldWriter)) return null;
       const recovery: RestoredApplicationRecord['recovery'] = { version: 1, scope: 'restored-working-document', state: 'restored', requestId, operationId: pointer.id,
         snapshotHash: index.snapshotHash, operationPointerHash: await hashAbsText(pointerText),
         documentHash: await hashAbsText(absJson(record.document)), attachment: observer.attachment,

@@ -17,15 +17,8 @@ before(() => {
       '@domain/project/project-data/public-api': path.join(__dirname, 'fixtures/r0-publication-domain-exports.ts') } });
   kernel = require(bundle);
 });
-async function fixture(legacy = false, projectMode = false) {
-  const project = fs.mkdtempSync(path.join(root, 'project-'));
-  await new Promise((resolve, reject) => {
-    const child = fork(path.join(__dirname, 'fixtures/r0-publication-worker.cjs'), ['fixture', project, bundle],
-      { execPath: process.execPath, windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
-    child.once('exit', code => code === 0 ? resolve() : reject(Error('Fixture failed ' + code)));
-  });
-  if (projectMode) fs.writeFileSync(path.join(project, '.aily/workspace-mode.json'), '{"version":1,"mode":"project-v1"}');
-  const child = fork(path.join(__dirname, 'fixtures/r1-restored-application-worker.cjs'), [project, bundle, legacy === true ? 'legacy' : legacy || ''],
+async function worker(project, mode) {
+  const child = fork(path.join(__dirname, 'fixtures/r1-restored-application-worker.cjs'), [project, bundle, mode],
     { execPath: process.execPath, windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
   children.add(child);
   const closed = new Promise(resolve => child.once('exit', () => { children.delete(child); resolve(); }));
@@ -34,8 +27,19 @@ async function fixture(legacy = false, projectMode = false) {
     child.once('message', value => { clearTimeout(timer); value.event === 'ready' ? resolve(value) : reject(Error(value.message)); });
     child.once('exit', () => { clearTimeout(timer); reject(Error('Original worker exited before ready')); });
   });
+  return { original, child, closed, stop: async () => { child.kill('SIGKILL'); await closed; } };
+}
+async function fixture(legacy = false, projectMode = false) {
+  const project = fs.mkdtempSync(path.join(root, 'project-'));
+  await new Promise((resolve, reject) => {
+    const child = fork(path.join(__dirname, 'fixtures/r0-publication-worker.cjs'), ['fixture', project, bundle],
+      { execPath: process.execPath, windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    child.once('exit', code => code === 0 ? resolve() : reject(Error('Fixture failed ' + code)));
+  });
+  if (projectMode) fs.writeFileSync(path.join(project, '.aily/workspace-mode.json'), '{"version":1,"mode":"project-v1"}');
+  const originalWorker = await worker(project, legacy === true ? 'legacy' : legacy || '');
   const port = await openProjectSyncStorage(project, guard), journal = new kernel.AbsOperationJournal(port, project);
-  return { project, original, port, journal, child, closed, stop: async () => { child.kill('SIGKILL'); await closed; } };
+  return { project, port, journal, ...originalWorker };
 }
 const recover = ctx => ctx.journal.inspectRestoredApplication(ctx.original.requestId, guard, async document => assert.deepEqual(document, ctx.original.document));
 
@@ -96,6 +100,44 @@ test('a project-v1 draft independent of the recovered Working document preserves
   assert.equal(reply.currentDocumentRecovery.oldWriter.state, 'exited');
   assert.equal(reply.currentDocumentRecovery.settlement.recordHash, await kernel.hashAbsText(stored));
   assert.equal(fs.readFileSync(source, 'utf8'), draft);
+});
+
+test('a second restart reuses the sealed original ABS fence when process identity is temporarily unavailable', async () => {
+  const ctx = await fixture('identical-document', true);
+  await ctx.stop();
+  const authorFile = path.join(ctx.project, 'project.abs'), draft = '# Preserve independent author changes across both restarts\n';
+  fs.writeFileSync(authorFile, draft);
+  const store = new kernel.AbsBaselineStore(ctx.port, { projectKey: ctx.project, pageId: 'main' });
+  const before = await store.captureDisk();
+  const recovery = await worker(ctx.project, 'recover-original');
+  await recovery.stop();
+  const cold = await openProjectSyncStorage(ctx.project, guard), marker = `recoveries/application-restored-${ctx.original.operationId}.json`;
+  assert.notEqual(ctx.original.executor.storagePid, recovery.original.executor.storagePid);
+  assert.notEqual(recovery.original.executor.storagePid, cold.executor.storagePid);
+  const inspect = (state, reason) => new kernel.AbsApplicationJournal({ ...cold, observeExecutor: async executor => {
+    assert.deepEqual(executor, ctx.original.executor);
+    return { version: 1, state, reason };
+  } }, ctx.project).observe(ctx.original.requestId, guard).then(({ result }) => result);
+
+  const reply = await inspect('unknown', 'identity-unavailable');
+  assert.equal(reply.publication.status, 'UNKNOWN');
+  assert.equal(reply.applicationObservation.current, false);
+  assert.equal(reply.currentDocumentRecovery?.settlement.recordHash, await kernel.hashAbsText(recovery.original.proof));
+  assert.equal(reply.currentDocumentRecovery.oldWriter.state, 'exited');
+  assert.equal(reply.currentDocumentRecovery.originalExecutor.storagePid, ctx.original.executor.storagePid);
+  assert.equal(reply.currentDocumentRecovery.observerExecutor.storagePid, recovery.original.executor.storagePid);
+  assert.equal((await inspect('active', 'process-matched')).currentDocumentRecovery, undefined, 'Positive contradictory evidence fails closed');
+  assert.equal((await inspect('unknown', 'invalid-executor')).currentDocumentRecovery, undefined, 'Malformed identity does not count as transient');
+  const record = JSON.parse(recovery.original.proof);
+  const file = path.join(ctx.project, '.aily/abs-sync', marker);
+  try {
+    record.recovery.documentHash = 'sha256:' + '0'.repeat(64);
+    fs.writeFileSync(file, JSON.stringify(record));
+    await assert.rejects(inspect('unknown', 'identity-unavailable'), { code: 'ABS_OPERATION_CONFLICT' });
+  } finally { fs.writeFileSync(file, recovery.original.proof); }
+  assert.equal(await cold.read(marker), recovery.original.proof);
+  assert.deepEqual(await store.captureDisk(), before);
+  assert.equal(fs.readFileSync(authorFile, 'utf8'), draft);
 });
 
 test('pending/completed/different pointers, changed mirrors, prepared or application facts never grant a restored Working fact', async () => {

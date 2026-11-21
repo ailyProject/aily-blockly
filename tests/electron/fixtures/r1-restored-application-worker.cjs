@@ -1,3 +1,4 @@
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { openProjectSyncStorage } = require('../../../electron/project-sync-storage');
@@ -6,6 +7,19 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
   const input = JSON.parse(fs.readFileSync(path.join(project, 'r0-input.json'), 'utf8'));
   const port = await openProjectSyncStorage(project, guard);
   const journal = new kernel.AbsOperationJournal(legacy === 'legacy' ? { read: key => port.read(key), withLock: run => port.withLock(run) } : port, project);
+  const waitForKill = () => new Promise(() => { process.on('message', () => {}); });
+  if (legacy === 'recover-original') {
+    const original = await journal.inspect();
+    const restored = await kernel.recoverAbsProjectOperation(port, project, guard);
+    assert.deepEqual(restored.document, original.document);
+    await journal.restored(restored.operationId, guard);
+    await journal.recordRestoredApplication(restored.operationId, guard, async document => assert.deepEqual(document, original.document));
+    const proof = await port.read(`recoveries/application-restored-${restored.operationId}.json`);
+    assert.ok(proof);
+    process.send({ event: 'ready', proof, executor: port.executor });
+    await waitForKill();
+    return;
+  }
   const store = new kernel.AbsBaselineStore(port, { projectKey: project, pageId: 'main' });
   if (legacy === 'advanced-intent') {
     await store.stage(input.next, input.expectedPointerHash);
@@ -28,7 +42,6 @@ const [project, bundle, legacy] = process.argv.slice(2), kernel = require(bundle
   const operationId = await journal.begin({ kind: 'abs-apply', document, disk,
     candidate: { source, hash: validation.candidate.hash, generation: validation.base.generation }, application: { requestId, validation } }, guard);
   const ready = () => process.send({ event: 'ready', requestId, operationId, document, executor: port.executor, attachment: port.attachment });
-  const waitForKill = () => new Promise(() => { process.on('message', () => {}); });
   if (legacy === 'staged-before-abi') {
     await store.stage(input.next, input.expectedPointerHash);
     const evidence = await kernel.generationEvidence(input.next.projection, input.next.abi);
