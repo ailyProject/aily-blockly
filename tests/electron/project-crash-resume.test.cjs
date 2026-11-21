@@ -201,7 +201,7 @@ test('a cold empty view only reopens the exact closed physical source from the o
   assert.equal(next.closedSessionHint(), null);
 });
 
-function interruptedOpen(name) {
+function originalOpen(name, { activated = true, completed = false } = {}) {
   const f = fixture(name), original = owner(), first = f.make(original);
   const destination = path.join(f.folder, 'destination'); fs.mkdirSync(destination);
   const reference = { version: 1, originalTargetPid: original.hostPid, originalInstanceId: original.instanceId,
@@ -210,14 +210,113 @@ function interruptedOpen(name) {
       sourceProject: f.project, targetProject: destination } };
   assert.equal(first.record(f.project).ok, true);
   assert.equal(first.recordNavigation(reference, null, rootAttachment(f.project)).ok, true);
-  assert.equal(first.record(destination).ok, true);
-  assert.equal(first.recordNavigation(reference, { state: 'open', project: destination, attachment: rootAttachment(destination) },
-    rootAttachment(f.project)).ok, true);
-  const next = f.make(owner(41002));
-  const restore = next.interruptedProject();
-  assert.equal(next.record(destination, { restore }).recoverySessionId, reference.sessionId);
-  return { f, next, reference, destination };
+  if (activated) {
+    assert.equal(first.record(destination).ok, true);
+    assert.equal(first.recordNavigation(reference, { state: 'open', project: destination, attachment: rootAttachment(destination) },
+      rootAttachment(f.project)).ok, true);
+  }
+  if (completed) assert.equal(first.finishNavigation(reference, { ok: true, project: destination }).ok, true);
+  return { f, first, reference, destination };
 }
+
+function interruptedOpen(name, { nextOptions, ...options } = {}) {
+  const original = originalOpen(name, options), { f, reference, destination } = original;
+  const next = f.make(owner(41002), nextOptions);
+  const restore = next.interruptedProject();
+  const view = next.record(destination, { restore });
+  assert.equal(view.recoverySessionId, reference.sessionId);
+  return { ...original, next, view };
+}
+
+test('a second interrupted startup grants only the exact original open to its new view', () => {
+  const { f, next, reference, destination, view } = interruptedOpen('repeat-hard-restoration');
+  const third = f.make(owner(41003)), restore = third.interruptedProject();
+  assert.equal(restore.project, destination);
+  const active = third.record(destination, { restore });
+  assert.equal(active.recoverySessionId, reference.sessionId);
+  assert.notEqual(active.activationViewId, view.activationViewId);
+  assert.equal(third.observeNavigation(destination, reference).activationViewId, active.activationViewId);
+  assert.equal(third.observeNavigation(destination, { ...reference, sessionId: randomUUID() }).navigationReceipt, undefined);
+  assert.equal(next.clear(destination, { retainInterruptedSource: true }).reason, 'different-owner');
+});
+
+test('a normal quit after a restored open switches projects preserves the source on the blank startup', () => {
+  const { f, next, reference, destination } = interruptedOpen('repeat-clean-restoration');
+  const selected = path.join(f.folder, 'selected'); fs.mkdirSync(selected);
+  const draft = path.join(f.project, 'project.abs'); fs.writeFileSync(draft, 'original source draft');
+  assert.equal(next.record(selected, { explicit: true }).ok, true);
+  assert.equal(next.closedSessionHint(), null);
+  assert.equal(next.suspend().ok, true);
+  const third = f.make(owner(41003));
+  assert.equal(third.interruptedProject().project, null, 'clean quit does not restart the unrelated selected project');
+  assert.deepEqual(third.closedSessionHint(), { project: f.project, sessionId: reference.sessionId });
+  assert.equal(third.canReopenFrom(reference, destination), false);
+  assert.equal(third.canReopenFrom(reference, f.project), true);
+  assert.equal(third.observeNavigation(null, reference).navigationReceipt.state, 'pending');
+  assert.equal(fs.readFileSync(draft, 'utf8'), 'original source draft');
+  fs.renameSync(destination, path.join(f.folder, 'original-destination')); fs.mkdirSync(destination);
+  assert.equal(third.closedSessionHint(), null, 'the target directory must still be the one recorded by the original open');
+});
+
+test('a normal quit before open activation retains the source until the original executor can be proven exited', () => {
+  const { f, first, reference } = originalOpen('clean-quit-before-activation', { activated: false });
+  assert.equal(first.suspend().ok, true);
+  assert.equal(first.closedSessionHint(), null, 'parking source metadata cannot retire its live writer');
+  assert.equal(f.make(owner(41002), { processState: () => true }).closedSessionHint(), null);
+  const next = f.make(owner(41002));
+  assert.equal(next.interruptedProject().project, null);
+  assert.deepEqual(next.closedSessionHint(), { project: f.project, sessionId: reference.sessionId });
+  const observed = next.observeNavigation(null, reference);
+  assert.equal(observed.activationCurrent, false);
+  assert.equal(observed.navigationReceipt.state, 'pending');
+  assert.deepEqual(observed.writerDisposition, { version: 1, state: 'retired', reason: 'executor-exited' });
+});
+
+test('a second startup after revocation survived a cursor write failure cannot reoffer the old target session', () => {
+  let revokeBeforeCursor = false;
+  const files = { ...fs, renameSync(from, to) {
+    if (revokeBeforeCursor && path.basename(to) === 'active.json') throw Object.assign(new Error('Controlled EIO'), { code: 'EIO' });
+    return fs.renameSync(from, to);
+  } };
+  const { f, next, reference, destination } = interruptedOpen('repeat-revocation-before-cursor', { nextOptions: { files } });
+  const selected = path.join(f.folder, 'selected'); fs.mkdirSync(selected);
+  revokeBeforeCursor = true;
+  assert.equal(next.record(selected, { explicit: true }).code, 'EIO');
+  const third = f.make(owner(41003)), restore = third.interruptedProject();
+  assert.equal(restore.project, destination, 'the original physical cursor was still the last committed selection');
+  assert.equal(restore.navigation, undefined);
+  assert.equal(third.record(restore.project, { restore }).recoverySessionId, undefined);
+  assert.equal(third.observeNavigation(destination, reference).activationDisposition, 'superseded');
+  assert.equal(third.clear(destination, { retainInterruptedSource: true }).cleared, true);
+  assert.deepEqual(third.closedSessionHint(), { project: f.project, sessionId: reference.sessionId });
+});
+
+for (const acknowledged of [false, true]) {
+  test(`business result and conversation takeover stay separate across repeated startup (${acknowledged})`, () => {
+    const { f, next, reference, destination } = interruptedOpen(`repeat-completed-${acknowledged}`, { completed: true });
+    const selected = path.join(f.folder, 'selected'); fs.mkdirSync(selected);
+    if (acknowledged) assert.equal(next.acknowledgeNavigation(destination, reference).acknowledged, true);
+    assert.equal(next.record(selected, { explicit: true }).ok, true);
+    const third = f.make(owner(41003)), restore = third.interruptedProject();
+    assert.equal(restore.project, selected);
+    assert.equal(third.record(selected, { restore }).recoverySessionId, undefined);
+    assert.equal(third.clear(selected, { retainInterruptedSource: true }).cleared, true);
+    const historical = third.observeNavigation(null, reference);
+    assert.equal(historical.activationDisposition, 'superseded');
+    assert.equal(historical.navigationReceipt.state, 'completed');
+    assert.equal(historical.result.ok, true);
+    assert.deepEqual(third.closedSessionHint(), acknowledged ? null : { project: f.project, sessionId: reference.sessionId });
+  });
+}
+
+test('a normal quit on an unrelated ordinary project still starts blank without a session hint', () => {
+  const f = fixture('ordinary-clean-quit'), first = f.make(owner());
+  assert.equal(first.record(f.project).ok, true);
+  assert.equal(first.suspend().cleared, true);
+  const next = f.make(owner(41002));
+  assert.equal(next.interruptedProject().reason, 'no-record');
+  assert.equal(next.closedSessionHint(), null);
+});
 
 test('closing an unfinished restart activation retains only its original session source', async () => {
   const { f, next, reference, destination } = interruptedOpen('close-unfinished-restart');

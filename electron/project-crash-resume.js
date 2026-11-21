@@ -244,6 +244,33 @@ function createProjectCrashResume(options) {
     writeFile(store, stored, { ...stored.record, executorExited: true }, stored.file);
     stored.record.executorExited = true;
   };
+  const activeOpen = (cursor, navigation) => navigation?.activation?.state === 'open'
+    && !navigation.activationSuperseded && sameProject(navigation.activation.project, cursor?.project)
+    && sameProject(navigation.activation.project, navigation.reference.navigationRequest.targetProject)
+    && same(navigation.activation.attachment, cursor.attachment);
+  const pendingOpen = (store, cursor) => {
+    const stored = getNavigation(store, cursor?.pendingNavigation);
+    return stored && !stored.record.activation && !stored.record.result && same(stored.record.executor, cursor.executor)
+      ? stored : null;
+  };
+  const interruptedSource = (stored, awaitingExit = false) => {
+    if (!stored) return;
+    const { reference, sourceAttachment, activation, activationSuperseded, executorExited, result } = stored.record;
+    const { operation, sourceProject, targetProject } = reference.navigationRequest;
+    if (operation !== 'project_open' || !sameProject(sourceAttachment?.root, sourceProject) || !testAttachment(sourceAttachment)) return;
+    if (!activation) return !result && (executorExited || awaitingExit) ? sourceAttachment : undefined;
+    if (!activationSuperseded || activation.state !== 'open' || !sameProject(activation.project, targetProject)
+      || !sameProject(activation.attachment?.root, targetProject) || !testAttachment(activation.attachment)) return;
+    return sourceAttachment;
+  };
+  const parkInterruptedSource = (store, previous, reference, awaitingExit = false) => {
+    const record = previous.record;
+    const attachment = interruptedSource(getNavigation(store, reference), awaitingExit);
+    if (!attachment || !testAttachment(record.attachment)) return;
+    write(store, previous, { version: 1, profile, project: null, attachment, executor: record.executor,
+      viewId: randomUUID(), navigation: reference, closed: true, closedRecovery: true });
+    return { ok: true, cleared: true, closedSession: { project: attachment.root, sessionId: reference.sessionId } };
+  };
   const matchesView = (cursor, project, reference, attachment) => {
     if (!cursor || !same(cursor.navigation, reference) || !same(cursor.attachment, attachment)) return false;
     const executor = currentExecutor();
@@ -251,11 +278,9 @@ function createProjectCrashResume(options) {
     return same(cursor.executor, executor) && sameProject(cursor.project, project);
   };
   const retainedClosedSource = (cursor, reference, stored) => {
-    const { sourceAttachment, activation, executorExited } = stored?.record ?? {};
-    if (!cursor?.closedRecovery || !same(cursor.navigation, reference) || !ownsCursor(cursor, currentExecutor())
-      || !same(cursor.attachment, sourceAttachment) || !testAttachment(sourceAttachment)
-      || (activation ? activation.state !== 'open' || !testAttachment(activation.attachment) : !executorExited)) return;
-    return { project: sourceAttachment.root };
+    if (!cursor?.closedRecovery || !same(cursor.navigation, reference) || !ownsCursor(cursor, currentExecutor())) return;
+    const attachment = interruptedSource(stored);
+    if (attachment && same(cursor.attachment, attachment)) return { project: attachment.root };
   };
   const inspectNavigation = (store, cursor, project, reference) => {
     const stored = getNavigation(store, reference);
@@ -319,22 +344,23 @@ function createProjectCrashResume(options) {
         const activation = creation === undefined ? null : readCreation(creation);
         if (creation !== undefined && (!activation || !same(createdAttachment, attachment)))
           throw fault('PROJECT_CREATE_NAVIGATION_ATTACHMENT_CHANGED', 'The original creation does not match the active physical directory.');
-        const resumed = prior?.creation && restore?.reason === 'interrupted'
-          && same(restore.executor, prior.executor) && same(restore.creation, prior.creation)
-          && same(restore.attachment, prior.attachment);
+        const restoredCursor = prior && restore?.reason === 'interrupted'
+          && same(restore.executor, prior.executor) && same(restore.attachment, prior.attachment);
+        const resumed = prior?.creation && restoredCursor && same(restore.creation, prior.creation);
         const original = activation ?? (prior?.creation && same(prior.attachment, attachment) && (sameOwner || resumed) ? prior.creation : null);
-        const navigationResumed = prior?.navigation && restore?.reason === 'interrupted'
-          && same(restore.navigation, prior.navigation) && same(restore.executor, prior.executor)
-          && same(restore.attachment, prior.attachment);
+        const storedNavigation = getNavigation(store, prior?.navigation)?.record;
+        const navigationResumed = restoredCursor && prior.navigation && same(restore.navigation, prior.navigation);
         const sameView = !prior?.closed && same(prior?.attachment, attachment);
-        const navigation = !activation && !explicit && sameView && (sameOwner || navigationResumed) ? prior.navigation : undefined;
+        const navigation = !activation && !explicit && sameView && (sameOwner || navigationResumed)
+          && activeOpen(prior, storedNavigation) ? prior.navigation : undefined;
         let retainedNavigation = prior?.retainedNavigation;
-        if (prior?.navigation && !navigation && prior.resumedNavigation && !prior.navigationAcknowledged
-          && !getNavigation(store, prior.navigation)?.record.result) retainedNavigation ??= prior.navigation;
+        if (!navigation && storedNavigation?.activation?.state === 'open' && !prior.navigationAcknowledged
+          && (prior.resumedNavigation || restoredCursor && storedNavigation.activationSuperseded)) {
+          retainedNavigation ??= prior.navigation;
+        }
         if (prior?.pendingNavigation && !sameOwner) {
-          const interrupted = getNavigation(store, prior.pendingNavigation);
-          if (interrupted && !interrupted.record.activation && !interrupted.record.result
-            && same(interrupted.record.executor, prior.executor)) {
+          const interrupted = pendingOpen(store, prior);
+          if (interrupted) {
             retireExecutor(store, interrupted);
             if (interrupted.record.executorExited) retainedNavigation ??= prior.pendingNavigation;
           }
@@ -523,15 +549,8 @@ function createProjectCrashResume(options) {
         retireActivation(store, record);
         const recovery = record.retainedNavigation ?? (record.resumedNavigation && !record.navigationAcknowledged ? record.navigation : undefined);
         if (retainInterruptedSource && recovery && !record.closed) {
-          const stored = getNavigation(store, recovery)?.record;
-          const attachment = stored?.sourceAttachment;
-          if (stored && !stored.result && (stored.activation?.state === 'open'
-            ? stored.activationSuperseded && testAttachment(stored.activation.attachment)
-            : stored.executorExited) && testAttachment(record.attachment) && testAttachment(attachment)) {
-            write(store, previous, { version: 1, profile, project: null, attachment, executor,
-              viewId: randomUUID(), navigation: recovery, closed: true, closedRecovery: true });
-            return { ok: true, cleared: true, closedSession: { project: attachment.root, sessionId: recovery.sessionId } };
-          }
+          const parked = parkInterruptedSource(store, previous, recovery);
+          if (parked) return parked;
         }
         assertCurrent(store, previous); files.unlinkSync(store.file);
         return { ok: true, cleared: true };
@@ -542,6 +561,12 @@ function createProjectCrashResume(options) {
         const record = previous?.record;
         if (!record || !same(record.executor, currentExecutor()) || record.navigation || record.creation)
           return { ok: true, cleared: false };
+        // Normal quit keeps its blank startup, with an exact source only when
+        // an old open still awaits takeover. A pending writer must exit before
+        // the next reader can use the parked source.
+        const parked = parkInterruptedSource(store, previous, record.retainedNavigation)
+          ?? parkInterruptedSource(store, previous, pendingOpen(store, record)?.record.reference, true);
+        if (parked) return { ok: true, cleared: true };
         assertCurrent(store, previous); files.unlinkSync(store.file);
         return { ok: true, cleared: true };
       });
@@ -556,9 +581,10 @@ function createProjectCrashResume(options) {
         try { attachment = rootAttachment(record.project, files); } catch { /* Preserve the record if the physical root is missing or unavailable. */ }
         if (!same(attachment, record.attachment)) return { ok: true, project: null, reason: 'attachment-mismatch' };
         assertCurrent(store, previous);
+        const navigation = activeOpen(record, getNavigation(store, record.navigation)?.record) ? record.navigation : undefined;
         return { ok: true, project: record.project, attachment: record.attachment, executor: record.executor,
           ...(record.creation ? { creation: record.creation } : {}),
-          ...(record.navigation ? { navigation: record.navigation } : {}), reason: 'interrupted' };
+          ...(navigation ? { navigation } : {}), reason: 'interrupted' };
       });
     },
   };
