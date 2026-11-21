@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomBytes, randomUUID } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { projectFileHash: hash, projectFileFault: fault, projectFileGuard,
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
@@ -10,6 +10,7 @@ const digest = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.tes
 const same = isDeepStrictEqual;
 const fail = message => fault('ABS_WORKSPACE_MIGRATION_CONFLICT', message);
 const migrationOperation = 'abs_workspace_migration_status';
+const replaceOperation = 'abs_workspace_migration_replace';
 const modePath = '.aily/workspace-mode.json';
 const selected = Buffer.from(JSON.stringify({ version: 1, mode: 'project-v1' }) + '\n');
 
@@ -33,7 +34,8 @@ function readWorkspaceMigration(access, recordHash, guard) {
     return access.readRegular(path.join(root, ...segments));
   };
   const workspacePath = '.workspace-history/workspace.json';
-  const objectPath = `.workspace-history/objects/${recordHash.slice(0, 2)}/${recordHash}.blob`;
+  const archivePath = value => `.workspace-history/objects/${value.slice(0, 2)}/${value}.blob`;
+  const objectPath = archivePath(recordHash);
   const originalWorkspace = read(workspacePath), object = read(objectPath);
   if (originalWorkspace === null || hash(object) !== `sha256:${recordHash}`) throw fail('The prepared migration metadata or immutable record is missing.');
   let workspace, record;
@@ -66,10 +68,14 @@ function readWorkspaceMigration(access, recordHash, guard) {
   if (reused && workspaceMode(mode) !== 'project-v1') throw fail('The project mode changed independently of this prepared migration.');
   // The author plan may already have changed author bytes. Its accepted
   // ABI, map and committed head must still be exact.
-  const verify = () => {
+  const verifyIntent = () => {
     guard(); access.checkRoot();
     if (!same(read(workspacePath), originalWorkspace) || hash(read(objectPath)) !== `sha256:${recordHash}`)
       throw fail('Migration metadata changed during settlement.');
+    if (hash(read(modePath)) !== hash(mode)) throw fail('The selected mode changed during settlement.');
+  };
+  const verify = () => {
+    guard(); access.checkRoot();
     for (const [file, name] of checks) {
       if (reused && file === 'project.abs') continue;
       if (hash(read(file)) !== expected[name]) throw fail('A project file changed during migration settlement.');
@@ -80,9 +86,9 @@ function readWorkspaceMigration(access, recordHash, guard) {
       try { pointer = JSON.parse(operation.toString('utf8')); } catch {}
       if (pointer?.version !== 1 || pointer.state !== 'completed') throw fail('An original native operation must settle before migration.');
     }
-    if (hash(read(modePath)) !== hash(mode)) throw fail('The selected mode changed during settlement.');
+    verifyIntent();
   };
-  return { record, expected, executionMode, reused, read, verify };
+  return { record, expected, workspace, executionMode, reused, workspacePath, archivePath, read, verify, verifyIntent };
 }
 
 function migrationReceipt(recordHash, reused) {
@@ -117,6 +123,86 @@ async function observeProjectWorkspaceMigration(projectPath, input) {
   } catch (error) {
     return { ok: false, operation: migrationOperation, code: error.code ?? 'ABS_WORKSPACE_MIGRATION_CONFLICT',
       message: 'The original native migration could not be verified.' };
+  }
+}
+
+/** Take the same History directory lock used by the agent before native lock. */
+function acquireMigrationHistoryLock(access, guard) {
+  const history = path.join(access.root, '.workspace-history');
+  const directory = path.join(history, 'workspace.lock'), file = path.join(directory, 'owner.json');
+  const owner = Buffer.from(JSON.stringify({ pid: process.pid, token: `${process.pid}-${randomBytes(8).toString('hex')}`, createdAt: Date.now() }));
+  guard(); access.checkRoot(); access.checkDirectory(history);
+  try { fs.mkdirSync(directory); }
+  catch (error) {
+    if (error.code === 'EEXIST') throw fault('PROJECT_FILE_BUSY', 'The original History writer still owns this migration.');
+    throw error;
+  }
+  try { fs.writeFileSync(file, owner, { flag: 'wx', mode: 0o600 }); }
+  catch (error) { fs.rmdirSync(directory); throw error; }
+  access.checkDirectory(directory);
+  const assertOwned = () => {
+    access.checkRoot(); access.checkDirectory(history); access.checkDirectory(directory);
+    if (!same(access.readRegular(file), owner)) throw fail('The original History writer no longer owns this migration.');
+  };
+  return { assertOwned, release() { assertOwned(); fs.unlinkSync(file); fs.rmdirSync(directory); } };
+}
+
+/** Revoke an unselected writer under both History and native locks. No source
+ * or mode is changed, including when the previous selector wins the race. */
+async function replacePreparedWorkspaceMigration(projectPath, input, assertCurrent) {
+  try {
+    if (!path.isAbsolute(projectPath ?? '') || input?.version !== 1 || !bareHash(input.recordHash)
+      || !bareHash(input.replacementHash) || input.recordHash === input.replacementHash
+      || Object.keys(input).some(key => !['version', 'recordHash', 'replacementHash'].includes(key)))
+      throw fault('ABS_REQUEST_INVALID', 'Migration replacement requires exact original and successor records.');
+    const guard = projectFileGuard(assertCurrent), root = await fs.promises.realpath(projectPath);
+    const access = createProjectFileAccess(root, projectPath);
+    const history = acquireMigrationHistoryLock(access, guard);
+    let lock, temporary;
+    try {
+      lock = await acquireProjectFileLock(access, guard);
+      const { record, workspace, executionMode, reused, workspacePath, archivePath, read, verifyIntent } =
+        readWorkspaceMigration(access, input.recordHash, guard);
+      const verifyOwner = () => {
+        history.assertOwned(); lock.assertOwned(); verifyIntent();
+      };
+      verifyOwner();
+      if (!reused) {
+        if (workspace.executionMigration.phase !== 'prepared' || executionMode !== 'overlay-v1'
+          || record.modeBefore.text !== null && workspaceMode(Buffer.from(record.modeBefore.text)) !== 'overlay-v1')
+          throw fail('The original workspace is not an unselected prepared migration.');
+        const nextPath = archivePath(input.replacementHash), next = read(nextPath);
+        if (hash(next) !== `sha256:${input.replacementHash}`) throw fail('The replacement archive is missing.');
+        const successor = JSON.parse(next.toString('utf8'));
+        if (successor?.version !== record.version || successor.from !== record.from || successor.to !== record.to
+          || successor.previousRecordHash !== input.recordHash || !same(successor.attachment, access.attachment)
+          || !same(successor.accepted?.attachment, access.attachment) || !same(successor.modeBefore, record.modeBefore))
+          throw fail('The replacement archive is not bound to this original preparation.');
+        const target = path.join(root, workspacePath);
+        temporary = path.join(path.dirname(target), `.workspace-migration-${randomUUID()}.tmp`);
+        workspace.executionMigration.recordHash = input.replacementHash;
+        const handle = await fs.promises.open(temporary, 'wx', 0o600);
+        try { await handle.writeFile(JSON.stringify(workspace)); await handle.sync(); }
+        finally { await handle.close(); }
+        if (hash(read(nextPath)) !== `sha256:${input.replacementHash}`) throw fail('The replacement archive changed.');
+        verifyOwner();
+        fs.renameSync(temporary, target); temporary = undefined;
+      }
+      return { ok: true, operation: replaceOperation, project: root, replacement: { version: 1,
+        recordHash: input.recordHash, replacementHash: input.replacementHash, state: reused ? 'selected' : 'replaced' } };
+    } finally {
+      try {
+        if (temporary) { access.checkRoot(); access.checkDirectory(path.dirname(temporary)); fs.unlinkSync(temporary); }
+      } finally {
+        try {
+          const warnings = lock?.release();
+          if (warnings?.length) throw fail(warnings.join('; '));
+        } finally { history.release(); }
+      }
+    }
+  } catch (error) {
+    return { ok: false, operation: replaceOperation, code: error.code ?? 'ABS_WORKSPACE_MIGRATION_CONFLICT',
+      message: 'The original prepared migration could not be replaced.' };
   }
 }
 
@@ -186,4 +272,4 @@ async function selectProjectWorkspaceModeBridge(...args) {
   try { return { ok: true, value: await selectProjectWorkspaceMode(...args) }; }
   catch (error) { return { ok: false, error: { code: error.code, message: error.message } }; }
 }
-module.exports = { observeProjectWorkspaceMigration, selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge, assertNoPreparedWorkspaceMigration };
+module.exports = { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration, selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge, assertNoPreparedWorkspaceMigration };

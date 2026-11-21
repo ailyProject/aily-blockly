@@ -5,7 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { projectFileHash: hash } = require('../../electron/project-file-access');
 const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
-const { observeProjectWorkspaceMigration, selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge } = require('../../electron/project-workspace-mode');
+const { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration, selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge } = require('../../electron/project-workspace-mode');
 
 async function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-mode-migration-'));
@@ -28,15 +28,52 @@ async function fixture(t) {
       abiHash: expected.abiHash, mapHash: expected.mapHash, absHash: hash('# accepted author\n') }, committedHash: expected.committedHash },
     host: { expected, workingRevision: 4, workingDocumentHash: documentHash, author: { hash: expected.absHash, bytes: 15 } },
     authorPlan: [], retiredTurns: [] };
-  const prepare = value => {
+  const archive = value => {
     const bytes = Buffer.from(JSON.stringify(value)), recordHash = hash(bytes).slice(7);
     write(`.workspace-history/objects/${recordHash.slice(0, 2)}/${recordHash}.blob`, bytes);
+    return recordHash;
+  };
+  const prepare = value => {
+    const recordHash = archive(value);
     write('.workspace-history/workspace.json', JSON.stringify({ executionMode: 'overlay-v1',
       executionMigration: { version: 1, from: 'overlay-v1', to: 'project-v1', phase: 'prepared', recordHash } }));
     return { version: 1, recordHash, workingRevision: value.host.workingRevision, workingDocumentHash: value.host.workingDocumentHash ?? documentHash };
   };
-  return { root, old, expected, record, write, prepare, input: prepare(record) };
+  return { root, old, expected, record, write, archive, prepare, input: prepare(record) };
 }
+
+test('a fresh prepared record fences a delayed original selector, retains its archive and leaves program bytes alone', async t => {
+  const f = await fixture(t), historyLock = path.join(f.root, '.workspace-history/workspace.lock');
+  const originalHash = f.input.recordHash;
+  const replacementHash = f.archive({ ...f.record, previousRecordHash: originalHash, selectionAttempt: '4aef75dc-ab44-4422-adb2-d88e16d69b25' });
+  const params = { version: 1, recordHash: originalHash, replacementHash };
+  const workspace = () => JSON.parse(fs.readFileSync(path.join(f.root, '.workspace-history/workspace.json'), 'utf8'));
+  const author = fs.readFileSync(path.join(f.root, 'project.abs'));
+  fs.mkdirSync(historyLock);
+  assert.equal((await replacePreparedWorkspaceMigration(f.root, params, () => {})).code, 'PROJECT_FILE_BUSY');
+  assert.equal(workspace().executionMigration.recordHash, originalHash);
+  fs.rmdirSync(historyLock);
+  const reply = await replacePreparedWorkspaceMigration(f.root, params, () => {});
+  assert.deepEqual(reply.replacement, { version: 1, recordHash: originalHash, replacementHash, state: 'replaced' });
+  assert.equal(workspace().executionMigration.recordHash, replacementHash);
+  assert.equal(fs.existsSync(path.join(f.root, '.aily/workspace-mode.json')), false);
+  await assert.rejects(selectProjectWorkspaceMode(f.root, f.input, () => {}), { code: 'ABS_WORKSPACE_MIGRATION_CONFLICT' });
+  assert.equal((await replacePreparedWorkspaceMigration(f.root, params, () => {})).ok, false);
+  assert.equal((await selectProjectWorkspaceMode(f.root, { ...f.input, recordHash: replacementHash }, () => {})).selected, true);
+  assert.equal((await observeProjectWorkspaceMigration(f.root, { version: 1, recordHash: replacementHash })).ok, true);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, 'project.abs')), author);
+});
+
+test('a selector that wins the native lock keeps its original receipt when the replacement arrives', async t => {
+  const f = await fixture(t);
+  const originalHash = f.input.recordHash;
+  const replacementHash = f.archive({ ...f.record, previousRecordHash: originalHash, selectionAttempt: '4aef75dc-ab44-4422-adb2-d88e16d69b25' });
+  await selectProjectWorkspaceMode(f.root, f.input, () => {});
+  const result = await replacePreparedWorkspaceMigration(f.root, { version: 1, recordHash: originalHash, replacementHash }, () => {});
+  assert.deepEqual(result.replacement, { version: 1, recordHash: originalHash, replacementHash, state: 'selected' });
+  assert.equal((await observeProjectWorkspaceMigration(f.root, { version: 1, recordHash: originalHash })).ok, true);
+  assert.equal((await observeProjectWorkspaceMigration(f.root, { version: 1, recordHash: replacementHash })).ok, false);
+});
 
 test('detached migration status proves only the selected original without writing a lock, mode or project file', async t => {
   const f = await fixture(t), input = { version: 1, recordHash: f.input.recordHash };

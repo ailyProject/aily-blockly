@@ -27,7 +27,7 @@ const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
 const { createProjectCrashResume, readProjectCreateRecovery, readProjectNavigationRecovery } = require('./project-crash-resume');
-const { observeProjectWorkspaceMigration } = require('./project-workspace-mode');
+const { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { startCliBridge } = require("./cli-bridge");
 const { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
@@ -1311,6 +1311,19 @@ async function handleCliBridgeCommand(action, payload) {
         return observeOriginalProjectNavigation(operation, payload?.params);
       if (operation === 'abs_workspace_migration_status' && getBuildProduct() === 'blockly')
         return observeProjectWorkspaceMigration(requestedPath, payload?.params);
+      if (operation === 'abs_workspace_migration_replace' && getBuildProduct() === 'blockly') {
+        const generation = rendererGeneration;
+        const refusal = projectLifecycleRequestRejection(payload?.lifecycle, generation);
+        if (refusal) return refusal;
+        const proveCurrent = () => {
+          const current = projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow());
+          const target = projectLock.normalizeProjectPathLoose(requestedPath);
+          if (!current || current !== target || rendererGeneration !== generation || !isCurrentRendererGenerationReady()
+            || payload?.lifecycle && projectLock.normalizeProjectPathLoose(payload.lifecycle.sourceProject) !== current)
+            throw Object.assign(new Error('The original migration canvas is no longer active.'), { code: 'PROJECT_LIFECYCLE_CONTEXT_CHANGED' });
+        };
+        return replacePreparedWorkspaceMigration(requestedPath, payload?.params, proveCurrent);
+      }
       const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
       const dir = route.path;
       const projectOptionalOperations = new Set([
