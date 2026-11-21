@@ -1309,6 +1309,15 @@ async function handleCliBridgeCommand(action, payload) {
         return observeOriginalProjectCreate(operation, payload?.params);
       if (operation === 'project_navigation_recover' || operation === 'project_navigation_acknowledge')
         return observeOriginalProjectNavigation(operation, payload?.params);
+      if (operation === 'project_navigation_workspace_mode' && getBuildProduct() === 'blockly') {
+        const currentView = () => isCurrentRendererGenerationReady() && !getOpenedProjectPathFromWindow()
+          ? rendererGeneration : null;
+        return projectCrashResumeController()?.observeClosedWorkspaceProtocol(requestedPath, payload?.params, currentView,
+          (project, generation) => requestMainWindow(
+            'cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+            { operation, path: project, lifecycle: { version: 1, sourceProject: null, rendererGeneration: generation } }, 4000,
+          )) ?? { ok: false, operation, code: 'PROJECT_LIFECYCLE_TARGET_UNCONFIRMED' };
+      }
       if (operation === 'abs_workspace_migration_status' && getBuildProduct() === 'blockly')
         return observeProjectWorkspaceMigration(requestedPath, payload?.params);
       if (operation === 'abs_workspace_migration_replace' && getBuildProduct() === 'blockly') {

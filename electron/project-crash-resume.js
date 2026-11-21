@@ -370,6 +370,20 @@ function createProjectCrashResume(options) {
       const observed = this.observeNavigation(null, reference);
       return observed.activationCurrent === true && observed.navigationReceipt?.state === 'completed';
     },
+    async observeClosedWorkspaceProtocol(project, value, currentView, read) {
+      const operation = 'project_navigation_workspace_mode';
+      const refused = { ok: false, operation, code: 'PROJECT_LIFECYCLE_TARGET_UNCONFIRMED' };
+      const reference = readProjectNavigationRecovery(value), generation = currentView();
+      if (!positivePid(generation) || !reference || !this.canReopenFrom(reference, project)) return refused;
+      const result = await read(project, generation);
+      if (currentView() !== generation || !this.canReopenFrom(reference, project)) return refused;
+      if (result?.ok !== true || !sameProject(result.project, project)) return {
+        ...refused, code: result?.code || refused.code,
+      };
+      const { version, originalTargetPid, originalInstanceId, sessionId } = reference;
+      return { ok: true, operation, project: result.project, protocol: result.protocol, rendererGeneration: generation,
+        navigationRecovery: { version, originalTargetPid, originalInstanceId, sessionId } };
+    },
     closedSessionHint() {
       return run(false, (store, previous) => {
         const cursor = previous?.record;

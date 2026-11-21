@@ -216,6 +216,47 @@ test('a completed creation remains observable after the active cursor is cleared
   assert.equal(next.observeOriginalCreation(null, creation).project, null);
 });
 
+test('the current empty view grants only its original closed workspace a read-only mode observation', async () => {
+  const f = fixture('navigation-closed-mode'), original = owner(), first = f.make(original);
+  const reference = { version: 1, originalTargetPid: original.hostPid, originalInstanceId: original.instanceId,
+    sessionId: randomUUID(), navigationRequest: { version: 1, requestId: randomUUID(),
+      rendererGeneration: 7, deadlineAt: Date.now() + 300_000, operation: 'project_close',
+      sourceProject: f.project, targetProject: null } };
+  first.record(f.project);
+  first.clear(f.project);
+  first.recordNavigation(reference, { state: 'closed', project: null }, rootAttachment(f.project));
+  first.finishNavigation(reference, { ok: true, project: null });
+  first.suspend();
+  const next = f.make(owner(41002));
+  let blankGeneration = 3, reads = 0;
+  const currentView = () => blankGeneration;
+  const protocol = { workspaceMode: 'project-v1' };
+  const read = async project => { assert.equal(project, f.project); reads++; return { ok: true, project, protocol }; };
+  const inspect = (ref = reference, scope = f.project, reader = read) =>
+    next.observeClosedWorkspaceProtocol(scope, ref, currentView, reader);
+  assert.equal((await inspect({ ...reference, sessionId: randomUUID() })).ok, false);
+  assert.equal((await inspect(reference, f.folder)).ok, false);
+  assert.equal(reads, 0);
+  const confirmed = await inspect();
+  assert.equal(confirmed.ok, true);
+  assert.equal(confirmed.rendererGeneration, 3);
+  assert.equal(confirmed.navigationRecovery.sessionId, reference.sessionId);
+  assert.equal(confirmed.activationCurrent, undefined);
+  assert.deepEqual(confirmed.protocol, protocol);
+  assert.equal((await inspect(reference, f.project, async project => {
+    const result = await read(project);
+    blankGeneration = 4;
+    return result;
+  })).ok, false);
+  assert.equal((await inspect(reference, f.project, async project => {
+    const result = await read(project);
+    fs.renameSync(f.project, path.join(f.folder, 'replaced'));
+    fs.mkdirSync(f.project);
+    return result;
+  })).ok, false);
+  assert.equal(reads, 3);
+});
+
 test('profile buckets are independent; only the exact recording owner can clear its matching project', () => {
   const f = fixture('profile-clear'), original = owner(), a = f.make(original);
   assert.equal(a.record(f.project).ok, true);

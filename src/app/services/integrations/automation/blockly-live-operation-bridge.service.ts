@@ -189,6 +189,7 @@ export class BlocklyLiveOperationBridgeService {
     // File permission approval cannot authorize an internal recovery clone.
     if (payload.operation === 'project_fork') return forkProject(this.projectService, payload.path, payload.params || {});
     if (payload.operation === 'abs_admission_status') return this.observeApplicationAdmission(payload);
+    if (payload.operation === 'project_navigation_workspace_mode') return this.observeClosedWorkspaceMode(payload);
     const blocklyProgram = this.projectService.getProjectMode(payload.path || this.projectService.currentProjectPath) !== 'coder';
     // Bind the original request before the live readiness and mutation gates.
     // Invalid protocol messages cannot acquire an admission record.
@@ -318,6 +319,20 @@ export class BlocklyLiveOperationBridgeService {
     return { project, guard: () => {
       if (!current()) throw Object.assign(new Error('The original request project changed during admission.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
     } };
+  }
+
+  private async observeClosedWorkspaceMode(payload: BlocklyLiveOperationPayload) {
+    const { operation, path: project, lifecycle, rendererGeneration } = payload;
+    if (!project || lifecycle?.sourceProject !== null || lifecycle.rendererGeneration !== rendererGeneration
+      || this.projectService.currentProjectPath || this.projectService.getProjectMode(project) !== 'blockly') {
+      return { ok: false, operation, code: 'PROJECT_LIFECYCLE_TARGET_UNCONFIRMED' };
+    }
+    const revision = this.projectService.projectViewRevision;
+    return absWorkspaceProtocol(project, { version: 1 }, () => {
+      if (this.projectService.currentProjectPath || this.projectService.projectViewRevision !== revision) {
+        throw Object.assign(new Error('The original closed project view changed.'), { code: 'PROJECT_LIFECYCLE_CONTEXT_CHANGED' });
+      }
+    });
   }
 
   /** Read an exact original refusal or an exited, unindexed writer. Neither
