@@ -158,7 +158,20 @@ export class BlocklyLiveOperationBridgeService {
     }
 
     try {
+      const reportsCanvas = payload.operation === 'abs_apply'
+        || payload.operation === 'abs_recovery' && payload.params?.['action'] === 'candidate_capture';
+      const originalView = reportsCanvas ? this.canvasScope(payload) : undefined;
       const result = await this.ngZone.run(() => this.execute(payload));
+      if (originalView && result['ok'] === true) {
+        const observed = this.canvasScope(payload);
+        const workingRevision = payload.operation === 'abs_apply'
+          ? result['receipt']?.appliedRevision : result['capture']?.working?.revision;
+        if (typeof result['project'] === 'string'
+          && this.normalizePath(result['project']) === this.normalizePath(originalView.attachment.root)
+          && observed && absJson(observed) === absJson(originalView)
+          && Number.isSafeInteger(workingRevision) && workingRevision >= 0)
+          result['canvasVersion'] = { ...originalView, workingRevision };
+      }
       respond(result);
     } catch (error) {
       const original = error;
@@ -189,6 +202,7 @@ export class BlocklyLiveOperationBridgeService {
     // Deny legacy copy requests before allocating a receipt or destination.
     // File permission approval cannot authorize an internal recovery clone.
     if (payload.operation === 'project_fork') return forkProject(this.projectService, payload.path, payload.params || {});
+    if (payload.operation === 'project_canvas_status') return this.observeCanvasVersion(payload);
     if (payload.operation === 'abs_admission_status') return this.observeApplicationAdmission(payload);
     if (payload.operation === 'project_navigation_workspace_mode') return this.observeClosedWorkspaceMode(payload);
     const blocklyProgram = this.projectService.getProjectMode(payload.path || this.projectService.currentProjectPath) !== 'coder';
@@ -312,6 +326,38 @@ export class BlocklyLiveOperationBridgeService {
       }
     }
     return this.executeAdmittedOperation(payload);
+  }
+
+  private canvasScope(payload: BlocklyLiveOperationPayload) {
+    const project = this.projectService.currentProjectPath, rendererGeneration = payload.rendererGeneration;
+    const viewRevision = this.projectService.projectViewRevision;
+    if (!project || !payload.path || this.normalizePath(payload.path) !== this.normalizePath(project)
+      || typeof rendererGeneration !== 'number' || !Number.isSafeInteger(rendererGeneration) || rendererGeneration < 1
+      || rendererGeneration !== this.electronService.currentRendererGeneration
+      || !Number.isSafeInteger(viewRevision) || viewRevision < 0) return;
+    try {
+      const attachment: ProjectStorageAttachment | undefined = window['fs']?.captureProjectAttachment?.(project);
+      if (attachment?.version === 1) return { version: 1 as const, attachment, rendererGeneration, viewRevision };
+    } catch { /* The physical project is no longer verifiable. */ }
+  }
+
+  private observeCanvasVersion(payload: BlocklyLiveOperationPayload): Record<string, any> {
+    const params = payload.params ?? {}, probeId = params['probeId'];
+    const operation = 'project_canvas_status';
+    if (params['version'] !== 1 || typeof probeId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(probeId)
+      || Object.keys(params).some(key => key !== 'version' && key !== 'probeId'))
+      return { ok: false, operation, code: 'PROJECT_CANVAS_STATUS_INVALID' };
+    const unknown = { ok: false, operation, probeId, code: 'PROJECT_CANVAS_STATUS_UNKNOWN' };
+    try {
+      const before = this.canvasScope(payload), project = this.projectService.currentProjectPath;
+      if (!before || this.projectService.getProjectMode(project) !== 'blockly'
+        || !this.projectService.getBlocklyProjectLoadStatus(project).ready
+        || this.projectService.isProjectTransitionInProgress(project)) return unknown;
+      const workingRevision = this.blocklyEditor.readCanvasWorkingRevision();
+      if (typeof workingRevision !== 'number' || !Number.isSafeInteger(workingRevision) || workingRevision < 0
+        || absJson(this.canvasScope(payload) ?? null) !== absJson(before)) return unknown;
+      return { ok: true, operation, probeId, project, canvasVersion: { ...before, workingRevision } };
+    } catch { return unknown; }
   }
 
   private async admissionGuard(requested: string | undefined): Promise<{ project: string; guard: () => void } | undefined> {
