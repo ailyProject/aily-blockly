@@ -20,6 +20,14 @@ export function nativeSaveAdmissionResponse(
     publicationObservation: { ...originalAdmissionObservation(record, observer), operation } };
 }
 
+export function nativeSaveWriterReleaseResponse(
+  project: string, request: ProjectSaveRequest, proof: NonNullable<ProjectSaveReceiptResponse['writerObservation']>,
+): ProjectSaveReceiptResponse {
+  const { requestId, operation, input } = request;
+  return { ok: true, operation: 'project_save_status', code: 'PROJECT_SAVE_WRITER_UNAVAILABLE',
+    saveReceipt: { version: 2, requestId, project, operation, state: 'unknown', ...(input ? { input } : {}) }, writerObservation: proof };
+}
+
 /** The input digest describes the original command, never a later GUI capture. */
 export async function nativeSaveIdentity(project: string, request: ProjectSaveRequest): Promise<NativeSaveIdentity> {
   const normalized = project.replace(/\\/g, '/').replace(/\/+$/, '');

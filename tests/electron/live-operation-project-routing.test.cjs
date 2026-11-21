@@ -88,7 +88,7 @@ test('versioned publication routing captures only the current physical project a
 
 test('only a renderer command stopped before sending its original publication records non-dispatch', async () => {
   const original = { ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT' };
-  const request = { path: '/source', operation: 'project_save', params: { saveRequest: { version: 2 } } };
+  const request = { path: '/source', operation: 'abs_apply', params: { version: 2 } };
   const stopped = mainRouteFixture('/source', async () => original);
   const timeout = mainRouteFixture('/source', async (...args) => {
     args[6](7);
@@ -97,4 +97,58 @@ test('only a renderer command stopped before sending its original publication re
   const result = await stopped.handleCliBridgeCommand('blockly-live-operation', request);
   assert.equal(result.commandDispatched, false);
   assert.deepEqual(await timeout.handleCliBridgeCommand('blockly-live-operation', request), original);
+});
+
+test('native save preparation reaches only the current physical view and precedes the first writer dispatch', async t => {
+  const temp = fs.realpathSync.native(os.tmpdir());
+  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(temp, 'aily-save-dispatch-')));
+  t.after(() => {
+    assert.equal(path.dirname(directory), temp);
+    assert.match(path.basename(directory), /^aily-save-dispatch-[A-Za-z0-9]+$/);
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  const project = path.join(directory, 'a'), newer = path.join(directory, 'b');
+  fs.mkdirSync(project);
+  fs.mkdirSync(newer);
+  const request = { version: 2, operation: 'project_save', requestId: 'pub2-00000000-0000-4000-8000-000000000abc' };
+  const saveWriter = { viewRevision: 7, intentHash: 'sha256:' + 'a'.repeat(64) };
+  const invoke = (fixture, operation) => fixture.handleCliBridgeCommand('blockly-live-operation', {
+    path: project, operation, params: { saveRequest: request },
+  });
+  const host = mainRouteFixture(project, async (...args) => {
+    if (args[2].operation === 'project_publication_prepare') return { ok: true, rendererGeneration: 8, saveWriter };
+    args[6](8);
+    return { ok: true };
+  });
+  assert.equal((await invoke(host, 'project_publication_prepare')).saveWriter, saveWriter);
+  assert.deepEqual(host.calls.map(call => call.operation), ['project_publication_prepare']);
+  await invoke(host, 'project_save');
+  assert.deepEqual(host.calls.map(call => call.operation), ['project_publication_prepare', 'project_publication_prepare', 'project_save']);
+  assert.deepEqual(host.calls[1].originalAdmissionAttachment, rootAttachment(project));
+  assert.equal(host.calls[2].nativeSaveWriter, saveWriter);
+  assert.equal(host.calls[2].lifecycle.rendererGeneration, 8);
+  const different = mainRouteFixture(newer);
+  assert.equal((await invoke(different, 'project_publication_prepare')).commandDispatched, false);
+  assert.equal(different.calls.length, 0);
+  const proof = { ...saveWriter, version: 1, kind: 'admitted-save', attachment: rootAttachment(project) };
+  const detached = mainRouteFixture(newer, async (...args) => {
+    args[6](8);
+    return { ok: true };
+  });
+  await detached.handleCliBridgeCommand('blockly-live-operation', {
+    path: project, operation: 'project_save', params: { saveRequest: request, saveWriter: proof },
+  });
+  assert.deepEqual(detached.calls.map(call => call.operation), ['project_save']);
+  assert.deepEqual(detached.calls[0].originalAdmissionAttachment, proof.attachment);
+  assert.equal(detached.calls[0].params.saveWriter, undefined);
+  assert.equal(detached.calls[0].nativeSaveWriter, proof);
+  const lost = mainRouteFixture(project, async () => ({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT' }));
+  assert.equal((await invoke(lost, 'project_save')).commandDispatched, false);
+  assert.deepEqual(lost.calls.map(call => call.operation), ['project_publication_prepare']);
+  const observed = mainRouteFixture(project, async (_channel, _response, { operation }) =>
+    operation === 'project_publication_prepare'
+      ? { ok: false, code: 'PROJECT_SAVE_REQUEST_CONSUMED' }
+      : { ok: true, state: 'completed' });
+  assert.equal((await invoke(observed, 'project_save')).state, 'completed');
+  assert.deepEqual(observed.calls.map(call => call.operation), ['project_publication_prepare', 'project_save_status']);
 });

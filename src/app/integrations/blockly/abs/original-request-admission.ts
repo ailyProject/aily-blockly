@@ -1,6 +1,6 @@
 import type { AbsStorageExecutor, AbsSyncStorageAccess, AbsSyncStoragePort } from './abs-baseline-store';
 import { absJson, hashAbsText } from './abs-identity-map';
-import { nativeSaveCapability, nativeSaveIndexKey } from './abs-native-save-protocol';
+import { assertNativeSaveIdentity, nativeSaveCapability, nativeSaveIndexKey } from './abs-native-save-protocol';
 import type { NativeSaveIdentity } from './abs-native-save-protocol';
 import { AbsSyncError } from './abs-state';
 
@@ -16,6 +16,8 @@ export const applicationRequestKey = async (requestId: string) =>
   `recoveries/request-${(await hashAbsText(requestId)).slice(7)}.json`;
 const applicationWriterKey = async (requestId: string) =>
   `recoveries/application-writer-${(await hashAbsText(requestId)).slice(7)}.json`;
+const nativeSaveWriterKey = async (requestId: string) =>
+  `recoveries/save-writer-${(await hashAbsText(requestId)).slice(7)}.json`;
 
 export function nativeSaveAdmissionIdentity(request: NativeSaveIdentity): OriginalRequestAdmissionIdentity | undefined {
   if (request.operation === 'project_save' || request.operation === 'blocks_tidy') {
@@ -45,6 +47,11 @@ type AdmissionRecord = {
 
 type ApplicationWriter = { version: 1; kind: 'validated-writer'; project: string; requestId: string;
   candidateHash: string } & ReturnType<typeof nativeSaveCapability>;
+type SaveWriter = { version: 1; kind: 'admitted-save'; project: string; request: NativeSaveIdentity;
+  viewRevision: number } & ReturnType<typeof nativeSaveCapability>;
+
+const exited = (observation: Awaited<ReturnType<NonNullable<AbsSyncStoragePort['observeExecutor']>>>) =>
+  observation.state === 'exited' && ['system-restarted', 'process-exited', 'process-reused'].includes(observation.reason);
 
 /** A rejection and its original writer index are mutually exclusive under the
  * existing project storage lock. Absence provides no evidence of a rejection. */
@@ -74,6 +81,8 @@ export class OriginalRequestAdmissions {
       const retained = await this.observe(request, storage);
       if (retained) return retained;
       if (request.operation === 'abs_apply') await this.assertApplicationWriter(request.requestId, undefined, storage);
+      else await this.assertSaveWriter({ version: 2, requestId: request.requestId, operation: request.operation,
+        inputDigest: request.inputDigest! }, storage);
       if (await storage.read(await this.writerIndex(request)) !== null) return null;
       const record: AdmissionRecord = { version: 1, kind: 'not-started', operationId: crypto.randomUUID(),
         project: this.project, request, ...nativeSaveCapability(this.port), code: failure.code, message: failure.message };
@@ -121,10 +130,66 @@ export class OriginalRequestAdmissions {
       if (!retained || retained.writer.executor.hostPid !== originalTargetPid
         || await this.observe(request, storage) || await storage.read(writerIndex) !== null) return null;
       const oldWriter = await this.port.observeExecutor!(retained.writer.executor);
-      if (oldWriter.state !== 'exited' || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
+      if (!exited(oldWriter)) return null;
       return { oldWriter, intentHash: await hashAbsText(retained.text), attachment: retained.writer.attachment,
         executor: retained.writer.executor };
     });
+  }
+
+  async reserveSave(request: NativeSaveIdentity, viewRevision: number, guard: () => void) {
+    assertNativeSaveIdentity(request);
+    const identity = nativeSaveAdmissionIdentity(request), key = await nativeSaveWriterKey(request.requestId);
+    if (!identity || !Number.isSafeInteger(viewRevision) || viewRevision < 0) throw admissionFault('Invalid original save writer.');
+    return this.port.withLock(async storage => {
+      guard();
+      if (await this.observe(identity, storage) || await storage.read(await this.writerIndex(identity)) !== null) return null;
+      const old = await this.saveWriter(request, storage);
+      const record: SaveWriter = { version: 1, kind: 'admitted-save', project: this.project, request, viewRevision,
+        ...nativeSaveCapability(this.port) };
+      const text = absJson(record);
+      if (old ? old.text !== text : !await storage.replace(key, null, text))
+        throw admissionFault('The original save belongs to a different admitted writer.');
+      guard();
+      return { version: record.version, kind: record.kind, request, viewRevision, attachment: record.attachment,
+        executor: record.executor, intentHash: await hashAbsText(text) };
+    });
+  }
+
+  /** The optional acknowledgement belongs only to the active canvas that prepared it. */
+  async assertSaveWriter(request: NativeSaveIdentity, storage: Pick<AbsSyncStorageAccess, 'read'>,
+    expected?: { viewRevision: number; intentHash: string }) {
+    if (!nativeSaveAdmissionIdentity(request)) return;
+    const retained = await this.saveWriter(request, storage);
+    if (expected && (!retained || retained.record.viewRevision !== expected.viewRevision
+      || await hashAbsText(retained.text) !== expected.intentHash)
+      || retained && absJson(retained.record.executor) !== absJson(nativeSaveCapability(this.port).executor))
+      throw admissionFault('The original save belongs to a different admitted writer.');
+  }
+
+  async observeExitedSaveWriter(request: NativeSaveIdentity, originalTargetPid: number) {
+    const identity = nativeSaveAdmissionIdentity(request);
+    if (!this.port.observeExecutor || !identity) return null;
+    return this.port.withLock(async storage => {
+      const retained = await this.saveWriter(request, storage);
+      if (!retained || retained.record.executor.hostPid !== originalTargetPid || await this.observe(identity, storage)
+        || await storage.read(await this.writerIndex(identity)) !== null) return null;
+      const oldWriter = await this.port.observeExecutor!(retained.record.executor);
+      if (!exited(oldWriter)) return null;
+      const { version, kind, attachment, executor, viewRevision } = retained.record;
+      return { version, kind, request, attachment, executor, viewRevision, oldWriter, intentHash: await hashAbsText(retained.text) };
+    });
+  }
+
+  private async saveWriter(request: NativeSaveIdentity, storage: Pick<AbsSyncStorageAccess, 'read'>) {
+    const text = await storage.read(await nativeSaveWriterKey(request.requestId));
+    if (text === null) return null;
+    const record = JSON.parse(text) as SaveWriter;
+    nativeSaveCapability(record);
+    if (record.version !== 1 || record.kind !== 'admitted-save' || record.project !== this.project
+      || absJson(record.request) !== absJson(request) || !Number.isSafeInteger(record.viewRevision) || record.viewRevision < 0
+      || absJson(record.attachment) !== absJson(nativeSaveCapability(this.port).attachment))
+      throw admissionFault('The save writer belongs to a different original request or physical project.');
+    return { text, record };
   }
 
   private async applicationWriter(requestId: string, storage: Pick<AbsSyncStorageAccess, 'read'>) {

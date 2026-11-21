@@ -50,6 +50,7 @@ describe('original project admission settlement', () => {
     const domain = Object.create(ProjectService.prototype);
     Object.assign(domain, {
       currentProjectPathSubject: new BehaviorSubject(project),
+      viewRevision: 0,
       getProjectMode: () => 'blockly',
       isProjectTransitionInProgress: () => false,
       injector: { get: () => ({ observeProjectPublication: sync.observeNativeSave.bind(sync) }) },
@@ -281,5 +282,111 @@ describe('original project admission settlement', () => {
     }
     expect(openStorage).not.toHaveBeenCalled();
     expect([...files]).toEqual(snapshot);
+  });
+
+  it('observes an indexed ABS rollback on a replacement canvas only for its original writer', async () => {
+    const source = 'candidate', candidateHash = await hashAbsText(source);
+    const original = port.executor;
+    const validation = applyParams().validation;
+    validation.candidate.hash = candidateHash;
+    const operations = new AbsOperationJournal(port, project);
+    await new OriginalRequestAdmissions(port, project).reserveApplication(requestId, candidateHash, guard);
+    const id = await operations.begin({ kind: 'abs-apply', document: {}, disk: { abi: null, abs: null, map: null },
+      candidate: { hash: candidateHash, source, generation: 'base' }, application: { requestId, validation },
+    }, guard);
+    await operations.restored(id, guard);
+    await new AbsApplicationJournal(port, project).completeRolledBack(id, { code: 'ORIGINAL_ROLLBACK' }, guard, async () => {});
+    const retained = [...files];
+    port = open('2', 222);
+    const cold = bridge();
+    cold.projectService.currentProjectPathSubject.next('/replacement-canvas');
+    const payload = { operation: 'abs_admission_status', path: project,
+      params: { version: 2, requestId, originalTargetPid: original.hostPid } };
+    expect(await cold.execute(payload)).toEqual(jasmine.objectContaining({
+      ok: false, code: 'ORIGINAL_ROLLBACK', application: { status: 'ROLLED_BACK', requestId },
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false },
+      publicationObservation: jasmine.objectContaining({ executor: original, observer: { hostPid: 222 }, current: false }),
+    }));
+    expect((await cold.execute({ ...payload, params: { ...payload.params, originalTargetPid: 333 } })).publication.status).toBe('UNKNOWN');
+    port = open('9', 222);
+    expect((await cold.execute(payload)).publication.status).toBe('UNKNOWN');
+    expect([...files]).toEqual(retained);
+  });
+
+  for (const indexed of [false, true]) {
+    it(`observes exact exited save occupancy with ${indexed ? 'an unchanged indexed snapshot' : 'no writer index'}`, async () => {
+      const host = bridge();
+      const request: ProjectSaveRequest = { version: 2, operation: 'project_save', requestId: 'pub2-' + requestId };
+      const original = port.executor;
+      const prepare = { operation: 'project_publication_prepare', path: project,
+        params: { saveRequest: request }, originalAdmissionAttachment: port.attachment };
+      const prepared = await host.execute(prepare);
+      expect(prepared).toEqual(jasmine.objectContaining({ ok: true, operation: 'project_publication_prepare',
+        saveWriter: jasmine.objectContaining({ executor: original, attachment: port.attachment }) }));
+      expect(host.executeProjectSave).not.toHaveBeenCalled();
+      const identity = await nativeSaveIdentity(project, request);
+      if (indexed) await new AbsOperationJournal(port, project).beginDocumentSave({
+        request: identity, document: {}, disk: { abi: null, abs: null, map: null },
+      }, guard);
+      const retained = [...files];
+      let exited = false;
+      port = { ...open('2', 222), observeExecutor: async candidate => {
+        expect(candidate).toEqual(original);
+        return { version: 1, state: exited ? 'exited' : 'active', reason: exited ? 'process-exited' : 'process-matched' };
+      } };
+      const cold = bridge();
+      cold.projectService.currentProjectPathSubject.next('/replacement-canvas');
+      const observe = { operation: 'project_publication_status', path: project,
+        params: { saveRequest: request, originalTargetPid: 101 } };
+      expect((await cold.execute(observe)).writerObservation).toBeUndefined();
+      exited = true;
+      expect(await cold.execute(observe)).toEqual(jasmine.objectContaining({
+        saveReceipt: jasmine.objectContaining({ requestId: request.requestId, state: 'unknown' }),
+        writerObservation: jasmine.objectContaining({ kind: indexed ? 'source-not-published' : 'admitted-save',
+          request: identity, executor: original, observer: { hostPid: 222 }, oldWriter: jasmine.objectContaining({ state: 'exited' }) }),
+      }));
+      expect((await cold.execute({ ...observe, params: { ...observe.params, originalTargetPid: 333 } })).writerObservation).toBeUndefined();
+      await expectAsync(new AbsOperationJournal(port, project).beginDocumentSave({
+        request: identity, document: {}, disk: { abi: null, abs: null, map: null },
+      }, guard)).toBeRejectedWithError('The original save belongs to a different admitted writer.');
+      expect([...files]).toEqual(retained);
+    });
+  }
+
+  it('durably refuses a prepared save after its canvas is replaced, without dispatching a writer', async () => {
+    const host = bridge(), attachment = port.attachment;
+    const request: ProjectSaveRequest = { version: 2, operation: 'project_save', requestId: 'pub2-' + requestId, waitMs: 1000 };
+    const params = { saveRequest: request };
+    const prepared = await host.execute({ operation: 'project_publication_prepare', path: project, params,
+      originalAdmissionAttachment: attachment });
+    expect(prepared.ok).toBeTrue();
+    host.projectService.currentProjectPathSubject.next('/replacement-canvas');
+    await host.execute({ path: project, operation: 'project_save', params, originalAdmissionAttachment: attachment,
+      nativeSaveWriter: prepared.saveWriter });
+    expect(host.executeProjectSave).not.toHaveBeenCalled();
+    const observed = await host.execute({ operation: 'project_publication_status', path: project,
+      params: { ...params, originalTargetPid: 101 } });
+    expect(observed.result.admission).toEqual({ status: 'NOT_STARTED', requestId: request.requestId });
+  });
+
+  it('prepares the exact board save input and observes a consumed request without entering the board writer', async () => {
+    const host = bridge(), attachment = port.attachment;
+    const request: ProjectSaveRequest = { version: 2, operation: 'project_save', requestId: 'pub2-' + requestId,
+      input: { kind: 'board-config', configKey: 'clock', configValue: '80' } };
+    const params = { saveRequest: request };
+    const prepared = await host.execute({ operation: 'project_publication_prepare', path: project, params,
+      originalAdmissionAttachment: attachment });
+    expect(prepared.ok).toBeTrue();
+    const identity = await nativeSaveIdentity(project, request);
+    expect(prepared.saveWriter.request).toEqual(identity);
+    await new AbsOperationJournal(port, project).beginDocumentSave({
+      request: identity, document: {}, disk: { abi: null, abs: null, map: null },
+    }, guard);
+    host.executeAdmittedOperation = jasmine.createSpy('board writer');
+    const observed = await host.execute({ path: project, operation: 'set_board_config',
+      params: { ...params, config_key: 'clock', config_value: '80' }, originalAdmissionAttachment: attachment,
+      nativeSaveWriter: prepared.saveWriter });
+    expect(observed.saveReceipt.state).toBe('running');
+    expect(host.executeAdmittedOperation).not.toHaveBeenCalled();
   });
 });

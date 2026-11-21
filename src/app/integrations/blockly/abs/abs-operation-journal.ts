@@ -119,8 +119,12 @@ export class AbsOperationJournal {
     return this.port.withLock(async storage => {
       assertCurrent();
       const admission = nativeSaveAdmissionIdentity(input.request);
-      if (admission && await new OriginalRequestAdmissions(this.port, this.project).observe(admission, storage))
-        throw nativeSaveError('The original native request was rejected before starting.', 'ABS_NATIVE_SAVE_REQUEST_ALREADY_RECORDED');
+      if (admission) {
+        const admissions = new OriginalRequestAdmissions(this.port, this.project);
+        if (await admissions.observe(admission, storage))
+          throw nativeSaveError('The original native request was rejected before starting.', 'ABS_NATIVE_SAVE_REQUEST_ALREADY_RECORDED');
+        await admissions.assertSaveWriter(input.request, storage);
+      }
       const found = await readNativeSaveRequest({ ...context, read: key => storage.read(key) }, this.project, input.request);
       if (found) return { created: false, ref: found.ref };
       const previous = await storage.read(currentKey);

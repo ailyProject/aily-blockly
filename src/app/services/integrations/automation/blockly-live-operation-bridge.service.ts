@@ -67,6 +67,7 @@ type BlocklyLiveOperationPayload = {
   rendererGeneration?: number;
   lifecycle?: ProjectLifecycleSnapshot;
   originalAdmissionAttachment?: ProjectStorageAttachment;
+  nativeSaveWriter?: { viewRevision: number; intentHash: string };
   path?: string;
   operation?: string;
   params?: Record<string, any>;
@@ -211,6 +212,9 @@ export class BlocklyLiveOperationBridgeService {
       && !Object.hasOwn(payload.params || {}, 'saveRequest')) return { ok: false, code: 'PROJECT_SAVE_PROTOCOL_UPGRADE_REQUIRED',
         operation: payload.operation, commandDispatched: false, message: 'A native save requires the matching original durable request.' };
     if (payload.operation === 'project_board_environment_settle') return this.executeBoardEnvironmentSettlement(payload, blocklyProgram);
+    if (payload.operation === 'project_publication_prepare') return this.prepareOriginalSaveWriter(payload, blocklyProgram);
+    if (blocklyProgram && payload.nativeSaveWriter && ['set_board_config', 'board_switch'].includes(payload.operation || ''))
+      return this.executePreparedBoardPublication(payload);
     if (payload.operation === 'project_publication_status') {
       const params = payload.params || {}, project = params['project'] ?? payload.path;
       try {
@@ -335,8 +339,7 @@ export class BlocklyLiveOperationBridgeService {
     });
   }
 
-  /** Read an exact original refusal or an exited, unindexed writer. Neither
-   * can certify a current canvas or authorize the original application. */
+  /** Read the exact original application independently of the current canvas. */
   private async observeApplicationAdmission(payload: BlocklyLiveOperationPayload) {
     const project = payload.path, { version, requestId, originalTargetPid } = payload.params ?? {};
     const unknown = { ok: false, operation: 'abs_apply', project, publication: { status: 'UNKNOWN' },
@@ -354,11 +357,15 @@ export class BlocklyLiveOperationBridgeService {
       if (record && (originalTargetPid === undefined || record.executor.hostPid === originalTargetPid))
         return observedApplicationAdmission(record, port.executor);
       if (!record && originalTargetPid !== undefined) {
+        if (await port.read(await applicationRequestKey(requestId)) !== null) {
+          const { result } = await new AbsApplicationJournal(port, project).observe(requestId, () => {}, originalTargetPid);
+          if (result.publicationObservation?.executor.hostPid === originalTargetPid) return result;
+        }
         const writer = await admissions.observeExitedApplicationWriter(requestId, originalTargetPid);
         if (writer) return { ...unknown, code: 'ABS_APPLY_WRITER_UNAVAILABLE',
           writerObservation: { version: 1, ...writer, observer: { hostPid: port.executor?.hostPid ?? null } } };
       }
-    } catch { /* No verified refusal is available for this project. */ }
+    } catch { /* Keep the result unknown without an exact original proof. */ }
     return { ...unknown, code: 'ABS_APPLY_OBSERVATION_UNKNOWN' };
   }
 
@@ -438,13 +445,72 @@ export class BlocklyLiveOperationBridgeService {
     const project = scope?.project ?? path;
     const { port, settlementGuard } = await this.openAdmissionStorage(payload, project, scope?.guard);
     const root = port.attachment?.root ?? project;
-    const identity = nativeSaveAdmissionIdentity(await nativeSaveIdentity(root, request))!;
-    return this.settleAdmissionFailure(new OriginalRequestAdmissions(port, root), identity, settlementGuard, markWriter => {
-      if (!scope) return Promise.resolve(rejected);
+    const nativeRequest = await nativeSaveIdentity(root, request), identity = nativeSaveAdmissionIdentity(nativeRequest)!;
+    const admissions = new OriginalRequestAdmissions(port, root);
+    await admissions.assertSaveWriter(nativeRequest, port, payload.nativeSaveWriter);
+    if (payload.operation !== request.operation && (await admissions.observe(identity)
+      || await new AbsOperationJournal(port, root).findDocumentSave(nativeRequest, settlementGuard))) {
+      return this.projectService.observeProjectPublication(root, request, port.executor!.hostPid);
+    }
+    return this.settleAdmissionFailure(admissions, identity, settlementGuard, markWriter => {
+      if (!scope || payload.nativeSaveWriter && payload.nativeSaveWriter.viewRevision !== this.projectService.projectViewRevision)
+        return Promise.resolve(rejected);
       scope.guard();
       requireProjectProgramPublication();
       return this.executeAdmittedOperation(payload, request, () => { scope.guard(); markWriter(); });
     });
+  }
+
+  private async prepareOriginalSaveWriter(payload: BlocklyLiveOperationPayload, blocklyProgram: boolean) {
+    const operation = 'project_publication_prepare';
+    const params = payload.params || {}, path = payload.path;
+    try {
+      const request = readProjectSaveRequest(params['saveRequest']);
+      if (!blocklyProgram || request.version !== 2 || !path
+        || !window['path']?.isAbsolute(path) || !payload.originalAdmissionAttachment
+        || params['project'] !== undefined && this.normalizePath(params['project']) !== this.normalizePath(path)
+        || Object.keys(params).some(key => !['project', 'saveRequest'].includes(key)))
+        throw Object.assign(new Error('Preparing a save requires the exact original active project and native request.'), { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
+      const scope = await this.admissionGuard(path);
+      const revision = this.projectService.projectViewRevision;
+      const guard = () => {
+        if (!scope || this.projectService.projectViewRevision !== revision)
+          throw Object.assign(new Error('The original save canvas changed.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+        scope.guard();
+      };
+      guard();
+      requireProjectProgramPublication();
+      const port = await openAbsHostStorage(path, guard);
+      if (absJson(port.attachment) !== absJson(payload.originalAdmissionAttachment))
+        throw Object.assign(new Error('The original physical save target changed.'), { code: 'PROJECT_ADMISSION_ATTACHMENT_CHANGED' });
+      const project = port.attachment?.root ?? path;
+      const identity = await nativeSaveIdentity(project, request);
+      const saveWriter = await new OriginalRequestAdmissions(port, project).reserveSave(identity, revision, guard);
+      if (!saveWriter) return { ok: false, operation, project, code: 'PROJECT_SAVE_REQUEST_CONSUMED', commandDispatched: false };
+      return { ok: true, operation, project, saveWriter };
+    } catch (error) {
+      return { ok: false, operation, code: (error as any)?.code ?? 'PROJECT_SAVE_RECEIPT_FAILED',
+        commandDispatched: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async executePreparedBoardPublication(payload: BlocklyLiveOperationPayload) {
+    const path = payload.path, params = payload.params || {};
+    if (!path) return { ok: false, code: 'PROJECT_SAVE_RECEIPT_INVALID', commandDispatched: false };
+    const input = payload.operation === 'board_switch'
+      ? { kind: 'board-switch' as const, boardName: params['boardName'] }
+      : { kind: 'board-config' as const, configKey: params['config_key'], configValue: params['config_value'] };
+    const request = boardPublicationRequest(input, readProjectSaveRequest(params['saveRequest']));
+    const key = path + '\0' + request.requestId;
+    const pending = { ok: false, operation: payload.operation, project: path, code: 'PROJECT_SAVE_OBSERVATION_REQUIRED',
+      publication: { status: 'UNKNOWN' } };
+    if (this.pendingApplyAdmissions.has(key)) return pending;
+    this.pendingApplyAdmissions.add(key);
+    try {
+      return await this.executeSaveAdmission(payload, path, request);
+    } finally {
+      this.pendingApplyAdmissions.delete(key);
+    }
   }
 
   private async openAdmissionStorage(payload: BlocklyLiveOperationPayload, project: string, activeGuard: (() => void) | undefined) {
@@ -1077,8 +1143,10 @@ export class BlocklyLiveOperationBridgeService {
       case 'get_board_config':
         return getBoardConfig(this.projectService, payload.params?.['section']);
       case 'board_switch':
+        markWriter?.();
         return this.executeBoardSwitch(payload.params || {});
       case 'set_board_config':
+        markWriter?.();
         return setBoardConfig(this.projectService, this.builderService, this.electronService, payload.params || {},
           this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder'
             ? project => this.coderRuntime.build(project, { preprocessOnly: true }) : undefined,

@@ -1338,8 +1338,46 @@ async function handleCliBridgeCommand(action, payload) {
         };
         return replacePreparedWorkspaceMigration(requestedPath, payload?.params, proveCurrent);
       }
-      const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
+      const prepareSave = operation === 'project_publication_prepare';
+      const saveRequest = payload?.params?.saveRequest;
+      const saveWriterEnabled = getBuildProduct() === 'blockly';
+      const suppliedSaveWriter = saveWriterEnabled ? payload?.params?.saveWriter : undefined;
+      const preparedBoardSave = suppliedSaveWriter !== undefined && ['set_board_config', 'board_switch'].includes(operation);
+      const originalSave = (['project_save', 'blocks_tidy'].includes(operation) || preparedBoardSave) && saveRequest?.version === 2;
+      if (suppliedSaveWriter !== undefined && (!originalSave || !path.isAbsolute(requestedPath || '')
+        || suppliedSaveWriter?.version !== 1 || suppliedSaveWriter.kind !== 'admitted-save' || !suppliedSaveWriter.attachment
+        || !Number.isSafeInteger(suppliedSaveWriter.viewRevision) || suppliedSaveWriter.viewRevision < 0
+        || !/^sha256:[a-f0-9]{64}$/.test(suppliedSaveWriter.intentHash))) {
+        return { ok: false, operation, commandDispatched: false, code: 'PROJECT_SAVE_RECEIPT_INVALID' };
+      }
+      if (prepareSave && (!saveWriterEnabled || !path.isAbsolute(requestedPath || '')
+        || !['project_save', 'blocks_tidy'].includes(saveRequest?.operation) || saveRequest?.version !== 2)) {
+        return { ok: false, operation, commandDispatched: false, code: 'PROJECT_SAVE_RECEIPT_INVALID' };
+      }
+      const route = routeLiveOperationProject(prepareSave || preparedBoardSave ? saveRequest.operation : operation,
+        requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
       const dir = route.path;
+      let nativeSaveWriter = suppliedSaveWriter, saveLifecycle;
+      if (prepareSave || originalSave && saveWriterEnabled && !suppliedSaveWriter) {
+        if (!route.originalAdmissionAttachment || originalSave && saveRequest.operation !== operation) {
+          return { ok: false, operation, commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE' };
+        }
+        const prepared = await requestMainWindow(
+          'cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+          { operation: 'project_publication_prepare', path: dir, params: payload.params,
+            originalAdmissionAttachment: route.originalAdmissionAttachment, lifecycle: payload.lifecycle }, 5000);
+        if (prepareSave) return prepared;
+        if (prepared?.code === 'PROJECT_SAVE_REQUEST_CONSUMED') {
+          return requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+            { operation: 'project_save_status', path: dir, params: payload.params }, 12000);
+        }
+        if (!prepared?.ok || !prepared.saveWriter) return { ...prepared, ok: false, operation, commandDispatched: false };
+        nativeSaveWriter = prepared.saveWriter;
+        saveLifecycle = { version: 1, sourceProject: dir, rendererGeneration: prepared.rendererGeneration };
+      }
+      const originalAdmissionAttachment = route.originalAdmissionAttachment ?? suppliedSaveWriter?.attachment;
+      const cliParams = suppliedSaveWriter ? { ...payload.params } : payload?.params;
+      if (suppliedSaveWriter) delete cliParams.saveWriter;
       const projectOptionalOperations = new Set([
         'search_boards_libraries',
         'project_create',
@@ -1417,9 +1455,10 @@ async function handleCliBridgeCommand(action, payload) {
         {
           path: dir || '',
           operation,
-          params: payload && payload.params,
-          ...(route.originalAdmissionAttachment ? { originalAdmissionAttachment: route.originalAdmissionAttachment } : {}),
-          ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
+          params: cliParams,
+          ...(nativeSaveWriter ? { nativeSaveWriter } : {}),
+          ...(originalAdmissionAttachment ? { originalAdmissionAttachment } : {}),
+          ...(payload.lifecycle !== undefined || saveLifecycle ? { lifecycle: payload.lifecycle ?? saveLifecycle } : {}),
         },
         liveOperationTimeoutMs,
         undefined,
@@ -1594,6 +1633,7 @@ function getCliBridgeStatus() {
     project: getOpenedProjectPathFromWindow(),
     projects: coderOpenProjects,
     serve: !!serve,
+    ...(getBuildProduct() === 'blockly' ? { nativeSaveWriterVersion: 1 } : {}),
   };
 }
 

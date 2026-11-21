@@ -1,4 +1,4 @@
-import type { ProjectStorageAttachment, ProjectStorageExecutor } from '../../shared/project-sync-storage-bridge';
+import type { ProjectStorageAttachment, ProjectStorageExecutor, ProjectStorageExecutorObservation } from '../../shared/project-sync-storage-bridge';
 import { readProjectSaveInput, type ProjectSaveInput } from '../../shared/project-save-input';
 export { readProjectSaveInput, type ProjectSaveInput } from '../../shared/project-save-input';
 
@@ -29,6 +29,17 @@ export interface ProjectSaveReceiptResponse {
     version: 1; durable: boolean; requestId: string; operation: ProjectPublicationOperation; operationId: string;
     attachment: ProjectStorageAttachment; executor: ProjectStorageExecutor; observer: { hostPid: number | null }; current: boolean;
   };
+  writerObservation?: {
+    version: 1; request: { version: 2; requestId: string; operation: ProjectPublicationOperation; inputDigest: string };
+    attachment: ProjectStorageAttachment; executor: ProjectStorageExecutor; observer: { hostPid: number | null };
+    oldWriter: ProjectStorageExecutorObservation;
+  } & (
+    { kind: 'admitted-save'; viewRevision: number; intentHash: string }
+    | { kind: 'source-not-published'; operationId: string; snapshotHash: string; saved: {
+        abiHash: string | null; absHash: string | null; mapHash: string | null;
+        committedHash: string | null; operationPointerHash: string;
+      } }
+  );
 }
 /** Reads the existing publication journal; never admits or repeats a writer.
  * null means no v2 admission record, not that a legacy request never ran. */
