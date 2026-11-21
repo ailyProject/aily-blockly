@@ -3,7 +3,7 @@ import { AbsBaselineStore, type AbsDiskSnapshot, type AbsSyncStorageAccess, type
 import { assertGenerationValidation } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
-import { assertNativeSaveIdentity, nativeSaveCapability, nativeSaveIndexKey, nativeSaveError, readNativeSaveRequest,
+import { assertNativeSaveIdentity, nativeSaveCapability, nativeSaveIndexKey, nativeSaveError, nativeSaveSettlementKey, readNativeSaveRequest,
   type NativeSaveIdentity, type NativeSaveOperationRef } from './abs-native-save-protocol';
 import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
 export type { NativeSaveIdentity, NativeSaveOperationRef } from './abs-native-save-protocol';
@@ -20,6 +20,7 @@ export interface AbsOperationSnapshot {
   candidate?: { source: string; generation: string; hash: string };
   application?: { requestId: string; validation: unknown };
   nativeSave?: NativeSaveIdentity;
+  sourceStageVersion?: 1;
   attachment?: import('./abs-baseline-store').AbsProjectAttachment;
   executor?: import('./abs-baseline-store').AbsStorageExecutor;
 }
@@ -44,6 +45,12 @@ export interface AbsUnpublishedDocumentSave {
   saved: { abiHash: string | null; absHash: string | null; mapHash: string | null;
     committedHash: string | null; operationPointerHash: string };
 }
+type SaveSettlementKind = 'source-not-published' | 'before-source-stage';
+interface SaveSettlementRecord {
+  version: 1; kind: 'save-writer-settlement'; project: string; ref: NativeSaveOperationRef;
+  snapshotHash: string; reason: SaveSettlementKind; oldWriter: AbsUnpublishedDocumentSave['oldWriter'];
+  unpublished?: { pointer: string; saved: AbsUnpublishedDocumentSave['saved'] };
+}
 export interface LocationOperation {
   operation: AbsOperationSnapshot; pointer: string; snapshot: string;
 }
@@ -62,47 +69,110 @@ export class AbsOperationJournal {
    * its dead parent did not publish source, not that Working was restored. */
   async inspectUnpublishedDocumentSave(ref: NativeSaveOperationRef, guard: () => void): Promise<AbsUnpublishedDocumentSave | null> {
     if (!this.port.observeExecutor) return null;
+    return this.port.withLock(storage => this.inspectUnpublishedSaveLocked(ref, guard, storage));
+  }
+
+  private async inspectUnpublishedSaveLocked(ref: NativeSaveOperationRef, guard: () => void, storage: AbsSyncStorageAccess): Promise<AbsUnpublishedDocumentSave | null> {
     const context = nativeSaveCapability(this.port);
-    return this.port.withLock(async storage => {
+    guard();
+    const original = await readNativeSaveRequest({ ...context, read: key => storage.read(key) }, this.project, ref.request);
+    if (!original || absJson(original.ref) !== absJson(ref)) return null;
+    const pointerText = await storage.read(currentKey);
+    if (pointerText === null) return null;
+    const pointer = this.pointer(pointerText);
+    if (pointer.id !== ref.operationId || pointer.hash !== original.snapshotHash || pointer.state === 'completed') return null;
+    const disk = await this.disk(storage), source = original.snapshot.disk;
+    if (disk.abi !== source.abi || disk.map !== source.map) return null;
+    const draftChanged = disk.abs !== source.abs;
+    const accepted = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' });
+    const unchanged = async () => {
       guard();
-      const original = await readNativeSaveRequest({ ...context, read: key => storage.read(key) }, this.project, ref.request);
-      if (!original || absJson(original.ref) !== absJson(ref)) return null;
-      const pointerText = await storage.read(currentKey);
-      if (pointerText === null) return null;
-      const pointer = this.pointer(pointerText);
-      if (pointer.id !== ref.operationId || pointer.hash !== original.snapshotHash || pointer.state === 'completed') return null;
-      const disk = await this.disk(storage), source = original.snapshot.disk;
-      if (disk.abi !== source.abi || disk.map !== source.map) return null;
-      const draftChanged = disk.abs !== source.abs;
-      const accepted = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, { projectKey: this.project, pageId: '' });
-      const unchanged = async () => {
-        guard();
-        return await storage.read(currentKey) === pointerText
-          && absJson(await this.disk(storage)) === absJson(disk)
-          && await storage.read('committed.json') === original.snapshot.committed
-          && (!draftChanged || await accepted.workspaceMode(storage) === 'project-v1')
-          && await storage.read('prepared.json') === null
-          && await storage.read(`recoveries/application-commit-${ref.operationId}.json`) === null
-          && await storage.read(`recoveries/application-result-${ref.operationId}.json`) === null;
-      };
-      if (!await unchanged()) return null;
-      const oldWriter = await this.port.observeExecutor!(ref.executor);
-      if (oldWriter.state !== 'exited' || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
-      if (draftChanged) {
-        const committed = await accepted.readCommittedSnapshot();
-        if (!committed || committed.projection.map.scope.projectKey !== this.project
-          || !await accepted.matchesAcceptedDisk(committed, disk)) return null;
-      }
-      const hash = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
-      const saved = { abiHash: await hash(disk.abi), absHash: await hash(disk.abs),
-        mapHash: await hash(disk.map), committedHash: await hash(original.snapshot.committed),
-        operationPointerHash: await hashAbsText(pointerText) };
-      if (!await unchanged() || absJson(await this.port.observeExecutor!(ref.executor)) !== absJson(oldWriter)) return null;
+      return await storage.read(currentKey) === pointerText
+        && absJson(await this.disk(storage)) === absJson(disk)
+        && await storage.read('committed.json') === original.snapshot.committed
+        && (!draftChanged || await accepted.workspaceMode(storage) === 'project-v1')
+        && await storage.read('prepared.json') === null
+        && await storage.read(`recoveries/application-commit-${ref.operationId}.json`) === null
+        && await storage.read(`recoveries/application-result-${ref.operationId}.json`) === null;
+    };
+    if (!await unchanged()) return null;
+    const oldWriter = await this.port.observeExecutor!(ref.executor);
+    if (oldWriter.state !== 'exited' || !['system-restarted', 'process-exited', 'process-reused'].includes(oldWriter.reason)) return null;
+    if (draftChanged) {
+      const committed = await accepted.readCommittedSnapshot();
+      if (!committed || committed.projection.map.scope.projectKey !== this.project
+        || !await accepted.matchesAcceptedDisk(committed, disk)) return null;
+    }
+    const hash = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
+    const saved = { abiHash: await hash(disk.abi), absHash: await hash(disk.abs),
+      mapHash: await hash(disk.map), committedHash: await hash(original.snapshot.committed),
+      operationPointerHash: await hashAbsText(pointerText) };
+    if (!await unchanged() || absJson(await this.port.observeExecutor!(ref.executor)) !== absJson(oldWriter)) return null;
+    guard();
+    return { version: 1, kind: 'source-not-published', requestId: ref.request.requestId, operationId: ref.operationId,
+      attachment: context.attachment, originalExecutor: ref.executor, observerExecutor: context.executor,
+      oldWriter: oldWriter as AbsUnpublishedDocumentSave['oldWriter'], snapshotHash: original.snapshotHash, saved };
+  }
+
+  /** Release only the old writer. An immutable record outlives the current
+   * operation pointer, but cannot supply a save outcome or canvas proof. */
+  async observeSaveWriterSettlement(ref: NativeSaveOperationRef, guard: () => void) {
+    if (!this.port.observeExecutor) return null;
+    return this.port.withLock(storage => this.settleSaveWriter(ref, guard, storage));
+  }
+
+  private async settleSaveWriter(ref: NativeSaveOperationRef, guard: () => void, storage: AbsSyncStorageAccess) {
+    if (!this.port.observeExecutor || !nativeSaveAdmissionIdentity(ref.request)) return null;
+    guard();
+    const context = nativeSaveCapability(this.port);
+    const original = await readNativeSaveRequest({ ...context, read: key => storage.read(key) }, this.project, ref.request);
+    if (!original || absJson(original.ref) !== absJson(ref)) return null;
+    const id = ref.operationId, key = nativeSaveSettlementKey(id);
+    if (await storage.read(`recoveries/application-commit-${id}.json`) !== null
+      || await storage.read(`recoveries/application-result-${id}.json`) !== null) return null;
+    const retained = await storage.read(key);
+    let text = retained;
+    let record: SaveSettlementRecord;
+    if (retained !== null) {
+      record = JSON.parse(retained);
+      if (record.version !== 1 || record.kind !== 'save-writer-settlement' || record.project !== this.project
+        || absJson(record.ref) !== absJson(ref) || record.snapshotHash !== original.snapshotHash
+        || !exitedApplicationWriter(record.oldWriter)
+        || (record.reason !== 'source-not-published' && record.reason !== 'before-source-stage')) throw conflict();
+      if (record.reason === 'before-source-stage' && await storage.read(`recoveries/application-${id}.json`) !== null) return null;
+    } else {
+      const oldWriter = await this.port.observeExecutor(ref.executor);
+      if (!exitedApplicationWriter(oldWriter)) return null;
+      const pointer = await storage.read(currentKey);
+      const unpublished = pointer !== null ? await this.inspectUnpublishedSaveLocked(ref, guard, storage) : null;
+      // The original stage is written once, before any source publish. On
+      // older records without that declared protocol also require the exact
+      // original file preimage; a missing current pointer alone proves nothing.
+      if (!unpublished && (await storage.read(`recoveries/application-${id}.json`) !== null
+        || original.sourceStageVersion !== 1 && (absJson(await this.disk(storage)) !== absJson(original.snapshot.disk)
+          || await storage.read('committed.json') !== original.snapshot.committed || await storage.read('prepared.json') !== null))) return null;
+      record = { version: 1, kind: 'save-writer-settlement', project: this.project, ref, snapshotHash: original.snapshotHash,
+        reason: unpublished ? 'source-not-published' : 'before-source-stage', oldWriter,
+        ...(unpublished ? { unpublished: { pointer: pointer!, saved: unpublished.saved } } : {}) };
+      text = absJson(record);
       guard();
-      return { version: 1, kind: 'source-not-published', requestId: ref.request.requestId, operationId: ref.operationId,
-        attachment: context.attachment, originalExecutor: ref.executor, observerExecutor: context.executor,
-        oldWriter: oldWriter as AbsUnpublishedDocumentSave['oldWriter'], snapshotHash: original.snapshotHash, saved };
-    });
+      if (!await storage.replace(key, null, text)) throw conflict();
+    }
+    return { version: 1 as const, kind: 'indexed-save-retired' as const, request: ref.request, operationId: id,
+      snapshotHash: original.snapshotHash, attachment: ref.attachment, executor: ref.executor,
+      observer: { hostPid: context.executor.hostPid }, oldWriter: record.oldWriter,
+      settlement: { kind: record.reason, recordHash: await hashAbsText(text!) } };
+  }
+
+  /** Seal the original proof before a restored pointer can be overwritten. */
+  private async retainSaveBeforeAdvancing(pointer: OperationPointer, guard: () => void, storage: AbsSyncStorageAccess) {
+    if (!this.port.observeExecutor) return;
+    const text = await storage.read(snapshotKey(pointer.id));
+    if (text === null || await hashAbsText(text) !== pointer.hash) throw conflict();
+    const snapshot = JSON.parse(text) as AbsOperationSnapshot;
+    if (snapshot.kind !== 'document-save' || !snapshot.nativeSave || !snapshot.attachment || !snapshot.executor) return;
+    await this.settleSaveWriter({ operationId: pointer.id, request: snapshot.nativeSave,
+      attachment: snapshot.attachment, executor: snapshot.executor }, guard, storage);
   }
 
   async findDocumentSave(request: NativeSaveIdentity, assertCurrent: () => void): Promise<NativeSaveOperationRef | null> {
@@ -127,17 +197,17 @@ export class AbsOperationJournal {
       }
       const found = await readNativeSaveRequest({ ...context, read: key => storage.read(key) }, this.project, input.request);
       if (found) return { created: false, ref: found.ref };
-      const previous = await storage.read(currentKey);
-      if (previous !== null && this.pointer(previous).state === 'pending') throw conflict();
+      const previous = await this.previousOperation(storage, assertCurrent);
       if (absJson(await this.disk(storage)) !== absJson(input.disk)) throw conflict();
       const id = crypto.randomUUID();
       const record: AbsOperationSnapshot = { version: 1, id, project: this.project, kind: 'document-save',
         document: input.document, disk: input.disk, committed: await storage.read('committed.json'),
-        nativeSave: input.request, ...context };
+        nativeSave: input.request, ...(admission ? { sourceStageVersion: 1 as const } : {}), ...context };
       const text = absJson(record), hash = await hashAbsText(text);
       assertCurrent();
       if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
       const index = absJson({ version: 2, kind: 'native-save', project: this.project, operationId: id,
+        ...(record.sourceStageVersion ? { sourceStageVersion: record.sourceStageVersion } : {}),
         snapshotHash: hash, request: input.request, ...context });
       if (!await storage.replace(await nativeSaveIndexKey(input.request.requestId), null, index))
         throw nativeSaveError('The exact native request was already consumed.', 'ABS_NATIVE_SAVE_REQUEST_CONFLICT');
@@ -159,8 +229,7 @@ export class AbsOperationJournal {
           throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED', 'The original apply request was rejected before starting.');
         await admissions.assertApplicationWriter(input.application.requestId, input.candidate?.hash, storage);
       }
-      const previous = await storage.read(currentKey);
-      if (previous !== null && this.pointer(previous).state === 'pending') throw conflict();
+      const previous = await this.previousOperation(storage, assertCurrent);
       const disk = await this.disk(storage);
       if (absJson(disk) !== absJson(input.disk)) throw conflict();
       const record: AbsOperationSnapshot = { ...input, version: 1, id, project: this.project,
@@ -492,9 +561,19 @@ export class AbsOperationJournal {
       const pointer = this.pointer(text);
       if (pointer.id !== id) throw conflict();
       if (pointer.state === 'completed' || pointer.state === state) return;
+      if (state === 'restored') await this.retainSaveBeforeAdvancing(pointer, assertCurrent, storage);
       assertCurrent();
       if (!await storage.replace(currentKey, await hashAbsText(text), absJson({ ...pointer, state }))) throw conflict();
     });
+  }
+
+  private async previousOperation(storage: AbsSyncStorageAccess, assertCurrent: () => void) {
+    const previous = await storage.read(currentKey);
+    if (previous === null) return null;
+    const pointer = this.pointer(previous);
+    if (pointer.state === 'pending') throw conflict();
+    if (pointer.state === 'restored') await this.retainSaveBeforeAdvancing(pointer, assertCurrent, storage);
+    return previous;
   }
 
   private pointer(text: string): OperationPointer {

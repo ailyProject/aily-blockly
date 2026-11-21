@@ -4,7 +4,7 @@ import { generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { acceptedSourceMatches } from './abs-workspace-mode';
 import type { AbsOperationSnapshot } from './abs-operation-journal';
-import { assertNativeSaveRef, nativeSaveCapability, nativeSaveError, readNativeSaveRequest, blockStatePublicationIdentity,
+import { assertNativeSaveRef, nativeSaveCapability, nativeSaveError, nativeSaveSettlementKey, readNativeSaveRequest, blockStatePublicationIdentity,
   type NativeSaveIdentity, type NativeSaveOperationRef, type NativeSaveStageInput,
   type NativeSaveResultFacts, type NativeSaveObservation } from './abs-native-save-protocol';
 
@@ -68,9 +68,14 @@ export class NativeSavePublications {
     if (previous !== text && (previous !== null || !await access.replace(key, null, text)))
       throw nativeSaveError('The exact immutable native publication record already differs.');
   }
+  private async assertWriterAvailable(ref: NativeSaveOperationRef, access: AbsSyncStorageAccess) {
+    if (await access.read(nativeSaveSettlementKey(ref.operationId)) !== null)
+      throw nativeSaveError('The original native save writer has already been retired.');
+  }
   async stageNativeSave(input: NativeSaveStageInput, guard: () => void): Promise<void> {
     input = JSON.parse(absJson(input));
     await this.port.withLock(async access => {
+      await this.assertWriterAvailable(input.ref, access);
       const original = await this.original(input.ref, access);
       if (await access.read(resultKey(input.ref.operationId)) !== null) throw nativeSaveError('This native request already has a terminal result.');
       const record = { version: 2, kind: 'native-save', project: this.project, snapshotHash: original.snapshotHash, ...input };
@@ -127,6 +132,7 @@ export class NativeSavePublications {
       && !await resolved.store.matchesAcceptedDisk({ projection: resolved.ancestor.projection, abi: resolved.abi }, disk)) return false;
     await this.port.withLock(async access => {
       await this.original(ref, access);
+      await this.assertWriterAvailable(ref, access);
       if (await access.read(stageKey(ref.operationId)) !== staged.text || await access.read('committed.json') !== pointer
         || !same(await resolved.store.captureDisk(access), disk)) throw nativeSaveError('Native commit changed during sealing.');
       const finalText = await access.read(resultKey(ref.operationId));
@@ -137,6 +143,7 @@ export class NativeSavePublications {
   }
   async sealNativeUnchangedLocked(ref: NativeSaveOperationRef, access: AbsSyncStorageAccess,
     original: AbsOperationSnapshot, committedPointer: string | null, guard: () => void): Promise<void> {
+    await this.assertWriterAvailable(ref, access);
     const staged = await this.stage(ref, access);
     if (!staged.record || !same(staged.original.snapshot, original) || original.committed !== committedPointer
       || await access.read('committed.json') !== committedPointer || await access.read('prepared.json') !== null)
@@ -165,6 +172,7 @@ export class NativeSavePublications {
   async completeNativeSave(ref: NativeSaveOperationRef, facts: NativeSaveResultFacts, guard: () => void): Promise<void> {
     facts = JSON.parse(absJson(facts)); this.validateFacts(facts);
     await this.port.withLock(async access => {
+      await this.assertWriterAvailable(ref, access);
       const original = await this.original(ref, access);
       const committed = facts.publication.status === 'COMMITTED';
       const staged = await this.stage(ref, access);

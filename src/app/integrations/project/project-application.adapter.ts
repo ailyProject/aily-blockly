@@ -240,7 +240,8 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   }
 
   observeProjectPublication(path: string, request: ProjectSaveRequest, originalTargetPid?: number) {
-    return this.injector.get(AbsWorkspaceSyncService).observeNativeSave(path, request, originalTargetPid);
+    return this.injector.get(AbsWorkspaceSyncService).observeNativeSave(path, request, originalTargetPid,
+      () => this.projectService.projectViewRevision);
   }
 
   async inspectBlocklyConflict(path: string) {

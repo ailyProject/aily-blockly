@@ -168,7 +168,8 @@ export class AbsWorkspaceSyncService {
 
   /** Read-only across renderer/host restarts. PID addresses an executor; the
    * durable request and its physical attachment establish the saved fact. */
-  async observeNativeSave(path: string, request: ProjectSaveRequest, originalTargetPid?: number): Promise<ProjectSaveReceiptResponse | null> {
+  async observeNativeSave(path: string, request: ProjectSaveRequest, originalTargetPid?: number,
+    viewRevision?: () => number): Promise<ProjectSaveReceiptResponse | null> {
     if (request.version !== 2) return null;
     request = structuredClone(request);
     const guard = () => undefined;
@@ -184,15 +185,13 @@ export class AbsWorkspaceSyncService {
     const observed = await new AbsApplicationJournal(port, project).observeNativeSave(identity, guard);
     if (admission && originalTargetPid !== undefined && observed.state !== 'completed') {
       if (observed.state === 'not-found') {
+        const retired = viewRevision && await admissions.retireSupersededSave(identity, originalTargetPid, viewRevision);
+        if (retired) return nativeSaveAdmissionResponse(retired, request, port.executor, originalTargetPid);
         const writer = await admissions.observeExitedSaveWriter(identity, originalTargetPid);
         if (writer) return nativeSaveWriterReleaseResponse(project, request, { ...writer, observer: { hostPid: port.executor?.hostPid ?? null } });
       } else if (observed.ref?.executor.hostPid === originalTargetPid) {
-        const writer = await new AbsOperationJournal(port, project).inspectUnpublishedDocumentSave(observed.ref, guard);
-        if (writer) return nativeSaveWriterReleaseResponse(project, request, {
-          version: 1, kind: writer.kind, request: identity, operationId: writer.operationId, snapshotHash: writer.snapshotHash,
-          saved: writer.saved, attachment: writer.attachment, executor: writer.originalExecutor,
-          observer: { hostPid: writer.observerExecutor.hostPid }, oldWriter: writer.oldWriter,
-        });
+        const writer = await new AbsOperationJournal(port, project).observeSaveWriterSettlement(observed.ref, guard);
+        if (writer) return nativeSaveWriterReleaseResponse(project, request, writer);
       }
     }
     const response = nativeSaveObservationResponse(project, identity, observed, port.executor, originalTargetPid);

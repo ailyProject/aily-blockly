@@ -76,21 +76,45 @@ export class OriginalRequestAdmissions {
 
   async reject(request: OriginalRequestAdmissionIdentity, failure: { code: string; message: string },
     guard: () => void): Promise<AdmissionRecord | null> {
+    return this.port.withLock(storage => this.rejectLocked(request, failure, guard, storage));
+  }
+
+  private async rejectLocked(request: OriginalRequestAdmissionIdentity, failure: { code: string; message: string },
+    guard: () => void, storage: AbsSyncStorageAccess): Promise<AdmissionRecord | null> {
+    guard();
+    const retained = await this.observe(request, storage);
+    if (retained) return retained;
+    if (request.operation === 'abs_apply') await this.assertApplicationWriter(request.requestId, undefined, storage);
+    else await this.assertSaveWriter({ version: 2, requestId: request.requestId, operation: request.operation,
+      inputDigest: request.inputDigest! }, storage);
+    if (await storage.read(await this.writerIndex(request)) !== null) return null;
+    const record: AdmissionRecord = { version: 1, kind: 'not-started', operationId: crypto.randomUUID(),
+      project: this.project, request, ...nativeSaveCapability(this.port), code: failure.code, message: failure.message };
+    guard();
+    if (!await storage.replace(await receiptKey(request), null, absJson(record))) {
+      throw admissionFault('The original rejection changed during settlement.');
+    }
+    return record;
+  }
+
+  /** The preparing renderer alone can prove its own view was superseded.
+   * Persist the usual no-start receipt under the first writer's lock so a
+   * delayed envelope cannot acquire authority afterwards. */
+  async retireSupersededSave(request: NativeSaveIdentity, originalTargetPid: number, revision: () => number | undefined) {
+    const identity = nativeSaveAdmissionIdentity(request);
+    if (!identity || nativeSaveCapability(this.port).executor.hostPid !== originalTargetPid) return null;
     return this.port.withLock(async storage => {
-      guard();
-      const retained = await this.observe(request, storage);
-      if (retained) return retained;
-      if (request.operation === 'abs_apply') await this.assertApplicationWriter(request.requestId, undefined, storage);
-      else await this.assertSaveWriter({ version: 2, requestId: request.requestId, operation: request.operation,
-        inputDigest: request.inputDigest! }, storage);
-      if (await storage.read(await this.writerIndex(request)) !== null) return null;
-      const record: AdmissionRecord = { version: 1, kind: 'not-started', operationId: crypto.randomUUID(),
-        project: this.project, request, ...nativeSaveCapability(this.port), code: failure.code, message: failure.message };
-      guard();
-      if (!await storage.replace(await receiptKey(request), null, absJson(record))) {
-        throw admissionFault('The original rejection changed during settlement.');
-      }
-      return record;
+      const retained = await this.saveWriter(request, storage);
+      const current = revision();
+      if (!retained || absJson(retained.record.executor) !== absJson(nativeSaveCapability(this.port).executor)
+        || typeof current !== 'number' || !Number.isSafeInteger(current) || current <= retained.record.viewRevision) return null;
+      const guard = () => {
+        const next = revision();
+        if (typeof next !== 'number' || !Number.isSafeInteger(next) || next < current)
+          throw admissionFault('The original save view lost its observation scope.');
+      };
+      return this.rejectLocked(identity, { code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+        message: 'The original save target is no longer open in its prepared view.' }, guard, storage);
     });
   }
 

@@ -35,6 +35,8 @@ export interface ProjectSaveReceiptResponse {
     oldWriter: ProjectStorageExecutorObservation;
   } & (
     { kind: 'admitted-save'; viewRevision: number; intentHash: string }
+    | { kind: 'indexed-save-retired'; operationId: string; snapshotHash: string;
+        settlement: { kind: 'source-not-published' | 'before-source-stage'; recordHash: string } }
     | { kind: 'source-not-published'; operationId: string; snapshotHash: string; saved: {
         abiHash: string | null; absHash: string | null; mapHash: string | null;
         committedHash: string | null; operationPointerHash: string;

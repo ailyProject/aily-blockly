@@ -6,6 +6,7 @@ import { AbsApplicationJournal } from './abs-application-journal';
 import type { AbsSyncStoragePort } from './abs-baseline-store';
 import { hashAbsText } from './abs-identity-map';
 import { nativeSaveIdentity } from './abs-native-save-result';
+import { nativeSaveIndexKey } from './abs-native-save-protocol';
 import { AbsOperationJournal } from './abs-operation-journal';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
@@ -53,7 +54,8 @@ describe('original project admission settlement', () => {
       viewRevision: 0,
       getProjectMode: () => 'blockly',
       isProjectTransitionInProgress: () => false,
-      injector: { get: () => ({ observeProjectPublication: sync.observeNativeSave.bind(sync) }) },
+      injector: { get: () => ({ observeProjectPublication: (path, request, pid) =>
+        sync.observeNativeSave(path, request, pid, () => domain.projectViewRevision) }) },
     });
     const service = Object.create(BlocklyLiveOperationBridgeService.prototype);
     Object.assign(service, { projectService: domain, boardSwitchInProgress: true, pendingApplyAdmissions: new Set(),
@@ -132,6 +134,51 @@ describe('original project admission settlement', () => {
     expect(await admissions.reject(original, { code: 'REJECTED', message: 'Rejected' }, guard)).toBeNull();
     expect(await admissions.observe(original)).toBeNull();
   });
+
+  it('settles a lost writer envelope against its invalidated view even after returning to the same project', async () => {
+    const host = bridge();
+    const request: ProjectSaveRequest = { version: 2, operation: 'project_save', requestId: 'pub2-' + requestId };
+    const prepared = await host.execute({ operation: 'project_publication_prepare', path: project,
+      params: { saveRequest: request }, originalAdmissionAttachment: port.attachment });
+    const status = { operation: 'project_publication_status', path: project,
+      params: { saveRequest: request, originalTargetPid: 101 } };
+    expect(prepared.saveWriter?.viewRevision).toBe(0);
+    expect((await host.execute(status)).saveReceipt.state).toBe('unknown');
+    host.projectService.viewRevision += 2;
+    const retired = await host.execute(status);
+    expect(retired.saveReceipt.state).toBe('completed');
+    expect(retired.result.admission).toEqual({ status: 'NOT_STARTED', requestId: request.requestId });
+    expect(retired.publicationObservation.current).toBeFalse();
+    expect(await port.read(await nativeSaveIndexKey(request.requestId))).toBeNull();
+    await host.execute({ operation: 'project_save', path: project, params: { saveRequest: request },
+      nativeSaveWriter: prepared.saveWriter, originalAdmissionAttachment: port.attachment });
+    expect(host.executeProjectSave).not.toHaveBeenCalled();
+    expect((await host.execute(status)).result).toEqual(retired.result);
+  });
+
+  for (const cut of ['index-only', 'after-restore'] as const) {
+    it(`keeps the proven writer release independent of the latest operation pointer (${cut})`, async () => {
+      const request: ProjectSaveRequest = { version: 2, operation: 'project_save', requestId: 'pub2-' + requestId };
+      const identity = await nativeSaveIdentity(project, request);
+      const input = { request: identity, document: {}, disk: { abi: null, abs: null, map: null } };
+      const first = await new AbsOperationJournal(port, project).beginDocumentSave(input, guard);
+      if (cut === 'index-only') files.delete('operation.json');
+      const original = port.executor;
+      port = { ...open('2', 222), observeExecutor: async () =>
+        ({ version: 1, state: 'exited', reason: 'process-exited' }) };
+      const journal = new AbsOperationJournal(port, project);
+      if (cut === 'after-restore') {
+        await journal.restored(first.ref.operationId, guard);
+        await journal.beginDocumentSave({ ...input,
+          request: { ...identity, requestId: 'pub2-' + crypto.randomUUID() } }, guard);
+      }
+      const result = await bridge().execute({ operation: 'project_publication_status', path: project,
+        params: { saveRequest: request, originalTargetPid: original!.hostPid } });
+      expect(result.saveReceipt.state).toBe('unknown');
+      expect(result.writerObservation?.settlement?.recordHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(result.result).toBeUndefined();
+    });
+  }
 
   it('keeps an admitted route rejection observable after the active canvas moves', async () => {
     const host = bridge();
@@ -342,14 +389,15 @@ describe('original project admission settlement', () => {
       exited = true;
       expect(await cold.execute(observe)).toEqual(jasmine.objectContaining({
         saveReceipt: jasmine.objectContaining({ requestId: request.requestId, state: 'unknown' }),
-        writerObservation: jasmine.objectContaining({ kind: indexed ? 'source-not-published' : 'admitted-save',
+        writerObservation: jasmine.objectContaining({ kind: indexed ? 'indexed-save-retired' : 'admitted-save',
           request: identity, executor: original, observer: { hostPid: 222 }, oldWriter: jasmine.objectContaining({ state: 'exited' }) }),
       }));
       expect((await cold.execute({ ...observe, params: { ...observe.params, originalTargetPid: 333 } })).writerObservation).toBeUndefined();
       await expectAsync(new AbsOperationJournal(port, project).beginDocumentSave({
         request: identity, document: {}, disk: { abi: null, abs: null, map: null },
       }, guard)).toBeRejectedWithError('The original save belongs to a different admitted writer.');
-      expect([...files]).toEqual(retained);
+      expect([...files].filter(([key]) => !key.startsWith('recoveries/save-settlement-'))).toEqual(retained);
+      expect([...files.keys()].filter(key => key.startsWith('recoveries/save-settlement-')).length).toBe(indexed ? 1 : 0);
     });
   }
 
