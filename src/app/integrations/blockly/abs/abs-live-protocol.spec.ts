@@ -75,6 +75,22 @@ describe('ABS live protocol admission', () => {
     expect(rejectAbsLiveRequest('project_save', {})).toBeNull();
   });
 
+  it('routes start, observation and explicit Stop with the same bound recovery request ID', () => {
+    const requestId = 'call_af82707268bf40a6b25f9b45';
+    for (const action of [
+      { action: 'recover_project' },
+      { action: 'recover_project', observe: true },
+      { action: 'cancel_project' },
+    ]) {
+      expect(rejectAbsLiveRequest('abs_recovery', { version: 2, requestId, ...action })).toBeNull();
+      expect(rejectAbsLiveRequest('abs_recovery', { version: 2, requestId: '../other', ...action })?.code)
+        .toBe('ABS_REQUEST_INVALID');
+      expect(rejectAbsLiveRequest('abs_recovery', { version: 1, requestId, ...action })?.code)
+        .toBe('ABS_PROTOCOL_REQUIRED');
+    }
+    expect(rejectAbsLiveRequest('abs_apply', { ...request(), requestId })?.code).toBe('ABS_REQUEST_INVALID');
+  });
+
   it('retires base-only apply and old baseline mutations before touching the coordinator', async () => {
     const service = bridge(), old: any = request();
     delete old.workingCandidate; delete old.validation.workingCandidate;
