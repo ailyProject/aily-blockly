@@ -5,7 +5,7 @@ import { decodeAbsState } from './abs-full-state';
 import { absJson, assertCurrentAbsProjection, createAbsProjection, reconstructAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 import { readAbsWorkspaceMode, type AbsWorkspaceMode, type AbsAuthorSourceRecord, type AbsAcceptedSourceProof } from './abs-workspace-mode';
-import { generationEvidence } from './abs-generation-protocol';
+import { generationEvidence, type AbsGenerationEvidence } from './abs-generation-protocol';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
 import type { AbsProgramDriftObservation } from './abs-program-drift';
 import type { CopiedProjectLockRecovery, ProjectStorageAttachment, ProjectStorageExecutor, ProjectStorageExecutorObservation } from '@shared/project-sync-storage-bridge';
@@ -578,13 +578,18 @@ export class AbsBaselineStore {
     return this.port.withLock(storage => this.describeJournalRecovery(storage));
   }
 
-  /** Qualify the copied bytes before acquiring a target that may still carry
-   * the original marker. No write authority is granted by this inspection. */
-  async inspectCopiedJournalRecovery(source: { disk: AbsDiskSnapshot; committed: string; candidate?: string }): Promise<AbsJournalRecovery | null> {
+  /** Check the prepared and predecessor bytes against an authenticated original request. */
+  async inspectBoundJournalRecovery(source: { disk: AbsDiskSnapshot; committed: string; candidate?: string;
+    native?: AbsGenerationEvidence }): Promise<AbsJournalRecovery | null> {
     const offered = await this.describeJournalRecovery(this.port);
     if (!offered || offered.scope.projectKey !== this.scope.projectKey || offered.scope.pageId !== this.scope.pageId) return null;
     const { record } = await this.readGeneration(this.port, offered.generation, true);
     const original = this.parsePointer(source.committed), previous = await this.readGeneration(this.port, original.generation, true);
+    if (source.native && (!record.abi || absJson(source.native) !== absJson(await generationEvidence(record.projection, record.abi)))) return null;
+    const author = record.authorSource;
+    const preserved = source.native && record.authorIntent === 'preserve' && author?.disposition === 'preserved';
+    if (preserved && (source.disk.abs === null || author.hash !== record.expected.abs
+      || author.inputHash !== record.expected.abs || await this.port.read('project.abs') !== source.disk.abs)) return null;
     if (record.mode !== 'import' || record.previousPointer !== source.committed
       || record.previousCommitted !== await hashAbsText(source.committed)
       || absJson(record.expected) !== absJson(await this.hashDisk(source.disk))
@@ -594,7 +599,7 @@ export class AbsBaselineStore {
       || previous.record.projection.map.scope.pageId !== this.scope.pageId
       || source.disk.abi === null || source.disk.abi !== previous.record.abi
       || source.disk.abs !== (previous.record.authorSource?.disposition === 'accepted' ? previous.record.inputAbs : previous.record.projection.abs)
-        && ((record.workspaceMode ?? 'overlay-v1') !== 'project-v1' || source.disk.abs !== source.candidate)
+        && ((record.workspaceMode ?? 'overlay-v1') !== 'project-v1' || !preserved && source.disk.abs !== source.candidate)
       || source.disk.map !== absMapJson(previous.record.projection.map)
       || await this.workspaceMode(this.port) !== (record.workspaceMode ?? 'overlay-v1')) return null;
     return offered;

@@ -19,6 +19,45 @@ const projectKey = (value: string) => {
   return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
 };
 
+type OriginalNativeSave = NonNullable<Awaited<ReturnType<typeof readNativeSaveRequest>>>;
+type NativeSaveStageRecord = NativeSaveStageInput & { version: 2; kind: 'native-save'; project: string; snapshotHash: string };
+
+/** The same immutable stage validation also serves read-only copied project inspection. */
+export async function readNativeSaveStage(access: Pick<AbsSyncStorageAccess, 'read'>, original: OriginalNativeSave) {
+  const text = await access.read(stageKey(original.ref.operationId));
+  if (text === null) return { original, text, record: null };
+  const record: NativeSaveStageRecord = json(text);
+  await validateNativeSaveStage(record, original);
+  return { original, text, record };
+}
+
+async function validateNativeSaveStage(record: any, original: OriginalNativeSave) {
+  const { ref } = original, project = original.snapshot.project;
+  const binding = record.evidence?.binding;
+  if (record.version !== 2 || record.kind !== 'native-save' || record.project !== project
+    || record.snapshotHash !== original.snapshotHash || !same(record.ref, ref) || !binding
+    || typeof binding.scope?.projectKey !== 'string' || projectKey(binding.scope.projectKey) !== projectKey(project) || typeof binding.scope.pageId !== 'string'
+    || typeof binding.generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(binding.generation)
+    || ![binding.abiHash, binding.absHash, binding.mapHash].every(value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value))
+    || !Number.isSafeInteger(record.evidence.absBytes) || record.evidence.absBytes < 0
+    || record.inputAbiHash !== await hash(original.snapshot.disk.abi)) throw nativeSaveError('Native stage does not bind its exact original input/output.');
+  if (ref.request.operation !== 'history_restore' && typeof (original.snapshot.document as any)?.activePageId === 'string'
+    && (original.snapshot.document as any).activePageId !== binding.scope.pageId) throw nativeSaveError('Native save changed the original target page.');
+  if (ref.request.operation === 'blocks_set_state') {
+    const state = record.blockState;
+    if (state?.version !== 2 || state.action !== 'update' || !Array.isArray(state.changes)
+      || !Array.isArray(state.beforeStates) || !Array.isArray(state.states)
+      || state.beforeStates.length !== state.changes.length || state.states.length !== state.changes.length
+      || state.inputAbiHash !== record.inputAbiHash || !same(state.output, record.evidence)) {
+      throw nativeSaveError('The state publication lacks its original native readback.');
+    }
+    const identity = await blockStatePublicationIdentity(project, { version: 2, requestId: state.requestId, action: 'update',
+      ...(state.expectedCanvas ? { expectedCanvas: state.expectedCanvas } : { expectedGeneration: state.expectedGeneration }), changes: state.changes });
+    if (!same(identity, ref.request) || state.changes.some((change, index) => change.blockId !== state.beforeStates[index]?.blockId
+      || change.blockId !== state.states[index]?.blockId)) throw nativeSaveError('The original state request differs from its native stage.');
+  } else if (record.blockState !== undefined) throw nativeSaveError('A different native operation cannot claim state-update readback.');
+}
+
 /** Native-save section of the existing operation/application journal. There is
  * no second store, mutable current-result pointer, or projection on observation. */
 export class NativeSavePublications {
@@ -32,36 +71,7 @@ export class NativeSavePublications {
     assertNativeSaveRef(found.ref, ref); return found;
   }
   private async stage(ref: NativeSaveOperationRef, access: Pick<AbsSyncStorageAccess, 'read'> = this.port) {
-    const original = await this.original(ref, access), text = await access.read(stageKey(ref.operationId));
-    if (text === null) return { original, text, record: null };
-    const record = json(text);
-    await this.validateStage(record, original, ref);
-    return { original, text, record };
-  }
-  private async validateStage(record: any, original: any, ref: NativeSaveOperationRef) {
-    const binding = record.evidence?.binding;
-    if (record.version !== 2 || record.kind !== 'native-save' || record.project !== this.project
-      || record.snapshotHash !== original.snapshotHash || !same(record.ref, ref) || !binding
-      || typeof binding.scope?.projectKey !== 'string' || projectKey(binding.scope.projectKey) !== projectKey(this.project) || typeof binding.scope.pageId !== 'string'
-      || typeof binding.generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(binding.generation)
-      || ![binding.abiHash, binding.absHash, binding.mapHash].every(value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value))
-      || !Number.isSafeInteger(record.evidence.absBytes) || record.evidence.absBytes < 0
-      || record.inputAbiHash !== await hash(original.snapshot.disk.abi)) throw nativeSaveError('Native stage does not bind its exact original input/output.');
-    if (ref.request.operation !== 'history_restore' && typeof (original.snapshot.document as any)?.activePageId === 'string'
-      && (original.snapshot.document as any).activePageId !== binding.scope.pageId) throw nativeSaveError('Native save changed the original target page.');
-    if (ref.request.operation === 'blocks_set_state') {
-      const state = record.blockState;
-      if (state?.version !== 2 || state.action !== 'update' || !Array.isArray(state.changes)
-        || !Array.isArray(state.beforeStates) || !Array.isArray(state.states)
-        || state.beforeStates.length !== state.changes.length || state.states.length !== state.changes.length
-        || state.inputAbiHash !== record.inputAbiHash || !same(state.output, record.evidence)) {
-        throw nativeSaveError('The state publication lacks its original native readback.');
-      }
-      const identity = await blockStatePublicationIdentity(this.project, { version: 2, requestId: state.requestId, action: 'update',
-        ...(state.expectedCanvas ? { expectedCanvas: state.expectedCanvas } : { expectedGeneration: state.expectedGeneration }), changes: state.changes });
-      if (!same(identity, ref.request) || state.changes.some((change, index) => change.blockId !== state.beforeStates[index]?.blockId
-        || change.blockId !== state.states[index]?.blockId)) throw nativeSaveError('The original state request differs from its native stage.');
-    } else if (record.blockState !== undefined) throw nativeSaveError('A different native operation cannot claim state-update readback.');
+    return readNativeSaveStage(access, await this.original(ref, access));
   }
   private async immutable(access: AbsSyncStorageAccess, key: string, text: string) {
     const previous = await access.read(key);
@@ -79,7 +89,7 @@ export class NativeSavePublications {
       const original = await this.original(input.ref, access);
       if (await access.read(resultKey(input.ref.operationId)) !== null) throw nativeSaveError('This native request already has a terminal result.');
       const record = { version: 2, kind: 'native-save', project: this.project, snapshotHash: original.snapshotHash, ...input };
-      await this.validateStage(record, original, input.ref);
+      await validateNativeSaveStage(record, original);
       guard();
       await this.immutable(access, stageKey(input.ref.operationId), absJson(record));
       // Reuse the same strict reader used by every subsequent seal/observation.

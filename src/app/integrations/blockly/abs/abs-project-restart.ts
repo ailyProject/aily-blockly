@@ -6,6 +6,7 @@ import { inspectAbsBaselineRecovery, recoverAbsBaseline } from './abs-baseline-r
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
 import { nativeSaveCapability, readNativeSaveAtAttachment } from './abs-native-save-protocol';
+import { readNativeSaveStage } from './abs-native-save-publication';
 
 const movedOperation = (retained: LocationOperation | null, port: AbsSyncStoragePort, project: string) => !!retained
   && (retained.operation.project !== project || !!(retained.operation.attachment && port.attachment
@@ -16,6 +17,13 @@ const digest = (value: string | null) => value === null ? Promise.resolve(null) 
 const matchesLocationAuthor = async (current: NonNullable<Awaited<ReturnType<AbsBaselineStore['readCommittedSnapshot']>>>, abs: string | null) =>
   abs === current.projection.abs || abs !== null && current.workspaceMode === 'project-v1'
   && current.authorSource?.hash === await hashAbsText(abs);
+
+async function originalNativePublication(port: AbsSyncStoragePort, operation: LocationOperation['operation']) {
+  if (!operation.nativeSave) return null;
+  const { attachment } = nativeSaveCapability(operation);
+  const save = await readNativeSaveAtAttachment(port, operation.project, operation.nativeSave, attachment);
+  return save?.ref.operationId === operation.id ? readNativeSaveStage(port, save) : null;
+}
 
 async function inspectCopiedTransaction(port: AbsSyncStoragePort, project: string) {
   const observed = new Map<string, string | null>();
@@ -35,13 +43,12 @@ async function inspectCopiedTransaction(port: AbsSyncStoragePort, project: strin
     throw unprovenCopy();
   const pageId = (source.document as { activePageId?: unknown }).activePageId;
   if (typeof pageId !== 'string' || !pageId) throw unprovenCopy();
-  if (source.nativeSave) {
-    const save = await readNativeSaveAtAttachment(inspection, source.project, source.nativeSave, original.attachment);
-    if (!save || save.ref.operationId !== source.id) throw unprovenCopy();
-  } else if (!source.candidate) throw unprovenCopy();
+  const publication = await originalNativePublication(inspection, source);
+  if (source.nativeSave ? !publication : !source.candidate) throw unprovenCopy();
+  const native = publication?.record?.evidence;
   const scope = { projectKey: source.project, pageId };
-  const recovery = await new AbsBaselineStore(inspection, scope).inspectCopiedJournalRecovery({
-    disk: source.disk, committed: source.committed, ...(source.candidate ? { candidate: source.candidate.source } : {}),
+  const recovery = await new AbsBaselineStore(inspection, scope).inspectBoundJournalRecovery({
+    disk: source.disk, committed: source.committed, candidate: source.candidate?.source, native,
   });
   if (!recovery || source.application && !await new AbsOperationJournal(inspection, source.project)
       .matchesCopiedApplication(retained, recovery.generation, pageId)) throw unprovenCopy();
@@ -76,13 +83,26 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
     if (await storage.read('prepared.json') === null) return;
     // Reuse the exact journal checks and CAS with the lock already held.
     const locked: AbsSyncStoragePort = { ...port, read: key => storage.read(key), withLock: action => action(storage) };
+    const journal = new AbsOperationJournal(locked, project);
+    const retained = await journal.inspectLocation();
+    const operation = retained?.operation;
+    const moved = movedOperation(retained, locked, project);
     if (copied) {
+      // Another adopter may have cleared the foreign marker and admitted a local
+      // save while this recovery was between locks. Its own admission, stage and
+      // source must prove this new prepared generation under the current lock.
+      if (!moved && operation?.nativeSave && operation.committed && locked.attachment
+        && absJson(operation.attachment) === absJson(locked.attachment)) {
+        const native = (await originalNativePublication(locked, operation))?.record?.evidence;
+        const scope = native?.binding.scope;
+        const local = scope?.projectKey === project && await new AbsBaselineStore(locked, scope).inspectBoundJournalRecovery({
+          disk: operation.disk, committed: operation.committed, native,
+        });
+        if (local) return settlePreparedJournal(locked, local, assertCurrent);
+      }
       await verifyCopiedTransaction(locked, copied);
       return settlePreparedJournal(locked, copied.recovery, assertCurrent);
     }
-    const journal = new AbsOperationJournal(locked, project);
-    const retained = await journal.inspectLocation();
-    const moved = movedOperation(retained, locked, project);
     const recovery = await new AbsBaselineStore(locked, { projectKey: project, pageId: '' }).inspectJournalRecovery();
     // A second interruption may already have a new target-local metadata
     // generation. Recovery still uses its own scope; the old request stays historical.
@@ -105,10 +125,17 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
     if (entered || (error as { code?: string })?.code !== 'PROJECT_FILE_LOCK_CHANGED' || !port.retireCopiedLock) throw error;
     // A foreign marker must be proven before the normal target lock can be acquired.
     if (await port.read('prepared.json') === null) return;
-    if (!movedOperation(await new AbsOperationJournal(port, project).inspectLocation(), port, project)) throw error;
+    if (!movedOperation(await new AbsOperationJournal(port, project).inspectLocation(), port, project)) {
+      return settleUnderLock();
+    }
     const copied = await inspectCopiedTransaction(port, project);
     assertCurrent();
-    await port.retireCopiedLock({ original: copied.original, expected: copied.expected });
+    try { await port.retireCopiedLock({ original: copied.original, expected: copied.expected }); }
+    catch (retirementError) {
+      // A changed journal authorizes an ordinary lock admission only. The target
+      // lock and an exact prepared proof still guard every attempted write.
+      if ((retirementError as { code?: string })?.code !== 'ABS_TRANSACTION_CONFLICT') throw retirementError;
+    }
     await settleUnderLock(copied);
   }
 }
