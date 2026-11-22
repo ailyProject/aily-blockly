@@ -376,9 +376,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     }
   }
 
-  async prepareBlocklyRecoveryDiscard(path: string) {
+  async prepareBlocklyRecoveryDiscard(path: string, mode?: 'discard' | 'reload') {
     if (!this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) throw new Error('The departing recovery view changed.');
-    return this.blocklyEditorProjectService.prepareRetainedDiscard(path);
+    return this.blocklyEditorProjectService.prepareRetainedDiscard(path, mode);
   }
 
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any {

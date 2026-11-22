@@ -65,18 +65,18 @@ export async function refreshInvalidAbsMirrors(port: AbsSyncStoragePort, project
     const canonical = accepted && (mode === 'project-v1' || !isLegacyAbsProjection(accepted.projection.map.projectionVersion)) ? accepted : null;
     if ((canonical && canonical.abi !== abi) || (!canonical && mode === 'project-v1'))
       throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'The original accepted program cannot verify mirror recovery.');
-    if (canonical && mode === 'overlay-v1' && observed[1] === invalid && observed[0] !== invalid
-      && observed[0] !== canonical.projection.abs)
-      throw new AbsSyncError('ABS_SOURCE_CONFLICT', 'The current draft and invalid map require distinct recovery evidence.');
     const replacements = canonical ? [canonical.projection.abs, absMapJson(canonical.projection.map)] : [null, null];
     const digest = (value: string | null) => value === null ? null : hashAbsText(value);
     const abiHash = await hashAbsText(abi), committedHash = await digest(committed), operationHash = await digest(operation);
-    const canonicalOverlay = canonical && mode === 'overlay-v1' ? await hashAbsText(canonical.projection.abs) : undefined;
+    // The map describes the accepted ABI. A distinct author stays untouched
+    // and its exact bytes are a CAS preimage, even when they do not parse.
+    const author = observed[0] === invalid ? replacements[0] : observed[0];
+    const absHash = await digest(author ?? (mode === 'overlay-v1' ? canonical?.projection.abs ?? null : null));
     for (const [index, key] of settings.entries()) {
       if (observed[index] !== invalid) continue;
       assertCurrent();
       if (!await storage.retireInvalidAbsMirror({ key, abiHash, committedHash, operationHash,
-        ...(key === 'project.abs.map.json' && canonicalOverlay ? { absHash: canonicalOverlay } : {}), replacement: replacements[index] }))
+        ...(key === 'project.abs.map.json' && absHash ? { absHash } : {}), replacement: replacements[index] }))
         throw new AbsSyncError('ABS_DISK_CONFLICT', 'The original invalid mirror changed before recovery.');
     }
     assertCurrent();

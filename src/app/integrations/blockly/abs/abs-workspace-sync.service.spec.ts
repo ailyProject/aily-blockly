@@ -46,6 +46,7 @@ describe('v2 actual workspace generation coordinator', () => {
   afterAll(() => { jasmine.DEFAULT_TIMEOUT_INTERVAL = originalTimeout; });
   let service: AbsWorkspaceSyncService, project: _ProjectService, editor: any;
   let disk: Map<string, string>, values: Map<string, any>;
+  let unreadableMirrors: Map<string, Uint8Array>, rawArchives: Map<string, Uint8Array>;
   let port: AbsSyncStoragePort, gate: BlocklyWorkspaceEditGate;
   let catalog: BlocklyDeclarativeBlockCatalog;
   let failWrite: string | undefined, loseCommitReply: boolean, held: boolean;
@@ -90,7 +91,11 @@ describe('v2 actual workspace generation coordinator', () => {
       this.appendValueInput('VALUE').setCheck('Number');
     } };
     disk = new Map(); values = new Map(); failWrite = undefined; loseCommitReply = false; held = false;
-    const read = async key => disk.get(key) ?? null;
+    unreadableMirrors = new Map(); rawArchives = new Map();
+    const read = async key => {
+      if (unreadableMirrors.has(key)) throw Object.assign(new Error('Unreadable UTF-8 mirror'), { code: 'ABS_STORAGE_ENCODING_INVALID' });
+      return disk.get(key) ?? null;
+    };
     const access: AbsSyncStorageAccess = {
       read, replace: async (key, expected, content) => {
         expect(held).toBeTrue();
@@ -98,6 +103,17 @@ describe('v2 actual workspace generation coordinator', () => {
         const before = await read(key);
         if ((before === null ? null : await hashAbsText(before)) !== expected) return false;
         if (content === null) disk.delete(key); else disk.set(key, content);
+        return true;
+      },
+      retireInvalidAbsMirror: async ({ key, abiHash, committedHash, operationHash, absHash, replacement }) => {
+        expect(held).toBeTrue();
+        const bytes = unreadableMirrors.get(key);
+        if (!bytes || disk.has('prepared.json')) return false;
+        const hash = (path: string) => disk.has(path) ? hashAbsText(disk.get(path)!) : null;
+        if (await hash('project.abi') !== abiHash || await hash('committed.json') !== committedHash
+          || await hash('operation.json') !== operationHash || absHash !== undefined && await hash('project.abs') !== absHash) return false;
+        rawArchives.set(key, bytes.slice()); unreadableMirrors.delete(key);
+        if (replacement === null) disk.delete(key); else disk.set(key, replacement);
         return true;
       },
     };
@@ -124,6 +140,9 @@ describe('v2 actual workspace generation coordinator', () => {
           read: async key => { assertCurrent(); const value = await locked.read(key); assertCurrent(); return value; },
           replace: async (key, expected, content) => {
             assertCurrent(); const value = await locked.replace(key, expected, content); assertCurrent(); return value;
+          },
+          retireInvalidAbsMirror: async request => {
+            assertCurrent(); const result = await locked.retireInvalidAbsMirror!(request); assertCurrent(); return result;
           },
         }, result => result.ok ? resolve(result.value) : reject(Object.assign(new Error(result.error.message), { code: result.error.code })));
       })) };
@@ -3687,61 +3706,6 @@ describe('v2 actual workspace generation coordinator', () => {
     expect((await inspect(tools)).diagnostics.status).toBe('ready');
   });
 
-  it('never offers rebinding for an unapplied source even when the map and project scope differ', async () => {
-    const { tools, source } = await wireBase();
-    project.currentProjectPath = 'D:/copied-project'; disk.set('project.abs', source); disk.set('project.abs.map.json', 'corrupt');
-    const before = [...disk], diagnosis = await inspect(tools);
-    expect(diagnosis.diagnostics.status).toBe('blocked'); expect(diagnosis.diagnostics.rebind).toBeUndefined();
-    expect(diagnosis.diagnostics.issues).toContain('ABS_SOURCE_CONFLICT');
-    expect((await rebind(tools, 'sha256:' + '0'.repeat(64))).code).toBe('ABS_REBIND_STALE'); expect([...disk]).toEqual(before);
-  });
-
-  it('offers a guarded repair with raw draft evidence for combined scope/map/source conflicts', async () => {
-    const { tools, source } = await wireBase();
-    project.currentProjectPath = 'D:/copied-project';
-    disk.set('project.abs', source); disk.set('project.abs.map.json', '{broken copied map');
-    const before = [...disk], diagnosis = await inspect(tools);
-    expect(diagnosis.diagnostics.issues).toContain('ABS_SCOPE_INVALID');
-    expect(diagnosis.diagnostics.issues).toContain('ABS_MAP_INVALID');
-    expect(diagnosis.diagnostics.issues).toContain('ABS_SOURCE_CONFLICT');
-    expect(diagnosis.diagnostics.rebind).toBeUndefined();
-    expect(diagnosis.diagnostics.draft).toEqual(jasmine.objectContaining({
-      hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength,
-    }));
-    expect(diagnosis.diagnostics.repair).toEqual(jasmine.objectContaining({ authority: 'workspace', token: jasmine.stringMatching(/^sha256:/) }));
-    expect([...disk]).toEqual(before);
-  });
-
-  it('repairs the copied conflict from the current canvas and retains the exact original draft/map/ABI', async () => {
-    const { tools, source } = await wireBase();
-    project.currentProjectPath = 'D:/copied-project';
-    disk.set('project.abs', source); disk.set('project.abs.map.json', '{broken copied map');
-    const oldAbi = disk.get('project.abi'), oldPointer = disk.get('committed.json');
-    const diagnosis = await inspect(tools);
-    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
-      action: 'repair', authority: 'workspace', token: diagnosis.diagnostics.repair?.token ?? 'sha256:' + '0'.repeat(64) });
-    expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
-    expect(result.publication?.status).toBe('COMMITTED');
-    expect(result.appliedRevision).toBeUndefined();
-    expect(result.receipt?.appliedRevision).toBeUndefined();
-    expect(result.candidateApplied).not.toBeTrue();
-    expect(result.receipt?.candidateApplied).not.toBeTrue();
-    expect(result.evidence?.binding.scope.projectKey).toBe('D:/copied-project');
-    if (!result.recoveryArchive) return;
-    const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
-    expect(archive.disk).toEqual({ abi: oldAbi, abs: source, map: '{broken copied map' });
-    expect(archive.committed.pointer).toBe(oldPointer);
-    const restored: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
-      action: 'read_repair', generation: result.publication.generation });
-    expect(restored.ok).toBeTrue(); expect(restored.draft.abs).toBe(source);
-    expect((await inspect(tools)).diagnostics.status).toBe('ready');
-    expect(roots().getFieldValue('TEXT')).toBe('before');
-    expect(result.abs).not.toBe(source);
-    expect(disk.get('project.abs')).toBe(result.abs);
-    expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(result.abs));
-    expect(restored.draft.abs).not.toBe(result.abs);
-  });
-
   const programDriftInput = async () => {
     const capture = await service.captureWorkingCandidate();
     const keys = ['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json', 'prepared.json'];
@@ -4884,17 +4848,98 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(JSON.parse(retained![1]).map).toBe(oldMap);
       expect(editor.prepareProjectCode).not.toHaveBeenCalled();
     });
-    it('keeps an unapplied ABS draft when a public map is stale', async () => {
+    it('repairs a stale map without applying an independent local ABS draft', async () => {
       savedCanvas();
       await service.prepareWorkspaceModeMigration();
-      disk.set('project.abs.map.json', '{"olderMap":true}');
-      disk.set('project.abs', disk.get('project.abs')! + '\n# pending draft');
-      const before = [...disk];
-
-      await expectAsync(service.prepareWorkspaceModeMigration())
-        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_CONFLICT' }));
-      expect([...disk]).toEqual(before);
+      const originalMap = disk.get('project.abs.map.json'), abi = disk.get('project.abi');
+      const badMap = '{"olderMap":true}', draft = disk.get('project.abs')! + '\r\n# pending draft';
+      disk.set('project.abs.map.json', badMap); disk.set('project.abs', draft);
+      const prepared: any = await new AbsGenerationToolsService(service).workspaceMigration('prepare', { version: 1, action: 'prepare_workspace_migration' });
+      expect(prepared.ok).withContext(JSON.stringify(prepared)).toBeTrue();
+      expect(prepared.migration.host.author.hash).toBe(await hashAbsText(draft));
+      expect(disk.get('project.abs.map.json')).toBe(originalMap);
+      expect(disk.get('project.abs')).toBe(draft); expect(disk.get('project.abi')).toBe(abi);
+      expect([...disk].some(([key, value]) => key.startsWith('recoveries/map-') && JSON.parse(value).map === badMap)).toBeTrue();
+      expect(roots().getFieldValue('TEXT')).toBe('before');
     });
+    for (const badMap of ['missing', 'invalid JSON', 'invalid UTF-8'] as const) {
+      it(`automatically prepares a copied project with a retained draft and ${badMap} map`, async () => {
+        const original = await foreignBaseline(), expected = disk.get(absBaselineKey(original.generation));
+        // An independently edited source need not parse to be preserved.
+        const draft = '\uFEFF' + original.source + '\r\ntext_print(\r\n';
+        disk.set('project.abs', draft);
+        const bytes = Uint8Array.of(0xc3, 0x28, 0xff);
+        if (badMap === 'missing') disk.delete('project.abs.map.json');
+        if (badMap === 'invalid JSON') disk.set('project.abs.map.json', '{broken copied map');
+        if (badMap === 'invalid UTF-8') unreadableMirrors.set('project.abs.map.json', bytes);
+        const tools = new AbsGenerationToolsService(service);
+        const prepared: any = await tools.workspaceMigration('prepare', { version: 1, action: 'prepare_workspace_migration' });
+        expect(prepared.ok).withContext(JSON.stringify(prepared)).toBeTrue();
+        const binding = prepared.migration.accepted.accepted;
+        expect(binding.scope).toEqual(scope); expect(binding.generation).not.toBe(original.generation);
+        const restored: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+          action: 'read_draft', generation: binding.generation });
+        expect(restored.ok).toBeTrue(); expect(restored.draft.abs).toBe(draft);
+        expect(restored.draft.hash).toBe(await hashAbsText(draft));
+        expect(restored.draft.baseGeneration).toBe(original.generation);
+        expect(disk.get(absBaselineKey(original.generation))).toBe(expected);
+        expect(disk.get('project.abi')).toBe(original.abi); expect(disk.get('project.abs')).toBe(original.source);
+        if (badMap === 'invalid UTF-8') expect(rawArchives.get('project.abs.map.json')).toEqual(bytes);
+        else expect([...disk].some(([key, value]) => key.startsWith('recoveries/map-')
+          && JSON.parse(value).map === (badMap === 'missing' ? null : '{broken copied map'))).toBeTrue();
+        const capture = await service.captureWorkingCandidate();
+        expect(capture.published?.scope).toEqual(scope); expect(capture.published?.absHash).toBe(await hashAbsText(original.source));
+        expect(roots().getFieldValue('TEXT')).toBe('before');
+      });
+    }
+    const rememberSavedCanvas = () => {
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, disk.get('project.abi')!, editor.captureProjectSnapshot().document);
+    };
+    for (const [key, background] of [['project.abs', false], ['project.abs.map.json', false], ['project.abs.map.json', true]] as const) {
+      it(`saves unsaved Working and retains invalid ${key} bytes (${background ? 'background' : 'foreground'})`, async () => {
+        savedCanvas(); await service.prepareWorkspaceModeMigration(); rememberSavedCanvas();
+        const bytes = Uint8Array.of(0xff, 0xc3, 0x28);
+        const draft = key === 'project.abs.map.json' && !background && disk.get('project.abs')! + '\r\n# unsaved ABS author';
+        if (draft) disk.set('project.abs', draft);
+        unreadableMirrors.set(key, bytes);
+        roots().setFieldValue('unsaved authorship', 'TEXT');
+        const request = { version: 2 as const, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' as const };
+        const saved = await project.save(scope.projectKey, request, background);
+        expect(saved.projectSaved).toBeTrue();
+        expect(rawArchives.get(key)).toEqual(bytes);
+        expect(JSON.parse(disk.get('project.abi')!).pages[0].content.blocks.blocks[0].fields.TEXT).toBe('unsaved authorship');
+        const receipt = await service.observeNativeSave(scope.projectKey, request);
+        expect(receipt?.saveReceipt.requestId).toBe(request.requestId);
+        expect(receipt?.saveReceipt.state).toBe('completed');
+        expect(receipt?.result?.['projectSaved']).toBeTrue();
+        if (draft) {
+          const generation = JSON.parse(disk.get('project.abs.map.json')!).generation;
+          expect((await service.readArchivedDraft(generation)).abs).toBe(draft);
+        }
+      });
+    }
+    for (const blocker of ['external ABI', 'prepared writer'] as const) {
+      it(`does not repair unreadable mirrors against a ${blocker}`, async () => {
+        savedCanvas(); await service.prepareWorkspaceModeMigration(); rememberSavedCanvas();
+        const key = 'project.abs.map.json', bytes = Uint8Array.of(0xff, 0xc3, 0x28);
+        unreadableMirrors.set(key, bytes);
+        if (blocker === 'external ABI') {
+          const outside = JSON.parse(disk.get('project.abi')!);
+          outside.pages[0].content.blocks.blocks[0].fields.TEXT = 'external change';
+          disk.set('project.abi', absJson(outside));
+        } else disk.set('prepared.json', 'original writer marker');
+        roots().setFieldValue('unsaved authorship', 'TEXT');
+        const before = [...disk];
+        const request = { version: 2 as const, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' as const };
+        await expectAsync(project.save(scope.projectKey, request)).toBeRejectedWith(jasmine.objectContaining({
+          code: blocker === 'external ABI' ? 'ABS_DUAL_EDIT_CONFLICT' : 'ABS_TRANSACTION_PENDING',
+        }));
+        expect([...disk]).toEqual(before); expect(unreadableMirrors.get(key)).toBe(bytes);
+        expect(rawArchives.size).toBe(0); expect(roots().getFieldValue('TEXT')).toBe('unsaved authorship');
+      });
+    }
     it('uses the acknowledged native load when first migration sees the same legacy ABI bytes', async () => {
       const loaded = editor.captureProjectSnapshot().document;
       const legacy = absJson({ ...loaded, metadata: 'legacy normalized during load' });
@@ -5580,6 +5625,17 @@ describe('v2 actual workspace generation coordinator', () => {
       const saved: any = await project.save(scope.projectKey);
       expect(saved.projectSaved).toBeTrue(); expect(saved.publication.status).toBe('COMMITTED');
       expect(disk.get('project.abs')).toContain('TEXT="candidate A"'); expect(gate.busy).toBeFalse();
+    });
+    it('keeps the original History observation attached when the project switches during request validation', async () => {
+      const tools = new AbsGenerationToolsService(service), open = spyOn(window['fs'], 'openProjectSyncStorage').and.callThrough();
+      const hash = `sha256:${'a'.repeat(64)}`;
+      const request = { version: 2, requestId: `pub2-${crypto.randomUUID()}`, action: 'history_observe', originalTargetPid: 101,
+        history: { id: 'original-history-step', expected: { generation: 'original-base', scope, abiHash: hash, absHash: hash, mapHash: hash },
+          base: { hash, bytes: 21 }, candidate: { hash, bytes: 21 } } };
+      const observing = tools.execute('abs_recovery', request, undefined, undefined, undefined, scope.projectKey);
+      project.currentProjectPath = 'D:/competing-project';
+      expect(await observing).toEqual(jasmine.objectContaining({ ok: false, code: 'ABS_CONTEXT_STALE' }));
+      expect(open).not.toHaveBeenCalled();
     });
     it('S3 observes the one History commit after a lost reply with a dirty author and rejects changed accepted files', async () => {
       await baseline(); select();

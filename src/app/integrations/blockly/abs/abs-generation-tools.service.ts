@@ -119,7 +119,8 @@ export class AbsGenerationToolsService {
               recoveryArchive: result.recoveryArchive, candidateApplied: false } };
         }
         if (params['action'] === 'history_publish') return { ...reply, ...await this.sync.publishHistoryProgram(params) };
-        if (params['action'] === 'history_observe') return { ...reply, ...await this.sync.observeHistoryProgram(params, params['originalTargetPid']) };
+        if (params['action'] === 'history_observe') return { ...reply,
+          ...await this.sync.observeHistoryProgram(params, params['originalTargetPid'], requestedProject) };
         if (params['action'] === 'history_begin') return { ...reply, ok: true, ...await this.sync.beginHistoryNavigation() };
         if (['history_seal', 'history_release'].includes(params['action']) && typeof params['token'] === 'string') {
           if (params['action'] === 'history_seal') await this.sync.sealHistoryNavigation(params['token']);

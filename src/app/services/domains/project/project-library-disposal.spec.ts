@@ -116,6 +116,47 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 
+  for (const problem of ['damaged journal', 'active writer'] as const) {
+    it(`checks same-project reload recovery before retiring the canvas with a ${problem}`, async () => {
+      const { service, events, mounted } = fixture();
+      const commit = jasmine.createSpy('release departure admission').and.resolveTo();
+      const dispose = jasmine.createSpy('dispose departure admission');
+      const writerBusy = Object.assign(new Error('original writer still active'), { code: 'PROJECT_FILE_BUSY' });
+      Object.assign(service, {
+        electronService: { isElectron: false, exists: () => true },
+        ensureProjectModeAllowed: async () => true,
+        dependencyLifecycleState: { beginPreparation: () => ({}) },
+        rememberDependencyBackend: (session: unknown) => session,
+        assertProjectDependencySession: () => {},
+        publishCoderWorkspaceContext: () => {}, publishCoderOperations: () => {},
+        projectActivationSubject: new Subject(),
+        waitForProjectOpenCompletion: jasmine.createSpy('load from saved ABI').and.resolveTo(),
+      });
+      service.application.prepareBlocklyRecoveryDiscard = jasmine.createSpy('preflight retained operation').and.callFake(async () => {
+        expect(mounted()).toBeTrue();
+        events.push('prepare');
+        if (problem === 'active writer') throw writerBusy;
+        return { commit, dispose, preserveRecovery: true };
+      });
+      const reload = service.projectOpenInternal('/source', { reason: 'chat-tool-reload' });
+      if (problem === 'active writer') {
+        await expectAsync(reload).toBeRejectedWith(writerBusy);
+        expect(events).toEqual(['stop', 'prepare']);
+        expect(mounted()).toBeTrue();
+        expect(commit).not.toHaveBeenCalled();
+        expect(service.waitForProjectOpenCompletion).not.toHaveBeenCalled();
+      } else {
+        expect(await reload).toBeTrue();
+        expect(events.slice(0, 3)).toEqual(['stop', 'prepare', 'dispose']);
+        expect(service.waitForProjectOpenCompletion).toHaveBeenCalledTimes(1);
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(dispose).toHaveBeenCalledTimes(1);
+      }
+      expect(service.application.prepareBlocklyRecoveryDiscard).toHaveBeenCalledOnceWith('/source', 'reload');
+      expect(service.discardLibraryChanges).not.toHaveBeenCalled();
+    });
+  }
+
   for (const decision of ['cancel', 'focus']) it(`retains the source activation after target lock ${decision}`, async () => {
     const { service, mounted } = fixture();
     const previous = window['projectLock'];

@@ -436,7 +436,9 @@ export class _ProjectService {
     try { await discard.commit(); } finally { discard.dispose(); }
   }
 
-  async prepareRetainedDiscard(path: string): Promise<{ commit(): Promise<void>; dispose(): void; preserveRecovery?: true }> {
+  async prepareRetainedDiscard(path: string, mode: 'discard' | 'reload' = 'discard'): Promise<{
+    commit(): Promise<void>; dispose(): void; preserveRecovery?: true;
+  }> {
     const context = this.captureSaveContext(path);
     return this.blocklyService.runRecoveryCopyOperation(async () => {
       context.assertCurrent();
@@ -452,7 +454,7 @@ export class _ProjectService {
       try {
         await settleAbsProjectTransaction(port, path, guard);
         const retained = await journal.inspect();
-        return { commit: async () => { guard(); if (retained) await journal.finish(retained.id, guard); }, dispose };
+        return { commit: async () => { guard(); if (mode === 'discard' && retained) await journal.finish(retained.id, guard); }, dispose };
       } catch (error) {
         await readSavedAbiAfterRecoveryFailure(port, error, guard);
         // Preserve the unverified recovery record and its dependency state.

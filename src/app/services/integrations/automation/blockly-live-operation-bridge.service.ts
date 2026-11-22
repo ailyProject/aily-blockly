@@ -84,6 +84,11 @@ const PROJECT_MUTATIONS = new Set([
   'project_media_import',
 ]);
 const projectLockMaintenance = new Set(['retire_empty_project_lock', 'retire_project_file_lock']);
+const diskRecoveryObservations = new Set(['history_observe', 'read_draft']);
+
+function observesAbsDisk(payload: BlocklyLiveOperationPayload): boolean {
+  return payload.operation === 'abs_recovery' && diskRecoveryObservations.has(payload.params?.['action']);
+}
 
 // Backup/observation and environment-only operations are not program writers.
 function publishesProjectProgram(payload: BlocklyLiveOperationPayload): boolean {
@@ -792,7 +797,7 @@ export class BlocklyLiveOperationBridgeService {
     const recoveryDependencyReload = payload.operation === 'library_runtime_sync'
       && this.projectService.hasSavedRecoveryTarget?.(recoveryPath)
       && this.projectService.getBlocklyProjectLoadStatus(recoveryPath).ready === false;
-    if (journalReopen || recoveryInspection || candidateBackup || runtimeRecovery || recoveryDependencyReload || (!PROJECT_MUTATIONS.has(payload.operation || '')
+    if (journalReopen || recoveryInspection || observesAbsDisk(payload) || candidateBackup || runtimeRecovery || recoveryDependencyReload || (!PROJECT_MUTATIONS.has(payload.operation || '')
       && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update')
       && !(payload.operation === 'abs_protocol' && payload.params?.['action'] === 'prepare_workspace_migration'))) return execute();
     const projectPath = payload.path || this.projectService.currentProjectPath;
@@ -937,7 +942,8 @@ export class BlocklyLiveOperationBridgeService {
         matches ? active : original);
     }
     const inspection = ['project_load_status', 'app_info', 'search_boards_libraries'].includes(payload.operation || '')
-      || payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_apply';
+      || payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_apply'
+      || observesAbsDisk(payload);
     const buildNotStarted = payload.operation === 'project_build' ? { buildOutcome: 'not-started' } : {};
     if (this.boardSwitchInProgress && !inspection) {
       return { ok: false, ...buildNotStarted, reason: 'board_switch_in_progress', message: '开发板正在切换，请等待当前操作完成。' };
@@ -1143,6 +1149,8 @@ export class BlocklyLiveOperationBridgeService {
     }
     if (payload.operation !== 'project_reload') {
       const isBlocklyProject = this.projectService.getProjectMode(this.projectService.currentProjectPath) !== 'coder';
+      // Exact archived drafts and original History receipts do not need the current canvas.
+      if (isBlocklyProject && observesAbsDisk(payload)) return this.executeAbsRecovery(payload.params ?? {});
       const loadStatus = this.getProjectRuntimeStatus(this.projectService.currentProjectPath);
       const editorReady = loadStatus.ready;
       if (!isBlocklyProject && this.isBlocklyWorkspaceOperation(payload.operation)) {
@@ -1155,9 +1163,6 @@ export class BlocklyLiveOperationBridgeService {
           message: `Coder 工程不支持 Blockly 工作区操作: ${payload.operation}`,
           loadStatus,
         };
-      }
-      if (isBlocklyProject && payload.operation === 'abs_recovery' && payload.params?.['action'] === 'read_draft') {
-        return this.executeAbsRecovery(payload.params);
       }
       if (!editorReady) {
         if (isBlocklyProject && payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project') {

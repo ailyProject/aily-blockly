@@ -186,6 +186,7 @@ export class AbsWorkspaceSyncService {
   private async saveDocument(path: string, request: ProjectSaveRequest,
     change?: { runtime: OwnedBlocklyDocumentMutation } | { history: AbsHistoryPublicationRequest<HistoryEnvironmentPlan> }, background = false): Promise<ProjectSaveOutcome> {
     requireProjectProgramPublication();
+    const repairMirrors = !change && request.operation === 'project_save';
     const prepared = await this.run(async (initialContext, lease, initialStore, computation) => {
       let context = initialContext, store = initialStore;
       if (path !== context.path) throw new AbsSyncError('ABS_CONTEXT_STALE', 'The native save target changed.');
@@ -200,7 +201,12 @@ export class AbsWorkspaceSyncService {
       const before = this.editor.captureProjectSnapshot(lease);
       if (computation) await this.yieldBackgroundSave();
       const guard = this.atRevision(context.assertCurrent, lease, before);
-      const disk = await store.captureDisk(); guard();
+      if (repairMirrors && !computation) store = new AbsBaselineStore(port, context.scope, true);
+      const disk = repairMirrors ? await this.captureRepairableDisk(context, store, port, before.document, guard, {
+        repairLocation: () => computation ? computation.recoverLocation()
+          : this.withoutViewChecks(() => recoverAbsLocationMetadata(port, context.scope, guard, store)),
+      }) : await store.captureDisk();
+      guard();
       const document = await materializeGenericProjectDataValues(before.document, {
         resolve: async <T>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<T>(ref); guard(); return value; },
       });
@@ -298,7 +304,7 @@ export class AbsWorkspaceSyncService {
           throw error;
         }
       }
-    }, true, !!change, true, background);
+    }, true, !!change, !repairMirrors, background);
     if ('original' in prepared) {
       const response = nativeSaveObservationResponse(prepared.project, prepared.identity, prepared.original!, prepared.port.executor);
       if (response?.saveReceipt.state === 'completed' && response.result) return response.result as unknown as ProjectSaveOutcome;
@@ -351,7 +357,7 @@ export class AbsWorkspaceSyncService {
       const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard, port); guard();
       if (await store.workspaceMode() === 'project-v1') {
         if (!protocol.ok && (!('code' in protocol) || protocol.code !== 'ABS_WORKSPACE_MODE_UNINITIALIZED')) return protocol;
-        await this.captureReexportDisk(context, store, port, working.document, guard);
+        await this.captureRepairableDisk(context, store, port, working.document, guard);
         if (protocol.ok) return protocol;
         await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard, 'project-v1'));
         guard();
@@ -363,7 +369,7 @@ export class AbsWorkspaceSyncService {
       const deferred = (reason: 'saved-program-unavailable' | 'source-projection-present' | 'publication-pending' | 'saved-working-differs') =>
         ({ ...protocol, migrationDeferred: { version: 1 as const, reason } });
       if (pending || journal) return deferred('publication-pending');
-      const disk = await this.captureReexportDisk(context, store, port, working.document, guard);
+      const disk = await this.captureRepairableDisk(context, store, port, working.document, guard);
       const legacy = await inspectLegacyAbsMirrors(disk, accepted?.projection); guard();
       if (accepted?.abi === null && !legacy) return deferred('saved-program-unavailable');
       let draftArchive: AbsWorkspaceSyncOutcome['draftArchive'];
@@ -430,11 +436,13 @@ export class AbsWorkspaceSyncService {
     return this.observeHistoryProgram(request);
   }
 
-  async observeHistoryProgram(input: unknown, originalTargetPid?: number): Promise<AbsObservedProgramPublication> {
-    const request = await readAbsHistoryPublication(input, false);
-    const path = this.project.currentProjectPath, guard = () => {
+  async observeHistoryProgram(input: unknown, originalTargetPid?: number,
+    path = this.project.currentProjectPath): Promise<AbsObservedProgramPublication> {
+    const guard = () => {
       if (!path || this.project.currentProjectPath !== path) throw new AbsSyncError('ABS_CONTEXT_STALE', 'The history observer project changed.');
     };
+    guard();
+    const request = await readAbsHistoryPublication(input, false);
     const port = await openAbsHostStorage(path, guard), project = port.attachment?.root ?? path;
     const identity = await historyPublicationIdentity(project, request);
     const observed = await new AbsApplicationJournal(port, project).observeNativeSave(identity, guard);
@@ -820,26 +828,31 @@ export class AbsWorkspaceSyncService {
         const working = this.editor.captureProjectSnapshot(lease);
         const guard = this.atRevision(context.assertCurrent, lease, working);
         const port = await openAbsHostStorage(context.path, () => { guard(); });
-        await this.captureReexportDisk(context, store, port, working.document, guard);
+        await this.captureRepairableDisk(context, store, port, working.document, guard);
         store = await this.store(context, true, port);
       }
       return this.exportInContext(context, lease, store, options);
     }, true, false, !mayRefresh);
   }
 
-  private async captureReexportDisk(context: ReturnType<AbsWorkspaceSyncService['context']>, store: AbsBaselineStore,
-    port: AbsSyncStoragePort, working: BlocklyProjectDocument, assertCurrent: () => unknown): Promise<AbsDiskSnapshot> {
-    try { return await store.captureDisk(); }
+  private async captureRepairableDisk(context: ReturnType<AbsWorkspaceSyncService['context']>, store: AbsBaselineStore,
+    port: AbsSyncStoragePort, working: BlocklyProjectDocument, assertCurrent: () => unknown,
+    save?: { repairLocation(): Promise<void> }): Promise<AbsDiskSnapshot> {
+    const capture = async () => { await save?.repairLocation(); return store.captureDisk(); };
+    try { return await capture(); }
     catch (error) {
       if ((error as { code?: string })?.code !== 'ABS_STORAGE_ENCODING_INVALID') throw error;
       const guard = () => { assertCurrent(); };
       await refreshInvalidAbsMirrors(port, port.attachment?.root ?? context.path, async abi => {
+        // A save owns its current unsaved canvas. Only its original loaded ABI
+        // may stand for the independent on-disk baseline used to repair mirrors.
+        if (save && this.project.readSavedAbiRecipe(context.path) === abi) return;
         const dirty = this.project.hasUnsavedChangesAtLoadedAbi(context.path, abi, working);
         if (dirty ?? !await sameAbsSavedProgram(JSON.parse(abi), working, {
           normalize: value => this.editor.normalizeProjectAbi(value), resolve: ref => projectDataRuntime.resolve(ref), assertCurrent: guard,
         })) throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'The saved ABI does not match the current canvas; original mirror bytes were retained.');
       }, guard);
-      return store.captureDisk();
+      return capture();
     }
   }
 

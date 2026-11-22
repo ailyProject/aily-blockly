@@ -462,7 +462,7 @@ export class AbsBaselineStore {
    * not create a generation, acknowledge an edit or replace a retained request.
    * The damaged bytes remain in the existing recovery archive before CAS. */
   async restoreCommittedMap(assertCurrent: () => void,
-    observed?: { disk: AbsDiskSnapshot; pointerHash: string }): Promise<{ changed: boolean; generation: string }> {
+    observed?: { disk: AbsDiskSnapshot; pointerHash: string; inactiveOperation?: { text: string | null } }): Promise<{ changed: boolean; generation: string }> {
     let selected: AbsCommittedProgramSnapshot | null;
     try { selected = await this.readCommittedSnapshot(); }
     catch (error) {
@@ -478,8 +478,11 @@ export class AbsBaselineStore {
     return this.port.withLock(async storage => {
       assertCurrent();
       const pointer = await storage.read(COMMITTED), disk = await this.captureDisk(storage);
+      const inactiveOperation = observed?.inactiveOperation;
+      const sameOperation = async () => !inactiveOperation || await storage.read('operation.json') === inactiveOperation.text;
       if (pointer === null || await hashAbsText(pointer) !== selected.pointerHash
-        || disk.abi !== selected.abi || (await this.workspaceMode(storage) !== 'project-v1' && disk.abs !== selected.projection.abs)
+        || disk.abi !== selected.abi || (await this.workspaceMode(storage) !== 'project-v1' && disk.abs !== selected.projection.abs && !inactiveOperation)
+        || !await sameOperation()
         || await storage.read(PREPARED) !== null
         || observed && (observed.pointerHash !== selected.pointerHash || absJson(observed.disk) !== absJson(disk))) {
         throw new AbsSyncError('ABS_MAP_REPAIR_UNPROVEN', 'Source or original observation changed; no map was replaced.');
@@ -494,6 +497,7 @@ export class AbsBaselineStore {
       }
       assertCurrent();
       if (await storage.read(COMMITTED) !== pointer || await storage.read(PREPARED) !== null
+        || !await sameOperation()
         || absJson(await this.captureDisk(storage)) !== absJson(disk)) {
         throw new AbsSyncError('ABS_DISK_CONFLICT', 'Source changed before derived map restoration.');
       }
@@ -502,6 +506,7 @@ export class AbsBaselineStore {
       }
       assertCurrent();
       if (await storage.read(COMMITTED) !== pointer || await storage.read(PREPARED) !== null
+        || !await sameOperation()
         || absJson(await this.captureDisk(storage)) !== absJson({ ...disk, map })) {
         throw new AbsSyncError('ABS_COMMIT_UNCERTAIN', 'Derived map restoration requires a fresh source observation.');
       }

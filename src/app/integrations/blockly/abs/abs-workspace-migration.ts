@@ -30,20 +30,22 @@ export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
       throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'The engine changed before workspace readiness could be verified.');
     const snapshot = await store.readCommittedSnapshot(), disk = await store.captureDisk(storage);
     const committed = await storage.read('committed.json'), prepared = await storage.read('prepared.json');
+    const operationText = await storage.read('operation.json');
     const modeMarker = await storage.read('workspace-mode.json');
     if (!snapshot || snapshot.abi === null || disk.abi !== snapshot.abi || committed === null || prepared !== null
       || await new AbsOperationJournal(scoped, port.attachment.root).inspect())
       throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
     const map = absMapJson(snapshot.projection.map);
     if (disk.map !== map) {
-      if (!repairMap || (mode === 'overlay-v1' && disk.abs !== snapshot.projection.abs)) {
+      if (!repairMap) {
         throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
       }
       await assertWorkspaceMigrationWritable(scoped);
       // Repair the old generation's cache, then let the location rebind below
       // prove and publish the new scope. The storage still belongs to this copy.
       const original = new AbsBaselineStore(scoped, snapshot.projection.map.scope);
-      await original.restoreCommittedMap(assertCurrent, { disk, pointerHash: snapshot.pointerHash });
+      await original.restoreCommittedMap(assertCurrent, { disk, pointerHash: snapshot.pointerHash,
+        inactiveOperation: { text: operationText } });
       disk.map = map;
     }
     const accepted = (await generationEvidence(snapshot.projection, snapshot.abi)).binding;

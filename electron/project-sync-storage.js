@@ -118,7 +118,11 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     const bytes = readBytes(key);
     if (bytes === null) return null;
     const text = bytes.toString('utf8');
-    if (!Buffer.from(text, 'utf8').equals(bytes)) throw fault('ABS_STORAGE_ENCODING_INVALID', 'Sync files must contain exact UTF-8; invalid bytes were retained.');
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      if (key === 'prepared.json') throw fault('ABS_BASELINE_CORRUPT', 'The prepared generation is not valid UTF-8. Its original bytes were retained.');
+      if (key === 'operation.json') throw fault('ABS_OPERATION_CORRUPT', 'The operation pointer is not valid UTF-8. Its original bytes were retained.');
+      throw fault('ABS_STORAGE_ENCODING_INVALID', 'Sync files must contain exact UTF-8; invalid bytes were retained.');
+    }
     return text;
   };
   const retireCopiedLock = async ({ original, expected, phase = 'prepared' } = {}) => {

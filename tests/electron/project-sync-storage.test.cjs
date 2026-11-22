@@ -39,6 +39,24 @@ after(() => { for (const root of roots) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 
+test('invalid UTF-8 is attributed to the specific private navigation journal', async () => {
+  const root = project(), invalid = Buffer.from([0x7b, 0xff, 0xfd]);
+  const sync = path.join(root, '.aily', 'abs-sync');
+  fs.mkdirSync(sync, { recursive: true });
+  const bridge = await openProjectSyncStorageBridge(root, guard);
+  for (const [key, file, code] of [
+    ['prepared.json', path.join(sync, 'prepared.json'), 'ABS_BASELINE_CORRUPT'],
+    ['operation.json', path.join(sync, 'operation.json'), 'ABS_OPERATION_CORRUPT'],
+    ['project.abi', path.join(root, 'project.abi'), 'ABS_STORAGE_ENCODING_INVALID'],
+  ]) {
+    fs.writeFileSync(file, invalid);
+    const reply = await bridge.readResult(key);
+    assert.equal(reply.ok, false);
+    assert.equal(reply.error.code, code);
+    assert.deepEqual(fs.readFileSync(file), invalid);
+  }
+});
+
 test('legacy mirror recovery preserves exact malformed bytes before replacement and leaves strict reads in place', async () => {
   const root = project(), abi = '{"blocks":{}}', invalid = Buffer.from([0xef, 0xbb, 0xbf, 0xff, 0, 0x0d, 0x0a]);
   fs.writeFileSync(path.join(root, 'project.abi'), abi);

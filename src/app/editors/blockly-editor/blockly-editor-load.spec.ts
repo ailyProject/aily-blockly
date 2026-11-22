@@ -164,17 +164,24 @@ describe('project load normalization context', () => {
   let current: boolean;
   let previousFs: any;
   let files: Map<string, string>;
+  let readFailures: Map<string, Error>;
+  let writerBusy: Error | undefined;
   let storageReplace: jasmine.Spy;
   const guard = () => { if (!current) throw new Error('stale load'); };
   beforeEach(() => {
     current = true;
     previousFs = window['fs']; files = new Map([['project.abi', '{}']]);
+    readFailures = new Map(); writerBusy = undefined;
     // Exercise the actual v2 open/restore boundary, including its explicit
     // contextBridge settlement protocol. These legacy-document fixtures have
     // no ABS generation; opening them must not invent one or write any cache.
     window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async (_project, assertCurrent) => {
       assertCurrent();
-      const read = async (key: string) => { assertCurrent(); return files.get(key) ?? null; };
+      const read = async (key: string) => {
+        assertCurrent();
+        if (readFailures.has(key)) throw readFailures.get(key);
+        return files.get(key) ?? null;
+      };
       storageReplace = jasmine.createSpy('storageReplace').and.callFake(async (key: string, expected: string | null, text: string | null) => {
         assertCurrent(); const before = await read(key);
         if ((before === null ? null : await hashAbsText(before)) !== expected) return false;
@@ -183,6 +190,7 @@ describe('project load normalization context', () => {
       });
       return { read, withLock: operation => new Promise((resolve, reject) => {
         assertCurrent();
+        if (writerBusy) { reject(writerBusy); return; }
         expect(operation({ read, replace: storageReplace }, result => result.ok === true ? resolve(result.value)
           : reject(Object.assign(new Error(result.error.message), { code: result.error.code })))).toBeUndefined();
       }) };
@@ -226,6 +234,24 @@ describe('project load normalization context', () => {
       expect(files.get('project.abi')).toBe(abi);
     });
   }
+  it('rechecks undecodable recovery pointers under the original writer lock', async () => {
+    const abi = '{"blocks":{"blocks":[{"type":"arduino_setup","id":"saved"}]}}';
+    files.set('project.abi', abi);
+    for (const [key, code] of [['prepared.json', 'ABS_BASELINE_CORRUPT'], ['operation.json', 'ABS_OPERATION_CORRUPT']]) {
+      readFailures.set(key, Object.assign(new Error('invalid UTF-8 journal'), { code }));
+      writerBusy = Object.assign(new Error('active writer'), { code: 'PROJECT_FILE_BUSY' });
+      await expectAsync(component.loadProjectAbiDocument('D:/project', guard))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_FILE_BUSY' }));
+      writerBusy = undefined;
+      const opened = await component.loadProjectAbiDocument('D:/project', guard);
+      expect(opened.diskText).toBe(abi);
+      expect(opened.deferredNormalization?.code).toBe(code);
+      readFailures.delete(key);
+    }
+    readFailures.set('project.abi', Object.assign(new Error('invalid UTF-8 ABI'), { code: 'ABS_STORAGE_ENCODING_INVALID' }));
+    await expectAsync(component.loadProjectAbiDocument('D:/project', guard))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STORAGE_ENCODING_INVALID' }));
+  });
   it('keeps the original recovery error when there is no saved Blockly ABI to load', async () => {
     files.set('prepared.json', '{"version":');
     files.delete('project.abi');
