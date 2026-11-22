@@ -6,7 +6,7 @@ import { inspectAbsBaselineRecovery, recoverAbsBaseline } from './abs-baseline-r
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
 import { nativeSaveCapability, readNativeSaveAtAttachment } from './abs-native-save-protocol';
-import { readNativeSaveStage } from './abs-native-save-publication';
+import { NativeSavePublications, readNativeSaveStage } from './abs-native-save-publication';
 
 const movedOperation = (retained: LocationOperation | null, port: AbsSyncStoragePort, project: string) => !!retained
   && (retained.operation.project !== project || !!(retained.operation.attachment && port.attachment
@@ -45,6 +45,12 @@ async function inspectCopiedTransaction(port: AbsSyncStoragePort, project: strin
   if (typeof pageId !== 'string' || !pageId) throw unprovenCopy();
   const publication = await originalNativePublication(inspection, source);
   if (source.nativeSave ? !publication : !source.candidate) throw unprovenCopy();
+  if (await inspection.read('prepared.json') === null) {
+    if (!publication || !await new NativeSavePublications(inspection, source.project).verifyCommittedCopy(publication)) {
+      throw unprovenCopy();
+    }
+    return { phase: 'committed' as const, original, expected: Object.fromEntries(observed) };
+  }
   const native = publication?.record?.evidence;
   const scope = { projectKey: source.project, pageId };
   const recovery = await new AbsBaselineStore(inspection, scope).inspectBoundJournalRecovery({
@@ -52,7 +58,7 @@ async function inspectCopiedTransaction(port: AbsSyncStoragePort, project: strin
   });
   if (!recovery || source.application && !await new AbsOperationJournal(inspection, source.project)
       .matchesCopiedApplication(retained, recovery.generation, pageId)) throw unprovenCopy();
-  return { original, expected: Object.fromEntries(observed), recovery };
+  return { phase: 'prepared' as const, original, expected: Object.fromEntries(observed), recovery };
 }
 
 type CopiedTransaction = Awaited<ReturnType<typeof inspectCopiedTransaction>>;
@@ -101,6 +107,7 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
         if (local) return settlePreparedJournal(locked, local, assertCurrent);
       }
       await verifyCopiedTransaction(locked, copied);
+      if (copied.phase !== 'prepared') throw unprovenCopy();
       return settlePreparedJournal(locked, copied.recovery, assertCurrent);
     }
     const recovery = await new AbsBaselineStore(locked, { projectKey: project, pageId: '' }).inspectJournalRecovery();
@@ -109,6 +116,7 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
     if (moved && (!recovery || recovery.scope.projectKey !== project || retained?.operation.project === project)) {
       const proof = await inspectCopiedTransaction(locked, project);
       await verifyCopiedTransaction(locked, proof);
+      if (proof.phase !== 'prepared') throw unprovenCopy();
       return settlePreparedJournal(locked, proof.recovery, assertCurrent);
     }
     if (!moved && retained?.operation.nativeSave) {
@@ -124,13 +132,12 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
   catch (error) {
     if (entered || (error as { code?: string })?.code !== 'PROJECT_FILE_LOCK_CHANGED' || !port.retireCopiedLock) throw error;
     // A foreign marker must be proven before the normal target lock can be acquired.
-    if (await port.read('prepared.json') === null) return;
     if (!movedOperation(await new AbsOperationJournal(port, project).inspectLocation(), port, project)) {
       return settleUnderLock();
     }
     const copied = await inspectCopiedTransaction(port, project);
     assertCurrent();
-    try { await port.retireCopiedLock({ original: copied.original, expected: copied.expected }); }
+    try { await port.retireCopiedLock({ phase: copied.phase, original: copied.original, expected: copied.expected }); }
     catch (retirementError) {
       // A changed journal authorizes an ordinary lock admission only. The target
       // lock and an exact prepared proof still guard every attempted write.

@@ -132,6 +132,19 @@ export class NativeSavePublications {
     return { ...output, value: { ...this.proof(staged.original.ref, staged, output.ancestor.pointerHash, 'changed'),
       stageHash: await hashAbsText(staged.text) } };
   }
+  /** A copied lock can survive the original publisher after prepared cleanup.
+   * Prove the exact changed generation without creating an original receipt. */
+  async verifyCommittedCopy(staged: Awaited<ReturnType<typeof readNativeSaveStage>>): Promise<boolean> {
+    if (!staged.record) return false;
+    const output = await this.changedProof(staged);
+    if (!output) return false;
+    const committed = await output.store.readCommittedSnapshot(), disk = await output.store.captureDisk();
+    return !!committed && committed.pointerHash === output.ancestor.pointerHash
+      && await output.store.workspaceMode() === (committed.workspaceMode ?? 'overlay-v1')
+      && await output.store.matchesAcceptedDisk(committed, disk)
+      && (committed.workspaceMode !== 'project-v1' || !!committed.authorSource
+        && await hash(disk.abs) === committed.authorSource.hash);
+  }
   async sealNativeSave(ref: NativeSaveOperationRef, guard: () => void): Promise<boolean> {
     const staged = await this.stage(ref);
     if (!staged.record) return false;

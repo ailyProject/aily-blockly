@@ -49,16 +49,29 @@ function build(t) {
   return kernelPath;
 }
 
-async function nativeSave(project) {
+async function nativeSave(project, cut, value = 900) {
   const kernel = require(kernelPath);
   const port = await open(project);
   const disk = await new kernel.AbsBaselineStore(port, scope(project)).captureDisk();
   const current = await port.read('committed.json');
   assert.equal(JSON.parse(disk.map).scope.projectKey, project);
   const before = JSON.parse(disk.abi), document = structuredClone(before);
-  document.pages[0].content.blocks.blocks[0].fields.VALUE = 900;
+  document.pages[0].content.blocks.blocks[0].fields.VALUE = value;
   const abi = JSON.stringify(document, null, 2), generation = 'target-native-' + randomUUID();
-  const store = new kernel.AbsBaselineStore(port, scope(project));
+  const pause = async () => {
+    const next = once(process, 'message', { signal: AbortSignal.timeout(18000) });
+    process.send({ event: 'prepared', pid: process.pid, ref, generation, disk });
+    assert.equal((await next)[0].action, 'continue');
+  };
+  const publisher = cut !== 'after-cleanup' ? port : { ...port, withLock: action => port.withLock(access => action({
+    ...access,
+    async replace(key, hash, bytes) {
+      const stored = await access.replace(key, hash, bytes);
+      if (stored && key === 'prepared.json' && bytes === null) await pause();
+      return stored;
+    },
+  })) };
+  const store = new kernel.AbsBaselineStore(publisher, scope(project));
   const projection = await kernel.createAbsProjection(kernel.composeBlocklyPage(document, 'main'), {
     document, generation, baselineRef: kernel.absBaselineKey(generation), scope: scope(project),
     savedAbiHash: await kernel.hashAbsText(kernel.absJson(document)),
@@ -73,9 +86,7 @@ async function nativeSave(project) {
     inputAbiHash: await kernel.hashAbsText(disk.abi) }, guard);
   const result = await store.commit(generation, guard, async (bytes, expected, access) => {
     assert.equal(await access.replace('project.abi', expected, bytes), true);
-    const next = once(process, 'message', { signal: AbortSignal.timeout(18000) });
-    process.send({ event: 'prepared', pid: process.pid, ref, generation, disk });
-    assert.equal((await next)[0].action, 'continue');
+    if (cut !== 'after-cleanup') await pause();
   });
   assert.equal(result.status, 'COMMITTED');
   assert.equal(await applications.sealNativeSave(ref, guard), true);
@@ -105,7 +116,7 @@ function child(t, module, args) {
   };
 }
 
-async function seedCopy(t, kernelPath, native = false) {
+async function seedCopy(t, kernelPath, native = false, { cut = 'after-abi', keepPublisher = false } = {}) {
   const root = path.dirname(kernelPath);
   const source = path.join(root, 'source'), target = path.join(root, 'target');
   fs.mkdirSync(path.join(source, '.aily'), { recursive: true });
@@ -124,20 +135,20 @@ async function seedCopy(t, kernelPath, native = false) {
   fs.writeFileSync(inputPath, JSON.stringify(input));
   fs.writeFileSync(path.join(source, 'project.abs'), author);
   const publisher = native
-    ? child(t, __filename, ['native-save', source, kernelPath])
+    ? child(t, __filename, ['native-save', source, kernelPath, cut])
     : child(t, sourceWorker, ['publish', source, kernelPath, 'project.abi']);
   const paused = await publisher.reply();
   assert.equal(native ? paused.event : paused.label, native ? 'prepared' : 'project.abi');
   fs.cpSync(source, target, { recursive: true });
   const copiedMarker = fs.readFileSync(lock(target), 'utf8');
   assert.equal(JSON.parse(copiedMarker).pid, publisher.pid);
-  await publisher.kill();
+  if (!keepPublisher) await publisher.kill();
   const sourcePort = await open(source), targetPort = await open(target);
   const initial = await state(sourcePort);
   assert.equal(initial['project.abs'], author);
   assert.deepEqual(await state(targetPort), initial);
   const originalOperation = JSON.parse(initial['operation.json']);
-  return { source, target, sourcePort, targetPort, initial, originalOperation, copiedMarker, originalRequest: input.requestId, nativeResult: paused };
+  return { source, target, sourcePort, targetPort, initial, originalOperation, copiedMarker, originalRequest: input.requestId, nativeResult: paused, publisher };
 }
 
 async function verifyOverlap(t, preArchive) {
@@ -285,10 +296,139 @@ async function verifyNativeDraft(t) {
   assert.equal(fs.readFileSync(safe(target, 'recoveries/' + archives[0]), 'utf8'), copiedMarker);
 }
 
+async function committedSourceFixture(t) {
+  const kernelPath = build(t), kernel = require(kernelPath);
+  const source = await seedCopy(t, kernelPath, true, { cut: 'after-cleanup', keepPublisher: true });
+  assert.equal(source.initial['prepared.json'], null);
+  assert.equal(JSON.parse(source.initial['committed.json']).generation, source.nativeResult.generation);
+  assert.equal(JSON.parse(source.initial['operation.json']).id, source.nativeResult.ref.operationId);
+  return { ...source, kernelPath, kernel };
+}
+
+async function verifyCommittedCopy(t) {
+  const { kernel, kernelPath, source, target, targetPort, sourcePort, initial, copiedMarker, nativeResult, publisher } = await committedSourceFixture(t);
+  const restart = () => kernel.recoverAbsProjectOperation(targetPort, target, guard);
+  await assert.rejects(restart(), { code: 'ABS_OPERATION_LOCATION_UNPROVEN' });
+  assert.equal(fs.readFileSync(lock(target), 'utf8'), copiedMarker);
+  assert.deepEqual(await state(targetPort), initial);
+  await publisher.kill();
+  assert.equal((await publisher.exit)[1], 'SIGKILL');
+
+  const operationId = nativeResult.ref.operationId;
+  const stageKey = `recoveries/application-${operationId}.json`;
+  let retainedProof;
+  const interrupted = Error('Keep the original marker for the independent native proof checks.');
+  await assert.rejects(kernel.recoverAbsProjectOperation({ ...targetPort, async retireCopiedLock(proof) {
+    retainedProof = proof; throw interrupted;
+  } }, target, guard), error => error === interrupted);
+  assert.equal(retainedProof.phase, 'committed');
+  assert.equal(retainedProof.expected['prepared.json'], null);
+  const cloneChanges = [
+    ['missing-stage', folder => fs.unlinkSync(safe(folder, stageKey))],
+    ['different-input', folder => {
+      const file = safe(folder, stageKey), stage = JSON.parse(fs.readFileSync(file, 'utf8'));
+      fs.writeFileSync(file, JSON.stringify({ ...stage, inputAbiHash: 'sha256:' + '0'.repeat(64) }));
+    }],
+    ['different-lock-owner', folder => {
+      const file = lock(folder), marker = JSON.parse(fs.readFileSync(file, 'utf8'));
+      fs.writeFileSync(file, JSON.stringify({ ...marker, attachment: { ...marker.attachment, root: folder } }));
+    }],
+    ['different-author', folder => fs.appendFileSync(path.join(folder, 'project.abs'), '\n# competing edit\n')],
+  ];
+  for (const [name, change] of cloneChanges) {
+    const folder = `${target}-${name}`;
+    fs.cpSync(target, folder, { recursive: true }); change(folder);
+    const port = await open(folder), before = await state(port), marker = fs.readFileSync(lock(folder), 'utf8');
+    await assert.rejects(kernel.recoverAbsProjectOperation(port, folder, guard));
+    // Fresh hashes supplied by a caller do not establish that the changed
+    // bytes belong to the same original publisher or committed output.
+    const expected = Object.fromEntries(await Promise.all(Object.keys(retainedProof.expected).map(async key => {
+      const value = await port.read(key); return [key, value === null ? null : digest(value)];
+    })));
+    await assert.rejects(port.retireCopiedLock({ ...retainedProof, expected }), { code: 'PROJECT_FILE_LOCK_CHANGED' });
+    assert.deepEqual(await state(port), before);
+    assert.equal(fs.readFileSync(lock(folder), 'utf8'), marker);
+    assert.ok(!fs.readdirSync(safe(folder, 'recoveries')).some(file => file.startsWith('copied-lock-')));
+  }
+
+  const resumed = child(t, __filename, ['recover', target, kernelPath]);
+  assert.equal((await resumed.reply()).transaction, 'settled');
+  assert.equal((await resumed.exit)[0], 0);
+  const port = await open(target), recovered = await state(port);
+  assert.equal(recovered['project.abi'], initial['project.abi']);
+  assert.equal(recovered['project.abs'], initial['project.abs']);
+  assert.equal(recovered['prepared.json'], null);
+  assert.equal(JSON.parse(recovered['project.abs.map.json']).scope.projectKey, target);
+  assert.deepEqual(await state(sourcePort), initial);
+  const originalStage = await port.read(stageKey);
+  const copiedArchives = fs.readdirSync(safe(target, 'recoveries')).filter(file => file.startsWith('copied-lock-'));
+  assert.equal(copiedArchives.length, 1);
+  assert.equal(fs.readFileSync(safe(target, `recoveries/${copiedArchives[0]}`), 'utf8'), copiedMarker);
+
+  const newer = child(t, __filename, ['native-save', target, kernelPath, 'after-abi', '901']);
+  const pending = await newer.reply(), marker = fs.readFileSync(lock(target), 'utf8');
+  const observe = () => kernel.observeNativePublication(port, target, nativeResult.ref.request, { originalTargetPid: nativeResult.pid });
+  await assert.rejects(observe(), { code: 'ABS_NATIVE_SAVE_OBSERVATION_INVALID' });
+  assert.equal(fs.readFileSync(lock(target), 'utf8'), marker);
+  assert.equal(JSON.parse(marker).pid, newer.pid);
+  newer.send({ action: 'continue' });
+  assert.equal((await newer.reply()).event, 'saved');
+  assert.equal((await newer.exit)[0], 0);
+  const receipt = await kernel.observeNativePublication(port, target, pending.ref.request, { originalTargetPid: newer.pid });
+  assert.equal(receipt.saveReceipt.requestId, pending.ref.request.requestId);
+  assert.equal(receipt.result.publication.status, 'COMMITTED');
+  assert.equal(JSON.parse(await port.read('project.abi')).pages[0].content.blocks.blocks[0].fields.VALUE, 901);
+  assert.equal(await port.read('project.abs'), initial['project.abs']);
+  assert.equal(await port.read(stageKey), originalStage);
+  assert.notEqual(nativeResult.ref.attachment.root, target);
+  assert.equal(nativeResult.ref.attachment.root, source);
+  assert.deepEqual(await state(sourcePort), initial);
+}
+
+async function verifyLateCommittedProof(t) {
+  const { kernel, kernelPath, target, targetPort, initial, publisher } = await committedSourceFixture(t);
+  await publisher.kill();
+  const entered = deferred(), resume = deferred(), relocking = deferred();
+  let continueOld = false;
+  const old = kernel.recoverAbsProjectOperation({ ...targetPort,
+    async retireCopiedLock(proof) {
+      entered.resolve(); await resume.promise;
+      return targetPort.retireCopiedLock(proof);
+    },
+    withLock(action) {
+      if (continueOld) relocking.resolve();
+      return targetPort.withLock(action);
+    },
+  }, target, guard);
+  void old.catch(() => {});
+  try {
+    await Promise.race([entered.promise, old.then(() => assert.fail('The original copied proof was not intercepted.'))]);
+    const first = child(t, __filename, ['recover', target, kernelPath]);
+    assert.equal((await first.reply()).transaction, 'settled');
+    assert.equal((await first.exit)[0], 0);
+    const newer = child(t, __filename, ['native-save', target, kernelPath, 'after-abi', '901']);
+    const next = await newer.reply();
+    const marker = fs.readFileSync(lock(target), 'utf8'), pending = await state(targetPort);
+    continueOld = true;
+    resume.resolve();
+    await Promise.race([relocking.promise, old.then(() => assert.fail('The old proof did not wait for the newer lock.'))]);
+    assert.equal(fs.readFileSync(lock(target), 'utf8'), marker);
+    assert.deepEqual(await state(targetPort), pending);
+    newer.send({ action: 'continue' });
+    assert.equal((await newer.reply()).event, 'saved');
+    assert.equal((await newer.exit)[0], 0);
+    assert.equal(await old, null);
+    const result = await kernel.observeNativePublication(targetPort, target, next.ref.request, { originalTargetPid: newer.pid });
+    assert.equal(result.saveReceipt.requestId, next.ref.request.requestId);
+    assert.equal(result.result.publication.status, 'COMMITTED');
+    assert.equal(await targetPort.read('project.abs'), initial['project.abs']);
+  } finally { resume.resolve(); await old.catch(() => {}); }
+}
+
 if (process.send) {
   const [, , mode, project] = process.argv;
   (async () => {
-    if (mode === 'native-save') await nativeSave(project);
+    if (mode === 'native-save') await nativeSave(project, process.argv[5], process.argv[6] === undefined ? undefined : Number(process.argv[6]));
     else {
       assert.equal(mode, 'recover');
       await require(kernelPath).recoverAbsProjectOperation(await open(project), project, guard);
@@ -303,4 +443,6 @@ if (process.send) {
   test('copied marker retirement waits for an admitted local save without changing its lock', { timeout: 35000 }, t => verifyOverlap(t, true));
   test('local native save interrupted before copied recovery reacquires the project lock settles by its own request', { timeout: 35000 }, t => verifyOverlap(t, false));
   test('copied native save with an exact unpublished author draft can reopen without publishing the draft', { timeout: 35000 }, verifyNativeDraft);
+  test('committed copied native save retires only its exact exited foreign lock with no prepared pointer', { timeout: 45000 }, verifyCommittedCopy);
+  test('late committed copy proof waits for a newer local native save without releasing it', { timeout: 45000 }, verifyLateCommittedProof);
 }

@@ -16,6 +16,7 @@ export interface ProjectStorageExecutorObservation {
 export interface CopiedProjectLockRecovery {
   readonly original: { attachment: ProjectStorageAttachment; executor: ProjectStorageExecutor };
   readonly expected: Readonly<Record<string, string | null>>;
+  readonly phase?: 'prepared' | 'committed';
 }
 export interface ProjectStorageAccess {
   readonly attachment?: ProjectStorageAttachment;
