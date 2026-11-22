@@ -213,9 +213,13 @@ async function buildAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjec
   };
 }
 
+export function supportsAbsProjectionForEditing(version: string): boolean {
+  return version === ABS_PROJECTION_VERSION || version === 'abs-v2.preview.7';
+}
+
 /** A sidecar is only an index. Recompute its associations from the retained host snapshot. */
 export function assertCurrentAbsProjection(baseline: AbsProjection): void {
-  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.7'].includes(baseline.map.projectionVersion)) {
+  if (!supportsAbsProjectionForEditing(baseline.map.projectionVersion)) {
     throw new AbsSyncError('ABS_PROJECTION_UPGRADE_REQUIRED', 'Inspect and explicitly re-export this previous projection; never apply it with new syntax offsets.');
   }
 }

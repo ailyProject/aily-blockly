@@ -1,17 +1,17 @@
 import { absMapJson } from './abs-map-json';
 import { createProjectDataMarker } from '@domain/project/public-api';
-import { AbsBaselineStore, AbsSyncStoragePort, absBaselineKey } from './abs-baseline-store';
-import { absJson, createAbsProjection, hashAbsText } from './abs-identity-map';
+import { AbsBaselineStore, AbsSyncStorageAccess, AbsSyncStoragePort, absBaselineKey } from './abs-baseline-store';
+import { absJson, hashAbsText, reconstructAbsProjection } from './abs-identity-map';
 import { decodeAbsState, splitAbsState } from './abs-full-state';
 import { sameAbsProgram } from './abs-program-state';
 import { AbsSyncError } from './abs-state';
-import { settleAbsProjectTransaction } from './abs-project-restart';
+import { settleAbsProjectOpen } from './abs-project-restart';
 import { recoverAbsBaseline } from './abs-baseline-recovery';
 
 /** Opening a complete ABS regenerates caches; a draft is retained and opens its committed snapshot. */
 export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectPath: string,
   assertCurrent: () => void): Promise<string | null> {
-  await settleAbsProjectTransaction(port, projectPath, assertCurrent);
+  await settleAbsProjectOpen(port, projectPath, assertCurrent);
   const lookup = new AbsBaselineStore(port, { projectKey: projectPath, pageId: '' });
   let expected = await lookup.captureDisk();
   let committed: Awaited<ReturnType<AbsBaselineStore['inspectCommitted']>>;
@@ -40,11 +40,14 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
   catch (error) { if (!baselineState) throw error; }
   if (!publicState && !baselineState) return null;
   if (await port.read('prepared.json') !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending ABS transaction before opening.');
-  if (expected.abs === null) throw new AbsSyncError('ABS_SOURCE_MISSING', 'Complete ABS is missing; retain the committed recovery snapshot.');
-  let source = expected.abs;
-  // In project-v1 the public ABS is an author draft, even if it can decode
-  // as a complete snapshot. The committed program still supplies the canvas.
-  if (!publicState || baseline && await lookup.workspaceMode() === 'project-v1') source = baseline!.abs;
+  const projectMode = await lookup.workspaceMode() === 'project-v1';
+  const missingAuthor = expected.abs === null;
+  if (missingAuthor && (!projectMode || !baselineState || baseline?.map.scope.projectKey !== projectPath)) {
+    throw new AbsSyncError('ABS_SOURCE_MISSING', 'Complete ABS is missing; retain the committed recovery snapshot.');
+  }
+  // In project-v1 the public ABS is the author file. Use the verified saved
+  // snapshot for the canvas while leaving even an absent author file alone.
+  let source = baseline && (projectMode || !publicState) ? baseline.abs : expected.abs!;
   // A copied private generation is still foreign. Load its committed content so
   // the workspace can offer explicit rebind, without publishing a new identity
   // or consuming the public draft before that decision.
@@ -78,12 +81,26 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
   if (baseline?.abs === source) {
     const abi = await lookup.readDerivedAbi(baseline.map.generation);
     if (abi === null) throw new AbsSyncError('ABS_STATE_INVALID', 'This historical export has no saved-cache recipe; explicitly re-export it.');
-    await port.withLock(async storage => {
-      if (absJson(await lookup.captureDisk(storage)) !== absJson(expected)
-        || await hashAbsText((await storage.read('committed.json'))!) !== committed!.pointerHash) {
+    if (missingAuthor && expected.abi !== abi) {
+      throw new AbsSyncError('ABS_SOURCE_MISSING', 'Missing author ABS requires the exact verified saved ABI.');
+    }
+    const map = absMapJson(baseline.map);
+    const assertSource = async (storage: Pick<AbsSyncStorageAccess, 'read'>) => {
+      const pointer = await storage.read('committed.json');
+      if (pointer === null || await hashAbsText(pointer) !== committed!.pointerHash
+        || absJson(await lookup.captureDisk(storage)) !== absJson(expected)
+        || await storage.read('prepared.json') !== null || await storage.read('committed.json') !== pointer) {
         throw new AbsSyncError('ABS_DISK_CONFLICT', 'Project changed during cache restoration.');
       }
-      for (const [key, before, value] of [['project.abi', expected.abi, abi], ['project.abs.map.json', expected.map, absMapJson(baseline.map)]]) {
+      assertCurrent();
+    };
+    if (expected.abi === abi && expected.map === map) {
+      await assertSource(port);
+      return abi;
+    }
+    await port.withLock(async storage => {
+      await assertSource(storage);
+      for (const [key, before, value] of [['project.abi', expected.abi, abi], ['project.abs.map.json', expected.map, map]]) {
         assertCurrent();
         if (before !== value && !await storage.replace(key!, before === null ? null : await hashAbsText(before!), value!)) {
           throw new AbsSyncError('ABS_DISK_CONFLICT', 'Derived cache changed during restoration.');
@@ -94,8 +111,8 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
   }
   const abi = JSON.stringify({ ...document, $ailyProjectData: createProjectDataMarker() });
   const generation = crypto.randomUUID(), scope = { projectKey: projectPath, pageId: document.activePageId };
-  const projection = await createAbsProjection(decoded.workspace, { document, contracts: decoded.contracts,
-    generation, baselineRef: absBaselineKey(generation), scope, savedAbiHash: await hashAbsText(absJson(JSON.parse(abi))) });
+  const projection = await reconstructAbsProjection(decoded.workspace, { document, contracts: decoded.contracts,
+    generation, baselineRef: absBaselineKey(generation), scope, savedAbiHash: await hashAbsText(absJson(JSON.parse(abi))) }, source);
   if (projection.abs !== source) throw new AbsSyncError('ABS_STATE_INVALID', 'The restored snapshot is not canonical.');
   const store = new AbsBaselineStore(port, scope);
   await store.stage({ projection, mode: 'import', inputAbs: expected.abs, abi, expected }, committed?.pointerHash ?? null);

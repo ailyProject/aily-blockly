@@ -2625,6 +2625,19 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(editor.prepareProjectCode).not.toHaveBeenCalled();
   });
 
+  it('inspects a damaged map without acquiring a writer lock or running the repair', async () => {
+    await baseline();
+    const tools = new AbsGenerationToolsService(service);
+    disk.set('project.abs.map.json', '{broken sidecar');
+    const before = [...disk];
+    const lock = spyOn(port, 'withLock').and.rejectWith(Object.assign(new Error('new writer owns the lock'), { code: 'PROJECT_FILE_BUSY' }));
+    const result = await inspect(tools);
+    expect(result.ok).toBeTrue();
+    expect(result.diagnostics.issues).toContain('ABS_MAP_INVALID');
+    expect(lock).not.toHaveBeenCalled();
+    expect([...disk]).toEqual(before);
+  });
+
   it('does not mistake ABI JSON formatting for an external program edit', async () => {
     const { tools } = await wireBase();
     disk.set('project.abi', JSON.stringify(JSON.parse(disk.get('project.abi')!), null, 2));

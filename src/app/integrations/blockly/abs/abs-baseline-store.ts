@@ -105,8 +105,8 @@ const hashNullable = (text: string | null) => text === null ? Promise.resolve(nu
 /** Immutable baseline storage and recoverable mirror publication, independent of Blockly/Angular. */
 export class AbsBaselineStore {
   private readonly scope: AbsIdentityMap['scope'];
-  // Used only inside one private background worker. Every hit still reads and
-  // compares exact immutable file bytes; live source CAS and scope checks remain mandatory.
+  // An operation can reuse a verified generation for map repair and publication.
+  // Every hit still checks exact immutable file bytes; live CAS and scope checks remain mandatory.
   private readonly verified = new Map<string, { text: string; record: GenerationRecord; pointer: GenerationPointer }>();
   private selectedMode?: AbsWorkspaceMode;
   constructor(private readonly port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], private readonly reuseVerifiedRecords = false) {

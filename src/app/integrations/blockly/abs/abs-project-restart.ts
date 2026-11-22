@@ -147,10 +147,21 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
   }
 }
 
+/** With nothing retained to settle, opening can verify the saved source without
+ * competing for a writer. A prepared or retained operation still uses the full
+ * under-lock recovery, including copied ownership proof. */
+export async function settleAbsProjectOpen(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
+  assertCurrent();
+  if (await port.read('prepared.json') !== null || await port.read('operation.json') !== null) {
+    await settleAbsProjectTransaction(port, project, assertCurrent);
+  }
+  assertCurrent();
+}
+
 /** Cold-start recovery returns the complete *previous view*. It never applies
  * the retained candidate, nor calls the view saved merely because it loaded. */
 export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
-  await settleAbsProjectTransaction(port, project, assertCurrent);
+  await settleAbsProjectOpen(port, project, assertCurrent);
   const journal = new AbsOperationJournal(port, project), retained = await journal.inspectLocation();
   let operation = retained?.operation ?? null;
   const moved = movedOperation(retained, port, project);

@@ -23,7 +23,7 @@ const ID = 'aily-chat';
 const PACKAGE = '@aily-project/subapp-aily-chat';
 const compatibility = {
   version: 1,
-  blocklyAbs: { generation: 2, absSchema: 2, workingCandidateVersion: 1, publicMapSchemas: [1, 2], legacyDraftTakeover: 1 },
+  blocklyAbs: { generation: 2, absSchema: 2, workingCandidateVersion: 1, publicMapSchemas: [1, 2], legacyDraftTakeover: 1, completeWriterLockRecovery: 1 },
 };
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 
@@ -139,7 +139,10 @@ function fixture(t, options = {}) {
 
 test('Blockly launch replaces an old same-version Chat with a verified artifact without switching the shared selection', async t => {
   const version = '0.1.53';
-  const f = fixture(t, { version });
+  const originalDeclaration = structuredClone(compatibility);
+  delete originalDeclaration.blocklyAbs.completeWriterLockRecovery;
+  const original = compatibleChatArchive(version, { declaration: originalDeclaration });
+  const f = fixture(t, { version, archive: original.archive });
   await f.manager.install({ id: ID });
   const selected = readInstalledState(f.rootDir, f.entry);
   const active = fs.readFileSync(versions.activePath(f.rootDir, f.entry), 'utf8');
