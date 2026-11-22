@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const { isDeepStrictEqual } = require('node:util');
+const { performance } = require('node:perf_hooks');
 const { execFile } = require('child_process');
 const { spawn } = require('./owned-process');
 const semver = require('semver');
@@ -1749,14 +1750,15 @@ async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, optio
 }
 
 async function waitForUpdateLock(directory, options = {}) {
-  const deadline = Date.now() + duration(options.lockTimeoutMs, 120000);
+  const deadline = performance.now() + duration(options.lockTimeoutMs, 120000);
   let release;
   while (true) {
     options.signal?.throwIfAborted();
     release = acquireUpdateLock(directory);
     if (release) break;
-    if (Date.now() >= deadline) throw fault('SUBAPP_LOCK_TIMEOUT', `Timed out waiting for subapp installation lock: ${directory}`);
-    await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw fault('SUBAPP_LOCK_TIMEOUT', `Timed out waiting for subapp installation lock: ${directory}`);
+    await sleep(Math.min(100, Math.max(1, remaining)));
   }
   return release;
 }

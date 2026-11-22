@@ -1024,6 +1024,13 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
       subappLaunch?.spawned();
       const process = result.process;
+      if (subappLaunch) {
+        const finishLaunch = () => subappLaunches.finish(options.subappLaunchToken, senderWindow);
+        // Exit may precede stdio closure when a descendant inherited the handles.
+        // Close also covers spawn failures which emit no exit event.
+        process.once('exit', finishLaunch);
+        process.once('close', finishLaunch);
+      }
       if (delivery) {
         process.on('message', message => {
           try { delivery.onMessage(normalizeProcessMessage(message, 4096).message); }

@@ -818,6 +818,27 @@ test('a prepared update survives selection contention and can activate on retry'
   assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
 });
 
+test('wall clock adjustment does not expire a legitimate selection wait', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 600 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const holding = await f.manager.prepareLaunch({ id: ID });
+  const now = Date.now;
+  let offset = 0;
+  const clock = t.mock.method(Date, 'now', () => now() + offset);
+  const jumping = setTimeout(() => { offset = 10 * 60 * 1000; }, 25);
+  const releasing = setTimeout(holding.release, 180);
+  try {
+    const started = await f.manager.prepareLaunch({ id: ID });
+    started.release();
+    assert.equal(started.config.version, '0.1.32');
+  } finally {
+    clearTimeout(jumping);
+    clearTimeout(releasing);
+    clock.mock.restore();
+    holding.release();
+  }
+});
+
 function launchOwner() {
   return Object.assign(new EventEmitter(), { isDestroyed: () => false });
 }
