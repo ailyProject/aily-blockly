@@ -14,7 +14,7 @@ const { invalidateBlocklyUploadState } = require('./blockly-upload-state');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs,
-    validateSharedBuildLaunch, confirmSharedBuildInputs, mergeGeneratorInputs, assertSharedBuildSupervisor,
+    validateSharedBuildLaunch, confirmSharedBuildInputs, mergeGeneratorInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild,
     resolveBuildExecution } = require('./build-execution-workspace');
 const { resolvePlatformResourceRoots, resolveBoardResourceDirectory, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
 const { readBuilderCapabilities } = require('./builder-capabilities');
@@ -80,8 +80,16 @@ async function main() {
     }
 
     if (config.execution) recordFor(config);
-    const workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
     const standalone = config.execution?.operation === 'preprocess';
+    let workspace;
+    try {
+        workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
+    } catch (error) {
+        if (standalone && config.execution.layout === 'shared') {
+            settleUnstartedSharedBuild(config.currentProjectPath, config.execution, error);
+        }
+        throw error;
+    }
     let completed = false;
     try {
         if (standalone) startBuildExecution(config, workspace);

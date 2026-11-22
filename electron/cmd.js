@@ -11,6 +11,7 @@ const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-
 const { acquireNpmMutation } = require('./npm-mutation-queue');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
 const { sharedBlocklyBuildEnabled, sharedBuildCommand, withSharedBuildAdmission } = require('./shared-blockly-build');
+const { childScriptPath } = require('./child-script-path');
 let commandShutdown = false;
 const {
   normalizeProcessMessage,
@@ -987,6 +988,9 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearShare
     const senderWindow = event.sender; // 获取发送请求的窗口
     let delivery;
     let releaseNpmMutation;
+    let shared;
+    let sharedAuthorized = false;
+    let dispatchAttempted = false;
     const pending = { ownerWebContents: senderWindow, cwd: options.cwd || process.cwd(),
       buildWorkspacePath: options.buildWorkspace, projectPath: options.projectPath,
       projectSessionId: options.projectSessionId, cancelled: false, abort: new AbortController() };
@@ -999,7 +1003,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearShare
       if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
-      const shared = sharedBuildCommand(options);
+      shared = sharedBuildCommand(options);
       const assertSharedCurrent = () => {
         if (!canClearSharedBuild?.(event, options.projectPath)) throw new Error('The active Blockly project changed before launch.');
         const current = sharedBuildCommand(options);
@@ -1016,6 +1020,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearShare
       senderWindow.on?.('render-process-gone', onOwnerGone);
       senderWindow.on?.('did-start-navigation', onNavigation);
       if (shared && !canClearSharedBuild?.(event, options.projectPath)) throw new Error('Shared build requires the active Blockly project.');
+      sharedAuthorized = !!shared;
       const permit = acquireNpmMutation(options, {
         signal: pending.abort.signal,
         onWait: () => sendRendererLog(senderWindow, '依赖正在安装，当前操作已排队等待…', 'doing', `${streamId}:install-wait`),
@@ -1046,6 +1051,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearShare
         if (pending.cancelled || senderWindow.isDestroyed()) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
         assertProjectTaskActive(senderWindow, options);
         if (shared) assertSharedCurrent();
+        dispatchAttempted = true;
         const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
           releaseNpmMutation,
           ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
@@ -1132,6 +1138,16 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearShare
     } catch (error) {
       delivery?.abandon();
       const formattedError = formatSpawnError(error);
+      let refusal;
+      if (sharedAuthorized && !dispatchAttempted && shared.execution.operation !== 'upload') {
+        try {
+          const outcome = require(childScriptPath('build-execution-workspace.js'))
+            .settleUnstartedSharedBuild(options.buildWorkspace, shared.execution, error);
+          if (outcome?.status === 'not-started') refusal = outcome;
+        } catch (settlementError) {
+          console.warn('[PROC_TRACE][BUILD_REFUSAL_UNRECORDED]', { streamId, error: settlementError.message });
+        }
+      }
 
       console.error('[PROC_TRACE][CMD_START_ERROR]', {
         streamId,
@@ -1140,7 +1156,9 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearShare
 
       return {
         success: false,
-        error: formattedError,
+        error: refusal?.message ?? formattedError,
+        ...((refusal?.code || typeof error?.code === 'string') ? { code: refusal?.code ?? error.code } : {}),
+        ...(refusal ? { buildOutcome: 'not-started' } : {}),
         streamId
       };
     } finally {

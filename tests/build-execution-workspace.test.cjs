@@ -124,6 +124,37 @@ test('a later shared preparation retires only its pending original without chang
     assert.equal(api.resolveBuildExecution(f.root).executionId, next.execution.id);
 });
 
+for (const operation of ['compile', 'preprocess']) {
+    test(`shared ${operation} refusal settles only the original unstarted request`, async t => {
+        const f = sharedFixture(t);
+        const completed = f.prepare('previous-success');
+        complete(completed);
+        const owner = acquireBuildWorkspace(f.root, 'verify');
+        const pending = f.prepare('lock-refused', undefined, operation);
+        const originalMarker = fs.readFileSync(path.join(f.root, '.build', 'aily-workspace.lock'));
+        try {
+            const child = spawn(process.execPath, [require.resolve('../child/scripts/' + operation), pending.configFilePath],
+                { windowsHide: true, stdio: 'ignore' });
+            assert.deepEqual(await once(child, 'close'), [1, null]);
+            const refused = api.inspectBuildExecution(f.root, pending.execution.buildRequestId);
+            assert.equal(refused.executionId, pending.execution.id);
+            assert.equal(refused.status, 'not-started');
+            assert.equal(refused.code, 'BUILD_WORKSPACE_BUSY');
+            assert.equal(refused.nextAction, 'terminal');
+            assert.deepEqual(fs.readFileSync(path.join(f.root, '.build', 'aily-workspace.lock')), originalMarker);
+            assert.equal(fs.existsSync(pending.configFilePath), false);
+            assert.equal(api.inspectBuildExecution(f.root, completed.execution.buildRequestId).status, 'completed');
+            assert.equal(api.resolveBuildExecution(f.root).executionId, completed.execution.id);
+            assert.throws(() => f.prepare('lock-refused', undefined, operation), { code: 'BUILD_EXECUTION_EXISTS' });
+            assert.equal(api.settleStoppedSharedBuild(f.root, pending.execution).status, 'not-started');
+        } finally { owner.release(); }
+        const next = f.prepare('next-request');
+        complete(next);
+        assert.equal(api.resolveBuildExecution(f.root).executionId, next.execution.id);
+        assert.equal(api.inspectBuildExecution(f.root, 'lock-refused').status, 'not-started');
+    });
+}
+
 test('shared advisory preprocessing reuses the verified recipe and keeps the foreground firmware current', async t => {
     const f = sharedFixture(t);
     const completed = f.prepare('completed-foreground');

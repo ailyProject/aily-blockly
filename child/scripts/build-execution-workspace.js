@@ -16,7 +16,9 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const UUID = /^[a-f0-9-]{36}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
+const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled', 'not-started'];
+const REFUSAL_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const REFUSAL_MESSAGE_LIMIT = 4096;
 const fail = message => { throw Object.assign(new Error(`BUILD_EXECUTION_INVALID: ${message}`), { code: 'BUILD_EXECUTION_INVALID' }); };
 const state = stat => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
@@ -389,7 +391,7 @@ function retirePreviousSharedConfig(store, pointer, except) {
         && samePath(record.logicalProjectPath, store.root)) removeSharedConfig(folder);
 }
 
-function settleSharedBuild(store, { id, buildRequestId } = {}, requirePrepared = false) {
+function settleSharedBuild(store, { id, buildRequestId, operation } = {}, requirePrepared = false, refusal) {
     if (typeof id !== 'string' || !UUID.test(id) || typeof buildRequestId !== 'string' || !REQUEST_ID.test(buildRequestId)) return null;
     const folder = readOptional(directory, store.parent, id, false);
     if (!folder) return null;
@@ -397,13 +399,15 @@ function settleSharedBuild(store, { id, buildRequestId } = {}, requirePrepared =
         const filename = path.join(folder, 'execution.json'), record = json(filename);
         if (record.version !== 1 || record.layout !== SHARED || record.id !== id
             || record.buildRequestId !== buildRequestId || !samePath(record.logicalProjectPath, store.root)
-            || (requirePrepared && record.status !== 'prepared')) return null;
+            || (operation !== undefined && record.operation !== operation)) return null;
         const existing = readOutcome({ folder, record });
-        if (existing && existing.status !== 'cancelled') return existing;
+        const status = refusal ? 'not-started' : 'cancelled';
+        if (existing && existing.status !== status) return existing;
+        if (requirePrepared && (record.status !== 'prepared' || record.owner)) return existing;
         if (!existing && !['prepared', 'running'].includes(record.status)) return null;
-        const outcome = existing ?? claimOutcome({ folder, record }, 'cancelled');
-        if (outcome.status === 'cancelled') {
-            if (record.status !== 'cancelled') write(filename, { ...record, status: outcome.status });
+        const outcome = existing ?? claimOutcome({ folder, record }, status, refusal);
+        if (outcome.status === status) {
+            if (record.status !== status) write(filename, { ...record, status: outcome.status });
             removeSharedConfig(folder);
         }
         return outcome;
@@ -412,6 +416,16 @@ function settleSharedBuild(store, { id, buildRequestId } = {}, requirePrepared =
 
 function settleStoppedSharedBuild(projectPath, request) {
     return settleSharedBuild(storage(projectPath), request);
+}
+
+/** Denial releases only this original, unstarted execution's request file. */
+function settleUnstartedSharedBuild(projectPath, request, error) {
+    if (!['compile', 'preprocess'].includes(request?.operation)) return null;
+    const code = typeof error?.code === 'string' && REFUSAL_CODE.test(error.code) ? error.code : 'BUILD_DISPATCH_REJECTED';
+    const message = code === 'BUILD_WORKSPACE_RECOVERY_REQUIRED'
+        ? 'A previous build still owns the project cache; it can be reused after its exit is verified.'
+        : String(error?.message || 'The build was refused before starting.').slice(0, REFUSAL_MESSAGE_LIMIT);
+    return settleSharedBuild(storage(projectPath), request, true, { code, message });
 }
 
 function assertSharedBuildSupervisor(config) {
@@ -424,16 +438,18 @@ function readOutcome({ folder, record }) {
     if (outcome.version !== 1 || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
         || outcome.inputDigest !== record.inputDigest || !TERMINAL_STATUSES.includes(outcome.status)
         || (TERMINAL_STATUSES.includes(record.status) && record.status !== outcome.status)) fail('Terminal execution receipt changed.');
+    if (outcome.status === 'not-started' && (typeof outcome.code !== 'string' || !REFUSAL_CODE.test(outcome.code) || typeof outcome.message !== 'string'
+        || !outcome.message || outcome.message.length > REFUSAL_MESSAGE_LIMIT)) fail('Invalid build refusal receipt.');
     return outcome;
 }
 
-function claimOutcome(value, status) {
+function claimOutcome(value, status, refusal) {
     // Cancellation and completion use one immutable first-writer receipt. A
     // late Stop cannot rewrite a completed build, and a late compiler cannot
     // undo cancellation. Neither contender waits on the mutable status guard.
     const filename = path.join(value.folder, 'outcome.json');
     const receipt = { version: 1, id: value.record.id, buildRequestId: value.record.buildRequestId,
-        inputDigest: value.record.inputDigest, status };
+        inputDigest: value.record.inputDigest, status, ...(refusal ?? {}) };
     try {
         const fd = fs.openSync(filename, 'wx', 0o600);
         try { fs.writeFileSync(fd, JSON.stringify(receipt)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -697,6 +713,7 @@ function inspectBuildExecution(projectPath, buildRequestId) {
             ...(outcome ? { buildHistory: historicalBuildReference(record, root) } : {}),
             ...(buildLog ? { buildLog } : {}),
             ...(ownerState ? { ownerState } : {}),
+            ...(status === 'not-started' ? { code: outcome.code, message: outcome.message } : {}),
             nextAction: status === 'running' && ownerState === 'live' ? 'observe-original'
                 : ['prepared', 'interrupted', 'unconfirmed'].includes(status) ? 'new-execution-required'
                 : operation === 'compile' && status === 'completed' && !selected ? 'rebuild-current-inputs' : 'terminal',
@@ -788,4 +805,4 @@ function clearSharedBuildCache(projectPath, { preserveSketch = false } = {}) {
 module.exports = { prepareBuildExecution, startBuildExecution, finishBuildExecution, cancelBuildExecution, resolveBuildExecution,
     resolveBuildProjectPath, canReuseBuildExecution, inspectBuildExecution, recordFor, retireStandalonePreprocessInputs,
     pruneTerminalPreprocessInputs, abandonPreparedPreprocess, inspectBlocklyCompileProof, validateSharedBuildLaunch,
-    confirmSharedBuildInputs, settleStoppedSharedBuild, mergeGeneratorInputs, clearSharedBuildCache, assertSharedBuildSupervisor };
+    confirmSharedBuildInputs, settleStoppedSharedBuild, settleUnstartedSharedBuild, mergeGeneratorInputs, clearSharedBuildCache, assertSharedBuildSupervisor };

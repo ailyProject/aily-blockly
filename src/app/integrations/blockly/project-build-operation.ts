@@ -34,9 +34,11 @@ export async function runProjectBuild(
       };
     }
     const staleSource = buildResult?.code === 'BUILD_SOURCE_STALE' ? buildResult : error;
-    const sourceFailure = staleSource?.code === 'BUILD_SOURCE_STALE'
-      ? { code: staleSource.code, sourceReason: staleSource.sourceReason }
-      : {};
+    const failureCode = staleSource?.code ?? buildResult?.code;
+    const sourceFailure = {
+      ...(typeof failureCode === 'string' ? { code: failureCode } : {}),
+      ...(failureCode === 'BUILD_SOURCE_STALE' ? { sourceReason: staleSource.sourceReason } : {}),
+    };
     const operation = input.preprocessOnly ? '预处理' : '编译';
     const status = error?.buildOutcome === 'not-started' ? '未开始'
       : input.preprocessOnly && error?.buildOutcome === 'unknown' ? '结果未确认' : '失败';

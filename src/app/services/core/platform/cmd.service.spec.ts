@@ -38,6 +38,20 @@ describe('CmdService command lifecycle', () => {
     expect(kill).toHaveBeenCalledOnceWith('original');
   }));
 
+  it('retains the exact host admission refusal through its original stream', fakeAsync(() => {
+    const run = jasmine.createSpy('run').and.resolveTo({ success: false, streamId: 'original',
+      error: 'The previous cache owner is unverified.', code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED', buildOutcome: 'not-started' });
+    window['cmd'] = { run, onData: () => () => {} };
+    const service = new CmdService({ update() {} } as any);
+    const rejected = jasmine.createSpy('rejected');
+    service.spawn('node', [], { streamId: 'original', buildWorkspace: '/captured' }).subscribe({ error: rejected });
+    flushMicrotasks();
+    expect(rejected).toHaveBeenCalledOnceWith(jasmine.objectContaining({
+      code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED', buildOutcome: 'not-started',
+    }));
+    expect(run).toHaveBeenCalledTimes(1);
+  }));
+
   it('settles a queued npm command by its own receipt and starts the next command once', fakeAsync(() => {
     const listeners = new Map<string, (data: any) => void>();
     const run = jasmine.createSpy('run').and.resolveTo({ success: true });

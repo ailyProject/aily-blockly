@@ -117,6 +117,75 @@ test('managed build retires only its exact original Job after the host crashes',
   }
 });
 
+test('verified original Job drain survives loss of its last handle', windows, async t => {
+  const binding = owned.runtime().binding;
+  const writer = "const fs=require('node:fs');fs.writeFileSync(process.argv[1],'ready');"
+    + "const timer=setInterval(()=>{if(fs.existsSync(process.argv[2]))clearInterval(timer)},10)";
+  const hostScript = "const [runtime,writer,ready,finished,bootId,receiptPath,published]=process.argv.slice(1);"
+    + "const owned=require(runtime);const monitor=owned.spawnManagedBuild(process.execPath,['-e',writer,ready,finished],"
+    + "{stdio:'ignore',windowsHide:true},{bootId,receiptPath,publish(proof){require('node:fs').writeFileSync(published,JSON.stringify(proof))}});"
+    + "process.once('message',()=>{if(!monitor.kill('SIGKILL'))throw Error('Monitor did not stop');process.exit(91)});"
+    + "process.send({pid:monitor.pid,creation:owned.runtime().binding.identity(monitor.pid)})";
+  for (const operation of ['stop', 'observe', 'no-proof']) {
+    await t.test(operation, async subtest => {
+      const root = fixture(subtest);
+      const published = path.join(root, 'original.json'), receiptPath = path.join(root, 'drained');
+      const ready = path.join(root, 'ready'), finished = path.join(root, 'finished');
+      const host = cp.spawn(process.execPath, ['-e', hostScript, require.resolve('../../electron/owned-process'),
+        writer, ready, finished, bootId, receiptPath, published], {
+        windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+      const hostExit = once(host, 'exit');
+      let keeper;
+      try {
+        const [monitor] = await Promise.race([
+          once(host, 'message'),
+          hostExit.then(() => { throw new Error('Original host exited before publishing the monitor'); }),
+        ]);
+        await waitFor(() => fs.existsSync(ready));
+        const proof = JSON.parse(fs.readFileSync(published));
+        if (operation !== 'no-proof') {
+          keeper = binding.openBuildJob(proof.job);
+          assert.ok(binding.query(keeper).active > 0);
+          fs.writeFileSync(receiptPath, 'partial');
+        }
+        host.send('stop-fixture');
+        assert.equal((await hostExit)[0], 91);
+        await waitFor(() => ['exited', 'different'].includes(binding.buildHostState(monitor.pid, monitor.creation)));
+        assert.ok(fs.existsSync(receiptPath + '.admitted'));
+        if (operation === 'no-proof') {
+          assert.equal(binding.openBuildJob(proof.job), undefined);
+          assert.equal(await owned.stopManagedBuild(proof, bootId), false);
+          assert.equal(fs.existsSync(receiptPath), false);
+          return;
+        }
+        if (operation === 'observe') {
+          assert.equal(await owned.stopManagedBuild(proof, bootId, { observeOnly: true }), false);
+          assert.equal(fs.readFileSync(receiptPath, 'utf8'), 'partial');
+          fs.writeFileSync(finished, 'completed');
+          await waitFor(() => binding.query(keeper).active === 0);
+        }
+        assert.equal(await owned.stopManagedBuild(proof, bootId, { observeOnly: operation === 'observe' }), true);
+        assert.equal(binding.query(keeper).active, 0);
+        assert.equal(fs.readFileSync(receiptPath, 'utf8'), proof.job);
+        assert.equal(fs.existsSync(receiptPath + '.stop'), operation === 'stop');
+        binding.release(keeper);
+        keeper = undefined;
+        assert.equal(binding.openBuildJob(proof.job), undefined);
+        assert.equal(await owned.stopManagedBuild(proof, bootId), true);
+      } finally {
+        if (host.exitCode === null && host.signalCode === null) host.kill();
+        await hostExit;
+        if (keeper) {
+          binding.terminate(keeper);
+          await waitFor(() => binding.query(keeper).active === 0);
+          binding.release(keeper);
+        }
+      }
+    });
+  }
+});
+
 test('a durable publication interrupted before launch can be settled without starting the target', windows, async t => {
   const root = fixture(t), published = path.join(root, 'job.json'), receiptPath = path.join(root, 'drained');
   const ready = path.join(root, 'ran');

@@ -13,7 +13,7 @@ const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
 const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
 const { recordFor, startBuildExecution, finishBuildExecution, validateSharedBuildLaunch,
-    confirmSharedBuildInputs, assertSharedBuildSupervisor } = require('./build-execution-workspace');
+    confirmSharedBuildInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild } = require('./build-execution-workspace');
 const { captureBlocklyCompileSource } = require('./compile-source');
 
 // 简单的日志工具
@@ -324,6 +324,9 @@ async function main() {
 
     } catch (error) {
         logger.error(`[ERROR] ${error.message}`);
+        if (!workspace && config.execution?.layout === 'shared') {
+            settleUnstartedSharedBuild(currentProjectPath, config.execution, error);
+        }
         process.exitCode = 1;
     } finally {
         // Only the acquiring host releases, after preprocess/compiler close and
@@ -334,7 +337,7 @@ async function main() {
             finishBuildExecution(config, false);
             throw error;
         }
-        finishBuildExecution(config, !!workspace && process.exitCode !== 1);
+        if (workspace || config.execution?.layout !== 'shared') finishBuildExecution(config, !!workspace && process.exitCode !== 1);
     }
 }
 
