@@ -8,6 +8,7 @@ const { confirmLibraryProjections } = require('./library-source-evidence');
 const { confirmBuildSource, sourceManifest } = require('./build-source-capture');
 const { readBuildInputContextBinding } = require('./build-input-context');
 const { isProjectCoordinationFile } = require('./project-coordination-files');
+const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(`PROJECT_INPUTS_CHANGED: ${message}`); };
 const state = stat => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
@@ -33,9 +34,12 @@ function invalidateBuildDelivery(root) {
 function captureProjectSources(config) {
     const root = fs.realpathSync(config.currentProjectPath);
     const coder = project.isAilyCodeProjectRoot(root);
+    const sharedInputs = config.execution?.layout === 'shared'
+        ? new Set(['package.json', ...blocklyProjectBuildInputs(root)]) : null;
     const records = [], states = [];
     let bytes = 0;
-    const excluded = relative => ['.git', '.temp', '.build', 'node_modules', '.aily/build'].some(name => relative === name || relative.startsWith(name + '/'))
+    const excluded = relative => (sharedInputs && relative && !sharedInputs.has(relative.split('/')[0]))
+        || ['.git', '.temp', '.build', 'node_modules', '.aily/build'].some(name => relative === name || relative.startsWith(name + '/'))
         || (coder && /^sketch\/(?:preprocess\.json|target-compile\.json|library-cache\.json|compile-preprocess-[^/]+\.json)$/.test(relative));
     const visit = (filename, relative, depth = 0, exclusions = true) => {
         if (exclusions && excluded(relative)) return;

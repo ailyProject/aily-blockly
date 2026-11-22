@@ -1,5 +1,6 @@
 import { BehaviorSubject, Subject } from 'rxjs';
 import { DevToolComponent } from './dev-tool.component';
+import { ProcessState } from '@core/app-shell/public-api';
 
 describe('DevToolComponent in Coder mode', () => {
   const projectPath = '/workspace/coder-a';
@@ -19,7 +20,11 @@ describe('DevToolComponent in Coder mode', () => {
       save: jasmine.createSpy('save').and.resolveTo({ success: true }),
       projectOpen: jasmine.createSpy('projectOpen').and.resolveTo(true),
     };
-    const builderService = { clearBuildCache: jasmine.createSpy('clearBuildCache').and.resolveTo() };
+    const builderService = {
+      clearBuildCache: jasmine.createSpy('clearBuildCache').and.resolveTo(),
+      clearCache: jasmine.createSpy('clearCache').and.resolveTo(),
+      usesSharedBuildCache: jasmine.createSpy('usesSharedBuildCache').and.returnValue(false),
+    };
     const actionService = { dispatch: jasmine.createSpy('dispatch') };
     const electronService = { deleteDir: jasmine.createSpy('deleteDir') };
     const messageService = {
@@ -29,7 +34,7 @@ describe('DevToolComponent in Coder mode', () => {
     };
     const component = Object.create(DevToolComponent.prototype) as DevToolComponent;
     Object.assign(component, {
-      projectService, builderService, actionService, electronService, messageService,
+      projectService, builderService, actionService, electronService, messageService, workflowService: { currentState: undefined },
       configService: { data: { devmode: { enabled: false, autoSave: true } }, save: () => {} },
       ailyChatDemandSession: { diagramGenerationState$: new BehaviorSubject({ architecture: null, schematic: null }) },
       ngZone: { run: (fn: () => void) => fn() },
@@ -96,6 +101,30 @@ describe('DevToolComponent in Coder mode', () => {
     await component.clear();
     expect(builderService.clearBuildCache).toHaveBeenCalledTimes(1);
     expect(messageService.warning).toHaveBeenCalled();
+    component.ngOnDestroy();
+  });
+
+  it('uses the native shared Blockly cleanup without looking up a reusable firmware path', async () => {
+    const { component, builderService, actionService, electronService, messageService } = createHarness('blockly');
+    builderService.usesSharedBuildCache.and.returnValue(true);
+    actionService.dispatch.and.callFake((_, __, finish) => finish({ success: true }));
+    await component.clear();
+    expect(builderService.clearCache).toHaveBeenCalledOnceWith(projectPath);
+    expect(electronService.deleteDir).not.toHaveBeenCalled();
+    expect(messageService.success).toHaveBeenCalledOnceWith('Clear build folder success');
+    builderService.clearCache.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY'));
+    await component.clear();
+    expect(messageService.success).toHaveBeenCalledTimes(1);
+    expect(messageService.error).toHaveBeenCalledOnceWith('Clear build folder failed: BUILD_WORKSPACE_BUSY');
+    component.ngOnDestroy();
+  });
+
+  it('does not clear a shared Blockly workspace during a build', async () => {
+    const { component, builderService, actionService } = createHarness('blockly');
+    (component as any).workflowService.currentState = ProcessState.BUILDING;
+    await component.clear();
+    expect(actionService.dispatch).not.toHaveBeenCalled();
+    expect(builderService.clearCache).not.toHaveBeenCalled();
     component.ngOnDestroy();
   });
 

@@ -59,6 +59,26 @@ describe('BuilderService isolated derived outputs', () => {
     expect(publish.calls.mostRecent().args[0]).toBe(config.currentProjectPath);
     expect(service.projectService.currentPackageData).toBe(current);
   });
+  it('shows an exact current shared build result without rewriting the author manifest', async () => {
+    const config = execution();
+    config.currentProjectPath = 'D:/logical';
+    Object.assign(config.execution, { layout: 'shared' });
+    service.activeExecutionConfig = config;
+    window['builder'].inspectBuildExecution = inspect('completed');
+    await service.saveBuildInfo('D:/logical', 'success', '1', 'a'.repeat(64), true, { config });
+    expect(publish).not.toHaveBeenCalled();
+    expect(service.projectService.currentPackageData.buildInfo.lastBuildStatus).toBe('success');
+  });
+  it('launches the original immutable shared request file and rejects a missing capture', async () => {
+    const config = {
+      currentProjectPath: 'D:/logical',
+      execution: { layout: 'shared' },
+      configFilePath: 'D:/logical/.aily/build-executions/id/config.json',
+    };
+    await expectAsync(service.writeCompileRequest(config)).toBeResolvedTo(config.configFilePath);
+    await expectAsync(service.writeCompileRequest({ ...config, configFilePath: undefined }))
+      .toBeRejectedWithError('The original shared build request file is unavailable.');
+  });
   it('rejects another execution returned for the same request instead of publishing root metadata', async () => {
     window['builder'].inspectBuildExecution = inspect('completed', 'newer-execution');
     await expectAsync(service.saveBuildInfo('D:/logical', 'success', '1', 'a'.repeat(64), true, { config: execution() }))

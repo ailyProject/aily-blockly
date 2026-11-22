@@ -12,7 +12,8 @@ const { confirmBuildSource } = require('./build-source-capture');
 const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
 const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
-const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
+const { recordFor, startBuildExecution, finishBuildExecution, validateSharedBuildLaunch,
+    confirmSharedBuildInputs, assertSharedBuildSupervisor } = require('./build-execution-workspace');
 const { captureBlocklyCompileSource } = require('./compile-source');
 
 // 简单的日志工具
@@ -57,6 +58,10 @@ async function main() {
     let config;
     try {
         config = readBuildRequest(configPath);
+        if (config.execution?.layout === 'shared') {
+            config = validateSharedBuildLaunch(configPath, config.currentProjectPath, 'compile');
+            assertSharedBuildSupervisor(config);
+        }
     } catch (error) {
         logger.error('Failed to read config file:', error);
         process.exit(1);
@@ -83,6 +88,7 @@ async function main() {
         const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
         if (isAilyCode) invalidateCoderUploadState(currentProjectPath);
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
         invalidateBuildDelivery(currentProjectPath);
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
         // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
@@ -155,6 +161,7 @@ async function main() {
         await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
         workspace.assertOwned();
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         const materializedSource = !isAilyCode ? captureBlocklyCompileSource(config, compileSourcePath) : undefined;
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
@@ -258,6 +265,7 @@ async function main() {
         const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
+            confirmSharedBuildInputs(config);
             if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
             if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
@@ -270,6 +278,7 @@ async function main() {
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
+                confirmSharedBuildInputs(config);
                 if (projectSnapshot) {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);
                     await reportBuildDelivery(config, receipt);

@@ -15,7 +15,7 @@ struct Api {
 #undef DECLARE
 };
 static thread_local Api api;
-struct Job { HANDLE handle; };
+struct Job { HANDLE handle; bool observer = false; };
 static napi_value fail(napi_env env, const char* operation) {
   std::string message = std::string(operation) + " (Win32 " + std::to_string(GetLastError()) + ")";
   api.napi_throw_error(env, "WINDOWS_PROCESS_JOB_FAILED", message.c_str()); return nullptr;
@@ -40,6 +40,54 @@ static napi_value create(napi_env env,napi_callback_info info) {
   if(!SetInformationJobObject(handle,JobObjectExtendedLimitInformation,&limits,sizeof(limits))){CloseHandle(handle);return fail(env,"SetInformationJobObject");}
   auto job=new Job{handle};api.napi_create_external(env,job,finalize,nullptr,&result);return result;
 }
+static napi_value openBuildJob(napi_env env, napi_callback_info info) {
+  napi_value arg, result;
+  size_t count = 1;
+  api.napi_get_cb_info(env, info, &count, &arg, nullptr, nullptr);
+  if (count != 1) { api.napi_throw_error(env, nullptr, "Exact build Job name required"); return nullptr; }
+  const auto name = text(env, arg);
+  const std::wstring prefix = L"Global\\AilyBuild-";
+  if (name.compare(0, prefix.size(), prefix) || name.size() != prefix.size()+36
+    || name.find_first_not_of(L"0123456789abcdef-", prefix.size()) != std::wstring::npos) {
+    api.napi_throw_error(env, nullptr, "Invalid build Job name"); return nullptr;
+  }
+  HANDLE handle = OpenJobObjectW(JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE, FALSE, name.c_str());
+  if (!handle) {
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) return fail(env, "OpenBuildJob");
+    api.napi_get_undefined(env, &result);
+    return result;
+  }
+  auto job = new Job{handle, true};
+  api.napi_create_external(env, job, finalize, nullptr, &result);
+  return result;
+}
+static napi_value buildHostState(napi_env env, napi_callback_info info) {
+  napi_value args[2], result;
+  size_t count = 2;
+  uint32_t pid = 0;
+  api.napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
+  if (count != 2 || api.napi_get_value_uint32(env, args[0], &pid) != napi_ok || !pid) {
+    api.napi_throw_error(env, nullptr, "Exact build host identity required"); return nullptr;
+  }
+  const auto expected = text(env, args[1]);
+  const char* state = "unknown";
+  HANDLE parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+  if (parent) {
+    FILETIME c, e, k, u;
+    if (GetProcessTimes(parent, &c, &e, &k, &u)) {
+      const auto birth = std::to_wstring((static_cast<uint64_t>(c.dwHighDateTime) << 32) | c.dwLowDateTime);
+      if (birth != expected) state = "different";
+      else {
+        const auto wait = WaitForSingleObject(parent, 0);
+        if (wait == WAIT_OBJECT_0) state = "exited";
+        else if (wait == WAIT_TIMEOUT) state = "alive";
+      }
+    }
+    CloseHandle(parent);
+  } else if (GetLastError() == ERROR_INVALID_PARAMETER) state = "exited";
+  api.napi_create_string_utf8(env, state, std::strlen(state), &result);
+  return result;
+}
 static napi_value query(napi_env env,napi_callback_info info) {
   auto job=argument(env,info);if(!job)return nullptr;
   JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting={};
@@ -58,8 +106,9 @@ static napi_value query(napi_env env,napi_callback_info info) {
 static napi_value terminate(napi_env env,napi_callback_info info){auto job=argument(env,info);if(!job)return nullptr;if(!job->handle||!TerminateJobObject(job->handle,1))return fail(env,"TerminateJobObject");napi_value result;api.napi_get_undefined(env,&result);return result;}
 static napi_value release(napi_env env,napi_callback_info info){
   auto job=argument(env,info);if(!job)return nullptr;napi_value result;
-  if(job->handle){JOBOBJECT_BASIC_ACCOUNTING_INFORMATION a={};if(!QueryInformationJobObject(job->handle,JobObjectBasicAccountingInformation,&a,sizeof(a),nullptr))return fail(env,"QueryJobBeforeRelease");
-    if(a.ActiveProcesses){api.napi_throw_error(env,nullptr,"Cannot release a live Job");return nullptr;}
+  if(job->handle){
+    if(!job->observer){JOBOBJECT_BASIC_ACCOUNTING_INFORMATION a={};if(!QueryInformationJobObject(job->handle,JobObjectBasicAccountingInformation,&a,sizeof(a),nullptr))return fail(env,"QueryJobBeforeRelease");
+      if(a.ActiveProcesses){api.napi_throw_error(env,nullptr,"Cannot release a live Job");return nullptr;}}
     CloseHandle(job->handle);job->handle=nullptr;
   }api.napi_get_undefined(env,&result);return result;
 }
@@ -152,6 +201,6 @@ NAPI_MODULE_INIT(){
 #define LOAD(name) api.name=(decltype(api.name))GetProcAddress(host,#name);if(!api.name)return nullptr;
   APIS(LOAD)
 #undef LOAD
-  const struct{const char* name;napi_callback callback;} methods[]={{"create",create},{"query",query},{"terminate",terminate},{"release",release},{"identity",identity},{"removeDescriptor",removeDescriptor},{"archiveEmptyProjectLock",archiveEmptyProjectLock}};
+  const struct{const char* name;napi_callback callback;} methods[]={{"create",create},{"openBuildJob",openBuildJob},{"buildHostState",buildHostState},{"query",query},{"terminate",terminate},{"release",release},{"identity",identity},{"removeDescriptor",removeDescriptor},{"archiveEmptyProjectLock",archiveEmptyProjectLock}};
   for(auto method:methods){napi_value fn;api.napi_create_function(env,method.name,NAPI_AUTO_LENGTH,method.callback,nullptr,&fn);api.napi_set_named_property(env,exports,method.name,fn);}return exports;
 }

@@ -316,35 +316,43 @@ function createBuildWorkspaceSupervisor(projectPath) {
             }
             return true;
         },
-        releaseAfterTermination: stopped => {
-            if (stopped !== true) return false;
-            let guard;
-            try { guard = acquireNative(workspace); }
-            catch (error) { if (error.code === 'BUILD_WORKSPACE_BUSY') return false; throw error; }
-            try {
-                let owner;
-                try { owner = readOwner(workspace); }
-                catch (error) { if (error.code === 'ENOENT') return true; throw error; }
-                if (owner.record.supervisor !== token || processAlive(owner.record.pid)) return false;
-                const current = readOwner(workspace);
-                if (!sameFile(owner.stat, current.stat) || owner.bytes !== current.bytes) return false;
-                const builderPath = path.join(workspace.directory, BUILDER_MARKER);
-                let builder;
-                try { builder = readOwner(workspace, builderPath); }
-                catch (error) { if (error.code !== 'ENOENT') throw error; }
-                if (builder) {
-                    if (builder.record.ownerToken !== owner.record.token || builder.record.supervisor !== token || processAlive(builder.record.pid)) return false;
-                    const currentBuilder = readOwner(workspace, builderPath);
-                    if (!sameFile(builder.stat, currentBuilder.stat) || builder.bytes !== currentBuilder.bytes) return false;
-                    fs.unlinkSync(builderPath);
-                }
-                fs.unlinkSync(workspace.filename);
-                return true;
-            } finally { guard.close(); }
-        },
+        releaseAfterTermination: stopped => stopped === true && releaseStoppedWorkspace(workspace, token, false),
     };
 }
 
+function releaseStoppedWorkspace(workspace, supervisor, jobDrained) {
+    let guard;
+    try { guard = acquireNative(workspace); }
+    catch (error) { if (error.code === 'BUILD_WORKSPACE_BUSY') return false; throw error; }
+    try {
+        let owner;
+        try { owner = readOwner(workspace); }
+        catch (error) { if (error.code === 'ENOENT') return true; throw error; }
+        if (owner.record.supervisor !== supervisor || (!jobDrained && processAlive(owner.record.pid))) return false;
+        const current = readOwner(workspace);
+        if (!sameFile(owner.stat, current.stat) || owner.bytes !== current.bytes) return false;
+        const builderPath = path.join(workspace.directory, BUILDER_MARKER);
+        let builder;
+        try { builder = readOwner(workspace, builderPath); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (builder) {
+            if (builder.record.ownerToken !== owner.record.token || builder.record.supervisor !== supervisor
+                || (!jobDrained && processAlive(builder.record.pid))) return false;
+            const currentBuilder = readOwner(workspace, builderPath);
+            if (!sameFile(builder.stat, currentBuilder.stat) || builder.bytes !== currentBuilder.bytes) return false;
+            fs.unlinkSync(builderPath);
+        }
+        fs.unlinkSync(workspace.filename);
+        return true;
+    } finally { guard.close(); }
+}
+
+// Only the main process's managed-build admission calls this after checking
+// the original kernel Job. PID reuse here cannot change the Job's membership.
+function releaseManagedBuildWorkspace(projectPath, supervisor) {
+    if (!UUID.test(supervisor)) throw fault('BUILD_WORKSPACE_INVALID', 'Invalid managed build supervisor.');
+    return releaseStoppedWorkspace(openWorkspace(projectPath), supervisor, true);
+}
 /** Hold the existing cooperative build exclusion while observing idleness.
  * Unlike acquisition/recovery this never rewrites owner journals, retires old
  * claims or removes Builder evidence. A dead delegated parent is not idle. */
@@ -402,4 +410,5 @@ function inspectBuildWorkspaceIdle(projectPath) {
     return { assertIdle, release: () => guard.close() };
 }
 
-module.exports = { acquireBuildWorkspace, createBuildWorkspaceSupervisor, inspectBuildWorkspaceIdle, OWNER_ENV, BUILDER_ENV };
+module.exports = { acquireBuildWorkspace, createBuildWorkspaceSupervisor, inspectBuildWorkspaceIdle, releaseManagedBuildWorkspace,
+    SUPERVISOR_ENV, OWNER_ENV, BUILDER_ENV };

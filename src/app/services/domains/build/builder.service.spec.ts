@@ -2,7 +2,7 @@ import { of, Subject } from 'rxjs';
 import { BuilderService } from './builder.service';
 
 describe('BuilderService Coder persistence', () => {
-  function createHarness(options: { coder: boolean; saveSucceeds?: boolean; switchDuringSave?: boolean }) {
+  function createHarness(options: { coder: boolean; cloud?: boolean; saveSucceeds?: boolean; switchDuringSave?: boolean }) {
     const events: string[] = [];
     const operationEvents: string[] = [];
     const compiledProjects: string[] = [];
@@ -30,7 +30,7 @@ describe('BuilderService Coder persistence', () => {
       currentProjectPath: options.coder ? '/workspace/coder' : '/workspace/blockly',
       boardChangeSubject: new Subject<void>(),
       isAilyCodeProject: () => options.coder,
-      isCloudBuild: () => false,
+      isCloudBuild: () => options.cloud === true,
     };
     const compileService = {
       canReuseLocalCoderBuildForUpload: async () => {
@@ -54,6 +54,14 @@ describe('BuilderService Coder persistence', () => {
       {} as any,
       { isWindowFocused: () => true } as any,
       compileService as any,
+      undefined,
+      {
+        isAvailable: () => true,
+        build: async () => {
+          events.push('build-blockly');
+          return { success: true, result: { state: 'done', text: 'compiled' }, checkpoint: {} };
+        },
+      },
     );
     return { service, events, operationEvents, compiledProjects };
   }
@@ -86,7 +94,28 @@ describe('BuilderService Coder persistence', () => {
 
     await service.build();
 
-    expect(events).toEqual(['compile-from-disk']);
+    expect(events).toEqual(['build-blockly']);
+  });
+
+  it('delegates both local Blockly cache modes to the native shared-build owner', async () => {
+    const original = window['builder'];
+    const clearSharedBuildCache = jasmine.createSpy('clearSharedBuildCache').and.resolveTo();
+    window['builder'] = { sharedBuildExecutionVersion: 1, clearSharedBuildCache };
+    try {
+      const { service } = createHarness({ coder: false });
+      await service.clearBuildCache('/workspace/blockly');
+      await service.clearCache('/workspace/blockly');
+      expect(clearSharedBuildCache.calls.allArgs()).toEqual([
+        ['/workspace/blockly', { preserveSketch: true }],
+        ['/workspace/blockly', { preserveSketch: false }],
+      ]);
+      expect(createHarness({ coder: true }).service.usesSharedBuildCache('/workspace/coder')).toBeFalse();
+      expect(createHarness({ coder: false, cloud: true }).service.usesSharedBuildCache('/workspace/blockly')).toBeFalse();
+      clearSharedBuildCache.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY'));
+      await expectAsync(service.clearCache('/workspace/blockly')).toBeRejectedWithError('BUILD_WORKSPACE_BUSY');
+    } finally {
+      window['builder'] = original;
+    }
   });
 
   it('does not compile Coder source when persistence fails', async () => {

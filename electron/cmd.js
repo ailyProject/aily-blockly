@@ -1,6 +1,6 @@
 // 管理系统命令进程，并提供 Shell、路径和终端环境检测能力。
 const { exec } = require('child_process');
-const { spawn, getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
+const { spawn, spawnManagedBuild, getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -10,6 +10,7 @@ const { captureRegisteredProcessIdentity, killRegisteredProcessTree } = require(
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
 const { acquireNpmMutation } = require('./npm-mutation-queue');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
+const { sharedBlocklyBuildEnabled, sharedBuildCommand, withSharedBuildAdmission } = require('./shared-blockly-build');
 let commandShutdown = false;
 const {
   normalizeProcessMessage,
@@ -427,7 +428,7 @@ class CommandManager {
   }
 
   // 执行命令并返回流式数据
-  executeCommand(options, onSettledClose) {
+  executeCommand(options, onSettledClose, shared) {
     if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
     let {
       command,
@@ -538,7 +539,10 @@ class CommandManager {
       : ['pipe', 'pipe', 'pipe'];
     const buildWorkspace = createBuildWorkspaceSupervisor(options.buildWorkspace);
     const commandEnv = buildCommandEnv({ ...env, ...buildWorkspace?.environment });
-    const child = isWin32NpmFamily
+    const supervisor = buildWorkspace?.environment?.AILY_BUILD_WORKSPACE_SUPERVISOR;
+    const child = shared ? spawnManagedBuild(command, args, {
+      cwd: shared.admission.project, env: commandEnv, shell: false, windowsHide: true, stdio: childStdio,
+    }, shared.admission.bind(supervisor, streamId, shared.config.execution)) : isWin32NpmFamily
       ? spawn(fullCommand, {
           cwd: cwd || process.cwd(),
           env: commandEnv,
@@ -568,6 +572,7 @@ class CommandManager {
       shellDiagnostics,
       messagePort,
       buildWorkspace,
+      sharedBuildSupervisor: shared ? supervisor : undefined,
       buildWorkspacePath: options.buildWorkspace,
       startedAt,
       ownerWebContents: options.ownerWebContents,
@@ -955,7 +960,27 @@ class CommandManager {
 
 const commandManager = new CommandManager();
 
-function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
+function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearSharedBuild } = {}) {
+  const settleOld = entry => {
+    const command = commandManager.processes.get(entry.streamId);
+    if (command?.sharedBuildSupervisor === entry.supervisor) command.stopRequested = true;
+  };
+  ipcMain.handle('clear-shared-blockly-build', async (event, projectPath, options) => {
+    if (!sharedBlocklyBuildEnabled() || !canClearSharedBuild?.(event, projectPath)) {
+      throw new Error('Clearing project build cache requires the active Blockly project.');
+    }
+    const assertCurrent = () => {
+      if (!canClearSharedBuild(event, projectPath)) throw new Error('The active Blockly project changed before cache cleanup.');
+    };
+    return withSharedBuildAdmission(projectPath, { assertCurrent, beforeStop: settleOld, operation: 'clean' }, async () => {
+      assertCurrent();
+      const result = await require('./build-workspace-publication').clearAcceptedSharedBuildCache(projectPath, {
+        preserveSketch: options?.preserveSketch === true,
+      });
+      buildDeliveryAuthority?.invalidate(projectPath);
+      return result;
+    });
+  });
   // 执行命令
   ipcMain.handle('cmd-run', async (event, options) => {
     const streamId = options.streamId || `cmd_${Date.now()}_${Math.random()}`;
@@ -974,6 +999,14 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
+      const shared = sharedBuildCommand(options);
+      const assertSharedCurrent = () => {
+        if (!canClearSharedBuild?.(event, options.projectPath)) throw new Error('The active Blockly project changed before launch.');
+        const current = sharedBuildCommand(options);
+        if (!current || current.execution.id !== shared.execution.id
+          || current.execution.buildRequestId !== shared.execution.buildRequestId)
+          throw new Error('The original build command changed before launch.');
+      };
       if (commandManager.pendingCommands.has(streamId) || commandManager.processes.has(streamId)
         || !commandManager.registerOwnerStream(senderWindow, streamId)) {
         throw new Error('Command stream is already registered.');
@@ -982,11 +1015,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       senderWindow.on?.('destroyed', onOwnerGone);
       senderWindow.on?.('render-process-gone', onOwnerGone);
       senderWindow.on?.('did-start-navigation', onNavigation);
-      if (options.buildWorkspace) buildDeliveryAuthority?.invalidate(options.buildWorkspace);
-      if (options.buildDeliveryRequest !== undefined) {
-        if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame) throw new Error('Build delivery authority unavailable; restart the host.');
-        delivery = await buildDeliveryAuthority.begin(senderWindow, options);
-      }
+      if (shared && !canClearSharedBuild?.(event, options.projectPath)) throw new Error('Shared build requires the active Blockly project.');
       const permit = acquireNpmMutation(options, {
         signal: pending.abort.signal,
         onWait: () => sendRendererLog(senderWindow, '依赖正在安装，当前操作已排队等待…', 'doing', `${streamId}:install-wait`),
@@ -995,10 +1024,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       if (pending.cancelled) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
-      const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
-        releaseNpmMutation,
-        ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
-      }, ({ code, signal, pid, startedAt, expected, ownershipReleased }) => {
+      const onSettledClose = ({ code, signal, pid, startedAt, expected, ownershipReleased }) => {
         delivery?.onExit(code, signal, expected || !ownershipReleased);
 
         console.log(`[CMD][${streamId}] close, code: ${code}, signal: ${signal}`);
@@ -1008,7 +1034,30 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         sendCmdData(senderWindow, `cmd-data-${streamId}`, {
           type: 'close', code, signal, streamId, expected, ownershipReleased
         });
-      });
+      };
+      const launch = async admission => {
+        if (options.buildWorkspace && (!shared || shared.execution.operation === 'compile')) {
+          buildDeliveryAuthority?.invalidate(options.buildWorkspace);
+        }
+        if (options.buildDeliveryRequest !== undefined) {
+          if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame) throw new Error('Build delivery authority unavailable; restart the host.');
+          delivery = await buildDeliveryAuthority.begin(senderWindow, options);
+        }
+        if (pending.cancelled || senderWindow.isDestroyed()) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
+        assertProjectTaskActive(senderWindow, options);
+        if (shared) assertSharedCurrent();
+        const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
+          releaseNpmMutation,
+          ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
+        }, onSettledClose, admission && { admission, config: shared });
+        releaseNpmMutation = undefined;
+        return result;
+      };
+      const result = shared
+        ? await withSharedBuildAdmission(options.buildWorkspace, {
+          signal: pending.abort.signal, assertCurrent: assertSharedCurrent, beforeStop: settleOld, operation: shared.execution.operation,
+        }, launch)
+        : await launch();
       releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
       const process = result.process;
       if (delivery) {

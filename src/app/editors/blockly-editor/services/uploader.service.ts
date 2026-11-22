@@ -15,7 +15,7 @@ import {
 
 import { NzMessageService } from "ng-zorro-antd/message";
 import { _BuilderService } from "./builder.service";
-import { BuilderService as HostBuilderService, requirePreparedBuildExecution } from "@domain/build/public-api";
+import { BuilderService as HostBuilderService, isSharedBuildExecution, requirePreparedBuildExecution, type ResolvedBuildExecution, type SharedBuildExecution } from "@domain/build/public-api";
 import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { NzModalService } from "ng-zorro-antd/modal";
 import { CmdOutput, CmdService, LogService } from '@core/platform/public-api';
@@ -431,11 +431,14 @@ export class _UploaderService {
         }
 
         const boardJson = await this.projectService.getBoardJson();
+        let verifiedExecution: ResolvedBuildExecution | undefined;
+        const captureExecution = window['builder']?.sharedBuildExecutionVersion === 1
+          ? (execution: ResolvedBuildExecution) => { verifiedExecution = execution; } : undefined;
 
         assertContext();
         if (firmware || reuseCloud) {
           this._builderService.isUploading = true;
-          if (!await this._builderService.canReuseBuildForUpload(() => this.cancelled)) {
+          if (!await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {
             const message = reuseCloud ? 'No reusable cloud firmware is available for the current Blockly project.'
               : 'The active Blockly project changed after compilation.';
             throw Object.assign(new Error(message), { code: 'BUILD_ARTIFACT_STALE' });
@@ -506,9 +509,17 @@ export class _UploaderService {
         const isAilyCodeProject = this.projectService.isAilyCodeProject(projectPath);
         const verifyLocalCoderBuild = isAilyCodeProject && !!window['builder']?.canReuseCoderUpload;
         let buildPath: string;
+        let sharedExecution: SharedBuildExecution | undefined;
 
         if (firmware) {
-          buildPath = requirePreparedBuildExecution(projectPath, firmware).buildPath;
+          const execution = requirePreparedBuildExecution(projectPath, firmware);
+          buildPath = execution.buildPath;
+          if (isSharedBuildExecution(execution)) {
+            if (verifiedExecution?.executionId !== execution.executionId) {
+              throw Object.assign(new Error('Prepared firmware changed during verification.'), { code: 'BUILD_ARTIFACT_STALE' });
+            }
+            sharedExecution = execution;
+          }
         } else if (isAilyCodeProject) {
           try {
             this.coderBuildActive = true;
@@ -580,7 +591,7 @@ export class _UploaderService {
 
           assertContext();
 
-          const needsBuild = !reuseCloud && !await this._builderService.canReuseBuildForUpload(() => this.cancelled);
+          const needsBuild = !reuseCloud && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution);
 
           assertContext();
 
@@ -597,8 +608,11 @@ export class _UploaderService {
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
               if ((cloud || window['builder']?.canReuseBlocklyUpload)
-                && !await this._builderService.canReuseBuildForUpload(() => this.cancelled)) {
+                && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {
                 throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
+              }
+              if (verifiedExecution?.layout === 'shared' && buildResult.buildInput?.executionId !== verifiedExecution.executionId) {
+                throw new Error('BUILD_ARTIFACT_STALE: Another build replaced the requested firmware.');
               }
 
               // 编译成功，继续上传流程
@@ -642,7 +656,13 @@ export class _UploaderService {
               return;
             }
           }
-          buildPath = cloud ? '' : await this._builderService.getCurrentBuildPath();
+          if (!cloud && captureExecution) {
+            if (!verifiedExecution) throw new Error('BUILD_ARTIFACT_STALE: No verified current build execution; build again.');
+            buildPath = verifiedExecution.buildPath;
+            if (isSharedBuildExecution(verifiedExecution)) sharedExecution = verifiedExecution;
+          } else {
+            buildPath = cloud ? '' : await this._builderService.getCurrentBuildPath();
+          }
           assertContext();
         }
 
@@ -746,12 +766,13 @@ export class _UploaderService {
               assertContext();
             }
 
-            const result = await this.uploadByBle(buildPath, capturedPortInfo, boardJson?.name);
+            const result = await this.uploadByBle(buildPath, capturedPortInfo, boardJson?.name, sharedExecution);
 
             this.uploadPromiseReject = null;
 
             resolve(result);
           } catch (error) {
+            if (sharedExecution && error instanceof Error) throw error;
             this.uploadPromiseReject = null;
 
             reject(error);
@@ -762,12 +783,13 @@ export class _UploaderService {
 
         if (capturedPortInfo?.type === 'network-ota') {
           try {
-            const result = await this.uploadByNetworkOta(buildPath, capturedPortInfo, boardJson?.name);
+            const result = await this.uploadByNetworkOta(buildPath, capturedPortInfo, boardJson?.name, sharedExecution);
 
             this.uploadPromiseReject = null;
 
             resolve(result);
           } catch (error) {
+            if (sharedExecution && error instanceof Error) throw error;
             this.uploadPromiseReject = null;
 
             reject(error);
@@ -814,20 +836,32 @@ export class _UploaderService {
         const pnum = this.projectService.currentBoardPinConfig?.board || null;
         let configFilePath: string;
         let uploadScriptPath: string;
+        let sharedBuildWorkspace: string | undefined;
 
         if (!cloudLocalUpload) {
           const isolated = !this.projectService.isAilyCodeProject(currentProjectPath)
             && window['builder']?.isolatedBuildExecutionVersion === 1;
-          const execution = firmware ? requirePreparedBuildExecution(currentProjectPath, firmware)
-            : isolated ? window['builder'].resolveBuildExecution(currentProjectPath) : null;
+          const execution = sharedExecution ?? (firmware ? requirePreparedBuildExecution(currentProjectPath, firmware)
+            : verifiedExecution ?? (isolated ? window['builder'].resolveBuildExecution(currentProjectPath) : null));
           if (isolated && !execution) throw new Error('BUILD_ARTIFACT_STALE: No verified current build execution; build again.');
           const uploadProjectPath = execution?.currentProjectPath ?? currentProjectPath;
-          const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
-            ? window['path'].join(currentProjectPath, 'sketch')
-            : window['path'].join(uploadProjectPath, '.temp');
-
-          if (!window['fs'].existsSync(tempPath)) {
-            window['fs'].mkdirSync(tempPath, { recursive: true });
+          if (execution?.layout === 'shared') {
+            const canonical = (value: unknown) => String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+            if (uploadProjectPath !== execution.logicalProjectPath || canonical(uploadProjectPath) !== canonical(currentProjectPath)
+              || !/^[a-f0-9-]{36}$/.test(execution.executionId)) {
+              throw new Error('BUILD_ARTIFACT_STALE: Shared firmware does not belong to this project.');
+            }
+            sharedBuildWorkspace = uploadProjectPath;
+            configFilePath = window['path'].join(uploadProjectPath, '.aily', 'build-executions', execution.executionId,
+              `upload-request-${crypto.randomUUID()}.json`);
+          } else {
+            const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
+              ? window['path'].join(currentProjectPath, 'sketch')
+              : window['path'].join(uploadProjectPath, '.temp');
+            if (!window['fs'].existsSync(tempPath)) {
+              window['fs'].mkdirSync(tempPath, { recursive: true });
+            }
+            configFilePath = window['path'].join(tempPath, 'upload-config.json');
           }
 
           const uploadConfig = {
@@ -848,10 +882,10 @@ export class _UploaderService {
             pnum
           };
 
-          configFilePath = window['path'].join(tempPath, 'upload-config.json');
-
           try {
-            await window['fs'].writeFileSync(configFilePath, JSON.stringify(uploadConfig, null, 2));
+            const configText = JSON.stringify(uploadConfig, null, 2);
+            if (sharedBuildWorkspace) await window['fs'].writeFileSync(configFilePath, configText, { flag: 'wx' });
+            else await window['fs'].writeFileSync(configFilePath, configText);
           } catch (err) {
             this.uploadInProgress = false; // 重置上传状态
             this._builderService.isUploading = false;
@@ -964,13 +998,18 @@ export class _UploaderService {
           'node',
           [uploadScriptPath, configFilePath],
           { shellProfile: false, cwd: currentProjectPath, projectPath, projectSessionId: dependencySession.projectSessionId,
-            ...(verifyLocalCoderBuild && !cloud ? { buildWorkspace: currentProjectPath } : {}) },
+            ...(sharedBuildWorkspace || (verifyLocalCoderBuild && !cloud)
+              ? { buildWorkspace: sharedBuildWorkspace ?? currentProjectPath } : {}) },
           false,
         )).subscribe({
           next: async (output: CmdOutput) => {
             this.streamId = output.streamId;
 
             if (output.type === 'close') {
+              if (sharedBuildWorkspace) {
+                try { window['fs'].unlinkSync(configFilePath); }
+                catch { /* The request stays inside its original execution if cleanup is denied. */ }
+              }
               const trailingLine = bufferData.trim();
 
               if (trailingLine) {
@@ -1655,7 +1694,7 @@ export class _UploaderService {
     return { flags, cleanParam };
   }
 
-  private async uploadByNetworkOta(buildPath: string, portInfo: any, boardName = ''): Promise<ActionState> {
+  private async uploadByNetworkOta(buildPath: string, portInfo: any, boardName = '', sharedExecution?: SharedBuildExecution): Promise<ActionState> {
     let target: NetworkOtaUploadTarget;
 
     try {
@@ -1702,6 +1741,7 @@ export class _UploaderService {
     const cloudUploadId = this.cloudUploadInProgress ? this.activeCloudUploadId : null;
     const { projectPath, projectSessionId } = this.projectService.getProjectDependencySession(currentProjectPath);
     let uploadCmd: string;
+    let sharedRequestPath: string | undefined;
 
     if (!cloudUploadId) {
       const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
@@ -1721,12 +1761,20 @@ export class _UploaderService {
         uploadPath: target.uploadPath,
         ssl: !!target.ssl,
         timeoutMs: target.timeoutMs || 60000,
+        ...(sharedExecution ? { buildExecution: sharedExecution } : {}),
       };
 
-      const configFilePath = window['path'].join(tempPath, 'network-ota-upload-config.json');
+      const configFilePath = window['path'].join(tempPath, sharedExecution
+        ? `network-ota-upload-${crypto.randomUUID()}.json` : 'network-ota-upload-config.json');
 
       try {
-        await window['fs'].writeFileSync(configFilePath, JSON.stringify(uploadConfig, null, 2));
+        const config = JSON.stringify(uploadConfig, null, 2);
+        if (sharedExecution) {
+          window['fs'].writeFileSync(configFilePath, config, { flag: 'wx', mode: 0o600 });
+          sharedRequestPath = configFilePath;
+        } else {
+          await window['fs'].writeFileSync(configFilePath, config);
+        }
       } catch (err) {
         this.uploadInProgress = false;
         this._builderService.isUploading = false;
@@ -1979,6 +2027,10 @@ export class _UploaderService {
         this.workflowService.finishUpload(false, error.message);
         reject({ state: 'error', text: error.message });
       }
+    }).finally(() => {
+      if (sharedRequestPath) {
+        try { window['fs'].unlinkSync(sharedRequestPath); } catch { /* The build may have cleared .temp. */ }
+      }
     });
   }
 
@@ -2006,7 +2058,7 @@ export class _UploaderService {
     }
   }
 
-  private async uploadByBle(buildPath: string, portInfo: any, boardName = ''): Promise<ActionState> {
+  private async uploadByBle(buildPath: string, portInfo: any, boardName = '', sharedExecution?: SharedBuildExecution): Promise<ActionState> {
     const firmwarePath = this.resolveOtaFirmwareFile(buildPath, 'ble');
 
     if (!firmwarePath) {
@@ -2024,7 +2076,9 @@ export class _UploaderService {
       throw { state: 'error', text: message };
     }
 
-    const firmware = this.uploaderBleService.readFirmwareFile(firmwarePath);
+    const firmware = sharedExecution
+      ? window['builder'].readSharedBuildFirmware(sharedExecution, firmwarePath)
+      : this.uploaderBleService.readFirmwareFile(firmwarePath);
     const firmwareName = window['path'].basename(firmwarePath);
     let lastProgress = -1;
     let lastLoggedProgress = -1;

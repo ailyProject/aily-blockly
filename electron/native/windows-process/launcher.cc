@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstdio>
+#include <cstdint>
 
 static std::wstring quote(const std::wstring& value){
   std::wstring out=L"\"";size_t slashes=0;
@@ -31,8 +32,112 @@ static int watch(int argc,wchar_t** argv){
   }else if(GetLastError()==ERROR_INVALID_PARAMETER)removeDescriptor(argv[4],argv[5]);
   return 0;
 }
+static void closeStandardCopies(const STARTUPINFOW& startup) {
+  // Only the target retains the duplicated CRT/Node IPC descriptors.
+  if (startup.cbReserved2 >= sizeof(int)) {
+    const int descriptors = *reinterpret_cast<int*>(startup.lpReserved2);
+    for (int fd = 0; fd < descriptors; fd++) _close(fd);
+  } else for (int fd = 0; fd < 3; fd++) _close(fd);
+}
+static bool writeBuildTag(const std::wstring& filename, const std::wstring& jobName) {
+  const auto file = CreateFileW(filename.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+    CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  const std::wstring prefix = L"Global\\AilyBuild-";
+  if (jobName.compare(0, prefix.size(), prefix) || jobName.size() != prefix.size()+36
+    || jobName.find_first_not_of(L"0123456789abcdef-", prefix.size()) != std::wstring::npos) {
+    CloseHandle(file);
+    return false;
+  }
+  std::string tag;
+  for (const auto character : jobName) tag += static_cast<char>(character);
+  DWORD written = 0;
+  const bool ok = WriteFile(file, tag.data(), static_cast<DWORD>(tag.size()), &written, nullptr)
+    && written == tag.size() && FlushFileBuffers(file);
+  CloseHandle(file);
+  return ok;
+}
+static bool pathAbsent(const std::wstring& filename) {
+  if (GetFileAttributesW(filename.c_str()) != INVALID_FILE_ATTRIBUTES) return false;
+  const auto reason = GetLastError();
+  return reason == ERROR_FILE_NOT_FOUND || reason == ERROR_PATH_NOT_FOUND;
+}
+static bool startBuildTarget(HANDLE job, int argc, wchar_t** argv, PROCESS_INFORMATION& process) {
+  const unsigned flags = wcstoul(argv[2], nullptr, 10);
+  const bool verbatim = (flags & 1) != 0;
+  std::wstring file = argv[3], command = quote(argv[4]);
+  for (int n = 5; n < argc; n++) command += L" " + (verbatim ? std::wstring(argv[n]) : quote(argv[n]));
+  wchar_t found[32768];
+  if (SearchPathW(nullptr, file.c_str(), L".exe", 32768, found, nullptr)) file = found;
+
+  STARTUPINFOEXW startup = {};
+  GetStartupInfoW(&startup.StartupInfo);
+  startup.StartupInfo.cb = sizeof(startup);
+  SIZE_T bytes = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+  if (!bytes) return false;
+  std::vector<unsigned char> storage(bytes);
+  startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+  if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &bytes)) return false;
+  // The supervisor remains outside this Job. The target must belong to it
+  // from creation, even if the supervisor exits before its next instruction.
+  const bool started = UpdateProcThreadAttribute(startup.lpAttributeList, 0,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, &job, sizeof(job), nullptr, nullptr)
+    && CreateProcessW(file.c_str(), command.data(), nullptr, nullptr, TRUE,
+      EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | ((flags & 2) ? CREATE_NO_WINDOW : 0),
+      nullptr, nullptr, &startup.StartupInfo, &process);
+  DeleteProcThreadAttributeList(startup.lpAttributeList);
+  if (started) closeStandardCopies(startup.StartupInfo);
+  return started;
+}
+static int monitorBuild(int argc, wchar_t** argv) {
+  if (argc < 9) return 124;
+  const DWORD pid = wcstoul(argv[2], nullptr, 10);
+  const auto expected = _wcstoui64(argv[3], nullptr, 10);
+  const std::wstring receipt = argv[4], jobName = argv[5], stop = receipt + L".stop";
+  HANDLE parent = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!parent) return error("OpenBuildHost");
+  FILETIME c, e, k, u;
+  if (!GetProcessTimes(parent, &c, &e, &k, &u)
+    || ((static_cast<uint64_t>(c.dwHighDateTime) << 32) | c.dwLowDateTime) != expected) {
+    CloseHandle(parent);
+    return 125;
+  }
+  const auto job = OpenJobObjectW(JOB_OBJECT_ASSIGN_PROCESS | JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE, FALSE, jobName.c_str());
+  if (!job) { CloseHandle(parent); return error("OpenBuildJob"); }
+  const auto shouldStop = [&] { return WaitForSingleObject(parent, 0) != WAIT_TIMEOUT || !pathAbsent(stop); };
+  PROCESS_INFORMATION process = {};
+  DWORD exitCode = 125, active = 0;
+  SetConsoleCtrlHandler(ignoreInterrupt, TRUE);
+  if (!shouldStop() && writeBuildTag(receipt + L".admitted", jobName)
+    && startBuildTarget(job, argc - 4, argv + 4, process)) {
+    BOOL member = FALSE;
+    if (!IsProcessInJob(process.hProcess, job, &member) || !member || shouldStop()
+      || ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+      TerminateProcess(process.hProcess, 125);
+    }
+    CloseHandle(process.hThread);
+  }
+  bool terminated = false;
+  while (count(job, active) && active) {
+    if (!terminated && shouldStop()) terminated = TerminateJobObject(job, 1) != FALSE;
+    Sleep(5);
+  }
+  // Zero members is meaningful only after this gate can no longer launch.
+  if (!count(job, active) || active || !writeBuildTag(receipt, jobName)) {
+    CloseHandle(job);
+    CloseHandle(parent);
+    if (process.hProcess) CloseHandle(process.hProcess);
+    return 125;
+  }
+  if (process.hProcess) { GetExitCodeProcess(process.hProcess, &exitCode); CloseHandle(process.hProcess); }
+  CloseHandle(job);
+  CloseHandle(parent);
+  return static_cast<int>(exitCode);
+}
 int wmain(int argc,wchar_t** argv){
   if(argc>1 && std::wstring(argv[1])==L"--watch")return watch(argc,argv);
+  if(argc>1 && std::wstring(argv[1])==L"--monitor-build")return monitorBuild(argc,argv);
   if(argc<5)return 124;
   // This gate runs before the target executable. The main process owns the only
   // lasting Job handle. Closing it (including a crash) kills every descendant.
@@ -55,8 +160,7 @@ int wmain(int argc,wchar_t** argv){
   CloseHandle(process.hThread);CloseHandle(job);
   // The target owns its duplicated descriptors. Keeping an IPC or pipe copy in
   // this gate would prevent disconnect/EOF from reaching the actual parent.
-  if(startup.cbReserved2>=sizeof(int)){int descriptors=*(int*)startup.lpReserved2;for(int fd=0;fd<descriptors;fd++)_close(fd);}
-  else for(int fd=0;fd<3;fd++)_close(fd);
+  closeStandardCopies(startup);
   WaitForSingleObject(process.hProcess,INFINITE);DWORD exitCode=125;GetExitCodeProcess(process.hProcess,&exitCode);CloseHandle(process.hProcess);
   // A root may finish before a detached child. Keep the owning ChildProcess
   // registered until the entire task is empty, without adopting arbitrary PIDs.

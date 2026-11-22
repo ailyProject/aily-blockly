@@ -12,6 +12,8 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const location = filename => hash(process.platform === 'win32' ? filename.toLowerCase() : filename);
 const state = stat => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+const generatedLimit = 128 * 1024 * 1024;
+const isGeneratedBuildHeader = name => HEADER.test(name);
 
 function sourceManifest(bytes) {
     const manifest = JSON.parse(bytes.toString('utf8'));
@@ -43,6 +45,36 @@ function workspaceRecord(value) {
         runtimeRevision: value.runtimeRevision, pageId: value.pageId };
 }
 
+/** A shared build stages captured declarations only in its temporary sketch. */
+function sharedGeneratedArtifacts(config) {
+    if (config.execution?.layout !== 'shared' || config.generatedArtifacts === undefined) return undefined;
+    const artifacts = config.generatedArtifacts ?? [];
+    if (!Array.isArray(artifacts) || artifacts.length > 256) fail('Invalid captured generated artifacts.');
+    const seen = new Set();
+    let size = 0;
+    return artifacts.map(artifact => {
+        const { fileName, content } = artifact ?? {};
+        if (typeof fileName !== 'string' || !HEADER.test(fileName) || typeof content !== 'string') fail('Invalid captured generated artifact.');
+        const key = process.platform === 'win32' ? fileName.toLowerCase() : fileName;
+        if (seen.has(key) || (size += Buffer.byteLength(content)) > generatedLimit) fail('Generated artifact exceeds its capture boundary.');
+        seen.add(key);
+        return { fileName, content };
+    }).sort((a, b) => a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0);
+}
+
+function confirmSharedGeneratedArtifacts(config, root) {
+    const artifacts = sharedGeneratedArtifacts(config);
+    if (!artifacts) return;
+    const names = fs.readdirSync(root).filter(name => HEADER.test(name)).sort();
+    if (names.length !== artifacts.length || artifacts.some(({ fileName }, index) => fileName !== names[index])) {
+        fail('Materialized generated declaration names changed.');
+    }
+    for (const { fileName, content } of artifacts) {
+        const expected = Buffer.from(content);
+        if (!read(root, fileName, expected.length).equals(expected)) fail('Materialized generated declaration bytes changed.');
+    }
+}
+
 /** A bounded capture of request/configuration/generated files, not a complete
  * source tree or authenticated memory revision. No writes, locks or IPC here.
  */
@@ -56,6 +88,7 @@ function record(config, workspace) {
     const mode = project.isAilyCodeProjectRoot(root) ? 'coder' : 'blockly';
     const board = fs.realpathSync(path.join(root, 'node_modules', config.boardModule));
     const headers = [];
+    const artifacts = sharedGeneratedArtifacts(config);
     let generatedBytes = 0;
     if (mode === 'coder') {
         if (workspace) fail('Coder cannot claim a Blockly workspace revision.');
@@ -63,11 +96,15 @@ function record(config, workspace) {
         if (entry.startsWith('../') || path.isAbsolute(entry) || read(root, entry, 128 * 1024 * 1024).toString('utf8') !== config.code) {
             fail('Coder entry differs from the captured request; save and build again.');
         }
+    } else if (artifacts) {
+        for (const { fileName, content } of artifacts) {
+            headers.push({ name: fileName, sizeBytes: Buffer.byteLength(content), sha256: hash(content) });
+        }
     } else if (fs.existsSync(path.join(root, 'src'))) {
         if (fs.lstatSync(path.join(root, 'src')).isSymbolicLink()) fail('Generated source directory is linked.');
         for (const name of fs.readdirSync(path.join(root, 'src')).filter(name => HEADER.test(name)).sort()) {
             if (headers.length >= 256) fail('Generated header count exceeds budget.');
-            const bytes = read(root, `src/${name}`, 128 * 1024 * 1024 - generatedBytes);
+            const bytes = read(root, `src/${name}`, generatedLimit - generatedBytes);
             generatedBytes += bytes.length;
             headers.push({ name, sizeBytes: bytes.length, sha256: hash(bytes) });
         }
@@ -106,4 +143,5 @@ function confirmBuildSource(config) {
     return current;
 }
 
-module.exports = { captureBuildSource, confirmBuildSource, sourceManifest };
+module.exports = { captureBuildSource, confirmBuildSource, sourceManifest, isGeneratedBuildHeader,
+    sharedGeneratedArtifacts, confirmSharedGeneratedArtifacts };

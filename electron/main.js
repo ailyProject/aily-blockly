@@ -3110,7 +3110,11 @@ function createWindow() {
       previewEnabled: process.env.AILY_SIMDEBUG_PREVIEW === '1' });
     simulatorDebugPreviewRegistered = true;
   }
-  registerCmdHandlers(mainWindow, { buildDeliveryAuthority });
+  registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearSharedBuild: (event, projectPath) =>
+    getBuildProduct() === 'blockly' && !!getCurrentRendererOwner(event.sender) && event.senderFrame === event.sender.mainFrame
+    && ownsProjectNavigation(projectPath)
+    && projectLock.normalizeProjectPathLoose(projectPath) === projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow()),
+  });
   registerAilyServicesStreamHandlers(mainWindow);
   registerWebviewBridgeHandlers();
   if (!webviewDebuggerSurfaceHandlersRegistered) {
