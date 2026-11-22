@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { randomUUID } = require('node:crypto');
 const { test, after } = require('node:test');
 const { openProjectSyncStorage, openProjectSyncStorageBridge } = require('../../electron/project-sync-storage');
 const { replaceProjectText } = require('../../electron/project-file-writer');
@@ -38,6 +39,47 @@ after(() => { for (const root of roots) {
   assert.ok(path.basename(root).startsWith('aily-sync-storage-'));
   fs.rmSync(root, { recursive: true, force: true });
 } });
+
+test('prepared migration permits only the exact immutable original ABS refusal', async () => {
+  const root = project(), store = await openProjectSyncStorage(root, guard);
+  const history = path.join(root, '.workspace-history');
+  const original = randomUUID(), indexed = randomUUID(), other = randomUUID();
+  const writerKey = id => `recoveries/application-writer-${hash(id).slice(7)}.json`;
+  const indexKey = id => `recoveries/request-${hash(id).slice(7)}.json`;
+  const receiptKey = id => `recoveries/admission-${hash('abs-apply\0' + id).slice(7)}.json`;
+  const context = { attachment: store.attachment, executor: store.executor };
+  const receipt = (id, changes = {}) => JSON.stringify({ version: 1, kind: 'not-started', operationId: randomUUID(),
+    project: store.attachment.root, request: { operation: 'abs_apply', requestId: id }, ...context,
+    code: 'ABS_WORKSPACE_MIGRATION_PENDING', message: 'Prepared workspace migration.', ...changes });
+  await store.withLock(async locked => {
+    for (const requestId of [original, indexed, other]) await locked.replace(writerKey(requestId), null, JSON.stringify({
+      version: 1, kind: 'validated-writer', project: store.attachment.root, requestId,
+      candidateHash: hash('original draft'), ...context,
+    }));
+    await locked.replace(indexKey(indexed), null, '{}');
+    await locked.replace('project.abi', null, 'accepted ABI');
+  });
+  fs.mkdirSync(history);
+  const migration = '{"executionMigration":{"phase":"prepared"}}';
+  fs.writeFileSync(path.join(history, 'workspace.json'), migration);
+  const body = receipt(original);
+  await store.withLock(async locked => {
+    const denied = (key, content) => assert.rejects(locked.replace(key, null, content), { code: 'ABS_WORKSPACE_MIGRATION_PENDING' });
+    await denied('project.abs', 'unauthorized author write');
+    await denied('operation.json', '{}');
+    await denied(receiptKey(indexed), receipt(indexed));
+    await denied(receiptKey(other), body);
+    await denied(receiptKey(other), receipt(other, { executor: { ...store.executor, instanceId: randomUUID() } }));
+    const missingWriter = randomUUID();
+    await denied(receiptKey(missingWriter), receipt(missingWriter));
+    assert.equal(await locked.replace(receiptKey(original), null, body), true);
+    assert.equal(await locked.replace(receiptKey(original), null, receipt(original)), false);
+  });
+  assert.equal(await store.read(receiptKey(original)), body);
+  assert.equal(await store.read(receiptKey(other)), null);
+  assert.equal(await store.read('project.abi'), 'accepted ABI');
+  assert.equal(await store.read('history-workspace.json'), migration);
+});
 
 test('invalid UTF-8 is attributed to the specific private navigation journal', async () => {
   const root = project(), invalid = Buffer.from([0x7b, 0xff, 0xfd]);

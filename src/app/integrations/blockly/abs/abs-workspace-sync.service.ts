@@ -1597,10 +1597,13 @@ export class AbsWorkspaceSyncService {
         let currentWorkspace = composeBlocklyPage(compact, candidatePageId);
         let historyContracts = rollback.contracts;
         // An inline caller can coexist with a separately edited public draft.
-        // Resolve its public syntax against the committed generation, never by
-        // adopting a public state section as authority.
-        const ownMaterializedRevision = fixed && expected.abs !== null && fixed.sourceHashes.has(await hashAbsText(expected.abs));
-        if (committed && expected.abs !== null && expected.abs !== committed.abs && expected.abs !== source && !ownMaterializedRevision) {
+        // Resolve a distinct public draft against the committed generation. An
+        // exact input already accepted by that generation is part of Working.
+        const observedAuthorHash = expected.abs !== null && expected.abs !== committed?.abs && expected.abs !== source
+          ? await hashAbsText(expected.abs) : null;
+        const acceptedAuthor = published?.workspaceMode === 'project-v1' && published.authorSource?.disposition === 'accepted'
+          && committed?.map.scope.projectKey === context.scope.projectKey && published.authorSource.hash === observedAuthorHash;
+        if (committed && expected.abs !== null && observedAuthorHash && !acceptedAuthor && !fixed?.sourceHashes.has(observedAuthorHash)) {
           const draftBase = splitAbsState(expected.abs).state === splitAbsState(baseline.abs).state ? baseline : committed;
           if (draftBase.map.scope.pageId !== candidatePageId) throw new AbsSyncError('ABS_DOCUMENT_MERGE_CONFLICT',
             'A retained public draft belongs to another page; both immutable sources are preserved.', undefined, [], { reason: 'public-draft-page-identity', field: '/pages' });
@@ -1734,7 +1737,8 @@ export class AbsWorkspaceSyncService {
     return { ...prepared, expected, before: current, rollback, materialized, fullDocument };
   }
 
-  applyGeneration(source: string, generation: string, options: AbsWorkspaceLoadOptions = {}, validation?: AbsGenerationValidation): Promise<AbsWorkspaceSyncOutcome> {
+  applyGeneration(source: string, generation: string, options: AbsWorkspaceLoadOptions = {}, validation?: AbsGenerationValidation,
+    markWriteAttempt?: () => void): Promise<AbsWorkspaceSyncOutcome> {
     options = { ...options };
     if (validation) validation = JSON.parse(absJson(validation));
     return this.run(async (context, lease, store) => {
@@ -1758,7 +1762,7 @@ export class AbsWorkspaceSyncService {
       const journal = new AbsOperationJournal(await openAbsHostStorage(context.path, context.assertCurrent), context.path);
       const operationId = await journal.begin({ kind: 'abs-apply', document: completeBefore, disk: expected,
         candidate: { source, generation, hash: await hashAbsText(source) },
-        ...(validation ? { application: { requestId: validation.requestId, validation } } : {}) }, guardOperation);
+        ...(validation ? { application: { requestId: validation.requestId, validation } } : {}) }, guardOperation, markWriteAttempt);
       const application = new AbsApplicationJournal(await openAbsHostStorage(context.path, context.assertCurrent), context.path);
       let mutated = false, commitStarted = false;
       let publication: AbsPublishResult | undefined;

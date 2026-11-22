@@ -1,5 +1,5 @@
 import { BehaviorSubject } from 'rxjs';
-import { ProjectService, type ProjectSaveRequest } from '@domain/project/public-api';
+import { ProjectService, projectDataRuntime, type ProjectSaveRequest } from '@domain/project/public-api';
 import { SerialOperationQueue } from '@shared/public-api';
 import { BlocklyLiveOperationBridgeService } from '../../../services/integrations/automation/blockly-live-operation-bridge.service';
 import { AbsApplicationJournal } from './abs-application-journal';
@@ -12,6 +12,7 @@ import { blockStatePublicationIdentity, nativeSaveIndexKey } from './abs-native-
 import { AbsOperationJournal } from './abs-operation-journal';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
+import { BlocklyWorkspaceEditGate } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 
 describe('original project admission settlement', () => {
   const project = '/admission-test';
@@ -73,6 +74,71 @@ describe('original project admission settlement', () => {
     base: { generation: 'base', scope: { projectKey: project, pageId: 'page' }, abiHash: hash, absHash: hash, mapHash: hash },
     candidate: { hash, bytes: 9 }, workingCandidate: { version: 1, id: requestId, revisionHash: '2'.repeat(64) }, workspaceRevision: 1,
     libraryRuntimeFingerprint: '3'.repeat(64), validation: { scope: 'prepared-generation', ok: true } } });
+
+  function applyThroughCoordinator(gate: BlocklyWorkspaceEditGate, preparation: jasmine.Spy, candidateHash = hash) {
+    const host = bridge(), params = applyParams();
+    params.validation.candidate.hash = candidateHash;
+    Object.assign(host.absGenerationTools.sync, {
+      context: () => ({ path: project, workspace: { rendered: false }, scope: { projectKey: project, pageId: 'page' }, assertCurrent: guard }),
+      editor: { runProjectOperation: operation => operation(), acquireWorkspaceEditLease: () => gate.acquire() },
+      prepareApplication: preparation, atRevision: () => guard,
+    });
+    Object.assign(host, {
+      executeAdmittedOperation: (_payload, _save, markWriter) => host.executeAbsApply(params, markWriter),
+      executeAbsApply: BlocklyLiveOperationBridgeService.prototype['executeAbsApply'],
+      ngZone: { runOutsideAngular: operation => operation() }, emitLiveOperationProgress: guard,
+    });
+    host.projectService.getBlocklyLibraryRuntimeFingerprint = async () => params.validation.libraryRuntimeFingerprint;
+    return () => host.execute({ operation: 'abs_apply', path: project, params });
+  }
+
+  for (const refusal of ['workspace-busy', 'migration-prepared'] as const) {
+    it(`retains a pre-journal ABS application refusal (${refusal}) after the blocker ends`, async () => {
+      const gate = new BlocklyWorkspaceEditGate();
+      const previous = refusal === 'workspace-busy' ? gate.acquire() : undefined;
+      const preparation = jasmine.createSpy('application preparation');
+      const apply = applyThroughCoordinator(gate, preparation);
+      await new OriginalRequestAdmissions(port, project).reserveApplication(requestId, hash, guard);
+      if (refusal === 'migration-prepared') files.set('history-workspace.json', '{"executionMigration":{"phase":"prepared"}}');
+      const reply = await apply();
+      const expectedCode = refusal === 'workspace-busy' ? 'ABS_WORKSPACE_BUSY' : 'ABS_WORKSPACE_MIGRATION_PENDING';
+      expect(reply).toEqual(jasmine.objectContaining({ code: expectedCode, publication: { status: 'NOT_COMMITTED' },
+        admission: { requestId, status: 'NOT_STARTED' } }));
+      expect(preparation).not.toHaveBeenCalled();
+      expect(await port.read(await applicationRequestKey(requestId))).toBeNull();
+      expect(await port.read('operation.json')).toBeNull();
+      previous?.release(); files.delete('history-workspace.json');
+      const observed = await new AbsApplicationJournal(port, project).observe(requestId, guard, port.executor!.hostPid);
+      expect(observed.result).toEqual(jasmine.objectContaining({ code: expectedCode,
+        applicationObservation: jasmine.objectContaining({ requestId, resultKnown: true, current: false }) }));
+      expect(await apply()).toEqual(jasmine.objectContaining({ code: expectedCode }));
+      expect(preparation).not.toHaveBeenCalled();
+    });
+  }
+
+  it('keeps a lost first ABS journal write acknowledgement uncertain', async () => {
+    spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
+    const candidateHash = await hashAbsText(applyParams().abs);
+    const apply = applyThroughCoordinator(new BlocklyWorkspaceEditGate(), jasmine.createSpy('prepare').and.resolveTo({
+      expected: { abi: null, abs: null, map: null }, before: { document: {} },
+    }), candidateHash);
+    const withLock = port.withLock.bind(port);
+    port = { ...port, withLock: operation => withLock(storage => operation({ ...storage,
+      replace: async (...args) => {
+        const written = await storage.replace(...args);
+        if (written && args[0].startsWith('recoveries/operation-'))
+          throw Object.assign(Error('Lost acknowledgement after the first journal write'), { code: 'ABS_COMMIT_UNCERTAIN' });
+        return written;
+      },
+    })) };
+    const admissions = new OriginalRequestAdmissions(port, project);
+    await admissions.reserveApplication(requestId, candidateHash, guard);
+    expect(await apply()).toEqual(jasmine.objectContaining({ code: 'ABS_COMMIT_UNCERTAIN',
+      application: { status: 'UNKNOWN' }, publication: { status: 'UNKNOWN' } }));
+    expect(await admissions.observe({ operation: 'abs_apply', requestId })).toBeNull();
+    expect(await port.read(await applicationRequestKey(requestId))).toBeNull();
+    expect([...files.keys()].filter(key => key.startsWith('recoveries/operation-')).length).toBe(1);
+  });
 
   const stateRequest = () => ({ version: 2 as const, requestId, action: 'update' as const,
     expectedGeneration: 'prior-generation', changes: [{ blockId: 'existing-block', collapsed: true }] });

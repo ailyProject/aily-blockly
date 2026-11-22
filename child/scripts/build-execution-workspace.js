@@ -410,7 +410,15 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, { requ
     const folder = readOptional(directory, store.parent, id, false);
     if (!folder) return null;
     return executionTransition({ folder }, () => {
-        const filename = path.join(folder, 'execution.json'), record = json(filename);
+        const filename = path.join(folder, 'execution.json');
+        let record;
+        try { record = json(filename); }
+        catch (error) {
+            // Job and workspace release are already verified on this path.
+            // Preserve unreadable history without tying it to the next admission.
+            if (drained && (error.code === 'ENOENT' || error instanceof SyntaxError)) return { status: 'unconfirmed' };
+            throw error;
+        }
         if (record.version !== 1 || record.layout !== SHARED || record.id !== id
             || record.buildRequestId !== buildRequestId || !samePath(record.logicalProjectPath, store.root)
             || (operation !== undefined && record.operation !== operation)) return null;

@@ -448,7 +448,7 @@ export class AbsOperationJournal {
   }
 
   async begin(input: Omit<AbsOperationSnapshot, 'version' | 'id' | 'project' | 'committed' | 'sourceStageVersion'>,
-    assertCurrent: () => void): Promise<string> {
+    assertCurrent: () => void, markWriteAttempt?: () => void): Promise<string> {
     const id = crypto.randomUUID();
     return this.port.withLock(async storage => {
       assertCurrent();
@@ -472,6 +472,7 @@ export class AbsOperationJournal {
         ...(input.kind === 'abs-apply' && input.application ? { sourceStageVersion: 1 as const } : {}) };
       const text = absJson(record), hash = await hashAbsText(text);
       assertCurrent();
+      markWriteAttempt?.();
       if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
       if (requestKey !== undefined && record.application) {
         if (!await storage.replace(requestKey, null, absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,

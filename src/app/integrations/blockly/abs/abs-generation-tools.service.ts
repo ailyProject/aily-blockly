@@ -89,7 +89,7 @@ export class AbsGenerationToolsService {
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,
     activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string,
-    archiveContext?: { project: string; assertCurrent: () => void; prepareRuntime?: () => Promise<void> }) {
+    execution?: { archive?: { assertCurrent: () => void; prepareRuntime?: () => Promise<void> }; markApplyWriter?: () => void }) {
     if (operation === 'abs_recovery' && input['action'] === 'observe_state') return this.observeBlockState(requestedProject, input);
     const rejected = rejectAbsLiveRequest(operation, input);
     if (rejected) return rejected;
@@ -201,9 +201,9 @@ export class AbsGenerationToolsService {
       if (operation === 'abs_validate') {
         assertGenerationCandidate(params);
         if (params['workingCandidate']) params = await this.sync.bindWorkingCandidate(source, params as any);
-        if (archiveContext) {
-          await archiveContext.prepareRuntime?.();
-          archiveContext.assertCurrent();
+        if (execution?.archive) {
+          await execution.archive.prepareRuntime?.();
+          execution.archive.assertCurrent();
         }
         const { syntaxAdvice, ...prepared } = await this.sync.validateGeneration(source, params as any);
         return { ok: true, operation, project: prepared.base.scope.projectKey, syntaxAdvice,
@@ -211,8 +211,8 @@ export class AbsGenerationToolsService {
       }
       if (operation !== 'abs_apply') throw new AbsSyncError('ABS_REQUEST_INVALID', 'Unknown ABS generation operation.');
       const validation = readGenerationApplyValidation(params);
-      applyStarted = true;
-      const result = await this.sync.applyGeneration(source, validation.base.generation, { chunk: params['chunk'] === true, onProgress }, validation);
+      const result = await this.sync.applyGeneration(source, validation.base.generation, { chunk: params['chunk'] === true, onProgress }, validation,
+        () => { execution?.markApplyWriter?.(); applyStarted = true; });
       const ok = result.publication.status === 'COMMITTED' && !result.requiresReload && result.appliedRevision !== undefined && !!result.evidence;
       return { ...result, ok, operation, project: validation.base.scope.projectKey,
         ...(ok ? { receipt: { ...validation, output: result.evidence,

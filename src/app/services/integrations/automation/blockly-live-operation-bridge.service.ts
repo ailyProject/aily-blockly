@@ -1579,12 +1579,12 @@ export class BlocklyLiveOperationBridgeService {
     const assertCurrent = () => { if (!isCurrent())
       throw Object.assign(new Error('The candidate validation project changed.'), { code: 'ABS_CANDIDATE_ARCHIVE_CONTEXT_STALE' }); };
     const result = await this.absGenerationTools.execute('abs_validate', params, source, undefined, undefined, project,
-      { project, assertCurrent, prepareRuntime: async () => {
+      { archive: { assertCurrent, prepareRuntime: async () => {
         await this.projectService.ensureBlocklyLibraryRuntimeReady();
         libraryRuntimeFingerprint = await this.projectService.getBlocklyLibraryRuntimeFingerprint();
         if (!libraryRuntimeFingerprint) throw Object.assign(new Error('The current library runtime is not ready; the candidate was retained.'),
           { code: 'ABS_RUNTIME_NOT_READY' });
-      } });
+      } } });
 
     if (!result.ok) {
       this.retainNativeFailureRuntime(result, libraryRuntimeFingerprint!);
@@ -1634,10 +1634,10 @@ export class BlocklyLiveOperationBridgeService {
       type: 'editor_operation_progress', operationId, operationKind: 'blockly.abs.apply',
       phase, label: 'Apply ABS generation', detail, timestamp: Date.now(),
     });
-    markWriter?.();
     progress('started');
     const result = await this.ngZone.runOutsideAngular(() => this.absGenerationTools.execute('abs_apply', params, source,
-      (blocks, batches) => progress('progress', `已装载 ${blocks} 个块，完成 ${batches} 批`)));
+      (blocks, batches) => progress('progress', `已装载 ${blocks} 个块，完成 ${batches} 批`), undefined, undefined,
+      { markApplyWriter: markWriter }));
     if (!result.ok) this.retainNativeFailureRuntime(result, params['validation'].libraryRuntimeFingerprint);
     progress(result.ok ? 'completed' : 'failed', result.ok ? 'ABS 已完成身份合并、完整读回及同代保存' : (result as any).message);
     return result; // The coordinator already saved ABI and prepared outputs. Never save or generate twice.

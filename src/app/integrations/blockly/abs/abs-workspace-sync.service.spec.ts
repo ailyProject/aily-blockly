@@ -5256,6 +5256,36 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(editor.workspace.getAllBlocks(false).filter(block => block.type === 'text_print').length).toBe(15);
       expect(disk.get('project.abs')).toBe(f.source); expect(gate.busy).toBeFalse();
     });
+    it('imports program-only source after a separately accepted author input without merging it again', async () => {
+      const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
+      disk.set('project.abs', f.source);
+      const original = await service.validateGeneration(f.source, await f.request());
+      const first = await service.applyGeneration(f.source, original.base.generation, {}, original);
+      expect(first.publication.status).toBe('COMMITTED');
+      expect(await store.readAcceptedAuthorInput(first.evidence!.binding.generation)).toBe(f.source);
+      const capture = await service.captureWorkingCandidate();
+      expect(splitAbsState(capture.abs).state).not.toBe(splitAbsState(f.source).state);
+      const portable = splitAbsState(capture.abs).program.replace('verified state origin', 'new portable import');
+      expect(portable).toContain('new portable import');
+      const framed = await retainWorkingCandidate(capture, portable, { source: capture.abs,
+        edits: [{ start: 0, end: capture.abs.length, text: portable }] });
+      const record = JSON.parse(disk.get(`history-objects/${framed.revisionHash}`)!);
+      const replacement = absJson({ ...record, derivation: { kind: 'replace', mapping: 'unresolved' } });
+      const ref = { ...framed, revisionHash: (await hashAbsText(replacement)).slice(7) };
+      disk.set(`history-objects/${ref.revisionHash}`, replacement);
+
+      disk.set('project.abs', f.source.replace('verified state origin', 'another unapplied source'));
+      await expectAsync(service.validateGeneration(portable, await f.request(ref, portable)))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+      expect(disk.get('project.abs')).toContain('another unapplied source');
+
+      disk.set('project.abs', f.source);
+      const validation = await service.validateGeneration(portable, await f.request(ref, portable));
+      const imported = await service.applyGeneration(portable, validation.base.generation, {}, validation);
+      expect(imported.publication.status).toBe('COMMITTED');
+      const print = editor.workspace.getAllBlocks(false).find(block => block.type === 'text_print');
+      expect(print?.getInputTargetBlock('TEXT').getFieldValue('TEXT')).toBe('new portable import');
+    });
     it('S3 source continuation accepts two consecutive authored inputs while each normalized output stays the only Working base', async () => {
       const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
       disk.set('project.abs', f.source);

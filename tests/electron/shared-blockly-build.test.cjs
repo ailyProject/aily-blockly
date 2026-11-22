@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { fork, spawn } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { once } = require('node:events');
 const test = require('node:test');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -50,13 +51,13 @@ if (mode === 'old-host') {
 } else if (mode === 'descendant') {
   writeJson(path.join(project, '.build', 'descendant-ready.json'), { pid: process.pid });
   setInterval(() => fs.appendFileSync(path.join(project, '.build', 'old-writes'), 'old\n'), 15);
-} else if (mode === 'finish-build') {
+} else if (mode === 'finish-build' || mode === 'finish-before-workspace-release') {
   const original = execution.validateSharedBuildLaunch(configPath, project, 'compile');
   const lease = acquireBuildWorkspace(project, 'compile');
   try {
     execution.startBuildExecution(original, lease);
     execution.finishBuildExecution(original, false);
-  } finally { lease.release(); }
+  } finally { if (mode === 'finish-build') lease.release(); }
 } else {
   test('a restarted host retires the exact managed tree before a new request can reuse or clear the real .build', {
     skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 35000,
@@ -170,4 +171,86 @@ if (mode === 'old-host') {
     assert.deepEqual(readJson(path.join(project, 'project.abi')), { saved: 'legacy-unchanged' });
     assert.deepEqual(fs.readFileSync(outcomePath), damaged);
   });
+
+  for (const fault of ['truncated', 'missing', 'wrong-type']) {
+    test(`a drained build with ${fault} execution history cannot settle an unverified result`, {
+      skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 25000,
+    }, async t => {
+      const temp = fs.realpathSync(os.tmpdir());
+      const owned = fs.realpathSync(fs.mkdtempSync(path.join(temp, 'aily-shared-build-')));
+      const appData = path.join(owned, 'app-data'), project = path.join(owned, 'fixture');
+      const priorAppData = process.env.AILY_APPDATA_PATH;
+      fs.mkdirSync(appData);
+      process.env.AILY_APPDATA_PATH = appData;
+      t.after(() => {
+        if (priorAppData === undefined) delete process.env.AILY_APPDATA_PATH;
+        else process.env.AILY_APPDATA_PATH = priorAppData;
+        assert.equal(path.dirname(fs.realpathSync(owned)), temp);
+        assert.match(path.basename(owned), /^aily-shared-build-/);
+        fs.rmSync(owned, { recursive: true, force: true });
+      });
+      const abi = { saved: 'original project' };
+      writeJson(path.join(project, 'package.json'), { type: 'blockly', dependencies: { [boardModule]: '1' } });
+      writeJson(path.join(project, 'node_modules', boardModule, 'package.json'), { name: boardModule });
+      writeJson(path.join(project, 'node_modules', boardModule, 'board.json'), { compilerParam: '-b test:test:test' });
+      writeJson(path.join(project, 'project.abi'), abi);
+      const old = execution.prepareBuildExecution(compileConfig(project, 'old-history'), undefined, 'compile', { shared: true });
+      let receiptPath;
+      const child = await withSharedBuildAdmission(project, { operation: 'compile' }, admission => {
+        const supervisor = createBuildWorkspaceSupervisor(project);
+        const binding = admission.bind(supervisor.environment.AILY_BUILD_WORKSPACE_SUPERVISOR, 'old-history-stream', old.execution);
+        receiptPath = binding.receiptPath;
+        return spawnManagedBuild(process.execPath, [__filename, 'finish-before-workspace-release', project, old.configFilePath], {
+          cwd: project, windowsHide: true, stdio: 'ignore', env: { ...process.env, ...supervisor.environment },
+        }, binding);
+      });
+      assert.equal((await once(child, 'exit'))[0], 0);
+      await until(() => fs.existsSync(receiptPath));
+      const bindingPath = path.join(path.dirname(receiptPath), createHash('sha256').update(project.toLowerCase()).digest('hex') + '.json');
+      assert.equal(fs.readFileSync(receiptPath, 'utf8'), readJson(bindingPath).proof.job);
+      const workspaceOwner = path.join(project, '.build', 'aily-workspace.lock');
+      assert.ok(fs.existsSync(workspaceOwner));
+      const cache = path.join(project, '.build', 'old-cache.bin');
+      fs.writeFileSync(cache, 'old');
+      const folder = path.dirname(old.configFilePath);
+      const outcomePath = path.join(folder, 'outcome.json'), recordPath = path.join(folder, 'execution.json');
+      const outcome = fs.readFileSync(outcomePath), record = fs.readFileSync(recordPath);
+      assert.equal(JSON.parse(outcome).status, 'failed');
+      const truncated = Buffer.from('{"version":');
+      if (fault === 'truncated') fs.writeFileSync(recordPath, truncated);
+      else fs.unlinkSync(recordPath);
+
+      if (fault === 'wrong-type') {
+        fs.mkdirSync(recordPath);
+        await assert.rejects(withSharedBuildAdmission(project, { operation: 'clean' }, () => assert.fail('Unsafe history was accepted')),
+          { code: 'BUILD_EXECUTION_INVALID' });
+        assert.ok(fs.existsSync(bindingPath));
+        assert.ok(fs.lstatSync(recordPath).isDirectory());
+        assert.equal(fs.readFileSync(cache, 'utf8'), 'old');
+        fs.rmdirSync(recordPath);
+        fs.writeFileSync(recordPath, record);
+      }
+
+      const startNext = async () => {
+        const next = execution.prepareBuildExecution(compileConfig(project, 'next-history'), undefined, 'compile', { shared: true });
+        await withSharedBuildAdmission(project, { operation: 'compile' }, () => {
+          assert.equal(execution.validateSharedBuildLaunch(next.configFilePath, project, 'compile').execution.id, next.execution.id);
+        });
+      };
+      if (fault === 'truncated') await startNext();
+      await withSharedBuildAdmission(project, { operation: 'clean' }, () => execution.clearSharedBuildCache(project));
+      if (fault !== 'truncated') await startNext();
+      assert.ok(!fs.existsSync(workspaceOwner));
+      assert.ok(!fs.existsSync(bindingPath));
+      assert.ok(!fs.existsSync(cache));
+      assert.deepEqual(readJson(path.join(project, 'project.abi')), abi);
+      assert.deepEqual(fs.readFileSync(outcomePath), outcome);
+      if (fault === 'wrong-type') assert.equal(execution.inspectBuildExecution(project, 'old-history').status, 'failed');
+      else {
+        assert.equal(execution.inspectBuildExecution(project, 'old-history'), null);
+        if (fault === 'missing') assert.ok(!fs.existsSync(recordPath));
+        else assert.deepEqual(fs.readFileSync(recordPath), truncated);
+      }
+    });
+  }
 }

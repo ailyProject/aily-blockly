@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { storageExecutor, observeStorageExecutor, retireEmptyProjectFileLock, retireProjectFileLock } = require('./project-file-lock-owner');
 const { assertNoPreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
@@ -24,6 +25,26 @@ const historyHash = key => {
 };
 const isDigest = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
 const sameRecord = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+function matchesOriginalApplyRefusal(read, key, bytes, attachment, executor) {
+  if (!bytes || !/^recoveries\/admission-[a-f0-9]{64}\.json$/.test(key)) return false;
+  try {
+    const receipt = JSON.parse(bytes.toString('utf8'));
+    const requestId = receipt?.request?.requestId;
+    if (receipt?.version !== 1 || Object.keys(receipt).length !== 9 || receipt.kind !== 'not-started' || receipt.project !== attachment.root
+      || !/^[a-f0-9-]{36}$/.test(receipt.operationId) || typeof receipt.code !== 'string' || !receipt.code
+      || typeof receipt.message !== 'string' || typeof requestId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(requestId)
+      || !isDeepStrictEqual(receipt.request, { operation: 'abs_apply', requestId })
+      || !isDeepStrictEqual(receipt.attachment, attachment) || !isDeepStrictEqual(receipt.executor, executor)
+      || key !== `recoveries/admission-${hash('abs-apply\0' + requestId).slice(7)}.json`) return false;
+    const suffix = hash(requestId).slice(7);
+    const writer = JSON.parse(read(`recoveries/application-writer-${suffix}.json`));
+    return writer?.version === 1 && writer.kind === 'validated-writer' && writer.requestId === requestId
+      && writer.project === attachment.root && isDigest(writer.candidateHash)
+      && isDeepStrictEqual(writer.attachment, attachment) && isDeepStrictEqual(writer.executor, executor)
+      && read(`recoveries/request-${suffix}.json`) === null;
+  } catch { return false; }
+}
 
 function copiedCommittedSaveMatches(read, expected, pointer, journal, snapshot) {
   const request = snapshot.nativeSave;
@@ -185,8 +206,17 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       };
       const replaceBytes = async (key, expectedHash, bytes, raw = false, verify = () => {}) => {
         check();
-        assertNoPreparedWorkspaceMigration(access);
         if (bytes && bytes.length > MAX_PROJECT_FILE_BYTES) throw fault('PROJECT_FILE_TOO_LARGE', 'Sync file exceeds the 128 MiB publication limit.');
+        const checkMigration = () => {
+          try { assertNoPreparedWorkspaceMigration(access); }
+          catch (error) {
+            // A prepared migration excludes program writers. The current validated
+            // writer may still seal an immutable refusal for its own unused ID.
+            if (error.code !== 'ABS_WORKSPACE_MIGRATION_PENDING' || expectedHash !== null
+              || !matchesOriginalApplyRefusal(readText, key, bytes, access.attachment, executor)) throw error;
+          }
+        };
+        checkMigration();
         verify();
         const before = readBytes(key, raw);
         if (hash(before) !== expectedHash) return false;
@@ -204,7 +234,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
             finally { await handle.close(); }
           }
           // No await from the final renderer guard/physical identity/CAS to rename.
-          check(); locate(key, false, raw); assertNoPreparedWorkspaceMigration(access); verify();
+          check(); locate(key, false, raw); checkMigration(); verify();
           if (hash(readBytes(key, raw)) !== expectedHash) return false;
           attempted = true;
           if (bytes === null) files.unlinkSync(target);
