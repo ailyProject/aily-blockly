@@ -1,5 +1,5 @@
 import { openAbsHostStorage } from './abs/abs-host-storage';
-import { settleAbsProjectTransaction } from './abs/abs-project-restart';
+import { settleAbsProjectOpen } from './abs/abs-project-restart';
 import { observeRuntimePublication } from './abs/abs-runtime-publication-observation';
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs/abs-baseline-store';
 import { AbsOperationJournal } from './abs/abs-operation-journal';
@@ -81,7 +81,7 @@ export async function settleLinkedProjectEnvironment(project: string, assertCurr
     throw new Error('The linked environment no longer identifies the completed source publication.');
   }
   const io = completed ? undefined : await openAbsHostStorage(project, assertCurrent);
-  if (io) await settleAbsProjectTransaction(io, project, assertCurrent);
+  if (io) await settleAbsProjectOpen(io, project, assertCurrent);
   assertCurrent();
   for (const original of pending) await settleEnvironment(host, project, original, assertCurrent, io, !!completed);
 }

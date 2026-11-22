@@ -16,6 +16,7 @@ function supportsBlocklyAbs(compatibility) {
   const abs = compatibility?.blocklyAbs;
   return compatibility?.version === 1 && abs?.generation === 2 && abs.absSchema === 2
     && abs.workingCandidateVersion === 1 && abs.legacyDraftTakeover === 1 && abs.completeWriterLockRecovery === 1
+    && abs.exactLegacyWriterLockRecovery === 1
     && Array.isArray(abs.publicMapSchemas) && [1, 2].every(schema => abs.publicMapSchemas.includes(schema));
 }
 

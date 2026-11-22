@@ -8,7 +8,7 @@ import { readAbsWorkspaceMode, type AbsWorkspaceMode, type AbsAuthorSourceRecord
 import { generationEvidence, type AbsGenerationEvidence } from './abs-generation-protocol';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
 import type { AbsProgramDriftObservation } from './abs-program-drift';
-import type { CopiedProjectLockRecovery, ProjectFileLockObservation, ProjectStorageAttachment, ProjectStorageExecutor,
+import type { CopiedProjectLockRecovery, LegacyProjectFileLockObservation, ProjectFileLockObservation, ProjectStorageAttachment, ProjectStorageExecutor,
   ProjectStorageExecutorObservation } from '@shared/project-sync-storage-bridge';
 export type AbsProjectAttachment = ProjectStorageAttachment;
 export type AbsStorageExecutor = ProjectStorageExecutor;
@@ -30,7 +30,7 @@ export interface AbsSyncStoragePort {
   readonly attachment?: AbsProjectAttachment;
   readonly executor?: AbsStorageExecutor;
   observeExecutor?(original: AbsStorageExecutor): Promise<AbsStorageExecutorObservation>;
-  retireEmptyProjectFileLock?(): Promise<boolean>;
+  retireEmptyProjectFileLock?(observation: LegacyProjectFileLockObservation): Promise<boolean>;
   retireProjectFileLock?(observation: ProjectFileLockObservation): Promise<boolean>;
   retireCopiedLock?(proof: CopiedProjectLockRecovery): Promise<void>;
   read(key: string): Promise<string | null>;

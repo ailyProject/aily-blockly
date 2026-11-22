@@ -4,9 +4,12 @@ export interface ProjectStorageAttachment {
   readonly version: 1; readonly root: string;
   readonly identity: { readonly dev: string; readonly ino: string; readonly birthtimeNs: string };
 }
-export interface ProjectFileLockObservation {
+export interface LegacyProjectFileLockObservation {
   readonly attachment: ProjectStorageAttachment;
-  readonly marker: { readonly token: string; readonly sha256: string; readonly ino: string; readonly birthtimeNs: string };
+  readonly marker: { readonly ino: string; readonly birthtimeNs: string };
+}
+export interface ProjectFileLockObservation extends LegacyProjectFileLockObservation {
+  readonly marker: LegacyProjectFileLockObservation['marker'] & { readonly token: string; readonly sha256: string };
 }
 export interface ProjectStorageExecutor {
   readonly version: 1; readonly hostPid: number | null; readonly storagePid: number;
@@ -36,7 +39,7 @@ export interface ProjectStorageBridge {
   readonly attachment?: ProjectStorageAttachment;
   readonly executor?: ProjectStorageExecutor;
   observeExecutor?(original: ProjectStorageExecutor): Promise<ProjectStorageExecutorObservation>;
-  retireEmptyProjectFileLock?(): Promise<boolean>;
+  retireEmptyProjectFileLock?(observation: LegacyProjectFileLockObservation): Promise<boolean>;
   retireProjectFileLock?(observation: ProjectFileLockObservation): Promise<boolean>;
   retireCopiedLock?(proof: CopiedProjectLockRecovery): Promise<void>;
   read(key: string): Promise<string | null>;
@@ -44,7 +47,7 @@ export interface ProjectStorageBridge {
 }
 export interface NativeProjectStorageBridge extends ProjectStorageBridge {
   observeExecutorResult?(original: ProjectStorageExecutor): Promise<ProjectStorageSettlement<ProjectStorageExecutorObservation>>;
-  retireEmptyProjectFileLockResult?(): Promise<ProjectStorageSettlement<boolean>>;
+  retireEmptyProjectFileLockResult?(observation: LegacyProjectFileLockObservation): Promise<ProjectStorageSettlement<boolean>>;
   retireProjectFileLockResult?(observation: ProjectFileLockObservation): Promise<ProjectStorageSettlement<boolean>>;
   retireCopiedLockResult?(proof: CopiedProjectLockRecovery): Promise<ProjectStorageSettlement<void>>;
   readResult?(key: string): Promise<ProjectStorageSettlement<string | null>>;
@@ -75,8 +78,8 @@ export function projectStorageBridge(storage: NativeProjectStorageBridge, assert
       const observed = storage.observeExecutorResult ? value(await storage.observeExecutorResult(original)) : await storage.observeExecutor!(original);
       assertCurrent(); return observed;
     } } : {}),
-    ...(storage.retireEmptyProjectFileLockResult ? { retireEmptyProjectFileLock: async () => {
-      assertCurrent(); const archived = value(await storage.retireEmptyProjectFileLockResult!()); assertCurrent(); return archived;
+    ...(storage.retireEmptyProjectFileLockResult ? { retireEmptyProjectFileLock: async (observation: LegacyProjectFileLockObservation) => {
+      assertCurrent(); const archived = value(await storage.retireEmptyProjectFileLockResult!(observation)); assertCurrent(); return archived;
     } } : {}),
     ...(storage.retireProjectFileLockResult ? { retireProjectFileLock: async (observation: ProjectFileLockObservation) => {
       assertCurrent(); const retired = value(await storage.retireProjectFileLockResult!(observation)); assertCurrent(); return retired;

@@ -155,15 +155,18 @@ function tryArchiveEmptyMarker(access, directory, marker, stat, assertScope) {
 
 /** Warm-session recovery touches only the exact legacy marker, not any request,
  * generation or publication. A busy native guard is never waited on here. */
-function retireEmptyProjectFileLock(access, guard) {
+function retireEmptyProjectFileLock(access, guard, { attachment, marker: expected } = {}) {
   const { root, files, checkRoot, checkDirectory } = access;
   const directory = path.join(root, '.aily'), marker = path.join(directory, 'project-files.write.lock');
   guard(); checkRoot();
+  if (!access.attachment || !same(attachment, access.attachment) || !expected || Object.keys(expected).length !== 2
+    || !['ino', 'birthtimeNs'].every(key => typeof expected[key] === 'string' && /^\d{1,25}$/.test(expected[key]))) throw changedMarker();
   if (!markerStatAt(files, directory)) return false;
   checkDirectory(directory);
   const stat = markerStatAt(files, marker);
   if (!stat || stat.size !== 0n) return false;
-  if (!plainMarker(stat) || stat.nlink !== 1n) throw changedMarker();
+  if (!plainMarker(stat) || stat.nlink !== 1n
+    || String(stat.ino) !== expected.ino || String(stat.birthtimeNs) !== expected.birthtimeNs) throw changedMarker();
   const guardFile = path.join(directory, 'project-files.guard');
   const native = require(childScriptPath('native-file-lock.js')).tryAcquireFileLock(guardFile);
   if (!native) throw busyMarker();

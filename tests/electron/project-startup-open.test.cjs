@@ -11,6 +11,48 @@ const restored = path.resolve('restored');
 const explicit = path.resolve('explicit');
 const record = { project: restored, reason: 'interrupted' };
 
+test('a rejected target preflight keeps the original view and releases only the provisional target', async () => {
+  const { domain, window } = bridgeFixture(restored);
+  const held = new Set([restored]), release = [], visits = [], preparations = [];
+  let selected = restored;
+  window.projectLock = {
+    tryAcquire: async (target, options) => {
+      held.add(target);
+      if (!options?.provisional) selected = target;
+      return { ok: true };
+    },
+    release: async target => {
+      held.delete(target);
+      release.push(target);
+      if (selected === target) selected = null;
+    },
+  };
+  Object.assign(domain, {
+    electronService: { isElectron: true, exists: () => true },
+    ensureProjectModeAllowed: async () => true,
+    rememberDependencyBackend: session => session,
+    assertProjectDependencySession: () => {},
+    dependencyLifecycle: { isStopping: () => false, beginPreparation: target => ({ target }), finishPreparation: () => {} },
+    application: {
+      hasActiveProjectMutation: () => false,
+      closeConnectionGraphWindows: async () => { visits.push('close'); return true; },
+      settleEnvironmentBeforeOpen: async target => {
+        preparations.push([target, selected]);
+        throw Object.assign(Error('Target native writer is still active'), { code: 'PROJECT_FILE_BUSY' });
+      },
+    },
+    stopProjectCommands: async () => { visits.push('stop'); },
+    discardDepartingBlocklyProject: async () => { visits.push('discard'); return true; },
+  });
+  await assert.rejects(domain.projectOpen(explicit), { code: 'PROJECT_FILE_BUSY' });
+  assert.deepEqual(preparations, [[explicit, restored]]);
+  assert.deepEqual(visits, []);
+  assert.deepEqual(release, [explicit]);
+  assert.deepEqual([...held], [restored]);
+  assert.equal(domain.currentProjectPath, restored);
+  assert.equal(selected, restored);
+});
+
 test('the startup request survives only its exact dispatched renderer and physical route', () => {
   const startup = createProjectStartupOpen();
   const request = startup.stage(record);

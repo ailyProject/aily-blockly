@@ -2487,6 +2487,13 @@ export class ProjectService {
     }
 
     const originalOpen = this.projectOpenTask;
+    const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
+    const prepareBeforeHandoff = abiIsExist && isSwitchingProject && !creation && !recovery;
+    const sourceView = this.projectViewRevision;
+    const assertSourceView = () => {
+      if (prepareBeforeHandoff && (this.currentProjectPath !== previousProjectPath || this.projectViewRevision !== sourceView))
+        throw Object.assign(new Error('The original view changed during target preparation.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    };
     let ownsNewTargetLock = false;
     const releasePreparedTargetLock = async () => {
       if (!ownsNewTargetLock) return;
@@ -2498,10 +2505,11 @@ export class ProjectService {
           && (!startup || this.projectOpenTask.startupRestore !== startup)
           && this.isSameProjectPath(projectPath, this.projectOpenTask.path)) return;
       try { await window['projectLock']?.release(projectPath); }
-      catch (error) { console.warn('project-lock release after create preparation:', error); }
+      catch (error) { console.warn('project-lock release after open preparation:', error); }
     };
     if (this.electronService.isElectron && window['projectLock']) {
-      let r = await window['projectLock'].tryAcquire(projectPath);
+      const provisional = prepareBeforeHandoff ? { provisional: true } : undefined;
+      let r = await window['projectLock'].tryAcquire(projectPath, provisional);
       if (!r.ok && startup) return false;
       if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
       if (!r.ok && options.interactive === false) throw projectViewOpenError(projectPath, r);
@@ -2514,7 +2522,7 @@ export class ProjectService {
           await window['projectLock'].focusProcess(r.holder.pid);
           return false;
         }
-        r = await window['projectLock'].tryAcquire(projectPath, { force: true });
+        r = await window['projectLock'].tryAcquire(projectPath, { ...provisional, force: true });
         if (!r.ok) {
           this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
           return false;
@@ -2523,7 +2531,7 @@ export class ProjectService {
         this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
         return false;
       }
-      if (creation || startup) {
+      if (creation || startup || prepareBeforeHandoff) {
         ownsNewTargetLock = !r.alreadyHeld;
         try { creation?.assertCurrent(); assertStartup(); }
         catch (error) { await releasePreparedTargetLock(); throw error; }
@@ -2536,34 +2544,35 @@ export class ProjectService {
       return session;
     };
     let preparedSession: ProjectDependencySession | undefined;
-    if (creation) {
-      // The target's environment may wait on a native queue. Complete this
-      // cancellable work before touching the previously active project.
+    if (creation || prepareBeforeHandoff) {
       const session = beginPreparation();
-      const check = () => { creation.assertCurrent(); this.assertProjectDependencySession(session); };
+      const check = () => {
+        creation?.assertCurrent();
+        assertSourceView();
+        this.assertProjectDependencySession(session);
+      };
       const abort = () => {
         this.dependencyLifecycle.release(session);
         void releasePreparedTargetLock();
       };
-      creation.signal.addEventListener('abort', abort, { once: true });
+      creation?.signal.addEventListener('abort', abort, { once: true });
       try {
         check();
         await this.application.settleEnvironmentBeforeOpen?.(projectPath, check);
         check();
         preparedSession = session;
-        // Source teardown must keep ownership until it settles; a pending
-        // handoff does not attest that the target canvas was activated.
-        if (previousProjectPath || this.router.url.startsWith('/main/blockly-editor')) creation.beginHandoff();
+        if (creation && (previousProjectPath || this.router.url.startsWith('/main/blockly-editor'))) creation.beginHandoff();
       } catch (error) {
-        this.dependencyLifecycle.release(session);
+        if (creation) this.dependencyLifecycle.release(session);
         await releasePreparedTargetLock();
         throw error;
       } finally {
-        creation.signal.removeEventListener('abort', abort);
+        creation?.signal.removeEventListener('abort', abort);
       }
     }
     if (isSwitchingProject && !(await this.application.closeConnectionGraphWindows())) {
-      if (this.electronService.isElectron && window['projectLock']
+      if (prepareBeforeHandoff) await releasePreparedTargetLock();
+      else if (this.electronService.isElectron && window['projectLock']
         && !this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
         try {
           await window['projectLock'].release(projectPath);
@@ -2590,7 +2599,8 @@ export class ProjectService {
       try {
         await this.stopProjectCommands(previousProjectPath);
       } catch (error) {
-        if (isSwitchingProject) await window['projectLock']?.release(projectPath);
+        if (prepareBeforeHandoff) await releasePreparedTargetLock();
+        else if (isSwitchingProject) await window['projectLock']?.release(projectPath);
         this.message.warning((error as Error).message);
         return false;
       }
@@ -2602,12 +2612,25 @@ export class ProjectService {
         && this.isSameProjectPath(previousProjectPath, projectPath);
       if (creation) await checkCreation();
       if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, isSwitchingProject && !options.retainRecovery))) {
-        if (isSwitchingProject) await window['projectLock']?.release(projectPath);
+        if (prepareBeforeHandoff) await releasePreparedTargetLock();
+        else if (isSwitchingProject) await window['projectLock']?.release(projectPath);
         return false;
       }
     }
     if (activationReason === 'chat-tool-reload' && !this.isSameProjectPath(previousProjectPath, projectPath)) {
       await this.discardLibraryChanges(projectPath, true);
+    }
+
+    if (prepareBeforeHandoff && this.electronService.isElectron && window['projectLock']) {
+      try {
+        assertSourceView();
+        this.assertProjectDependencySession(preparedSession!);
+        const selected = await window['projectLock'].tryAcquire(projectPath);
+        if (!selected.ok) throw projectViewOpenError(projectPath, selected);
+      } catch (error) {
+        await releasePreparedTargetLock();
+        throw error;
+      }
     }
 
     if (this.electronService.isElectron
@@ -2623,7 +2646,6 @@ export class ProjectService {
     }
 
     const session = preparedSession ?? beginPreparation();
-    const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
     let startupViewId: string | undefined;
     const recordNavigation = async () => {
       try {

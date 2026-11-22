@@ -474,6 +474,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.invoke("project-lock-try", {
         projectPath,
         force: options && options.force,
+        provisional: options?.provisional === true,
       }),
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
     checkStartupRestore: (projectPath, ticket) => ipcRenderer.invoke('project-navigation-startup-check', projectPath, ticket),

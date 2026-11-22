@@ -4,6 +4,7 @@ import { AbsBaselineStore, absBaselineKey } from './abs-baseline-store';
 import { createAbsProjection, reconstructAbsProjection, hashAbsText, absJson } from './abs-identity-map';
 import { recoverAbsProjectOperation } from './abs-project-restart';
 import { inspectAbsGeneration } from './abs-generation-inspection';
+import { AbsOperationJournal } from './abs-operation-journal';
 
 describe('complete ABS cache restoration',()=>{
  let files:Map<string,string>,port:any,store:AbsBaselineStore;
@@ -71,6 +72,20 @@ describe('complete ABS cache restoration',()=>{
    const withLock = spyOn(port, 'withLock').and.rejectWith(new Error('a newer writer still holds the native lock'));
    expect(await recoverAbsProjectOperation(port, 'project', () => {})).toBeNull();
    expect(await restoreAbsProjectCaches(port, 'project', () => {})).toBe(base.abi);
+   expect(withLock).not.toHaveBeenCalled();
+   expect([...files]).toEqual(before);
+ });
+ it('cold-loads a completed operation under a newer writer without taking its lock', async () => {
+   files.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
+   const base = await save('one'), guard = () => {};
+   const journal = new AbsOperationJournal(port, 'project');
+   const id = await journal.begin({ kind: 'runtime-rebuild', document: JSON.parse(base.abi), disk: await store.captureDisk() }, guard);
+   await journal.finish(id, guard);
+   files.set('project.abs', base.projection.abs + '\n# pending author draft');
+   const before = [...files];
+   const withLock = spyOn(port, 'withLock').and.rejectWith(new Error('a newer writer holds the native lock'));
+   expect(await recoverAbsProjectOperation(port, 'project', guard)).toBeNull();
+   expect(await restoreAbsProjectCaches(port, 'project', guard)).toBe(base.abi);
    expect(withLock).not.toHaveBeenCalled();
    expect([...files]).toEqual(before);
  });

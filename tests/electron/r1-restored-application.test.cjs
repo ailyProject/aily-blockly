@@ -448,18 +448,32 @@ test('an unmarked validated writer retires after the exact preimage was saved by
   const observer = await openProjectSyncStorage(ctx.project, guard, { timeoutMs: 100 });
   try {
     assert.equal((await observer.observeExecutor(executor)).state, 'active');
-    await assert.rejects(new kernel.AbsOperationJournal(observer, ctx.project)
-      .observeApplicationWriterSettlement(requestId, guard, executor.hostPid), { code: 'PROJECT_FILE_BUSY' });
+    assert.equal(await new kernel.AbsOperationJournal(observer, ctx.project)
+      .observeApplicationWriterSettlement(requestId, guard, executor.hostPid), null);
   } finally { await ctx.stop(); }
   assert.equal(await kernel.recoverAbsProjectOperation(ctx.port, ctx.project, guard), null);
   const saved = await publishSuccessorSave(ctx.project, ctx.port, 'saved-after-unmarked-original');
   const successor = JSON.parse(await ctx.port.read(`recoveries/operation-${saved.ref.operationId}.json`));
   assert.deepEqual(successor.disk, JSON.parse(snapshot).disk);
   assert.equal(successor.committed, JSON.parse(snapshot).committed);
+  const observe = async () => (await new kernel.AbsApplicationJournal(observer, ctx.project).observe(requestId, guard, executor.hostPid)).result;
+  const proofKey = `recoveries/application-retired-${operationId}.json`;
+  await ctx.port.withLock(async storage => {
+    const result = await observe();
+    assert.equal(result.code, 'ABS_APPLY_OBSERVATION_UNKNOWN');
+    assert.equal(result.applicationObservation.resultKnown, false);
+    assert.equal(await storage.read(proofKey), null);
+  });
   const retired = await observeAdvancedWriter(ctx, saved);
   assert.equal(retired.reason, 'legacy-validated-writer');
   assert.equal(retired.legacyWriterHash, await kernel.hashAbsText(writer));
   assert.equal(retired.handoffHash, undefined);
+  await ctx.port.withLock(async storage => {
+    const result = await observe();
+    assert.equal(result.code, 'ABS_APPLY_WRITER_RELEASED');
+    assert.equal(result.applicationObservation.resultKnown, false);
+    assert.equal(result.writerObservation.settlement.recordHash, await kernel.hashAbsText(await storage.read(proofKey)));
+  });
   const result = (await new kernel.AbsApplicationJournal(ctx.port, ctx.project).observe(requestId, guard, executor.hostPid)).result;
   assert.deepEqual(result.applicationObservation, { version: 1, requestId, observationOnly: true, resultKnown: false, current: false });
   assert.equal(await ctx.port.read(indexKey), index);
@@ -511,8 +525,8 @@ test('an unmarked index without a reservation retires only its exited writer and
   const observer = await openProjectSyncStorage(ctx.project, guard, { timeoutMs: 100 });
   try {
     assert.equal((await observer.observeExecutor(executor)).state, 'active');
-    await assert.rejects(new kernel.AbsOperationJournal(observer, ctx.project)
-      .observeApplicationWriterSettlement(requestId, guard, executor.hostPid), { code: 'PROJECT_FILE_BUSY' });
+    assert.equal(await new kernel.AbsOperationJournal(observer, ctx.project)
+      .observeApplicationWriterSettlement(requestId, guard, executor.hostPid), null);
   } finally { await ctx.stop(); }
   const uncertainPort = { ...ctx.port, observeExecutor: async () => ({ version: 1, state: 'unknown', reason: 'process-unavailable' }) };
   assert.equal(await new kernel.AbsOperationJournal(uncertainPort, ctx.project)

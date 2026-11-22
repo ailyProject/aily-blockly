@@ -154,10 +154,9 @@ export class OriginalRequestAdmissions {
       throw admissionFault('The original application belongs to a different validated writer or candidate.');
   }
 
-  /** Check the legacy reservation under the project lock. Missing evidence is
-   * distinct from a conflicting reservation or admission. */
+  /** Read the legacy reservation. Missing evidence is distinct from a conflict. */
   async inspectIndexedApplicationWriter(requestId: string, candidateHash: string, executor: AbsStorageExecutor,
-    storage: AbsSyncStorageAccess): Promise<{ validatedWriterHash: string | null } | null> {
+    storage: Pick<AbsSyncStorageAccess, 'read'>): Promise<{ validatedWriterHash: string | null } | null> {
     const retained = await this.applicationWriter(requestId, storage);
     if (retained && (retained.writer.candidateHash !== candidateHash || absJson(retained.writer.executor) !== absJson(executor))
       || await this.observe({ operation: 'abs_apply', requestId }, storage)) return null;

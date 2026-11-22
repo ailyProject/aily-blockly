@@ -42,7 +42,7 @@ import { forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
 import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
 import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
-import { recoverAbsProjectOperation, settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
+import { recoverAbsProjectOperation, settleAbsProjectOpen } from '../../../integrations/blockly/abs/abs-project-restart';
 import { AbsApplicationJournal } from '../../../integrations/blockly/abs/abs-application-journal';
 import { AbsOperationJournal } from '../../../integrations/blockly/abs/abs-operation-journal';
 import { absJson } from '../../../integrations/blockly/abs/abs-identity-map';
@@ -830,9 +830,9 @@ export class BlocklyLiveOperationBridgeService {
     const { version, action, requestId, attachment, marker } = params;
     const result = { operation: 'abs_recovery', project: path };
     const complete = action === 'retire_project_file_lock';
-    const allowed = complete ? ['version', 'action', 'requestId', 'attachment', 'marker'] : ['version', 'action', 'requestId'];
+    const allowed = ['version', 'action', 'requestId', 'attachment', 'marker'];
     if (version !== 2 || !path || !window['path']?.isAbsolute(path)
-      || Object.keys(params).some(key => !allowed.includes(key)) || complete && (!attachment || !marker)) {
+      || Object.keys(params).some(key => !allowed.includes(key)) || !attachment || !marker) {
       return { ...result, ok: false, code: 'ABS_REQUEST_INVALID' };
     }
     const stale = () => Object.assign(new Error('The project no longer owns this lock recovery.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
@@ -848,7 +848,7 @@ export class BlocklyLiveOperationBridgeService {
       };
       const port = await openAbsHostStorage(scope.project, current);
       if (absJson(port.attachment) !== absJson(originalAdmissionAttachment)
-        || complete && absJson(port.attachment) !== absJson(attachment)) throw stale();
+        || absJson(port.attachment) !== absJson(attachment)) throw stale();
       const retire = complete ? port.retireProjectFileLock : port.retireEmptyProjectFileLock;
       if (!retire) return { ...result, ok: false, code: 'PROJECT_LOCK_RECOVERY_UNSUPPORTED' };
       const retired = await retire({ attachment, marker });
@@ -1121,7 +1121,7 @@ export class BlocklyLiveOperationBridgeService {
         if (this.projectService.isProjectOpening || this.projectService.isProjectTransitionInProgress(currentProject)
           || this.aiOperations.hasBlocking(currentProject)) throw Object.assign(new Error('An active project owner must finish before recovery.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
         const port = await openAbsHostStorage(currentProject, check);
-        await settleAbsProjectTransaction(port, currentProject, check);
+        await settleAbsProjectOpen(port, currentProject, check);
         const operation = await new AbsOperationJournal(port, currentProject).inspect();
         if (operation) {
           const repaired = await recoverAbsBaseline(port, currentProject, check);
@@ -1165,7 +1165,7 @@ export class BlocklyLiveOperationBridgeService {
               };
               check();
               const port = await openAbsHostStorage(source, check);
-              await settleAbsProjectTransaction(port, source, check);
+              await settleAbsProjectOpen(port, source, check);
               const operation = await new AbsOperationJournal(port, source).inspect();
               if (!operation) await recoverAbsProjectOperation(port, source, check);
               if (await port.read('committed.json') !== null || await port.read('project.abs.map.json') !== null) {

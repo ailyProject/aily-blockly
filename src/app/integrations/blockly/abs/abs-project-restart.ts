@@ -147,12 +147,11 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
   }
 }
 
-/** With nothing retained to settle, opening can verify the saved source without
- * competing for a writer. A prepared or retained operation still uses the full
- * under-lock recovery, including copied ownership proof. */
+/** Opening a saved source with no pending transaction does not need its writer. */
 export async function settleAbsProjectOpen(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
   assertCurrent();
-  if (await port.read('prepared.json') !== null || await port.read('operation.json') !== null) {
+  const journal = new AbsOperationJournal(port, project);
+  if (await port.read('prepared.json') !== null || await journal.hasUnsettledOperation()) {
     await settleAbsProjectTransaction(port, project, assertCurrent);
   }
   assertCurrent();

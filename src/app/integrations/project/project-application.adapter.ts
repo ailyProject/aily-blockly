@@ -32,7 +32,7 @@ import { firstValueFrom } from 'rxjs';
 import { PasteInstallDialogComponent } from '../../editors/blockly-editor/components/paste-install-dialog/paste-install-dialog.component';
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { openAbsHostStorage } from '../blockly/abs/abs-host-storage';
-import { settleAbsProjectTransaction } from '../blockly/abs/abs-project-restart';
+import { settleAbsProjectOpen } from '../blockly/abs/abs-project-restart';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 import { observeOpenEnvironment, settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
 import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
@@ -71,7 +71,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       const observed = startupSignal
         ? { ...storage, read: (key: string) => observeOpenEnvironment(() => storage.read(key), startupSignal) }
         : storage;
-      await settleAbsProjectTransaction(observed, storage.attachment?.root ?? project, assertCurrent);
+      await settleAbsProjectOpen(observed, storage.attachment?.root ?? project, assertCurrent);
     }
     await settleLinkedProjectEnvironment(project, assertCurrent, undefined, startupSignal);
   }

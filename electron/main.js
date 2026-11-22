@@ -3758,13 +3758,13 @@ ipcMain.handle('project-commands-stop', async (event, data) => {
 });
 
 ipcMain.handle("project-lock-try", (event, data) => {
-  const { projectPath, force } = data || {};
+  const { projectPath, force, provisional } = data || {};
   if (repairBootstrap) {
     const rejection = checkRepairProjectOpen(repairBootstrap.record, projectPath);
     if (rejection) return rejection;
   }
   const r = projectLock.tryAcquireLock(projectPath, { force: !!force, strict: !!repairBootstrap });
-  if (r.ok) {
+  if (r.ok && provisional !== true) {
     heldProjectLockNormalized = r.normalizedPath;
   }
   return r;
