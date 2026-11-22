@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
-const { renameForAtomicReplace } = require('./atomic-replace');
+const { renameForAtomicReplace, isWindowsSharingError, retryDeferredWindowsFile } = require('./atomic-replace');
 const { tryAcquireFileLock } = require('./native-file-lock');
 const { collectLibraryPackages } = require('./library-packages');
 const { captureBuildSource, isGeneratedBuildHeader } = require('./build-source-capture');
@@ -44,12 +44,12 @@ function json(filename, limit = 1024 * 1024) {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > limit) fail('Invalid execution record.');
     return JSON.parse(fs.readFileSync(filename, 'utf8'));
 }
-function write(filename, value, assertOwned) {
+function write(filename, value, assertOwned, replace = renameForAtomicReplace) {
     const temp = `${filename}.${randomUUID()}.tmp`;
     try {
         const fd = fs.openSync(temp, 'wx', 0o600);
         try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        renameForAtomicReplace(temp, filename, assertOwned);
+        replace(temp, filename, assertOwned);
     } finally { try { fs.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
 }
 function locked(store, action) {
@@ -403,7 +403,7 @@ function removeSharedConfig(folder) {
         if (error.code === 'ENOENT') return true;
         // A Windows reader can keep a retired config open after the matching
         // request has already settled. The file is not a writer lease.
-        if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) return false;
+        if (isWindowsSharingError(error)) return false;
         throw error;
     }
     return true;
@@ -418,8 +418,28 @@ function retirePreviousSharedConfig(store, pointer, except) {
     return true;
 }
 
+function syncStoppedStatus(store, folder, filename, record, outcome) {
+    const updated = { ...record, status: outcome.status };
+    const matches = () => JSON.stringify(readOptional(json, filename)) === JSON.stringify(record)
+        && JSON.stringify(readOutcome({ folder, record })) === JSON.stringify(outcome);
+    const replace = () => write(filename, updated, undefined, fs.renameSync);
+    try { replace(); }
+    catch (error) {
+        // The durable outcome has already settled this drained writer.
+        if (!isWindowsSharingError(error) || error.dest !== filename || !matches()) throw error;
+        retryDeferredWindowsFile(() => {
+            if (!readOptional(directory, store.parent, record.id, false)) return;
+            try { executionTransition({ folder }, () => { if (matches()) replace(); }); }
+            catch (error) {
+                if (error.code === 'BUILD_WORKSPACE_BUSY') return false;
+                throw error;
+            }
+        });
+    }
+}
+
 function settleSharedBuild(store, { id, buildRequestId, operation } = {}, {
-    requirePrepared = false, refusal, allowUnreadableHistory = false, retainedConfigs,
+    requirePrepared = false, refusal, allowUnreadableHistory = false, deferStoppedStatus = false, retainedConfigs,
 } = {}) {
     if (typeof id !== 'string' || !UUID.test(id) || typeof buildRequestId !== 'string' || !REQUEST_ID.test(buildRequestId)) return null;
     const folder = readOptional(directory, store.parent, id, false);
@@ -449,7 +469,10 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, {
         if (!existing && !['prepared', 'running'].includes(record.status)) return null;
         const outcome = existing ?? claimOutcome({ folder, record }, status, refusal);
         if (outcome.status === status) {
-            if (record.status !== status) write(filename, { ...record, status: outcome.status });
+            if (record.status !== status) {
+                if (deferStoppedStatus) syncStoppedStatus(store, folder, filename, record, outcome);
+                else write(filename, { ...record, status: outcome.status });
+            }
             if (!removeSharedConfig(folder)) retainedConfigs?.add(id);
         }
         return outcome;
@@ -457,7 +480,7 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, {
 }
 
 function settleStoppedSharedBuild(projectPath, request) {
-    return settleSharedBuild(storage(projectPath), request, { allowUnreadableHistory: true });
+    return settleSharedBuild(storage(projectPath), request, { allowUnreadableHistory: true, deferStoppedStatus: true });
 }
 
 /** Denial releases only this original, unstarted execution's request file. */

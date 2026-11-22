@@ -2,7 +2,7 @@ import { AbsPrecheckFailure } from './abs-precheck';
 import { AbsComposeFailure } from './abs-compose';
 import { Injectable } from '@angular/core';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
-import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
+import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation, readMergedAuthorSources } from './abs-generation-protocol';
 import { AbsSyncError } from './abs-state';
 import { absJson } from './abs-identity-map';
 import { serializeAbsFailure } from './abs-diagnostics';
@@ -101,7 +101,7 @@ export class AbsGenerationToolsService {
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
         if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false,
-          capture: await this.sync.captureWorkingCandidate() };
+          capture: await this.sync.captureWorkingCandidate(readMergedAuthorSources(params['mergedAuthorSources'])) };
         if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false,
           capture: await this.sync.captureLegacyCandidate(params['legacy']) };
         if (params['originalTargetPid'] !== undefined

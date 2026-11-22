@@ -44,6 +44,12 @@ export interface AbsCommittedProgramSnapshot {
   projection: AbsProjection; abi: string | null; pointerHash: string;
   workspaceMode?: AbsWorkspaceMode; authorSource?: AbsAuthorSourceRecord;
 }
+export interface AbsMergedAuthorObservation {
+  version: 1;
+  mergedFrom: string;
+  /** Current accepted source bytes when the public author file has subsequent edits. */
+  acceptedAbs?: string;
+}
 export interface AbsViewResolutionRecord { token: string; choice: 'keep_view' | 'replace_view'; inputAbiHash: string }
 export interface AbsJournalRecovery {
   action: 'recover' | 'abandon'; generation: string; token: string; scope: AbsIdentityMap['scope'];
@@ -433,6 +439,33 @@ export class AbsBaselineStore {
       ...(loaded.record.workspaceMode ? { workspaceMode: loaded.record.workspaceMode, authorSource: loaded.record.authorSource } : {}) };
   }
 
+  /** Read-only evidence for a named source already merged into the committed lineage. */
+  async observeMergedAuthor(snapshot: AbsCommittedProgramSnapshot, sourceHashes: readonly string[], author: string | null,
+    assertCurrent: () => void = () => {}): Promise<AbsMergedAuthorObservation | null> {
+    if (!sourceHashes.length || author === null || snapshot.abi === null
+      || snapshot.projection.map.scope.projectKey !== this.scope.projectKey
+      || await this.workspaceMode() !== 'project-v1') return null;
+    const head = await this.port.read(COMMITTED);
+    if (head === null || await hashAbsText(head) !== snapshot.pointerHash || await this.port.read(PREPARED) !== null) return null;
+    const map = absMapJson(snapshot.projection.map);
+    const sameDisk = async () => {
+      const disk = await this.captureDisk();
+      return disk.abi === snapshot.abi && disk.abs === author && disk.map === map;
+    };
+    if (!await sameDisk()) return null;
+    const requested = new Set(sourceHashes), accepted = snapshot.projection.abs, dirty = author !== accepted;
+    for await (const { record } of this.committedLineage(head)) {
+      assertCurrent();
+      if (record.projection.map.scope.projectKey !== this.scope.projectKey) return null;
+      const source = record.authorSource;
+      if (!source?.mergedFrom || !requested.has(source.mergedFrom)) continue;
+      if (!await sameDisk() || await this.port.read(PREPARED) !== null || await this.port.read(COMMITTED) !== head) return null;
+      assertCurrent();
+      return { version: 1, mergedFrom: source.mergedFrom, ...(dirty ? { acceptedAbs: accepted } : {}) };
+    }
+    return null;
+  }
+
   private async mergedAuthorHash(input: Pick<AbsGenerationInput, 'mode' | 'authorIntent' | 'mergedAuthor' | 'inputAbs'>,
     expectedHash: string | null): Promise<string | undefined> {
     if (input.mergedAuthor === undefined) return undefined;
@@ -556,25 +589,30 @@ export class AbsBaselineStore {
 
   private async findCommittedGeneration(matches: (record: GenerationRecord) => boolean): Promise<AbsCommittedProgramSnapshot | null> {
     const current = await this.port.read(COMMITTED);
-    let text = current;
-    const seen = new Set<string>();
-    while (text !== null) {
-      const pointer = this.parsePointer(text);
-      if (seen.has(pointer.generation)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Cyclic committed generation lineage.');
-      seen.add(pointer.generation);
-      const loaded = await this.readGeneration(this.port, pointer.generation, true);
-      if (absJson(pointer) !== absJson(loaded.pointer)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical committed generation checksum mismatch.');
-      if (matches(loaded.record)) {
+    for await (const { record, text } of this.committedLineage(current)) {
+      if (matches(record)) {
         if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed during historical observation.');
-        return { projection: loaded.record.projection, pointerHash: await hashAbsText(text), abi: loaded.record.abi };
+        return { projection: record.projection, pointerHash: await hashAbsText(text), abi: record.abi };
       }
-      const previous = loaded.record.previousPointer;
-      if (previous === undefined) break;
-      if (await hashNullable(previous) !== loaded.record.previousCommitted) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical predecessor pointer changed.');
-      text = previous;
     }
     if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed during historical observation.');
     return null;
+  }
+
+  private async *committedLineage(head: string | null) {
+    const seen = new Set<string>();
+    for (let text = head; text !== null;) {
+      const pointer = this.parsePointer(text);
+      if (seen.has(pointer.generation)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Cyclic committed generation lineage.');
+      seen.add(pointer.generation);
+      const { record, pointer: actual } = await this.readGeneration(this.port, pointer.generation, true);
+      if (absJson(pointer) !== absJson(actual)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical committed generation checksum mismatch.');
+      yield { record, text };
+      const previous: string | null | undefined = record.previousPointer;
+      if (previous === undefined) return;
+      if (await hashNullable(previous) !== record.previousCommitted) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical predecessor pointer changed.');
+      text = previous;
+    }
   }
 
   /** Verify a metadata-only successor chain. This is an observation of saved

@@ -10,9 +10,9 @@ const { once } = require('node:events');
 const test = require('node:test');
 const { setTimeout: delay } = require('node:timers/promises');
 const { withSharedBuildAdmission } = require('../../electron/shared-blockly-build');
-const { spawnManagedBuild } = require('../../electron/owned-process');
+const { spawnManagedBuild, stopOwnedProcess } = require('../../electron/owned-process');
 const execution = require('../../child/scripts/build-execution-workspace');
-const { createBuildWorkspaceSupervisor, acquireBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
+const { createBuildWorkspaceSupervisor, acquireBuildWorkspace, releaseManagedBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
 const { holdWindowsFileWithoutDeleteSharing } = require('../fixtures/windows-file-sharing.cjs');
 
 const boardModule = '@aily-project/board-shared-test';
@@ -22,8 +22,8 @@ const compileConfig = (project, requestId) => ({
   currentProjectPath: project, boardModule, buildRequestId: requestId, code: 'void setup() {}\nvoid loop() {}',
 });
 
-async function until(check) {
-  const deadline = Date.now() + 15000;
+async function until(check, timeout = 15000) {
+  const deadline = Date.now() + timeout;
   while (!check()) {
     if (Date.now() > deadline) throw new Error('Managed build fixture did not reach the expected boundary.');
     await delay(20);
@@ -59,6 +59,14 @@ if (mode === 'old-host') {
     execution.startBuildExecution(original, lease);
     if (mode !== 'exit-unsettled') execution.finishBuildExecution(original, false);
   } finally { if (mode === 'finish-build') lease.release(); }
+} else if (mode === 'controlled-completion') {
+  const original = execution.validateSharedBuildLaunch(configPath, project, 'compile');
+  const lease = acquireBuildWorkspace(project, 'compile');
+  execution.startBuildExecution(original, lease);
+  lease.markDelegated();
+  until(() => fs.existsSync(process.argv[5]))
+    .then(() => execution.finishBuildExecution(original, true))
+    .catch(error => { console.error(error); process.exitCode = 1; });
 } else {
   test('a restarted host retires the exact managed tree before a new request can reuse or clear the real .build', {
     skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 35000,
@@ -231,6 +239,87 @@ if (mode === 'old-host') {
       assert.ok(!fs.existsSync(bindingPath));
     } finally { await release(); }
   });
+
+  for (const heldFile of ['execution status', 'drain receipt']) {
+    test(`a verified old build does not block the successor when Windows holds its ${heldFile}`, {
+      skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 25000,
+    }, async t => {
+      const temp = fs.realpathSync(os.tmpdir());
+      const owned = fs.realpathSync(fs.mkdtempSync(path.join(temp, 'aily-shared-build-')));
+      const appData = path.join(owned, 'app-data'), project = path.join(owned, 'fixture');
+      const priorAppData = process.env.AILY_APPDATA_PATH;
+      fs.mkdirSync(appData);
+      process.env.AILY_APPDATA_PATH = appData;
+      t.after(() => {
+        if (priorAppData === undefined) delete process.env.AILY_APPDATA_PATH;
+        else process.env.AILY_APPDATA_PATH = priorAppData;
+        assert.equal(path.dirname(fs.realpathSync(owned)), temp);
+        assert.match(path.basename(owned), /^aily-shared-build-/);
+        fs.rmSync(owned, { recursive: true, force: true });
+      });
+      writeJson(path.join(project, 'package.json'), { type: 'blockly', dependencies: { [boardModule]: '1' } });
+      writeJson(path.join(project, 'node_modules', boardModule, 'package.json'), { name: boardModule });
+      writeJson(path.join(project, 'node_modules', boardModule, 'board.json'), { compilerParam: '-b test:test:test' });
+      writeJson(path.join(project, 'project.abi'), { saved: 'unmodified' });
+      const prepare = id => execution.prepareBuildExecution(compileConfig(project, id), undefined, 'compile', { shared: true });
+      const status = config => execution.inspectBuildExecution(project, config.execution.buildRequestId);
+      const finish = path.join(owned, 'finish-successor');
+      const start = (config, childMode) => withSharedBuildAdmission(project, { operation: 'compile' }, admission => {
+        const supervisor = createBuildWorkspaceSupervisor(project);
+        const binding = admission.bind(supervisor.environment.AILY_BUILD_WORKSPACE_SUPERVISOR, config.execution.buildRequestId, config.execution);
+        const child = spawnManagedBuild(process.execPath, [__filename, childMode, project, config.configFilePath, finish], {
+          cwd: project, windowsHide: true, stdio: 'ignore', env: { ...process.env, ...supervisor.environment },
+        }, binding);
+        return { child, exited: once(child, 'exit'), receiptPath: binding.receiptPath };
+      });
+      const old = prepare('old-request'), original = await start(old, 'exit-unsettled');
+      assert.equal((await original.exited)[0], 0);
+      await until(() => fs.existsSync(original.receiptPath));
+      const bindingPath = path.join(path.dirname(original.receiptPath), createHash('sha256').update(project.toLowerCase()).digest('hex') + '.json');
+      const oldBinding = readJson(bindingPath), workspaceOwner = path.join(project, '.build', 'aily-workspace.lock');
+      assert.equal(fs.readFileSync(original.receiptPath, 'utf8'), oldBinding.proof.job);
+      assert.ok(fs.existsSync(workspaceOwner));
+      const oldFolder = path.dirname(old.configFilePath);
+      const held = heldFile === 'execution status' ? path.join(oldFolder, 'execution.json') : original.receiptPath;
+      const retained = fs.readFileSync(held);
+      let release = await holdWindowsFileWithoutDeleteSharing(held);
+      let successor;
+      try {
+        assert.throws(() => fs.unlinkSync(held), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
+        const next = prepare('next-request');
+        successor = await start(next, 'controlled-completion');
+        await until(() => status(next)?.status === 'running');
+        assert.equal(status(old).status, 'cancelled');
+        assert.equal(status(old).current, false);
+        assert.deepEqual(fs.readFileSync(held), retained);
+        const oldOutcome = fs.readFileSync(path.join(oldFolder, 'outcome.json'));
+        const nextOwner = fs.readFileSync(workspaceOwner), nextBinding = fs.readFileSync(bindingPath);
+        assert.notEqual(readJson(bindingPath).supervisor, oldBinding.supervisor);
+        await assert.rejects(withSharedBuildAdmission(project, { operation: 'preprocess' }, () => assert.fail('Preprocessing preempted the build')),
+          { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+        assert.equal(releaseManagedBuildWorkspace(project, oldBinding.supervisor), false);
+        assert.equal(execution.cancelBuildExecution(old).status, 'cancelled');
+        assert.deepEqual(fs.readFileSync(workspaceOwner), nextOwner);
+        assert.deepEqual(fs.readFileSync(bindingPath), nextBinding);
+        assert.deepEqual(fs.readFileSync(path.join(oldFolder, 'outcome.json')), oldOutcome);
+        assert.equal(status(next).status, 'running');
+        await release();
+        release = undefined;
+        await until(() => heldFile === 'execution status'
+          ? readJson(held).status === 'cancelled' : !fs.existsSync(held), 3500);
+        assert.deepEqual(fs.readFileSync(workspaceOwner), nextOwner);
+        assert.deepEqual(fs.readFileSync(bindingPath), nextBinding);
+        assert.deepEqual(fs.readFileSync(path.join(oldFolder, 'outcome.json')), oldOutcome);
+        assert.equal(status(next).status, 'running');
+        writeJson(finish, true);
+        assert.equal((await successor.exited)[0], 0);
+        assert.equal(status(next).status, 'completed');
+      } finally {
+        await release?.();
+        if (successor) await stopOwnedProcess(successor.child);
+      }
+    });
+  }
 
   for (const fault of ['truncated', 'missing', 'wrong-type']) {
     test(`a drained build with ${fault} execution history cannot settle an unverified result`, {

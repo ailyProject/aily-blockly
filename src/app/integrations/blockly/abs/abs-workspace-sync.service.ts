@@ -37,7 +37,7 @@ import { assertAbsContractsCompatible } from './abs-contract-compatibility';
 import { inspectAbsDraft, canInspectAbsDraft, AbsDraftReadiness } from './abs-draft-readiness';
 import { orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
 import { createAbsProjectSnapshotGuard } from './abs-project-snapshot-guard';
-import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey, type AbsSyncStoragePort, type AbsViewResolutionRecord } from './abs-baseline-store';
+import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey, type AbsCommittedProgramSnapshot, type AbsMergedAuthorObservation, type AbsSyncStoragePort, type AbsViewResolutionRecord } from './abs-baseline-store';
 import { openAbsHostStorage } from './abs-host-storage';
 import { absJson, assertAbsBaselineContext, assertCurrentAbsProjection, createAbsProjection, hashAbsText } from './abs-identity-map';
 import { AbsProjection, AbsProjectionContracts, AbsSyncError, type AbsIdentityMap } from './abs-state';
@@ -1309,7 +1309,7 @@ export class AbsWorkspaceSyncService {
 
   /** Read-only Working capture. It deliberately avoids store(), location repair,
    * save preparation and publication, including when Published is unavailable. */
-  captureWorkingCandidate() {
+  captureWorkingCandidate(mergedAuthorSources: readonly string[] = []) {
     const context = this.context();
     return this.editor.runProjectOperation(async () => {
       context.assertCurrent();
@@ -1324,10 +1324,11 @@ export class AbsWorkspaceSyncService {
         if (!port.attachment) throw new AbsSyncError('ABS_CANDIDATE_ATTACHMENT_STALE', 'Working capture requires the physical project attachment.');
         const captureStore = new AbsBaselineStore(port, context.scope), workspaceMode = await captureStore.workspaceMode();
         let published: AbsGenerationEvidence['binding'] | null = null;
+        let saved: AbsCommittedProgramSnapshot | null = null;
         let mergedFrom: string | undefined;
         let publishedObservation: { status: string; code?: string } = { status: 'none' };
         try {
-          const saved = await captureStore.readCommittedSnapshot();
+          saved = await captureStore.readCommittedSnapshot();
           if (saved) {
             published = (await generationEvidence(saved.projection, saved.abi)).binding;
             if (saved.projection.map.scope.projectKey === context.scope.projectKey) mergedFrom = saved.authorSource?.mergedFrom;
@@ -1341,10 +1342,16 @@ export class AbsWorkspaceSyncService {
         const authorSource = workspaceMode === 'project-v1' ? { version: 1, path: 'project.abs', text: author,
           hash: authorHash, bytes: author === null ? null : new TextEncoder().encode(author).byteLength,
           ...(mergedFrom && mergedFrom !== authorHash && authorHash === published?.absHash ? { mergedFrom } : {}) } : undefined;
+        let authorMerge: AbsMergedAuthorObservation | null = null;
+        if (authorSource && saved && mergedAuthorSources.length) {
+          // A damaged or unavailable old generation cannot invalidate current Working reads.
+          try { authorMerge = await captureStore.observeMergedAuthor(saved, mergedAuthorSources, author, guard); }
+          catch { guard(); }
+        }
         guard();
         return { version: 1, document: absJson(document), abs: projection.abs, map: absMapJson(projection.map), contracts: absJson(projection.contracts),
           scope: { kind: 'pages', pageIds: [context.scope.pageId] }, attachment: port.attachment,
-          ...(authorSource ? { workspaceMode, authorSource, accepted: published } : {}),
+          ...(authorSource ? { workspaceMode, authorSource, accepted: published } : {}), ...(authorMerge ? { authorMerge } : {}),
           published, publishedObservation, working: { revision: before.revision } };
       } finally { lease.release(); }
     });

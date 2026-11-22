@@ -172,6 +172,78 @@ describe('ABS immutable baseline and commit recovery', () => {
     expect((await store.readCommittedSnapshot())?.authorSource?.mergedFrom).toBe(await hashAbsText(draft));
   });
 
+  describe('committed merged author observation', () => {
+    let sourceHash: string, canonical: string, snapshot: NonNullable<Awaited<ReturnType<AbsBaselineStore['readCommittedSnapshot']>>>;
+    beforeEach(async () => {
+      host.files.set('workspace-mode.json', '{"mode":"project-v1","version":1}');
+      store = new AbsBaselineStore(host, scope);
+      const source = input.expected.abs!;
+      sourceHash = await hashAbsText(source);
+      await store.stage({ ...input, inputAbs: '# independent input', authorIntent: 'candidate', mergedAuthor: source });
+      expect((await store.commit('g1', assertCurrent, save)).status).toBe('COMMITTED');
+      const workspace: AbsAbiWorkspace = { blocks: { blocks: [{ type: 'root', id: 'protected', deletable: false,
+        fields: { VALUE: 'subsequent saved edit' } }] } };
+      const projection = await createAbsProjection(workspace, { document: { pages: [workspace], sharedModel: { keep: true } },
+        generation: 'g2', baselineRef: absBaselineKey('g2'), scope, savedAbiHash: await hashAbsText(absJson(workspace)) });
+      await store.stage({ mode: 'import', inputAbs: input.projection.abs, projection, abi: JSON.stringify(workspace, null, 2),
+        expected: await store.captureDisk() });
+      expect((await store.commit('g2', assertCurrent, save)).status).toBe('COMMITTED');
+      canonical = projection.abs;
+      snapshot = (await store.readCommittedSnapshot())!;
+      expect(snapshot.authorSource?.mergedFrom).toBeUndefined();
+    });
+
+    it('finds only the exact merged source after a later ordinary save and never replaces the current author', async () => {
+      const before = [...host.files];
+      const unknown = await hashAbsText('different candidate');
+      expect(await store.observeMergedAuthor(snapshot, [unknown], canonical)).toBeNull();
+      expect(await store.observeMergedAuthor(snapshot, [unknown, sourceHash], canonical)).toEqual({ version: 1, mergedFrom: sourceHash });
+      expect([...host.files]).toEqual(before);
+
+      const laterEdit = canonical.replace('subsequent saved edit', 'subsequent author edit');
+      host.files.set('project.abs', laterEdit);
+      expect(await store.observeMergedAuthor(snapshot, [sourceHash], laterEdit)).toEqual({
+        version: 1, mergedFrom: sourceHash, acceptedAbs: canonical,
+      });
+      expect(await host.read('project.abs')).toBe(laterEdit);
+      expect(await store.observeMergedAuthor(snapshot, [sourceHash], canonical)).toBeNull();
+    });
+
+    it('withholds proof for the wrong scope, unverified current files and a corrupted ancestor', async () => {
+      const foreign = new AbsBaselineStore(host, { ...scope, projectKey: 'copy' });
+      expect(await foreign.observeMergedAuthor(snapshot, [sourceHash], canonical)).toBeNull();
+      const map = (await host.read('project.abs.map.json'))!;
+      host.files.set('project.abs.map.json', '{}');
+      expect(await store.observeMergedAuthor(snapshot, [sourceHash], canonical)).toBeNull();
+      host.files.set('project.abs.map.json', map);
+      host.files.set('prepared.json', '{"not":"a sealed head"}');
+      expect(await store.observeMergedAuthor(snapshot, [sourceHash], canonical)).toBeNull();
+      host.files.delete('prepared.json');
+
+      host.files.set(absBaselineKey('g1'), '{"invalid":"ancestor"}');
+      await expectAsync(store.observeMergedAuthor(snapshot, [sourceHash], canonical))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+    });
+
+    it('withholds proof when the current head or author changes during the read', async () => {
+      const read = host.read.bind(host), head = (await read('committed.json'))!;
+      const earlier = JSON.parse((await read(absBaselineKey('g2')))!).previousPointer;
+      let changeHead = true;
+      spyOn(host, 'read').and.callFake(async key => {
+        if (key === absBaselineKey('g1')) {
+          if (changeHead) host.files.set('committed.json', earlier);
+          else host.files.set('project.abs', '# newer author');
+        }
+        return read(key);
+      });
+      expect(await store.observeMergedAuthor(snapshot, [sourceHash], canonical)).toBeNull();
+      host.files.set('committed.json', head);
+      changeHead = false;
+      expect(await store.observeMergedAuthor(snapshot, [sourceHash], canonical)).toBeNull();
+      expect(await read('project.abs')).toBe('# newer author');
+    });
+  });
+
   it('uses the callback-scoped capability for every locked read/write and the ABI commit', async () => {
     let held = false;
     const scoped: AbsSyncStorageAccess = {

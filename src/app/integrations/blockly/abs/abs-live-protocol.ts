@@ -1,4 +1,4 @@
-import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationProtocolVersion, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
+import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationProtocolVersion, assertGenerationRequest, readGenerationApplyValidation, readMergedAuthorSources } from './abs-generation-protocol';
 import { serializeAbsFailure } from './abs-diagnostics';
 import { AbsSyncError } from './abs-state';
 import { readAbsBlockStateRequest } from './abs-block-state';
@@ -43,6 +43,7 @@ export function rejectAbsLiveRequest(operation: string, input: Record<string, an
       return null;
     }
     assertGenerationRequest(input);
+    if (operation === 'abs_recovery' && input['action'] === 'candidate_capture') readMergedAuthorSources(input['mergedAuthorSources']);
     if (operation === 'abs_recovery' && input['action'] === 'reconcile_program') {
       if (Object.keys(input).some(key => !['version', 'requestId', 'action', 'observation'].includes(key)))
         throw new AbsSyncError('ABS_REQUEST_INVALID', 'Program reconciliation accepts only its exact observation.');
