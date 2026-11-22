@@ -13,6 +13,7 @@ import type {
 } from './models/auth-snapshot';
 import { isDetachedAilyChatRenderer } from './policies/detached-aily-chat-auth';
 import { normalizeCreditLedgerSnapshot } from './models/auth-credit-snapshot';
+import { HostCredentialOperationError, invokeHostCredential } from './bridges/host-credential-ipc';
 
 export interface CommonResponse {
   status: number;
@@ -166,6 +167,7 @@ export class AuthService {
   private readonly authRequestTimeoutMs = 12000;
   private readonly authQuotaRequestTimeoutMs = 8000;
   private authInitializationPromise: Promise<void> | null = null;
+  private authInitializationCredentialFailure?: HostCredentialOperationError;
   private readonly authInitializationStateSubject = new BehaviorSubject<AuthInitializationState>('idle');
   readonly authInitializationState$ = this.authInitializationStateSubject.asObservable();
 
@@ -277,6 +279,10 @@ export class AuthService {
     return this.authInitializationStateSubject.value;
   }
 
+  getAuthInitializationCredentialFailure(): HostCredentialOperationError | undefined {
+    return this.authInitializationCredentialFailure;
+  }
+
   /** Apply the main renderer's token-free state inside a detached Aily Chat shell. */
   applyHostAuthStateSnapshot(snapshot: {
     authenticated: boolean;
@@ -295,6 +301,7 @@ export class AuthService {
   }
 
   private async performAuthInitialization(): Promise<void> {
+    this.authInitializationCredentialFailure = undefined;
     this.authInitializationStateSubject.next('checking');
     try {
       const token = await this.getToken2();
@@ -309,6 +316,7 @@ export class AuthService {
       this.isLoggedInSubject.next(authenticated);
       this.authInitializationStateSubject.next(authenticated ? 'authenticated' : 'signed_out');
     } catch (error) {
+      if (error instanceof HostCredentialOperationError) this.authInitializationCredentialFailure = error;
       if (isAuthCredentialError(error)) {
         this.isLoggedInSubject.next(false);
         this.authInitializationStateSubject.next('signed_out');
@@ -708,10 +716,10 @@ export class AuthService {
     if (!token.trim()) throw new Error('Access token cannot be empty');
     const previousAccessToken = await this.getToken2();
     if (this.authBridge) {
-      const saved = await this.authBridge.write(
+      const saved = await invokeHostCredential<boolean>(() => this.authBridge.write(
         { access_token: token, refresh_token: refreshToken },
         expectedRefreshToken,
-      );
+      ));
       if (!saved) return false;
     } else {
       if (expectedRefreshToken !== undefined && await this.getRefreshToken() !== expectedRefreshToken) return false;
@@ -725,21 +733,25 @@ export class AuthService {
 
   private async getRefreshToken(): Promise<string | null> {
     if (isDetachedAilyChatRenderer()) return null;
-    if (this.authBridge) return (await this.authBridge.read()).refresh_token || null;
+    if (this.authBridge) return (await this.readHostCredentials()).refresh_token || null;
     return localStorage.getItem(this.REFRESH_TOKEN_KEY);
   }
 
   async getToken2(): Promise<string | null> {
     if (isDetachedAilyChatRenderer()) return null;
-    if (this.authBridge) return (await this.authBridge.read()).access_token || null;
+    if (this.authBridge) return (await this.readHostCredentials()).access_token || null;
     return localStorage.getItem('aily_auth_token');
+  }
+
+  private readHostCredentials(): Promise<{ access_token?: string; refresh_token?: string }> {
+    return invokeHostCredential(() => this.authBridge.read());
   }
 
   /** Clear the shared credentials only if an optional rejected token still matches. */
   async clearAuthDataFile(throwOnError = false, expectedAccessToken?: string | null): Promise<boolean> {
     if (isDetachedAilyChatRenderer()) return true;
     try {
-      if (this.authBridge) return await this.authBridge.clear(expectedAccessToken) !== false;
+      if (this.authBridge) return await invokeHostCredential<boolean>(() => this.authBridge.clear(expectedAccessToken)) !== false;
       else {
         if (expectedAccessToken !== undefined) {
           const currentToken = await this.getToken2();
@@ -896,7 +908,8 @@ export class AuthService {
       // Another instance may have signed in or rotated credentials while this request ran.
       return saved || !!(await this.getToken2());
     } catch (error) {
-      console.warn('刷新 token 失败:', error);
+      if (error instanceof HostCredentialOperationError) throw error;
+      console.warn('[AUTH_REFRESH_REQUEST_FAILED]', error instanceof HttpErrorResponse ? error.status : undefined);
       if (await this.getRefreshToken() !== refreshToken) return !!(await this.getToken2());
       return false;
     }

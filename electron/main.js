@@ -26,6 +26,7 @@ const { createWindowStateController } = require('./window-state');
 const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
+const { createProjectViewNavigation } = require('./project-view-navigation');
 const { createProjectCrashResume, readProjectCreateRecovery, readProjectNavigationRecovery } = require('./project-crash-resume');
 const { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { startCliBridge } = require("./cli-bridge");
@@ -471,6 +472,7 @@ let pendingRoute = null;
 let pendingQueryParams = null;
 /** 当前主进程已持有的项目锁（规范化路径） */
 let heldProjectLockNormalized = null;
+const projectViewNavigation = createProjectViewNavigation(projectLock);
 
 /** 主进程读取 i18n JSON：开发态在仓库 public；打包后 Angular 资源在 app.asar/renderer */
 function getMainProcessI18nJsonPath(pack) {
@@ -1194,7 +1196,7 @@ async function queryCloudBuildAuth(request, signal) {
 }
 
 /** 处理来自 CLI 的命令 */
-async function handleCliBridgeCommand(action, payload) {
+async function handleCliBridgeCommand(action, payload, commandSignal) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
   switch (action) {
     case 'library-dependencies': {
@@ -1441,7 +1443,7 @@ async function handleCliBridgeCommand(action, payload) {
       const requestId = payload?.params?.requestId;
       // Without its prepare reply the caller cannot enter the dependency writer.
       // Retire that exact renderer fence before returning the missed observation.
-      const releasePreparation = operation === 'library_mutation_prepare' && typeof requestId === 'string'
+      let releasePreparation = operation === 'library_mutation_prepare' && typeof requestId === 'string'
         ? generation => requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response', {
           path: dir || '', operation: 'library_mutation_abort', params: { requestId },
           lifecycle: { version: 1, rendererGeneration: generation, sourceProject: dir || null },
@@ -1449,8 +1451,24 @@ async function handleCliBridgeCommand(action, payload) {
         : undefined;
       let rendererSendStarted = false;
       const durableNavigation = ['project_open', 'project_close'].includes(operation) && payload?.params?.navigationSessionId !== undefined;
+      const navigationRequest = operation === 'project_open' ? cliParams?.navigationRequest : undefined;
+      let notifyNavigationStop;
+      const dispatchNavigation = generation => {
+        if (navigationRequest && commandSignal?.aborted)
+          return { ok: false, commandDispatched: false, errorCode: 'RENDERER_REQUEST_CANCELLED' };
+        const refusal = durableNavigation ? retainDispatchedNavigation(payload, generation) : undefined;
+        if (refusal?.commandDispatched === false || !navigationRequest
+          || navigationRequest.rendererGeneration !== generation) return refusal;
+        notifyNavigationStop = () => {
+          if (rendererGeneration === generation && isCurrentRendererGenerationReady())
+            mainWindow.webContents.send('cli-bridge:project-navigation-stop', navigationRequest);
+        };
+        commandSignal?.addEventListener('abort', notifyNavigationStop, { once: true });
+        return refusal;
+      };
+      if (navigationRequest) releasePreparation = () => notifyNavigationStop?.();
       const onDispatch = operation === 'project_create' ? generation => retainDispatchedProjectCreate(payload, generation)
-        : durableNavigation ? generation => retainDispatchedNavigation(payload, generation)
+        : durableNavigation || navigationRequest ? dispatchNavigation
         : route.originalPublication ? () => { rendererSendStarted = true; } : undefined;
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
@@ -1467,7 +1485,7 @@ async function handleCliBridgeCommand(action, payload) {
         undefined,
         releasePreparation,
         onDispatch,
-      );
+      ).finally(() => { if (notifyNavigationStop) commandSignal?.removeEventListener('abort', notifyNavigationStop); });
       if (route.originalPublication && !rendererSendStarted && result?.ok === false)
         return { ...result, commandDispatched: false };
       if (durableNavigation && result?.navigationReceipt) {
@@ -1820,6 +1838,7 @@ function invalidateRendererGeneration(reason) {
     void cloudBuildController?.invalidateOwner(mainWindow.webContents, rendererGeneration);
   }
   dispatchedProjectCreates.clear();
+  projectViewNavigation.retireGeneration(rendererGeneration);
   readyRendererGeneration = 0;
   console.info('[RendererLifecycle] unavailable', {
     generation: rendererGeneration,
@@ -2489,13 +2508,16 @@ function loadEnv() {
     process.env.AILY_APPDATA_PATH,
     withAuthCredentialsLock,
   );
+  const { runAuthCredentialIpc } = require('./auth-store');
   // loadEnv runs again when macOS recreates the main window.
   for (const operation of ['read', 'write', 'clear']) {
     ipcMain.removeHandler(`auth-credentials-${operation}`);
   }
-  ipcMain.handle('auth-credentials-read', () => authStore.read());
-  ipcMain.handle('auth-credentials-write', (_event, record, expectedRefreshToken) => authStore.write(record, expectedRefreshToken));
-  ipcMain.handle('auth-credentials-clear', (_event, expectedAccessToken) => authStore.clear(expectedAccessToken));
+  ipcMain.handle('auth-credentials-read', () => runAuthCredentialIpc(() => authStore.read()));
+  ipcMain.handle('auth-credentials-write', (_event, record, expectedRefreshToken) =>
+    runAuthCredentialIpc(() => authStore.write(record, expectedRefreshToken)));
+  ipcMain.handle('auth-credentials-clear', (_event, expectedAccessToken) =>
+    runAuthCredentialIpc(() => authStore.clear(expectedAccessToken)));
 
   // 检测并读取appdata_path目录下是否有config.json文件
   const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
@@ -3759,6 +3781,11 @@ ipcMain.handle('project-commands-stop', async (event, data) => {
 
 ipcMain.handle("project-lock-try", (event, data) => {
   const { projectPath, force, provisional } = data || {};
+  if (projectViewNavigation.isClaimed(projectPath)) {
+    if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+      || projectViewNavigation.currentProject() !== projectLock.normalizeProjectPathLoose(projectPath))
+      return { ok: false, code: 'PROJECT_VIEW_BUSY', error: 'Another navigation owns this view reservation.' };
+  }
   if (repairBootstrap) {
     const rejection = checkRepairProjectOpen(repairBootstrap.record, projectPath);
     if (rejection) return rejection;
@@ -3766,6 +3793,7 @@ ipcMain.handle("project-lock-try", (event, data) => {
   const r = projectLock.tryAcquireLock(projectPath, { force: !!force, strict: !!repairBootstrap });
   if (r.ok && provisional !== true) {
     heldProjectLockNormalized = r.normalizedPath;
+    projectViewNavigation.selectLegacy(r.normalizedPath, rendererGeneration);
   }
   return r;
 });
@@ -3776,6 +3804,9 @@ ipcMain.handle("project-lock-release", (event, data) => {
   if (!target) {
     return { ok: true };
   }
+  if (projectViewNavigation.isClaimed(target)) {
+    return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The project view requires its original reservation.' };
+  }
   const beforeHeld = heldProjectLockNormalized;
   const r = projectLock.releaseLock(target);
   if (r.ok && beforeHeld) {
@@ -3783,9 +3814,44 @@ ipcMain.handle("project-lock-release", (event, data) => {
     const nh = projectLock.normalizeProjectPathLoose(beforeHeld);
     if (nt === nh) {
       heldProjectLockNormalized = null;
+      projectViewNavigation.selectLegacy(null);
     }
   }
   return r;
+});
+
+ipcMain.handle('project-view-navigation', (event, request) => {
+  const invalid = { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The original renderer no longer owns this view.' };
+  if (!getCurrentRendererOwner(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+    || request?.rendererGeneration !== rendererGeneration
+    || typeof request?.requestId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(request.requestId)
+    || typeof request.sourceProject !== 'string' || !path.isAbsolute(request.sourceProject)
+    || typeof request.projectPath !== 'string' || !path.isAbsolute(request.projectPath)) return invalid;
+  switch (request.action) {
+    case 'reserve': {
+      if (repairBootstrap) {
+        const rejection = checkRepairProjectOpen(repairBootstrap.record, request.projectPath);
+        if (rejection) return rejection;
+      }
+      if (projectViewNavigation.currentProject() !== heldProjectLockNormalized)
+        projectViewNavigation.selectLegacy(heldProjectLockNormalized, rendererGeneration);
+      return projectViewNavigation.reserve(request, { strict: !!repairBootstrap, force: request.force === true });
+    }
+    case 'promote': {
+      const result = projectViewNavigation.promote(request);
+      if (result.ok) heldProjectLockNormalized = result.normalizedPath;
+      return result;
+    }
+    case 'observe':
+      return projectViewNavigation.observe(request);
+    case 'release': {
+      const before = projectViewNavigation.currentProject();
+      const result = projectViewNavigation.release(request, request.pendingOnly === true);
+      if (before === heldProjectLockNormalized && !projectViewNavigation.currentProject()) heldProjectLockNormalized = null;
+      return result;
+    }
+    default: return invalid;
+  }
 });
 
 // Navigation records identify the accepted project only. They never select a

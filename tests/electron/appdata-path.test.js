@@ -56,16 +56,20 @@ test('main shares credential locking and forwards credential arguments for both 
   const explicit = path.resolve('isolated-main-appdata');
   const record = { access_token: 'current' };
   const handlers = new Map();
+  const { runAuthCredentialIpc } = require('../../electron/auth-store');
   const writes = [], clears = [];
-  let lockCalls = 0;
+  let lockCalls = 0, readFailure;
   const context = vm.createContext({
     process: { env: { AILY_APPDATA_PATH: explicit } },
     require: module => {
       assert.equal(module, './auth-store');
-      return { createAuthStore: (root, withLock) => {
+      return { runAuthCredentialIpc, createAuthStore: (root, withLock) => {
         assert.equal(root, explicit);
         return {
-          read: () => withLock(() => record),
+          read: () => withLock(() => {
+            if (readFailure) throw readFailure;
+            return record;
+          }),
           write: (...args) => withLock(() => { writes.push(args); return true; }),
           clear: token => withLock(() => { clears.push(token); return true; }),
         };
@@ -90,6 +94,15 @@ test('main shares credential locking and forwards credential arguments for both 
   assert.equal(lockCalls, 6);
   assert.deepEqual(writes, [[record, 'expected-refresh'], [record, 'expected-refresh']]);
   assert.deepEqual(clears, ['expected-access', 'expected-access']);
+  for (const [original, diagnostic] of [
+    ['EACCES', 'AUTH_CREDENTIALS_STORAGE_DENIED'],
+    ['EISDIR', 'AUTH_CREDENTIALS_STORAGE_IO'],
+    ['AUTH_CREDENTIALS_LOCK_UNVERIFIED', 'AUTH_CREDENTIALS_LOCK_UNVERIFIED'],
+  ]) {
+    readFailure = Object.assign(new Error('native detail with private path and credentials'), { code: original });
+    const result = await handlers.get('auth-credentials-read')();
+    assert.deepEqual(result, { credentialError: { version: 1, code: diagnostic } });
+  }
 });
 
 test('npm prefix preserves explicit macOS and Windows paths including spaces', () => {

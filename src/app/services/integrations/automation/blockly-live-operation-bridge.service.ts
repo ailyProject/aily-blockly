@@ -38,6 +38,7 @@ import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest }
 import { createProjectLifecycleAssertion, type ProjectLifecycleSnapshot } from './project-lifecycle-admission';
 import { ProjectCreateReceipts, readProjectCreateRequest, type ProjectCreateGuard } from './project-create-receipts';
 import { ProjectNavigationReceipts, readProjectNavigationRequest } from './project-navigation-receipts';
+import type { ProjectNavigationTransition } from '../../domains/project/project-navigation-transition';
 import { forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
 import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
@@ -142,6 +143,10 @@ export class BlocklyLiveOperationBridgeService {
 
     ipcRenderer.on('cli-bridge:blockly-live-operation', (_event: unknown, payload: BlocklyLiveOperationPayload) => {
       void this.handleIpcPayload(ipcRenderer, payload);
+    });
+    ipcRenderer.on('cli-bridge:project-navigation-stop', (_event: unknown, value: unknown) => {
+      const request = readProjectNavigationRequest(value, path => window['path'].isAbsolute(path));
+      if (request?.rendererGeneration === this.electronService.currentRendererGeneration) this.navigationReceipts?.stop(request);
     });
     this.initialized = true;
   }
@@ -860,7 +865,8 @@ export class BlocklyLiveOperationBridgeService {
 
   private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol,
     markWriter?: () => void,
-    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>,
+    navigation?: { requestId: string; transition: ProjectNavigationTransition }): Promise<Record<string, any>> {
     if (payload.operation === 'project_navigation_status'
       || ['project_open', 'project_close'].includes(payload.operation || '') && Object.hasOwn(payload.params || {}, 'navigationRequest')) {
       return this.executeProjectNavigationSettlement(payload);
@@ -943,7 +949,7 @@ export class BlocklyLiveOperationBridgeService {
       return forkProject(this.projectService, payload.path, payload.params || {});
     }
     if (payload.operation === 'project_open') {
-      return onViewActivated ? this.executeProjectOpen(payload.path || '', lifecycleOwner, onViewActivated)
+      return onViewActivated ? this.executeProjectOpen(payload.path || '', lifecycleOwner, onViewActivated, navigation)
         : this.executeProjectOpen(payload.path || '', lifecycleOwner);
     }
     if (payload.operation === 'project_close') {
@@ -1858,7 +1864,7 @@ export class BlocklyLiveOperationBridgeService {
         throw Object.assign(new Error('The original navigation scope is no longer current.'), { code, commandDispatched: false });
       }
     };
-    return receipts.start(request, record => this.projectService.withProjectLifecycleAdmission(admit, async owner => {
+    return receipts.start(request, (record, transition) => this.projectService.withProjectLifecycleAdmission(admit, async owner => {
       if (reopenProof) {
         const allowed = await window['projectLock']?.canReopenNavigation(reopenProof, request.targetProject!);
         assertCurrent();
@@ -1873,7 +1879,7 @@ export class BlocklyLiveOperationBridgeService {
           if (!activation) return;
           try { await window['projectLock'].recordNavigation({ requestId: request.requestId, activation }); }
           catch (error) { console.warn('The original navigation proof could not be recorded:', error); }
-        });
+        }, { requestId: request.requestId, transition });
     }));
   }
 
@@ -2369,7 +2375,8 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeProjectOpen(projectPath: string, lifecycleOwner?: symbol,
-    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>,
+    navigation?: { requestId: string; transition: ProjectNavigationTransition }): Promise<Record<string, any>> {
     const requestedProject = String(projectPath || '').trim();
     if (!requestedProject) {
       return { ok: false, operation: 'project_open', message: '缺少项目路径' };
@@ -2421,6 +2428,7 @@ export class BlocklyLiveOperationBridgeService {
         reason: sameProject ? 'chat-tool-reload' : 'chat-tool-open',
         interactive: false,
         ...(onViewActivated ? { onViewActivated } : {}),
+        ...(navigation ? { navigation } : {}),
       });
       const loadStatus = this.projectService.getBlocklyProjectLoadStatus(requestedProject);
       const editorReady = this.electronService.exists(

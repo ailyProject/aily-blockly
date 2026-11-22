@@ -477,6 +477,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
         provisional: options?.provisional === true,
       }),
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
+    navigate: (action, reservation, options) => ipcRenderer.invoke('project-view-navigation', {
+      ...reservation, action, force: options?.force, pendingOnly: options?.pendingOnly,
+    }),
     checkStartupRestore: (projectPath, ticket) => ipcRenderer.invoke('project-navigation-startup-check', projectPath, ticket),
     cancelStartupRestore: () => ipcRenderer.send('project-navigation-startup-cancel'),
     recordActive: (projectPath, startupTicket) => ipcRenderer.invoke('project-navigation-active', projectPath, startupTicket),
