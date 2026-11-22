@@ -1,6 +1,7 @@
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store';
 import { generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
+import { absMapJson } from './abs-map-json';
 import { AbsSyncError } from './abs-state';
 import { AbsOperationJournal } from './abs-operation-journal';
 import { recoverAbsLocationMetadata } from './abs-baseline-recovery';
@@ -19,20 +20,30 @@ export async function assertWorkspaceMigrationWritable(port: Pick<AbsSyncStorage
 }
 
 export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
-  working: { revision: number; document: unknown }, assertCurrent: () => void, mode: AbsWorkspaceMode = 'overlay-v1') {
+  working: { revision: number; document: unknown }, assertCurrent: () => void, mode: AbsWorkspaceMode = 'overlay-v1', repairMap = false) {
   return port.withLock(async storage => {
     assertCurrent();
     if (!port.attachment) throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the original physical project attachment.');
-    const scoped = { ...port, read: key => storage.read(key) };
+    const scoped: AbsSyncStoragePort = { ...port, read: key => storage.read(key), withLock: operation => operation(storage) };
     const store = new AbsBaselineStore(scoped, { projectKey: port.attachment.root, pageId: '' });
     if (await store.workspaceMode(storage) !== mode)
       throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'The engine changed before workspace readiness could be verified.');
     const snapshot = await store.readCommittedSnapshot(), disk = await store.captureDisk(storage);
     const committed = await storage.read('committed.json'), prepared = await storage.read('prepared.json');
     const modeMarker = await storage.read('workspace-mode.json');
-    if (!snapshot || snapshot.abi === null || !await store.matchesAcceptedDisk(snapshot, { ...disk, abs: snapshot.projection.abs })
-      || committed === null || prepared !== null || await new AbsOperationJournal(scoped, port.attachment.root).inspect())
+    if (!snapshot || snapshot.abi === null || disk.abi !== snapshot.abi || committed === null || prepared !== null
+      || await new AbsOperationJournal(scoped, port.attachment.root).inspect())
       throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
+    const map = absMapJson(snapshot.projection.map);
+    if (disk.map !== map) {
+      if (!repairMap || snapshot.projection.map.scope.projectKey !== port.attachment.root
+        || (mode === 'overlay-v1' && disk.abs !== snapshot.projection.abs)) {
+        throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
+      }
+      await assertWorkspaceMigrationWritable(scoped);
+      await store.restoreCommittedMap(assertCurrent, { disk, pointerHash: snapshot.pointerHash });
+      disk.map = map;
+    }
     const accepted = (await generationEvidence(snapshot.projection, snapshot.abi)).binding;
     const expected = { abiHash: await nullableHash(disk.abi), absHash: await nullableHash(disk.abs), mapHash: await nullableHash(disk.map),
       committedHash: await hashAbsText(committed), preparedHash: null };
@@ -50,7 +61,7 @@ export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
  * Fence every recovery write against the observed original inputs. */
 export async function prepareWorkspaceMigrationProof(port: AbsSyncStoragePort,
   working: { revision: number; document: unknown }, assertCurrent: () => void, mode: AbsWorkspaceMode = 'overlay-v1') {
-  const original = await captureWorkspaceMigrationProof(port, working, assertCurrent, mode);
+  const original = await captureWorkspaceMigrationProof(port, working, assertCurrent, mode, true);
   const { root } = original.attachment, binding = original.accepted.accepted;
   const windows = /^[A-Za-z]:[/\\]|^\\\\/.test(root);
   if (await sameAbsProjectDirectory(binding.scope.projectKey, root, undefined, windows)) return original;

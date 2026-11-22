@@ -201,6 +201,30 @@ test('shared cache clear waits for the writer, removes legacy payloads and prese
     assert.equal(api.resolveBuildExecution(f.root), null);
 });
 
+test('shared cache clear removes an exited legacy recovery marker under the current cleaning lease', async t => {
+    const f = fixture(t);
+    const filename = '.build/aily-workspace-recovery.lock';
+    const marker = path.join(f.root, filename);
+    const firmware = path.join(f.root, '.build', 'firmware.bin');
+    const ownerToken = randomUUID();
+    f.put('.build/firmware.bin', 'old firmware');
+    for (const bytes of ['incomplete', JSON.stringify({ pid: process.pid, ownerToken })]) {
+        f.put(filename, bytes);
+        assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_WORKSPACE_BUSY' });
+        assert.equal(fs.readFileSync(marker, 'utf8'), bytes);
+        assert.equal(fs.readFileSync(firmware, 'utf8'), 'old firmware');
+    }
+
+    const exited = spawn(process.execPath, ['-e', ''], { windowsHide: true, stdio: 'ignore' });
+    assert.deepEqual(await once(exited, 'close'), [0, null]);
+    f.put(filename, JSON.stringify({ pid: exited.pid, ownerToken }));
+
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.deepEqual(fs.readdirSync(path.join(f.root, '.build')), []);
+    assert.ok(fs.existsSync(path.join(f.root, '.aily', 'build-workspace.guard')));
+    assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), 'original user program');
+});
+
 test('shared build rejects a redirected cache directory before taking over the writer', t => {
     const f = sharedFixture(t);
     const request = f.prepare('redirected');

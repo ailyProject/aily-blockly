@@ -28,6 +28,19 @@ export function readSavedBlocklyAbi(text: string | null): Record<string, unknown
   }
 }
 
+/** A damaged historical record can defer recovery while a verified ABI opens. */
+export async function readSavedAbiAfterRecoveryFailure(port: Pick<AbsSyncStoragePort, 'read'>,
+  error: unknown, assertCurrent: () => void): Promise<{ abi: string; code: string }> {
+  assertCurrent();
+  const code = (error as { code?: string })?.code;
+  if (code !== 'ABS_BASELINE_CORRUPT' && code !== 'ABS_BASELINE_MISSING'
+    && code !== 'ABS_OPERATION_CORRUPT' && code !== 'ABS_OPERATION_SOURCE_CHANGED') throw error;
+  const abi = await port.read('project.abi');
+  assertCurrent();
+  if (abi === null || !readSavedBlocklyAbi(abi)) throw error;
+  return { abi, code };
+}
+
 /** Opening a complete ABS regenerates caches; a draft is retained and opens its committed snapshot. */
 export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectPath: string,
   assertCurrent: () => void, { preferSavedAbi = false } = {}): Promise<string | null> {

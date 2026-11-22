@@ -168,20 +168,28 @@ function assertPreviousRecoverable(workspace) {
     assertLegacyClaimsStopped(previous);
 }
 
-function checkLegacyRecovery(workspace) {
+function checkLegacyRecovery(workspace, { retire = false } = {}) {
     const filename = path.join(workspace.directory, LEGACY_RECOVERY_MARKER);
     if (!markerExists(workspace, filename)) return;
-    let record;
+    let stat, bytes, record;
     try {
-        const stat = fs.lstatSync(filename);
+        stat = fs.lstatSync(filename);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 4096) throw new Error('unsafe');
-        record = JSON.parse(fs.readFileSync(filename, 'utf8'));
+        bytes = fs.readFileSync(filename, 'utf8');
+        record = JSON.parse(bytes);
     } catch { throw fault('BUILD_WORKSPACE_BUSY', 'An unreadable legacy recovery marker requires verified cleanup.'); }
-    if (!Number.isSafeInteger(record.pid) || record.pid < 1 || !UUID.test(record.ownerToken) || processAlive(record.pid)) {
+    if (!Number.isSafeInteger(record?.pid) || record.pid < 1 || typeof record.ownerToken !== 'string'
+        || !UUID.test(record.ownerToken) || processAlive(record.pid)) {
         throw fault('BUILD_WORKSPACE_BUSY', 'Legacy workspace recovery may still be running.');
     }
-    // This old implementation cannot run after its process exits. Leave its
-    // evidence intact; it is no longer an acquisition gate in the new protocol.
+    if (retire) {
+        workspace.check();
+        const current = fs.lstatSync(filename);
+        if (!sameFile(stat, current) || current.nlink !== 1 || current.size !== stat.size || fs.readFileSync(filename, 'utf8') !== bytes) {
+            throw fault('BUILD_WORKSPACE_CHANGED', 'Legacy recovery marker changed before cleanup.');
+        }
+        fs.unlinkSync(filename);
+    }
 }
 
 function acquireBuildWorkspace(projectPath, operation, { inherited = undefined } = {}) {
@@ -240,6 +248,13 @@ function lease(workspace, owner, owns, guard) {
         buildId: owner.record.token,
         assertOwned,
         assertBuilderIdle,
+        clearLegacyRecovery: () => {
+            if (owner.record.operation !== 'clean') throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Legacy recovery cleanup requires the cache cleaning lease.');
+            // An old host checks the recovery marker, then reserves the owner
+            // file exclusively. Keep our published owner in place during removal.
+            assertBuilderIdle();
+            checkLegacyRecovery(workspace, { retire: true });
+        },
         markDelegated,
         childEnvironment: () => {
             assertOwned();

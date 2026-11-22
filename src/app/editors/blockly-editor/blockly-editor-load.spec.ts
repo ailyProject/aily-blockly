@@ -54,7 +54,7 @@ describe('Blockly startup source and environment settlement', () => {
     window['libraryDependencies'] = { environmentVersion: 2, pendingEnvironment: async () => { order.push('dependencies'); return []; } };
     try {
       await adapter.settleEnvironmentBeforeOpen('D:/project', () => {});
-      expect(order).toEqual(['prepared.json', 'dependencies']);
+      expect(order).toEqual(['prepared.json', 'operation.json', 'dependencies']);
     } finally {
       window['fs'] = originalStorage;
       window['libraryDependencies'] = originalLibraries;
@@ -209,6 +209,57 @@ describe('project load normalization context', () => {
     await expectAsync(component.loadProjectAbiDocument('D:/old', guard)).toBeRejectedWithError('stale load');
     expect(component.projectService.ensureProjectDataSchemaForLoad).not.toHaveBeenCalled();
   });
+  for (const [name, code] of [['prepared.json', 'ABS_BASELINE_CORRUPT'], ['operation.json', 'ABS_OPERATION_CORRUPT']]) {
+    it(`opens the saved ABI without publishing when ${name} is corrupt`, async () => {
+      const abi = '{"blocks":{"blocks":[{"type":"arduino_setup","id":"saved"}]}}';
+      const damaged = '{"version":';
+      files.set(name, damaged);
+      files.set('project.abi', abi);
+      const result = await component.loadProjectAbiDocument('D:/project', guard);
+      expect(result.document).toEqual(JSON.parse(abi));
+      expect(result.diskText).toBe(abi);
+      expect(result.completeAbs).toBeFalse();
+      expect(result.loadNormalization).toBeUndefined();
+      expect(result.deferredNormalization?.code).toBe(code);
+      expect(component.projectService.ensureProjectDataSchemaForLoad.calls.argsFor(0)[2]).toBeUndefined();
+      expect(files.get(name)).toBe(damaged);
+      expect(files.get('project.abi')).toBe(abi);
+    });
+  }
+  it('keeps the original recovery error when there is no saved Blockly ABI to load', async () => {
+    files.set('prepared.json', '{"version":');
+    files.delete('project.abi');
+    await expectAsync(component.loadProjectAbiDocument('D:/project', guard))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+    expect(component.parseProjectAbiContent).not.toHaveBeenCalled();
+  });
+  it('passes the open preflight with a saved ABI and a corrupt prepare journal', async () => {
+    const adapter = Object.create(ProjectApplicationAdapter.prototype) as ProjectApplicationAdapter;
+    const previousLibraries = window['libraryDependencies'];
+    const pendingEnvironment = jasmine.createSpy('pendingEnvironment').and.resolveTo([]);
+    const damaged = '{"version":';
+    files.set('prepared.json', damaged);
+    window['libraryDependencies'] = { environmentVersion: 2, pendingEnvironment };
+    try {
+      await adapter.settleEnvironmentBeforeOpen('D:/project', guard);
+      expect(pendingEnvironment).toHaveBeenCalledOnceWith('D:/project');
+      expect(files.get('prepared.json')).toBe(damaged);
+    } finally { window['libraryDependencies'] = previousLibraries; }
+  });
+  it('defers cold-open dependency discard only when the pending ABS journal fails verification', async () => {
+    const damaged = '{"version":';
+    files.set('prepared.json', damaged);
+    const refusal = new Error("Error invoking remote method 'library-dependencies': Error: An ABS generation is pending. Recover or explicitly abandon it before publishing project files.");
+    component.projectService.discardLibraryChanges = jasmine.createSpy('discard').and.rejectWith(refusal);
+    expect(await component.restoreSavedLibrariesForOpen('D:/project', guard)).toBeTrue();
+    expect(component.projectService.discardLibraryChanges).toHaveBeenCalledOnceWith('D:/project');
+    expect(files.get('prepared.json')).toBe(damaged);
+    files.delete('project.abi');
+    await expectAsync(component.restoreSavedLibrariesForOpen('D:/project', guard))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+    component.projectService.discardLibraryChanges.and.rejectWith(new Error('disk unavailable'));
+    await expectAsync(component.restoreSavedLibrariesForOpen('D:/project', guard)).toBeRejectedWithError('disk unavailable');
+  });
   it('passes the same guard to disk and in-memory template normalization', async () => {
     files.set('project.abi', '{"blocks":{"blocks":[]}}');
     const template = { blocks: { blocks: [{ type: 'arduino_setup', id: 'protected', deletable: false }] } };
@@ -264,8 +315,9 @@ describe('project load normalization context', () => {
 });
 
 describe('Blockly dependency preparation cancellation', () => {
-  for (const retained of ['none', 'history', 'companion'] as const) {
-    it(retained === 'none' ? 'still collects an ordinary ABI-only project without history'
+  for (const retained of ['none', 'history', 'companion', 'journal'] as const) {
+    it(retained === 'journal' ? 'opens a deferred journal from installed dependencies without preparing library sources'
+      : retained === 'none' ? 'still collects an ordinary ABI-only project without history'
       : `retains old baseline-only resources for a plain-ABS load with ${retained}`, async () => {
       const component: any = Object.create(BlocklyEditorComponent.prototype);
       const resources = new Map([['old-baseline-only', 'immutable asset bytes']]);
@@ -282,7 +334,7 @@ describe('Blockly dependency preparation cancellation', () => {
           resolveBoardConfigForRuntime: async () => ({}), loadBoardMenuConfig: async () => {}, isCloudBuild: () => false,
           markBlocklyProjectLoaded() {}, markBlocklyLibraryRuntimeReady() {} },
         applyProjectPackageJson() {}, getDeclaredBlocklyLibraryDependencies: () => new Map(),
-        npmService: { ensureProjectDependenciesInstalled: async () => true, installedOk: async () => true,
+        npmService: { ensureProjectDependenciesInstalled: jasmine.createSpy('prepareSources').and.resolveTo(true), installedOk: async () => true,
           getAllInstalledLibraries: async () => [], installBoardDeps: async () => {} },
         blocklyService: { waitForWorkspace: async () => {}, withToolboxRefreshBatch: async work => work(),
           getMissingBlockDefinitions: () => [], acquireWorkspaceEditLease: () => ({ assertCurrent() {}, release() {} }),
@@ -292,18 +344,23 @@ describe('Blockly dependency preparation cancellation', () => {
         translate: { instant: text => text }, getMissingProjectLibraries: () => [], waitForNextFrame: async () => {},
         loadProjectAbiDocument: async () => ({ document: { pages: [] }, usedBoardTemplate: false,
           diskText: 'original ABI', completeAbs: false,
-          ...(retained === 'history' ? { deferredNormalization: { status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_DEFERRED',
+          ...(retained === 'history' || retained === 'journal' ? { deferredNormalization: { status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_DEFERRED',
             recovery: { tool: 'project_recover' } } } : {}) }),
         ngZone: { runOutsideAngular: work => work() },
-        _projectService: { rememberLoadedProject() {}, syncUsedLibraryManifest: () => false },
+        _projectService: { rememberLoadedProject() {}, syncUsedLibraryManifest: jasmine.createSpy('syncLibraryManifest').and.returnValue(false) },
         scheduleProjectLoadedCodeRefresh() {}, promptLoginForAuthRequiredBoard: async () => {},
         startPackageJsonDependencyWatch() {}, localLibrarySyncService: { start() {} }, checkBlocklyOnboarding() {},
       });
+      if (retained === 'journal') component.restoreSavedLibrariesForOpen = async () => true;
       spyOn(console, 'warn'); spyOn(console, 'info');
       try {
         await component.prepareProject('D:/isolated-load', { signal: new AbortController().signal }, () => {});
         expect(gc.calls.count()).toBe(retained === 'none' ? 1 : 0);
         expect(resources.size).toBe(retained === 'none' ? 0 : 1);
+        if (retained === 'journal') {
+          expect(component.npmService.ensureProjectDependenciesInstalled).not.toHaveBeenCalled();
+          expect(component._projectService.syncUsedLibraryManifest).not.toHaveBeenCalled();
+        }
       } finally { window['boardConfig'] = previousBoard; }
     });
   }

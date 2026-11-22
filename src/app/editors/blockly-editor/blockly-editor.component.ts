@@ -1,9 +1,9 @@
-import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import { readSavedAbiAfterRecoveryFailure, restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
 import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
-import { recoverAbsProjectOperation } from '../../integrations/blockly/abs/abs-project-restart';
+import { recoverAbsProjectOperation, settleAbsProjectOpen } from '../../integrations/blockly/abs/abs-project-restart';
 import { AbsOperationJournal } from '../../integrations/blockly/abs/abs-operation-journal';
 import { sameAbsSavedState } from '../../integrations/blockly/abs/abs-save-semantics';
-import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback,
+import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback, deferredAbsLoadNormalization,
   type AbsLoadNormalizationInput, type AbsLoadNormalizationDeferred } from '../../integrations/blockly/abs/abs-load-normalization';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
@@ -309,7 +309,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.stopPackageJsonDependencyWatch();
     this.clearProjectLoadedCodeRefreshTimer();
     // 打开时按已保存的根清单恢复未保存的库安装状态。
-    await this.projectService.discardLibraryChanges(projectPath);
+    const libraryWritesDeferred = await this.restoreSavedLibrariesForOpen(projectPath, assertCurrent);
     assertCurrent();
     // 加载项目package.json
     let packageJson = JSON.parse(
@@ -334,8 +334,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const hasMissingLocalLibrary = [...this.getDeclaredBlocklyLibraryDependencies(packageJson)]
       .some(([name, version]) => version.startsWith('file:')
         && !this.isBlocklyLibraryPackageReady(projectPath, name));
-    const dependenciesInstalled = hasMissingLocalLibrary
-      ? false : await this.npmService.ensureProjectDependenciesInstalled(projectPath, { deferSuccessNotice: true }, session);
+    const dependenciesInstalled = hasMissingLocalLibrary ? false : libraryWritesDeferred
+      ? await this.npmService.installedOk(projectPath, session)
+      : await this.npmService.ensureProjectDependenciesInstalled(projectPath, { deferSuccessNotice: true }, session);
     assertCurrent();
     if (!dependenciesInstalled && !hasMissingLocalLibrary) {
       throw new Error('项目依赖安装未完成，无法继续加载 Blockly 项目。');
@@ -541,7 +542,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         console.warn('[ProjectResourceGC] Resource cleanup was skipped:', error);
       }
     }
-    if (!usedBoardTemplateAbi && this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
+    if (!usedBoardTemplateAbi && !deferredNormalization && this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
       packageJson = this.readProjectPackageJson(projectPath) || packageJson;
       this.applyProjectPackageJson(packageJson);
     }
@@ -622,6 +623,26 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
   }
 
+  private async restoreSavedLibrariesForOpen(project: string, assertCurrent: () => void): Promise<boolean> {
+    try { await this.projectService.discardLibraryChanges(project); }
+    catch (error) {
+      // Electron invoke can carry only the main process's message.
+      const { code, message } = (error ?? {}) as { code?: string; message?: string };
+      if (code !== 'ABS_TRANSACTION_PENDING' && message !== "Error invoking remote method 'library-dependencies': Error: An ABS generation is pending. Recover or explicitly abandon it before publishing project files.") throw error;
+      const port = await openAbsHostStorage(project, assertCurrent);
+      try { await settleAbsProjectOpen(port, project, assertCurrent); }
+      catch (recoveryError) {
+        // The host refused dependency writes. Leave those unchanged while the
+        // independently readable saved ABI supplies the canvas.
+        await readSavedAbiAfterRecoveryFailure(port, recoveryError, assertCurrent);
+        return true;
+      }
+      assertCurrent();
+      await this.projectService.discardLibraryChanges(project);
+    }
+    return false;
+  }
+
   private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void, signal?: AbortSignal): Promise<{
     document: BlocklyProjectDocument;
     usedBoardTemplate: boolean;
@@ -634,9 +655,21 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
     const absPort = await openAbsHostStorage(projectPath, assertCurrent);
-    const recovery = await recoverAbsProjectOperation(absPort, projectPath, assertCurrent);
-    const derivedAbi = recovery ? null : await restoreAbsProjectCaches(absPort, projectPath, assertCurrent, { preferSavedAbi: true });
-    let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
+    let recovery: Awaited<ReturnType<typeof recoverAbsProjectOperation>> = null;
+    let derivedAbi: string | null = null;
+    let savedAbi: string | null = null;
+    let deferredRecovery: AbsLoadNormalizationDeferred | undefined;
+    try {
+      recovery = await recoverAbsProjectOperation(absPort, projectPath, assertCurrent);
+      if (!recovery) derivedAbi = await restoreAbsProjectCaches(absPort, projectPath, assertCurrent, { preferSavedAbi: true });
+    } catch (error) {
+      // The saved ABI may be healthy even when a retained recovery record cannot
+      // be opened. Render it without publishing normalization or retiring files.
+      const { abi, code } = await readSavedAbiAfterRecoveryFailure(absPort, error, assertCurrent);
+      savedAbi = abi;
+      deferredRecovery = deferredAbsLoadNormalization(projectPath, code);
+    }
+    let abiContent = savedAbi ?? derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
@@ -647,7 +680,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     projectAbi = recovery ? recovery.document : await this.projectService.ensureProjectDataSchemaForLoad(
       projectPath,
       projectAbi,
-      abiContent,
+      deferredRecovery ? undefined : abiContent,
       assertCurrent,
       text => { diskText = text; },
       prepared => { normalization = prepared; },
@@ -655,7 +688,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     assertCurrent();
     // Anchor the exact acknowledged publication, not a later external writer.
     abiContent = '';
-    const normalizationPreparation = normalization
+    const normalizationPreparation = deferredRecovery ? { outcome: deferredRecovery } : normalization
       ? await prepareAbsLoadNormalization(projectPath, normalization, absPort, assertCurrent) : undefined;
     assertCurrent();
 

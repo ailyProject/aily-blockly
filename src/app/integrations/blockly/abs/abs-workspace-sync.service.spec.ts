@@ -4869,6 +4869,32 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(roots()).toBe(root); expect(root.isDeletable()).toBeFalse(); expect(root.data).toBe('opaque');
       expect(gate.busy).toBeFalse();
     });
+    it('regenerates a stale public map before the first verified workspace migration', async () => {
+      savedCanvas();
+      const original: any = await service.prepareWorkspaceModeMigration();
+      const map = disk.get('project.abs.map.json')!;
+      const oldMap = absJson({ ...JSON.parse(map), projectionVersion: 'abs-v2.preview.4' });
+      disk.set('project.abs.map.json', oldMap);
+      editor.prepareProjectCode.calls.reset();
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+
+      expect(prepared.migration).toEqual(original.migration);
+      expect(disk.get('project.abs.map.json')).toBe(map);
+      const retained = [...disk].find(([key]) => key.startsWith('recoveries/map-'));
+      expect(JSON.parse(retained![1]).map).toBe(oldMap);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('keeps an unapplied ABS draft when a public map is stale', async () => {
+      savedCanvas();
+      await service.prepareWorkspaceModeMigration();
+      disk.set('project.abs.map.json', '{"olderMap":true}');
+      disk.set('project.abs', disk.get('project.abs')! + '\n# pending draft');
+      const before = [...disk];
+
+      await expectAsync(service.prepareWorkspaceModeMigration())
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_CONFLICT' }));
+      expect([...disk]).toEqual(before);
+    });
     it('uses the acknowledged native load when first migration sees the same legacy ABI bytes', async () => {
       const loaded = editor.captureProjectSnapshot().document;
       const legacy = absJson({ ...loaded, metadata: 'legacy normalized during load' });

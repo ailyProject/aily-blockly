@@ -28,6 +28,21 @@ test('a completed read-only settle is not an active library mutation or unsaved 
   }
 });
 
+test('saved library status remains readable while a retained ABS journal blocks writes', async t => {
+  const f = fixture(t), before = fs.readFileSync(path.join(f.root, 'package.json'));
+  const journal = path.join(f.root, '.aily/abs-sync/prepared.json');
+  fs.mkdirSync(path.dirname(journal), { recursive: true });
+  fs.writeFileSync(journal, '{"version":');
+
+  const status = await f.sessions.run('status', f.root);
+  assert.deepEqual(status.manifest, JSON.parse(before));
+  assert.equal(status.busy, true);
+  assert.equal(status.dirty, false);
+  await assert.rejects(f.manager.discard(f.root), { code: 'ABS_TRANSACTION_PENDING' });
+  assert.equal(fs.readFileSync(journal, 'utf8'), '{"version":');
+  assert.deepEqual(fs.readFileSync(path.join(f.root, 'package.json')), before);
+});
+
 test('a different active queue still blocks library admission', async t => {
   const f = fixture(t); let started, release;
   const entered = new Promise(resolve => { started = resolve; }), held = new Promise(resolve => { release = resolve; });

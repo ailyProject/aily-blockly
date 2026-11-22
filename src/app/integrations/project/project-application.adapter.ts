@@ -33,6 +33,7 @@ import { PasteInstallDialogComponent } from '../../editors/blockly-editor/compon
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { openAbsHostStorage } from '../blockly/abs/abs-host-storage';
 import { settleAbsProjectOpen } from '../blockly/abs/abs-project-restart';
+import { readSavedAbiAfterRecoveryFailure } from '../blockly/abs/abs-project-open';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 import { observeOpenEnvironment, settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
 import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
@@ -64,14 +65,15 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   }
 
   async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void, startupSignal?: AbortSignal): Promise<void> {
-    // Dependency preparation shares the file lock and refuses an interrupted
-    // source transaction even when it has no linked dependency environment.
+    // Inspect the original transaction before handoff. A damaged history can
+    // defer recovery when the saved ABI already provides a canvas to open.
     if (window['fs']?.projectSyncStorageVersion === 2) {
       const storage = await observeOpenEnvironment(() => openAbsHostStorage(project, assertCurrent), startupSignal);
       const observed = startupSignal
         ? { ...storage, read: (key: string) => observeOpenEnvironment(() => storage.read(key), startupSignal) }
         : storage;
-      await settleAbsProjectOpen(observed, storage.attachment?.root ?? project, assertCurrent);
+      try { await settleAbsProjectOpen(observed, storage.attachment?.root ?? project, assertCurrent); }
+      catch (error) { await readSavedAbiAfterRecoveryFailure(observed, error, assertCurrent); }
     }
     await settleLinkedProjectEnvironment(project, assertCurrent, undefined, startupSignal);
   }

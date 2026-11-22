@@ -762,6 +762,7 @@ function clearSharedBuildCache(projectPath, { preserveSketch = false } = {}) {
     if (json(path.join(store.root, 'package.json'), 2 * 1024 * 1024).type === 'coder') fail('Coder cache uses its own build contract.');
     const lease = acquireBuildWorkspace(store.root, 'clean');
     try {
+        lease.clearLegacyRecovery();
         clearBuildDirectory(store.root, lease.assertBuilderIdle);
         const temporary = readOptional(directory, store.root, '.temp', false);
         if (temporary) {
