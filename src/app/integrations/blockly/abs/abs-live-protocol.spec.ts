@@ -91,6 +91,45 @@ describe('ABS live protocol admission', () => {
     expect(rejectAbsLiveRequest('abs_apply', { ...request(), requestId })?.code).toBe('ABS_REQUEST_INVALID');
   });
 
+  it('allows only the exact current Blockly attachment to request empty lock maintenance', async () => {
+    const service = bridge();
+    service.executeOperation = BlocklyLiveOperationBridgeService.prototype['executeOperation'];
+    service.projectService.projectViewRevision = 1;
+    service.projectService.captureCurrentProjectGuard = () => () => true;
+    service.projectService.getProjectMode = () => 'blockly';
+    service.electronService.currentRendererGeneration = 1;
+    const project = '/a', attachment = { version: 1, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
+    const params = { version: 2, action: 'retire_empty_project_lock', requestId: 'retire-lock-wire-proof' };
+    const retire = jasmine.createSpy('retire').and.resolveTo({ ok: true, value: true });
+    const open = jasmine.createSpy('open').and.resolveTo({ attachment, read() {}, withLock() { throw new Error('Unexpected writer'); },
+      retireEmptyProjectFileLockResult: retire });
+    const saved = { path: window['path'], fs: window['fs'] };
+    try {
+      window['path'] = { isAbsolute: (value: string) => value.startsWith('/') };
+      window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: open };
+      const call = (fields: Record<string, unknown> = {}) => service.execute({ operation: 'abs_recovery', path: project,
+        rendererGeneration: 1, originalAdmissionAttachment: attachment, params, ...fields });
+      expect((await call({ params: { ...params, observe: true } })).code).toBe('ABS_REQUEST_INVALID');
+      expect((await call({ path: 'relative' })).code).toBe('ABS_REQUEST_INVALID');
+      expect((await call({ originalAdmissionAttachment: undefined })).code).toBe('PROJECT_ADMISSION_CONTEXT_STALE');
+      expect((await call({ originalAdmissionAttachment: { ...attachment, identity: { ...attachment.identity, ino: '9' } } })).code)
+        .toBe('PROJECT_ADMISSION_CONTEXT_STALE');
+      expect(retire).not.toHaveBeenCalled();
+      const result = await call();
+      expect(result).toEqual({ ok: true, operation: 'abs_recovery', project, receipt: params, retired: true });
+      expect(retire).toHaveBeenCalledTimes(1);
+      open.and.callFake(async () => {
+        service.projectService.projectViewRevision = 2;
+        return { attachment, read() {}, withLock() {}, retireEmptyProjectFileLockResult: retire };
+      });
+      expect((await call()).code).toBe('PROJECT_ADMISSION_CONTEXT_STALE');
+      expect(retire).toHaveBeenCalledTimes(1);
+    } finally {
+      window['path'] = saved.path;
+      window['fs'] = saved.fs;
+    }
+  });
+
   it('retires base-only apply and old baseline mutations before touching the coordinator', async () => {
     const service = bridge(), old: any = request();
     delete old.workingCandidate; delete old.validation.workingCandidate;

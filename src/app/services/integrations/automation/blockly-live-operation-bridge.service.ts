@@ -774,7 +774,7 @@ export class BlocklyLiveOperationBridgeService {
     const candidateBackup = payload.operation === 'abs_recovery'
       && ['preserve_candidate', 'read_candidate'].includes(payload.params?.['action']);
     const runtimeRecovery = payload.operation === 'abs_recovery'
-      && ['recover_runtime', 'recover_project', 'observe_apply', 'cancel_project'].includes(payload.params?.['action']);
+      && ['recover_runtime', 'recover_project', 'observe_apply', 'cancel_project', 'retire_empty_project_lock'].includes(payload.params?.['action']);
     const recoveryPath = payload.path || this.projectService.currentProjectPath;
     // A navigation can already own the target even though its editor failed or
     // is still loading. Advertise only the verified on-disk engine in that case.
@@ -821,6 +821,35 @@ export class BlocklyLiveOperationBridgeService {
   private isOwnedLibraryHistorySync(payload: BlocklyLiveOperationPayload, projectPath: string): boolean {
     return payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'synchronize'
       && this.projectService.ownsLibraryHistoryNavigation(payload.params['token'], projectPath);
+  }
+
+  private async retireEmptyProjectLock(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+    const { path, params = {}, originalAdmissionAttachment } = payload;
+    const { version, action, requestId } = params;
+    const result = { operation: 'abs_recovery', project: path };
+    if (version !== 2 || !path || !window['path']?.isAbsolute(path)
+      || Object.keys(params).some(key => !['version', 'action', 'requestId'].includes(key))) {
+      return { ...result, ok: false, code: 'ABS_REQUEST_INVALID' };
+    }
+    const stale = () => Object.assign(new Error('The project no longer owns this lock recovery.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+    try {
+      const view = this.projectService.projectViewRevision, renderer = this.electronService.currentRendererGeneration;
+      const scope = await this.admissionGuard(path);
+      if (!scope || !originalAdmissionAttachment || this.projectService.getProjectMode(scope.project) !== 'blockly') throw stale();
+      const current = () => {
+        scope.guard();
+        if (this.projectService.projectViewRevision !== view || this.electronService.currentRendererGeneration !== renderer
+          || payload.rendererGeneration !== undefined && payload.rendererGeneration !== renderer
+          || this.projectService.isProjectTransitionInProgress(scope.project)) throw stale();
+      };
+      const port = await openAbsHostStorage(scope.project, current);
+      if (absJson(port.attachment) !== absJson(originalAdmissionAttachment)) throw stale();
+      if (!port.retireEmptyProjectFileLock) return { ...result, ok: false, code: 'PROJECT_LOCK_RECOVERY_UNSUPPORTED' };
+      const retired = await port.retireEmptyProjectFileLock();
+      return { ...result, project: scope.project, ok: true, receipt: { version, action, requestId }, retired };
+    } catch (error) {
+      return { ...result, ok: false, code: (error as { code?: string })?.code ?? 'PROJECT_LOCK_RECOVERY_UNAVAILABLE' };
+    }
   }
 
   private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol,
@@ -875,6 +904,9 @@ export class BlocklyLiveOperationBridgeService {
         project: this.projectService.currentProjectPath,
         inProgress: this.absApplyInProgress,
       };
+    }
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'retire_empty_project_lock') {
+      return this.retireEmptyProjectLock(payload);
     }
     if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'cancel_project') {
       const { path, params } = payload;
