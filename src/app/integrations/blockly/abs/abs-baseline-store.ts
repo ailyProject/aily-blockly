@@ -59,6 +59,8 @@ export interface AbsGenerationInput {
   inputMap?: string | null;
   /** Explicit draft refresh: inputAbs/inputMap are the durable original draft pair. */
   draftBaseGeneration?: string;
+  /** Replaced historical public mirrors have no authority to name a draft base. */
+  legacyMirrorArchive?: true;
   recoveryArchive?: { key: string; hash: string };
   /** Only saved-source-preserving map/pointer recovery may set this marker. */
   metadataOnly?: true;
@@ -290,13 +292,16 @@ export class AbsBaselineStore {
     return record.inputAbs;
   }
 
-  async readArchivedDraft(generation: string) {
+  async readArchivedDraft(generation: string): Promise<{ generation: string; baseGeneration: string | null;
+    origin?: 'initial-baseline' | 'legacy-mirrors'; abs: string; hash: string; bytes: number }> {
     const { record } = await this.readGeneration(this.port, generation);
+    const legacy = record.legacyMirrorArchive === true && record.expected.abs !== null;
     const initial = !record.draftBaseGeneration && record.previousCommitted === null && record.expected.map === null
       && record.expected.abs !== null && typeof record.inputAbs === 'string'
       && await hashAbsText(record.inputAbs) === record.expected.abs;
-    if (!record.draftBaseGeneration && !initial) throw new AbsSyncError('ABS_DRAFT_ARCHIVE_MISSING', 'This generation is not an archived draft.');
-    return { generation, baseGeneration: record.draftBaseGeneration ?? null, ...(initial ? { origin: 'initial-baseline' as const } : {}), abs: record.inputAbs!,
+    if (!record.draftBaseGeneration && !initial && !legacy) throw new AbsSyncError('ABS_DRAFT_ARCHIVE_MISSING', 'This generation is not an archived draft.');
+    return { generation, baseGeneration: record.draftBaseGeneration ?? null,
+      ...(legacy ? { origin: 'legacy-mirrors' as const } : initial ? { origin: 'initial-baseline' as const } : {}), abs: record.inputAbs!,
       hash: record.expected.abs!, bytes: new TextEncoder().encode(record.inputAbs!).byteLength };
   }
 
@@ -376,7 +381,14 @@ export class AbsBaselineStore {
     return value;
   }
 
-  private async assertDraftArchive(record: Pick<AbsGenerationInput, 'mode' | 'inputAbs' | 'inputMap' | 'draftBaseGeneration' | 'expected'>) {
+  private async assertDraftArchive(record: Pick<AbsGenerationInput, 'mode' | 'inputAbs' | 'inputMap' | 'draftBaseGeneration' | 'legacyMirrorArchive' | 'expected'>) {
+    if (record.legacyMirrorArchive !== undefined) {
+      if (record.legacyMirrorArchive !== true || record.draftBaseGeneration !== undefined
+        || record.expected.abs === null || typeof record.inputAbs !== 'string' || record.inputMap === undefined
+        || await hashAbsText(record.inputAbs) !== record.expected.abs || await hashNullable(record.inputMap) !== record.expected.map) {
+        throw new AbsSyncError('ABS_GENERATION_INVALID', 'Legacy mirror archival must retain the exact displaced source and sidecar.');
+      }
+    }
     if (record.draftBaseGeneration === undefined) return;
     absBaselineKey(record.draftBaseGeneration);
     if (!['export', 'import'].includes(record.mode) || typeof record.inputAbs !== 'string' || typeof record.inputMap !== 'string'

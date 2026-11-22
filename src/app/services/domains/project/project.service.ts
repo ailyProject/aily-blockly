@@ -3894,10 +3894,11 @@ export class ProjectService {
       const packagePath = window['path'].join(projectPath, 'package.json');
       const manifest = window['fs'].existsSync(packagePath)
         ? JSON.parse(window['fs'].readFileSync(packagePath, 'utf8')) : undefined;
+      const hasAbi = window['fs'].existsSync(window['path'].join(projectPath, 'project.abi'));
       return detectProjectMode({
         manifest,
-        hasAbi: window['fs'].existsSync(window['path'].join(projectPath, 'project.abi')),
-        hasCompleteAbs: window['fs'].existsSync(window['path'].join(projectPath, 'project.abs'))
+        hasAbi,
+        hasCompleteAbs: !hasAbi && window['fs'].existsSync(window['path'].join(projectPath, 'project.abs'))
           && window['fs'].readFileSync(window['path'].join(projectPath, 'project.abs'), 'utf8').includes('\n# @project-state:'),
         hasAci: window['fs'].existsSync(window['path'].join(projectPath, 'project.aci')),
         hasArduinoSketch: !!findArduinoSketchEntry(projectPath),

@@ -48,6 +48,19 @@ describe('project mode boundaries', () => {
     expect(detectProjectMode({ manifest: { type: 'module' }, hasAbi: false, hasAci: false })).toBeNull();
   });
 
+  it('does not read an inaccessible ABS companion to recognize a project with ABI', () => {
+    const service = Object.create(ProjectService.prototype);
+    service.electronService = { isElectron: true };
+    const previous = { fs: window['fs'], path: window['path'] };
+    const read = jasmine.createSpy('file read').and.throwError('ABS read denied');
+    window['path'] = { join: (...parts: string[]) => parts.join('/') };
+    window['fs'] = { existsSync: (file: string) => file.endsWith('/project.abi') || file.endsWith('/project.abs'), readFileSync: read };
+    try {
+      expect(service.getProjectMode('/project')).toBe('blockly');
+      expect(read).not.toHaveBeenCalled();
+    } finally { Object.assign(window, previous); }
+  });
+
   it('filters before the six-item guide limit and preserves both modes when history changes', () => {
     const service = createService('blockly');
     service.configService.data.recentlyProjects = [coder, ...Array.from({ length: 8 }, (_, i) => ({ name: `${i}`, path: `/blocks/${i}` }))];

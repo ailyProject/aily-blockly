@@ -529,7 +529,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // Even an older plain-ABS generation, or a deferred load, can retain resource
     // roots absent from the current canvas. A successful normalization also just
     // published complete history; never GC only the active document afterwards.
-    if (!usedBoardTemplateAbi && !completeAbs && !loadNormalization && !deferredNormalization && !recoveredOperation) {
+    const retainsAbsCompanion = ['project.abs', 'project.abs.map.json'].some(
+      name => this.electronService.exists(this.electronService.pathJoin(projectPath, name)));
+    if (!usedBoardTemplateAbi && !completeAbs && !retainsAbsCompanion && !loadNormalization && !deferredNormalization && !recoveredOperation) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
         if (cleanup.deleted.length > 0) {
@@ -633,7 +635,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     assertCurrent();
     const absPort = await openAbsHostStorage(projectPath, assertCurrent);
     const recovery = await recoverAbsProjectOperation(absPort, projectPath, assertCurrent);
-    const derivedAbi = recovery ? null : await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
+    const derivedAbi = recovery ? null : await restoreAbsProjectCaches(absPort, projectPath, assertCurrent, { preferSavedAbi: true });
     let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);

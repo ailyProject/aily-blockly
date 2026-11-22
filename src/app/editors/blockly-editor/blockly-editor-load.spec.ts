@@ -264,8 +264,9 @@ describe('project load normalization context', () => {
 });
 
 describe('Blockly dependency preparation cancellation', () => {
-  for (const retainedHistory of [false, true]) {
-    it(`${retainedHistory ? 'retains old baseline-only resources for a deferred plain-ABS load' : 'still collects an ordinary ABI-only project without history'}`, async () => {
+  for (const retained of ['none', 'history', 'companion'] as const) {
+    it(retained === 'none' ? 'still collects an ordinary ABI-only project without history'
+      : `retains old baseline-only resources for a plain-ABS load with ${retained}`, async () => {
       const component: any = Object.create(BlocklyEditorComponent.prototype);
       const resources = new Map([['old-baseline-only', 'immutable asset bytes']]);
       const gc = spyOn(projectResourceGc, 'cleanupUnreferencedFiles').and.callFake(() => {
@@ -275,7 +276,8 @@ describe('Blockly dependency preparation cancellation', () => {
       Object.assign(component, {
         stopPackageJsonDependencyWatch() {}, clearProjectLoadedCodeRefreshTimer() {},
         configService: { ensureLibraryListForProject: async () => {}, getApplicationName: () => 'isolated' },
-        electronService: { readFile: () => '{"name":"isolated","devmode":"arduino"}', setTitle() {} },
+        electronService: { readFile: () => '{"name":"isolated","devmode":"arduino"}', setTitle() {},
+          pathJoin: (...paths: string[]) => paths.join('/'), exists: (file: string) => retained === 'companion' && file.endsWith('/project.abs') },
         projectService: { discardLibraryChanges: async () => {}, addRecentlyProject() {},
           resolveBoardConfigForRuntime: async () => ({}), loadBoardMenuConfig: async () => {}, isCloudBuild: () => false,
           markBlocklyProjectLoaded() {}, markBlocklyLibraryRuntimeReady() {} },
@@ -290,7 +292,7 @@ describe('Blockly dependency preparation cancellation', () => {
         translate: { instant: text => text }, getMissingProjectLibraries: () => [], waitForNextFrame: async () => {},
         loadProjectAbiDocument: async () => ({ document: { pages: [] }, usedBoardTemplate: false,
           diskText: 'original ABI', completeAbs: false,
-          ...(retainedHistory ? { deferredNormalization: { status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_DEFERRED',
+          ...(retained === 'history' ? { deferredNormalization: { status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_DEFERRED',
             recovery: { tool: 'project_recover' } } } : {}) }),
         ngZone: { runOutsideAngular: work => work() },
         _projectService: { rememberLoadedProject() {}, syncUsedLibraryManifest: () => false },
@@ -300,8 +302,8 @@ describe('Blockly dependency preparation cancellation', () => {
       spyOn(console, 'warn'); spyOn(console, 'info');
       try {
         await component.prepareProject('D:/isolated-load', { signal: new AbortController().signal }, () => {});
-        expect(gc.calls.count()).toBe(retainedHistory ? 0 : 1);
-        expect(resources.size).toBe(retainedHistory ? 1 : 0);
+        expect(gc.calls.count()).toBe(retained === 'none' ? 1 : 0);
+        expect(resources.size).toBe(retained === 'none' ? 0 : 1);
       } finally { window['boardConfig'] = previousBoard; }
     });
   }

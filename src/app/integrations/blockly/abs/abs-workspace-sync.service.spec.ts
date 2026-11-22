@@ -4901,20 +4901,61 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(reply.migrationDeferred).toEqual({ version: 1, reason: 'saved-working-differs' });
       expect([...disk]).toEqual(before);
     });
-    it('defers existing source projections and a dirty canvas without changing their original files', async () => {
+    it('defers a dirty canvas without changing an unbound ABS companion', async () => {
       savedCanvas();
-      for (const [key, bytes] of [['project.abs', '# preserved original draft'], ['project.abs.map.json', '{"old":"map"}']]) {
-        disk.set(key, bytes); const before = [...disk];
-        const prepared = await service.prepareWorkspaceModeMigration();
-        expect(prepared.ok).toBeTrue();
-        expect((prepared as any).migrationDeferred).toEqual({ version: 1, reason: 'source-projection-present' });
-        expect([...disk]).toEqual(before); disk.delete(key);
-      }
+      disk.set('project.abs', '# preserved original draft');
+      disk.set('project.abs.map.json', '{"old":"map"}');
       roots().setFieldValue('unsaved current view', 'TEXT'); const before = [...disk];
       const dirty = await service.prepareWorkspaceModeMigration();
       expect((dirty as any).migrationDeferred).toEqual({ version: 1, reason: 'saved-working-differs' });
       expect([...disk]).toEqual(before); expect(roots().getFieldValue('TEXT')).toBe('unsaved current view');
       expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(gate.busy).toBeFalse();
+    });
+    for (const variant of ['known mirror', 'old ABI hash', 'edited legacy ABS', 'only ABS', 'unknown companions'] as const) {
+      it(`establishes the first accepted generation from saved ABI with ${variant} retained as needed`, async () => {
+        savedCanvas();
+        const legacy = '# ABS Schema: 2\nroot(TEXT="before")\n';
+        const original = variant === 'known mirror' || variant === 'old ABI hash' ? legacy : legacy.replace('before', 'unsubmitted');
+        const map = variant === 'only ABS' ? null : variant === 'unknown companions' ? '{"unrecognized":"author map"}' : absJson({
+          schemaVersion: 1, absSchemaVersion: 2, projectionVersion: 'abs-v2.preview.4', generation: 'legacy',
+          baselineRef: absBaselineKey('legacy'), scope, baseAbsHash: await hashAbsText(legacy), nodes: [], symbols: [],
+          savedAbiHash: variant === 'old ABI hash' ? await hashAbsText('other ABI') : await hashAbsText(absJson(JSON.parse(disk.get('project.abi')!))),
+        });
+        disk.set('project.abs', original);
+        if (map !== null) disk.set('project.abs.map.json', map);
+        const prepared: any = await service.prepareWorkspaceModeMigration();
+        expect(prepared.ok).toBeTrue();
+        expect(prepared.migration).toBeDefined();
+        const store = new AbsBaselineStore(port, scope);
+        const accepted = await store.readCommittedSnapshot();
+        const generation = accepted!.projection.map.generation;
+        expect(disk.get('project.abs')).toContain('TEXT="before"');
+        expect(disk.get('project.abs')).not.toContain('unsubmitted');
+        expect(roots().getFieldValue('TEXT')).toBe('before');
+        if (variant === 'known mirror') {
+          await expectAsync(store.readArchivedDraft(generation)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DRAFT_ARCHIVE_MISSING' }));
+        } else {
+          const draft = await store.readArchivedDraft(generation);
+          expect(draft).toEqual(jasmine.objectContaining({ origin: 'legacy-mirrors', baseGeneration: null, abs: original }));
+          expect(JSON.parse(disk.get(absBaselineKey(generation))!).inputMap).toBe(map);
+        }
+      });
+    }
+    it('rejects a legacy companion refresh against independently changed saved ABI', async () => {
+      savedCanvas();
+      const loaded = editor.captureProjectSnapshot().document;
+      const original = disk.get('project.abi')!;
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, original, loaded);
+      const changed = JSON.parse(original);
+      changed.pages[0].content.blocks.blocks[0].fields.TEXT = 'different on disk';
+      disk.set('project.abi', absJson(changed));
+      disk.set('project.abs', 'unknown companion bytes');
+      const before = [...disk];
+      await expectAsync(service.exportGeneration()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DUAL_EDIT_CONFLICT' }));
+      expectProgramFilesUnchanged(before);
+      expect(roots().getFieldValue('TEXT')).toBe('before');
     });
     it('keeps verified readiness deferrals distinct from corrupt metadata and failed publications', async () => {
       savedCanvas(); await baseline();

@@ -88,6 +88,7 @@ import { readWorkingCandidate, workingCandidateBinding } from './abs-working-can
 import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { mergeAbsStrictDocument } from './abs-strict-document-merge';
 import { readLegacyCandidateCapture } from './abs-legacy-candidate-capture';
+import { inspectLegacyAbsMirrors } from './abs-legacy-mirrors';
 import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
 
 type AbsExportOptions = { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string;
@@ -109,7 +110,7 @@ export interface AbsWorkspaceSyncOutcome {
   abs?: string;
   reused?: boolean;
   inputAbiHash?: string | null;
-  draftArchive?: { generation: string; baseGeneration: string | null; origin?: 'initial-baseline'; hash: string; bytes: number };
+  draftArchive?: { generation: string; baseGeneration: string | null; origin?: 'initial-baseline' | 'legacy-mirrors'; hash: string; bytes: number };
   recoveryArchive?: AbsRecoveryArchive;
   derivedOutputs?: AbsDerivedOutputs;
   /** Read-only pre-AI user state for history; never a published generation. */
@@ -360,20 +361,21 @@ export class AbsWorkspaceSyncService {
       const deferred = (reason: 'saved-program-unavailable' | 'source-projection-present' | 'publication-pending' | 'saved-working-differs') =>
         ({ ...protocol, migrationDeferred: { version: 1 as const, reason } });
       if (pending || journal) return deferred('publication-pending');
-      if (accepted?.abi === null) return deferred('saved-program-unavailable');
-      if (!accepted) {
-        const disk = await store.captureDisk(); guard();
+      const disk = await store.captureDisk();
+      const legacy = await inspectLegacyAbsMirrors(disk, accepted?.projection); guard();
+      if (accepted?.abi === null && !legacy) return deferred('saved-program-unavailable');
+      if (!accepted || legacy) {
         const reason = disk.abi === null ? 'saved-program-unavailable'
-          : disk.abs !== null || disk.map !== null ? 'source-projection-present'
+          : !legacy && (disk.abs !== null || disk.map !== null) ? 'source-projection-present'
           : (this.project.hasUnsavedChangesAtLoadedAbi(context.path, disk.abi, working.document)
             ?? (absJson(this.editor.normalizeProjectAbi(JSON.parse(disk.abi))) !== absJson(this.editor.normalizeProjectAbi(working.document))))
             ? 'saved-working-differs' : undefined;
         if (reason) return deferred(reason);
-        // Only a pristine saved canvas can establish its first accepted state.
-        // Reuse the normal publisher under this same FIFO lease; no draft exists
-        // to replace and the original disk preimage is checked again at commit.
+        // Only the acknowledged saved canvas may bootstrap this engine.
+        // The normal publisher retains any displaced historical draft in the
+        // immutable generation before changing mirrors under their original CAS.
         const initialized = await this.exportInContext(context, lease, store, { initialize: true, save: true },
-          { expected: disk, generation: null }); guard();
+          { expected: disk, generation: accepted?.projection.map.generation ?? null }); guard();
         if (initialized.publication.status !== 'COMMITTED') throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_PENDING',
           'The first accepted publication must settle before workspace migration.');
         working = this.editor.captureProjectSnapshot(lease);
@@ -856,18 +858,20 @@ export class AbsWorkspaceSyncService {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Saved ABI changed before export.');
       }
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending generation before exporting.');
-      const savedCommit = !inspection && options.save ? await store.inspectCommitted() : null;
-      const committed = inspection ? inspection.committed?.projection : options.save ? savedCommit?.projection : await store.loadCommitted();
+      const mayUpgradeLegacy = !projectTree && !inspection && !options.synchronize && options.publish !== false;
+      const savedCommit = !inspection && (options.save || mayUpgradeLegacy) ? await store.inspectCommitted() : null;
+      const legacy = mayUpgradeLegacy ? await inspectLegacyAbsMirrors(expected, savedCommit?.projection) : undefined;
+      const committed = inspection ? inspection.committed?.projection : options.save || legacy ? savedCommit?.projection : await store.loadCommitted();
       // Explicit current-view saves/state operations own their canvas, not an
       // unrelated pending ABS draft. Retain that exact draft/map in the normal
       // immutable generation journal before publishing the current view.
-      const archiveCurrentDraft = !projectTree && !!committed && expected.abs !== null && expected.abs !== committed.abs
+      const archiveCurrentDraft = !legacy && !projectTree && !!committed && expected.abs !== null && expected.abs !== committed.abs
         && (options.save === true || input?.generation !== undefined && input.generation !== null);
       if (input && (committed?.map.generation ?? null) !== input.generation) {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed after state-operation preflight.');
       }
-      if (committed && !inspection) this.assertMirrors(committed, expected, !projectTree && options.publish !== false && !archiveCurrentDraft);
-      else if (!committed && (expected.map !== null || expected.abs !== null && !initialize)) {
+      if (!legacy && committed && !inspection) this.assertMirrors(committed, expected, !projectTree && options.publish !== false && !archiveCurrentDraft);
+      else if (!legacy && !committed && (expected.map !== null || expected.abs !== null && !initialize)) {
         throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An existing mirror requires explicit generation initialization; orphan maps are never overwritten.', undefined, [], {
           reason: expected.map === null ? 'initial-baseline' : 'orphan-map',
           hint: expected.map === null
@@ -880,6 +884,14 @@ export class AbsWorkspaceSyncService {
       let assertCurrent = captured
         ? () => { context.assertCurrent(); lease.assertCurrent(); return snapshot; }
         : this.atRevision(context.assertCurrent, lease, snapshot);
+      if (legacy && !committed && expected.abi !== null
+        && this.project.hasUnsavedChangesAtLoadedAbi(context.path, expected.abi, snapshot.document) === undefined
+        && !await sameAbsSavedProgram(JSON.parse(expected.abi), snapshot.document, {
+          normalize: value => this.editor.normalizeProjectAbi(value),
+          resolve: ref => projectDataRuntime.resolve(ref), assertCurrent,
+        })) {
+        throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'The saved ABI changed after the canvas opened; the original companions were retained.');
+      }
       if (options.save && !saveCheckpoint) {
         const document = await materializeGenericProjectDataValues(snapshot.document, {
           resolve: async <T>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<T>(ref); assertCurrent(); return value; },
@@ -947,7 +959,7 @@ export class AbsWorkspaceSyncService {
       // Still verify current disk/contracts and republish derived outputs: a
       // clean canvas does not prove generated files or dependencies are intact.
       const unchangedSave = options.save && prepared?.abiText === expected.abi;
-      if (!projectTree && (options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
+      if (!legacy && !projectTree && (options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
         && absJson(context.scope) === absJson(committed.map.scope)
@@ -982,14 +994,15 @@ export class AbsWorkspaceSyncService {
         abiSaved: false, absMirrored: false, mapPublished: false }, requiresReload: false, warnings: [], evidence, abs: projection.abs };
       await store.stage({ projection, mode: prepared ? 'import' : 'export', inputAbs: expected.abs ?? projection.abs, abi: prepared?.abiText ?? null, expected,
         ...(projectTree && preserveAuthor ? { authorIntent: 'preserve' as const } : {}),
-        ...(inspection || archiveCurrentDraft ? { inputMap: expected.map } : {}),
+        ...(inspection || archiveCurrentDraft || legacy?.retainMap ? { inputMap: expected.map } : {}),
+        ...(legacy?.retainDraft ? { legacyMirrorArchive: true as const } : {}),
         ...(options.preserveDraft || archiveCurrentDraft ? { draftBaseGeneration: committed!.map.generation } : {}) },
-        input?.generation === null ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash);
+        input?.generation === null || legacy && !savedCommit ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash);
       if (saveCheckpoint?.native) await saveCheckpoint.native.application.stageNativeSave({
         ref: saveCheckpoint.native.ref, evidence, inputAbiHash: expected.abi === null ? null : await hashAbsText(expected.abi),
         ...(saveCheckpoint.native.blockState ? { blockState: saveCheckpoint.native.blockState(evidence) } : {}),
       }, assertCurrent);
-      const archived = options.preserveDraft || archiveCurrentDraft || input?.generation === null && expected.abs !== null
+      const archived = options.preserveDraft || archiveCurrentDraft || legacy?.retainDraft || !legacy && input?.generation === null && expected.abs !== null
         ? await store.readArchivedDraft(projection.map.generation) : undefined;
       const draftArchive = archived ? { generation: archived.generation, baseGeneration: archived.baseGeneration,
         ...(archived.origin ? { origin: archived.origin } : {}), hash: archived.hash, bytes: archived.bytes } : undefined;
