@@ -47,6 +47,49 @@ function complete(config) {
     api.finishBuildExecution(config, true);
 }
 
+test('captures project audio for the build and invalidates upload on replacement or deletion', t => {
+    const f = fixture(t);
+    const audio = 'audio/73946cc8eb117bdb2d230f34583fcece.mp3';
+    f.put(audio, 'first converted audio');
+    f.put('assets/audio/source.wav', 'editor source');
+    const audioDigest = upload.captureBlocklyUploadInputs(f.config);
+    const first = api.prepareBuildExecution(f.config);
+    const captured = path.join(first.currentProjectPath, audio);
+    assert.equal(fs.readFileSync(captured, 'utf8'), 'first converted audio');
+    assert.equal(fs.existsSync(path.join(first.currentProjectPath, 'assets')), false);
+    complete(first);
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+
+    f.put('assets/audio/source.wav', 'updated editor source');
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+    f.put(audio, 'second converted audio');
+    assert.notEqual(upload.captureBlocklyUploadInputs(f.config), audioDigest);
+    assert.equal(api.canReuseBuildExecution(f.config), false);
+    assert.equal(fs.readFileSync(captured, 'utf8'), 'first converted audio');
+
+    const next = api.prepareBuildExecution({ ...f.config, buildRequestId: 'new-audio' });
+    assert.equal(fs.readFileSync(path.join(next.currentProjectPath, audio), 'utf8'), 'second converted audio');
+    complete(next);
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+    fs.unlinkSync(path.join(f.root, audio));
+    assert.equal(api.canReuseBuildExecution(f.config), false);
+});
+
+test('project audio capture refuses to follow a junction outside its input directory', t => {
+    const project = fixture(t);
+    const other = fixture(t);
+    other.put('linked.mp3', 'outside media');
+    fs.symlinkSync(other.root, path.join(project.root, 'audio'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => api.prepareBuildExecution(project.config), /linked project audio/i);
+    assert.throws(() => upload.captureBlocklyUploadInputs(project.config), /linked project audio/i);
+
+    fs.rmSync(path.join(project.root, 'audio'));
+    project.put('audio/converted.mp3', 'managed media');
+    fs.symlinkSync(other.root, path.join(project.root, 'audio', 'outside'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => api.prepareBuildExecution(project.config), /linked project audio escapes/i);
+    assert.throws(() => upload.captureBlocklyUploadInputs(project.config), /source link escapes/i);
+});
+
 test('publishes the next Windows build after a brief current receipt sharing violation',
     { skip: process.platform !== 'win32' }, t => {
         const f = fixture(t), first = api.prepareBuildExecution(f.config);

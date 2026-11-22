@@ -6,6 +6,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { sourceManifest } = require('./build-source-capture');
 const { captureLibrarySource } = require('./library-source-evidence');
 const { collectLibraryPackages } = require('./library-packages');
+const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const receiptPath = root => path.join(root, '.build', 'aily-upload-state.json');
 
@@ -22,7 +23,7 @@ function captureBlocklyUploadInputs(config) {
         const captured = captureLibrarySource(filename);
         records.push([filename, captured.location, captured.fingerprint]);
     };
-    for (const name of ['src', 'components', 'partitions.csv']) add(path.join(root, name));
+    for (const name of blocklyProjectBuildInputs(root)) add(path.join(root, name));
     const board = path.join(root, 'node_modules', config.boardModule);
     for (const name of ['package.json', 'board.json']) add(path.join(board, name));
     for (const lib of collectLibraryPackages(pkg.dependencies, root)) {

@@ -11,6 +11,7 @@ const { buildSnapshotReceipt } = require('./build-snapshot-receipt');
 const { getSystemBootId } = require('./system-boot-id');
 const { processIdentity } = require('./build-process-identity');
 const { inspectBuildWorkspaceIdle } = require('./build-workspace-lease');
+const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const UUID = /^[a-f0-9-]{36}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -132,9 +133,14 @@ function snapshot(config, target, copy, { compilerInputsOnly = false, retainedAb
     if (compilerInputsOnly) mergeGeneratorInputs(manifest, config);
     const inputs = [], active = new Set();
     let bytes = 0, count = 0;
-    const visit = (source, relative, depth = 0) => {
+    const visit = (source, relative, depth = 0, boundary) => {
         if (depth > 64) fail('Execution source depth exceeds budget.');
         const real = fs.realpathSync(source), before = fs.statSync(source);
+        if (boundary) {
+            const fromBoundary = path.relative(boundary, real);
+            if (fromBoundary === '..' || fromBoundary.startsWith('..' + path.sep) || path.isAbsolute(fromBoundary))
+                fail('Linked project audio escapes its input directory.');
+        }
         if (before.isDirectory()) {
             if (active.has(real)) fail('Execution source contains a link cycle.');
             active.add(real);
@@ -144,7 +150,7 @@ function snapshot(config, target, copy, { compilerInputsOnly = false, retainedAb
                 // Generated declarations come from the exact generator capture,
                 // never an interrupted older publisher's shared src directory.
                 if (relative === 'src' && HEADER.test(name) && config.generatedArtifacts !== undefined) continue;
-                visit(path.join(source, name), path.join(relative, name), depth + 1);
+                visit(path.join(source, name), path.join(relative, name), depth + 1, boundary);
             }
             active.delete(real);
         } else if (before.isFile()) {
@@ -160,9 +166,10 @@ function snapshot(config, target, copy, { compilerInputsOnly = false, retainedAb
     if (copy) fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify(manifest, null, 2), { flag: 'wx' });
     // The retained ABI is part of the historical capture. Conversion evidence
     // only needs compiler files, code, declarations and macros.
-    for (const name of ['project.abi', 'src', 'components', 'partitions.csv']) {
+    for (const name of ['project.abi', ...blocklyProjectBuildInputs(root)]) {
         if (compilerInputsOnly && name === 'project.abi') continue;
-        if (fs.existsSync(path.join(root, name))) visit(path.join(root, name), name);
+        const source = path.join(root, name);
+        if (fs.existsSync(source)) visit(source, name, 0, name === 'audio' ? source : undefined);
         else if (compilerInputsOnly && name === 'src' && config.generatedArtifacts != null) inputs.push([name, 'directory']);
     }
     const packages = new Map([[path.join('node_modules', config.boardModule), path.join(root, 'node_modules', config.boardModule)]]);
