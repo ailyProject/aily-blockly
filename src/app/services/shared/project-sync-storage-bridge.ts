@@ -32,12 +32,14 @@ export interface ProjectStorageBridge {
   readonly attachment?: ProjectStorageAttachment;
   readonly executor?: ProjectStorageExecutor;
   observeExecutor?(original: ProjectStorageExecutor): Promise<ProjectStorageExecutorObservation>;
+  retireEmptyProjectFileLock?(): Promise<boolean>;
   retireCopiedLock?(proof: CopiedProjectLockRecovery): Promise<void>;
   read(key: string): Promise<string | null>;
   withLock<T>(run: (storage: ProjectStorageAccess, settle: (result: ProjectStorageSettlement<T>) => void) => void): Promise<T>;
 }
 export interface NativeProjectStorageBridge extends ProjectStorageBridge {
   observeExecutorResult?(original: ProjectStorageExecutor): Promise<ProjectStorageSettlement<ProjectStorageExecutorObservation>>;
+  retireEmptyProjectFileLockResult?(): Promise<ProjectStorageSettlement<boolean>>;
   retireCopiedLockResult?(proof: CopiedProjectLockRecovery): Promise<ProjectStorageSettlement<void>>;
   readResult?(key: string): Promise<ProjectStorageSettlement<string | null>>;
   withLockResult?<T>(run: (storage: NativeProjectStorageAccess,
@@ -66,6 +68,9 @@ export function projectStorageBridge(storage: NativeProjectStorageBridge, assert
       assertCurrent();
       const observed = storage.observeExecutorResult ? value(await storage.observeExecutorResult(original)) : await storage.observeExecutor!(original);
       assertCurrent(); return observed;
+    } } : {}),
+    ...(storage.retireEmptyProjectFileLockResult ? { retireEmptyProjectFileLock: async () => {
+      assertCurrent(); const archived = value(await storage.retireEmptyProjectFileLockResult!()); assertCurrent(); return archived;
     } } : {}),
     ...(storage.retireCopiedLockResult ? { retireCopiedLock: async (proof: CopiedProjectLockRecovery) => {
       assertCurrent(); value(await storage.retireCopiedLockResult!(proof)); assertCurrent();

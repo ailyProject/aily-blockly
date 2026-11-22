@@ -191,7 +191,7 @@ test('only an exact publication staging alias can be recognized as part of a loc
   for (const name of [marker, alias, stage]) assert.equal(fs.readFileSync(name, 'utf8'), bytes);
 });
 
-test('an ownerless legacy marker stays protected without independent owner evidence', async () => {
+test('an ownerless legacy marker stays protected without a supported native handle proof', { skip: process.platform === 'win32' }, async () => {
   const directory = project(), metadata = path.join(directory, '.aily');
   const marker = path.join(metadata, 'project-files.write.lock');
   fs.mkdirSync(metadata);

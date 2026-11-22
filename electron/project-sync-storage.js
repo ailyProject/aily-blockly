@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { storageExecutor, observeStorageExecutor } = require('./project-file-lock-owner');
+const { storageExecutor, observeStorageExecutor, retireEmptyProjectFileLock } = require('./project-file-lock-owner');
 const { assertNoPreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
@@ -164,6 +164,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       guard(); return result;
     },
     read: async key => { guard(); return readText(key); },
+    retireEmptyProjectFileLock: async () => retireEmptyProjectFileLock(access, ownerGuard),
     retireCopiedLock,
     withLock: async (operation, observeScope = false) => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
@@ -308,6 +309,7 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
     read: key => storage.read(key),
     withLock: operation => withBridgeLock(operation, false),
     readResult: key => resultOf(() => storage.read(key)),
+    retireEmptyProjectFileLockResult: () => resultOf(() => storage.retireEmptyProjectFileLock()),
     retireCopiedLockResult: proof => resultOf(() => storage.retireCopiedLock(proof)),
     withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),
   };

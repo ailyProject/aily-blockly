@@ -14,6 +14,7 @@ const stagingName = (directory, token) => path.join(directory, `.project-files.w
 const plainMarker = stat => stat?.isFile() && !stat.isSymbolicLink() && stat.size <= 16384n;
 const sameMarker = (stat, original) => plainMarker(stat) && stat.dev === original.dev && stat.ino === original.ino;
 const changedMarker = () => fault('PROJECT_FILE_LOCK_CHANGED', 'Project lock ownership changed; retained the marker.');
+const busyMarker = () => fault('PROJECT_FILE_BUSY', 'Project writer lock is busy or its previous owner cannot be verified.');
 
 function markerStatAt(files, filename) {
   try { return files.lstatSync(filename, { bigint: true }); }
@@ -99,6 +100,51 @@ function observeStorageExecutor(original, observer = storageExecutor()) {
   return current === original.processIdentity ? result('active', 'process-matched') : result('exited', 'process-reused');
 }
 
+function tryArchiveEmptyMarker(access, directory, marker, stat, assertScope) {
+  if (process.platform !== 'win32' || !access.attachment) return 'protected';
+  const { files } = access;
+  const parent = rootAttachment(directory, files);
+  if (!parent || parent.identity.dev !== access.attachment.identity.dev || typeof stat.birthtimeNs !== 'bigint')
+    throw changedMarker();
+  assertScope();
+  const current = markerStatAt(files, marker);
+  if (!current) return 'absent';
+  if (!sameMarker(current, stat) || current.nlink !== 1n || current.size !== 0n || current.birthtimeNs !== stat.birthtimeNs)
+    throw changedMarker();
+  const retire = require('./owned-process').runtime()?.binding.archiveEmptyProjectLock;
+  if (typeof retire !== 'function') return 'protected';
+  const { dev, ino, birthtimeNs } = parent.identity;
+  const result = retire(directory, randomUUID(), BigInt(dev), BigInt(ino), BigInt(birthtimeNs) / 100n,
+    current.ino, current.birthtimeNs / 100n);
+  if (result === 0) return 'archived';
+  if (result === 2) return 'absent'; // The older writer removed its own marker.
+  if (result === 5 || result === 32 || result === 33 || result === 50) return 'protected'; // Denied, in use, or unsupported filesystem.
+  throw changedMarker();
+}
+
+/** Warm-session recovery touches only the exact legacy marker, not any request,
+ * generation or publication. A busy native guard is never waited on here. */
+function retireEmptyProjectFileLock(access, guard) {
+  const { root, files, checkRoot, checkDirectory } = access;
+  const directory = path.join(root, '.aily'), marker = path.join(directory, 'project-files.write.lock');
+  guard(); checkRoot();
+  if (!markerStatAt(files, directory)) return false;
+  checkDirectory(directory);
+  const stat = markerStatAt(files, marker);
+  if (!stat || stat.size !== 0n) return false;
+  if (!plainMarker(stat) || stat.nlink !== 1n) throw changedMarker();
+  const guardFile = path.join(directory, 'project-files.guard');
+  const native = require(childScriptPath('native-file-lock.js')).tryAcquireFileLock(guardFile);
+  if (!native) throw busyMarker();
+  try {
+    const outcome = tryArchiveEmptyMarker(access, directory, marker, stat, () => {
+      guard(); checkRoot(); checkDirectory(directory); native.assertHeld();
+    });
+    if (outcome === 'protected') throw busyMarker();
+    return outcome === 'archived';
+  } finally { native.close(); }
+}
+
 /** The permanent native anchor serializes recovery, while the canonical marker
  * remains the common exclusion point for old and new writers. No timeout/PID
  * alone authorizes deleting the marker; an exact dead owner is checked while
@@ -116,9 +162,8 @@ async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) 
     ...(attachment ? { attachment } : {}) }));
   const deadline = Date.now() + timeoutMs;
   let native, descriptor, preparedStat, markerStat;
-  const busy = () => fault('PROJECT_FILE_BUSY', 'Project writer lock is busy or its previous owner cannot be verified.');
   const wait = async () => {
-    if (Date.now() >= deadline) throw busy();
+    if (Date.now() >= deadline) throw busyMarker();
     await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
   };
   const assertScope = (checkContext = true) => {
@@ -165,6 +210,10 @@ async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) 
       if (!stat) publish();
       else {
         if (!plainMarker(stat) || (stat.nlink !== 1n && stat.nlink !== 2n)) throw changedMarker();
+        if (stat.size === 0n && stat.nlink === 1n) {
+          if (tryArchiveEmptyMarker(access, directory, marker, stat, assertScope) === 'protected') await wait();
+          continue;
+        }
         const bytes = files.readFileSync(marker);
         let previous; try { previous = JSON.parse(bytes.toString('utf8')); } catch { /* Retain unverified bytes. */ }
         // An interrupted publication can leave exactly one additional name for
@@ -238,4 +287,4 @@ async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) 
   }
 }
 
-module.exports = { rootAttachment, storageExecutor, acquirePublicationLock, ownerIsDead, observeStorageExecutor };
+module.exports = { rootAttachment, storageExecutor, acquirePublicationLock, ownerIsDead, observeStorageExecutor, retireEmptyProjectFileLock };

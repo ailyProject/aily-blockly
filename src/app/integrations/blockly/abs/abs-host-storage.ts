@@ -32,6 +32,7 @@ export async function openAbsHostStorage(
     attachment: storage.attachment,
     executor: storage.executor,
     ...(storage.observeExecutor ? { observeExecutor: (original: NonNullable<AbsSyncStoragePort['executor']>) => storage.observeExecutor!(original) } : {}),
+    ...(storage.retireEmptyProjectFileLock ? { retireEmptyProjectFileLock: storage.retireEmptyProjectFileLock } : {}),
     ...(storage.retireCopiedLock ? { retireCopiedLock: storage.retireCopiedLock } : {}),
     read: key => storage.read(key),
     // Return void to contextBridge. Zone/native promises stay on their owning side;

@@ -29,6 +29,7 @@ export interface AbsSyncStoragePort {
   readonly attachment?: AbsProjectAttachment;
   readonly executor?: AbsStorageExecutor;
   observeExecutor?(original: AbsStorageExecutor): Promise<AbsStorageExecutorObservation>;
+  retireEmptyProjectFileLock?(): Promise<boolean>;
   retireCopiedLock?(proof: CopiedProjectLockRecovery): Promise<void>;
   read(key: string): Promise<string | null>;
   /** Write capability exists only inside this callback; never store a global active lock. */
