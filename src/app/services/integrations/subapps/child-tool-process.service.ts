@@ -585,11 +585,10 @@ export class ChildToolProcessService implements OnDestroy {
         throw new Error('Blockly Chat compatibility check did not select a verified package');
       }
       session.version = latestConfig.version || '';
-      // Another renderer can register the Runtime while prepareLaunch waits on
-      // the shared install lock. Reuse its pinned package before spawning.
+      // Another renderer can finish startup while prepareLaunch is queued.
       const readySession = await this.acquireSharedSession(latestConfig, session);
       if (readySession) return readySession;
-      return await this.startServer(latestConfig, session);
+      return await this.startServer(latestConfig, session, prepared.token);
     } finally {
       await api.finishLaunch(prepared.token);
     }
@@ -847,7 +846,7 @@ export class ChildToolProcessService implements OnDestroy {
     }
   }
 
-  private async startServer(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
+  private async startServer(config: ChildToolConfig, session: ChildToolSession, subappLaunchToken?: string): Promise<ChildToolHostInfo> {
     // prepareLaunch may have selected a newer package than startSession saw.
     this.assertUiRuntime(config);
     const cmd = window['cmd'];
@@ -914,35 +913,27 @@ export class ChildToolProcessService implements OnDestroy {
       streamId
     });
 
+    let reportedReady = false;
     const readyPromise = new Promise<ChildToolHostInfo>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        session.readyResolve = null;
-        session.readyReject = null;
-        const reason = `${config.id} server did not report ready${this.formatBufferedStderr(session)}`;
-        this.logError(config, 'ready timeout', reason);
-        reject(new Error(reason));
-      }, config.startupTimeoutMs || 8000);
-
       session.readyResolve = value => {
-        clearTimeout(timeout);
+        reportedReady = true;
         resolve(value);
       };
-      session.readyReject = reason => {
-        clearTimeout(timeout);
-        reject(reason);
-      };
+      session.readyReject = reject;
     });
 
     session.removeListener = cmd.onData(streamId, (output: any) => {
       this.handleProcessOutput(config, session, streamId, output);
     });
 
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      const result = await cmd.run({
+      const launch = Promise.resolve(cmd.run({
         command: 'node',
         args: [scriptPath, 'serve', '--host', '127.0.0.1', '--port', '0'],
         cwd: projectPath,
         streamId,
+        subappLaunchToken,
         shellProfile: false,
         ...(config.runtime?.processMessagePort
           ? { messagePort: config.runtime.processMessagePort }
@@ -953,18 +944,23 @@ export class ChildToolProcessService implements OnDestroy {
           ...(config.env || {}),
           ...(hostApiServer ? { AILY_API_SERVER: hostApiServer } : {})
         }
+      })).then(result => {
+        if (!result?.success) {
+          const message = result?.error || `Failed to start ${config.id} server`;
+          this.logError(config, 'spawn failed', { message, result });
+          throw new Error(message);
+        }
       });
-
-      if (!result?.success) {
-        const message = result?.error || `Failed to start ${config.id} server`;
-        this.logError(config, 'spawn failed', {
-          message,
-          result
-        });
-        throw new Error(message);
-      }
-
-      const hostInfo = await readyPromise;
+      const startupDeadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          const detail = reportedReady ? 'server startup was not acknowledged' : 'server did not report ready';
+          const reason = `${config.id} ${detail}${this.formatBufferedStderr(session)}`;
+          this.logError(config, 'startup timeout', reason);
+          reject(new Error(reason));
+        }, config.startupTimeoutMs || 8000);
+      });
+      const [hostInfo] = await Promise.race([Promise.all([readyPromise, launch]), startupDeadline]);
+      clearTimeout(timeout);
       if (config.blocklyChatFingerprint && !await this.verifyBlocklyChat(config, hostInfo)) {
         throw new Error('The running Chat could not confirm its ABS capability and build fingerprint');
       }
@@ -984,6 +980,7 @@ export class ChildToolProcessService implements OnDestroy {
         hostInfo: registeredHostInfo,
         streamId,
         leaseId: session.leaseId,
+        subappLaunchToken,
       });
       if (registered && registered.success !== true) {
         throw new Error(`${config.id} Runtime registration failed: ${registered.reason || 'unknown error'}`);
@@ -1000,6 +997,8 @@ export class ChildToolProcessService implements OnDestroy {
       await readyPromise.catch(() => undefined);
       await this.cleanupFailedStart(config, session, streamId);
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

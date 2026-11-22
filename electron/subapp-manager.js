@@ -10,6 +10,7 @@ const semver = require('semver');
 const { killRegisteredProcessTree } = require('./process-tree');
 const versions = require('./subapp-version-store');
 const { acquireInstallLock: acquireUpdateLock } = require('./subapp-install-lock');
+const { subappLaunches } = require('./subapp-launch-reservations');
 const { extractNpmTarballInBackground } = require('./subapp-package-worker-client');
 const { resolveAilyNpmPrefix } = require('./appdata-path');
 const subappBinRouter = require('./subapp-bin-router');
@@ -2304,6 +2305,16 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
     assertSubappCanBeUninstalled(entry.id, options);
     const binNames = declaredBinNames(legacyPath, entry.package);
     await stop();
+    await select(() => {
+      assertSubappCanBeUninstalled(entry.id, options);
+      alreadyMarked = versions.isUninstalling(rootDir, entry);
+      versions.beginUninstall(rootDir, entry);
+      marked = true;
+    });
+    // A launch may have started before we wrote the marker. Check holders only
+    // after new starts are fenced out, including processes still reporting ready.
+    await stop();
+    assertSubappCanBeUninstalled(entry.id, options);
     const targets = [legacyPath, versionStoreRoot];
     // No global selection lock while stopping, inspecting or deleting files.
     for (const target of targets) {
@@ -2315,20 +2326,10 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
         await bounded(forceCloseBusyHolders(target, entry, holders, options), 30000,
           'SUBAPP_STOP_TIMEOUT', `Timed out stopping subapp holders: ${entry.id}`);
       }
-      if ((options.platform || process.platform) !== 'win32'
-        && await (options.hasProcessesUsingPath || hasProcessesUsingPackagePath)(target, options.platform || process.platform)) {
+      if (await (options.hasProcessesUsingPath || hasProcessesUsingPackagePath)(target, options.platform || process.platform)) {
         throw formatBusyNeedsForceError(target, holders);
       }
     }
-    await select(() => {
-      assertSubappCanBeUninstalled(entry.id, options);
-      alreadyMarked = versions.isUninstalling(rootDir, entry);
-      versions.beginUninstall(rootDir, entry);
-      marked = true;
-    });
-    // A launch may have completed during preflight. The persisted marker now
-    // prevents new launches, so stop that last registration before cleanup.
-    await stop();
     assertSubappCanBeUninstalled(entry.id, options);
     cleanupStarted = true;
     removeOwnedBinLinks(rootDir, legacyPath, entry.package, binNames);
@@ -2890,8 +2891,10 @@ function createSubappManager(options = {}) {
     return { current: await prepareReplacement(target, await resolveDistribution(target)) };
   }
 
-  async function prepareLaunch(payload = {}) {
+  async function prepareLaunch(payload = {}, signal = options.signal) {
+    signal?.throwIfAborted();
     const { index, meta } = await loadIndex('cache-first');
+    signal?.throwIfAborted();
     const entry = index[validateId(payload.id)];
     if (!entry) throw new Error('Subapp is not present in the catalog');
     const chatInstall = options.requireBlocklyChatCompatibility && entry.id === CHAT_ID
@@ -2902,14 +2905,14 @@ function createSubappManager(options = {}) {
         compatibleChat = await prepareBlocklyChat(entry, chatInstall, index.dev !== true, meta);
       } catch (error) {
         if (!currentChatCatalog(meta) || !sameChatInstall(chatInstall, readInstalledState(rootDir, entry))) {
-          return prepareLaunch(payload);
+          return prepareLaunch(payload, signal);
         }
         throw error;
       }
     }
-    // Only serialize the tiny selection/start handshake, never npm extraction.
-    const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+    const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), { ...options, signal });
     try {
+      signal?.throwIfAborted();
       let installed = readInstalledState(rootDir, entry);
       const runningConfig = options.getRunningSubappConfig?.(entry.id) || null;
       if (compatibleChat) {
@@ -2920,7 +2923,7 @@ function createSubappManager(options = {}) {
         if (runningConfig?.blocklyChatFingerprint) return { config: runningConfig, release };
         if (!currentChatCatalog(meta) || !sameChatInstall(chatInstall, installed)) {
           release();
-          return prepareLaunch(payload);
+          return prepareLaunch(payload, signal);
         }
         const useNext = next && !runningConfig && payload.deferPreparedUpdate !== true;
         return { config: useNext ? next : current, release };
@@ -3330,35 +3333,9 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     return result;
   };
 
-  const launches = new Map();
-  ipcMain.handle('subapp-manager-prepare-launch', async (event, payload = {}) => {
-    const prepared = await defaultManager.prepareLaunch(payload);
-    if (event.sender.isDestroyed()) {
-      prepared.release();
-      throw new Error('Launch owner closed');
-    }
-    const token = randomUUID();
-    const release = () => {
-      if (!launches.has(token)) return;
-      launches.delete(token);
-      event.sender.removeListener('destroyed', release);
-      event.sender.removeListener('render-process-gone', release);
-      event.sender.removeListener('did-start-navigation', onNavigation);
-      prepared.release();
-    };
-    const onNavigation = (_event, _url, inPlace, isMainFrame) => {
-      if (isMainFrame && !inPlace) release();
-    };
-    launches.set(token, { owner: event.sender.id, release });
-    event.sender.once('destroyed', release);
-    event.sender.once('render-process-gone', release);
-    event.sender.on('did-start-navigation', onNavigation);
-    return { config: prepared.config, token };
-  });
-  ipcMain.handle('subapp-manager-finish-launch', (event, token) => {
-    const launch = launches.get(token);
-    if (launch?.owner === event.sender.id) launch.release();
-  });
+  ipcMain.handle('subapp-manager-prepare-launch', (event, payload = {}) =>
+    subappLaunches.prepare(event.sender, validateId(payload.id), signal => defaultManager.prepareLaunch(payload, signal)));
+  ipcMain.handle('subapp-manager-finish-launch', (event, token) => subappLaunches.finish(token, event.sender));
   ipcMain.handle('subapp-manager-verify-blockly-chat', (_event, { url, fingerprint, retryUnavailable } = {}) => {
     if (requireBlocklyChatCompatibility !== true) return 'unavailable';
     return verifyBlocklyChatRuntime(url, fingerprint, undefined, {

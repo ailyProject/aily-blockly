@@ -10,6 +10,7 @@ const { captureRegisteredProcessIdentity, killRegisteredProcessTree } = require(
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
 const { acquireNpmMutation } = require('./npm-mutation-queue');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
+const { subappLaunches } = require('./subapp-launch-reservations');
 let commandShutdown = false;
 const {
   normalizeProcessMessage,
@@ -573,6 +574,7 @@ class CommandManager {
       ownerWebContents: options.ownerWebContents,
       projectPath: options.projectPath,
       projectSessionId: options.projectSessionId,
+      subappLaunchId: options.subappLaunchId,
       releaseNpmMutation: options.releaseNpmMutation,
       stopRequested: false,
     };
@@ -825,7 +827,8 @@ class CommandManager {
       command: entry.command,
       cwd: entry.cwd,
       durationMs: Date.now() - entry.startedAt,
-      messagePort: !!entry.messagePort
+      messagePort: !!entry.messagePort,
+      ...(entry.subappLaunchId ? { subappLaunchId: entry.subappLaunchId } : {}),
     }));
   }
 
@@ -962,6 +965,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
     const senderWindow = event.sender; // 获取发送请求的窗口
     let delivery;
     let releaseNpmMutation;
+    let subappLaunch;
     const pending = { ownerWebContents: senderWindow, cwd: options.cwd || process.cwd(),
       buildWorkspacePath: options.buildWorkspace, projectPath: options.projectPath,
       projectSessionId: options.projectSessionId, cancelled: false, abort: new AbortController() };
@@ -995,8 +999,16 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       if (pending.cancelled) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
+      if (options.subappLaunchToken !== undefined) {
+        subappLaunch = subappLaunches.bindCommand(options.subappLaunchToken, senderWindow, streamId, options, () => {
+          void Promise.resolve().then(() => commandManager.killProcess(streamId, senderWindow)).catch(error => {
+            console.warn('[subapp-manager] abandoned launch cleanup failed:', error.message);
+          });
+        });
+      }
       const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
         releaseNpmMutation,
+        subappLaunchId: subappLaunch?.id,
         ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
       }, ({ code, signal, pid, startedAt, expected, ownershipReleased }) => {
         delivery?.onExit(code, signal, expected || !ownershipReleased);
@@ -1010,6 +1022,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         });
       });
       releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
+      subappLaunch?.spawned();
       const process = result.process;
       if (delivery) {
         process.on('message', message => {
@@ -1081,6 +1094,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         ...(delivery ? { buildDeliveryHandle: delivery.handle } : {})
       };
     } catch (error) {
+      if (subappLaunch) subappLaunches.finish(options.subappLaunchToken, senderWindow);
       delivery?.abandon();
       const formattedError = formatSpawnError(error);
 

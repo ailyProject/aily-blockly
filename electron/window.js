@@ -2,6 +2,7 @@
 const { ipcMain, BrowserWindow, app, screen, webContents, safeStorage } = require("electron");
 const { createWindowStateController } = require('./window-state');
 const { requestWindowAttention } = require('./window-attention');
+const { subappLaunches } = require('./subapp-launch-reservations');
 const {
     getActiveCmdProcesses,
     getCmdProcessMessagePortInfo,
@@ -545,6 +546,11 @@ function listChildToolHoldersForCatalogId(catalogId) {
             toolId,
             source: 'child-tool-session',
         });
+    }
+    for (const { streamId, pid, subappLaunchId } of getActiveCmdProcesses()) {
+        if (toolIds.includes(subappLaunchId) && childToolSessions.get(subappLaunchId)?.streamId !== streamId) {
+            holders.push({ pid, name: subappLaunchId, toolId: subappLaunchId, source: 'child-tool-startup' });
+        }
     }
     return holders;
 }
@@ -1942,6 +1948,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
         if (!toolId || !payload.hostInfo || !payload.streamId) {
             return { success: false, reason: 'invalid-payload' };
         }
+        const checkLaunch = () => {
+            if (payload.subappLaunchToken === undefined) return undefined;
+            const finish = subappLaunches.checkRegistration(payload.subappLaunchToken, event.sender, payload);
+            if (!getActiveCmdProcesses().some(process => process.streamId === payload.streamId && process.subappLaunchId === toolId)) {
+                throw new Error('Subapp process exited before registration.');
+            }
+            return finish;
+        };
+        let finishLaunch = checkLaunch();
 
         const messagePort = getCmdProcessMessagePortInfo(payload.streamId);
         const existing = childToolSessions.get(toolId);
@@ -1955,6 +1970,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
         if (registration === 'same-stream') {
             cancelChildToolRelease(existing);
             const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
+            if (acquired.success) finishLaunch?.();
             return acquired.success
                 ? { success: true, session: cloneChildToolSession(existing) }
                 : { success: false, reason: acquired.reason };
@@ -1980,6 +1996,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             cancelChildToolRelease(existing);
             await stopChildToolSessionProcess(existing);
             pendingChildToolProcessMessages.delete(existing.streamId);
+            finishLaunch = checkLaunch();
         }
 
         if (applicationIsQuitting) return { success: false, reason: 'application-quitting' };
@@ -1995,6 +2012,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             return { success: false, reason: acquired.reason };
         }
         childToolSessions.set(toolId, session);
+        finishLaunch?.();
         console.info('[ChildToolSession] Runtime registered', {
             toolId,
             streamId: payload.streamId,

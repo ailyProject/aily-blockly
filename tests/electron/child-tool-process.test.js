@@ -148,6 +148,34 @@ test('launch lock acquisition rechecks a Runtime registered by another renderer'
   } finally { await service.stop('fixture'); global.window = originalWindow; }
 });
 
+for (const reportsReady of [false, true]) {
+  test(`a missing spawn acknowledgement does not strand a managed launch (ready: ${reportsReady})`, async () => {
+    const processModule = await processModulePromise;
+    const originalWindow = global.window;
+    const harness = createHarness({ ready: false });
+    const config = { ...fixtureConfig(20), catalogId: 'fixture' };
+    const finished = [];
+    harness.window.electronAPI = { subapps: {
+      async prepareLaunch() { return { config, token: 'launch-token' }; },
+      async finishLaunch(token) { finished.push(token); },
+    } };
+    harness.window.cmd.run = (input) => {
+      harness.runCalls.push(input);
+      if (reportsReady) queueMicrotask(() => harness.emitCaptured(input.streamId, readyOutput(4100)));
+      return new Promise(() => {});
+    };
+    global.window = harness.window;
+    processModule.replaceChildToolConfigs([config]);
+    const service = createService(processModule);
+    try {
+      await assert.rejects(service.acquire('fixture'), reportsReady ? /startup was not acknowledged/ : /did not report ready/);
+      assert.equal(harness.runCalls[0].subappLaunchToken, 'launch-token');
+      assert.deepEqual(harness.killCalls, [harness.runCalls[0].streamId]);
+      assert.deepEqual(finished, ['launch-token']);
+    } finally { await service.stop('fixture'); global.window = originalWindow; }
+  });
+}
+
 test('UI acquisition rejects headless packages before borrowing or spawning a runtime', async () => {
   const processModule = await processModulePromise, originalWindow = global.window;
   const harness = createHarness({ ready: true }); global.window = harness.window;

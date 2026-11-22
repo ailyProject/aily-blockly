@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createHash } = require('crypto');
+const { EventEmitter } = require('node:events');
 const versions = require('../../electron/subapp-version-store');
 const {
   createSubappManager,
@@ -17,6 +18,7 @@ const {
 const { npmTarball, portableSubappTarball } = require('./fixtures/npm-tarball-fixture');
 const http = require('node:http');
 const { acquireInstallLock } = require('../../electron/subapp-install-lock');
+const { createSubappLaunchReservations } = require('../../electron/subapp-launch-reservations');
 const { verifyBlocklyChatRuntime } = require('../../electron/blockly-chat-compatibility');
 
 const ID = 'aily-chat';
@@ -816,6 +818,107 @@ test('a prepared update survives selection contention and can activate on retry'
   assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
 });
 
+function launchOwner() {
+  return Object.assign(new EventEmitter(), { isDestroyed: () => false });
+}
+
+function launchCommand(config) {
+  return {
+    command: 'node', cwd: config.packagePath,
+    args: [path.join(config.packagePath, config.entry)],
+    env: { AILY_CHILD_TOOL_ID: config.id },
+  };
+}
+
+test('a live renderer which drops the launch handshake cannot strand the real selection lock', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 400 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const launches = createSubappLaunchReservations({ dispatchTimeoutMs: 25 });
+  const owner = launchOwner();
+  const retryOwner = launchOwner();
+  const select = signal => f.manager.prepareLaunch({ id: ID }, signal);
+  const abandoned = await launches.prepare(owner, ID, select);
+  assert.equal(acquireInstallLock(path.join(f.rootDir, 'store', '.locks')), null);
+
+  const retry = await launches.prepare(retryOwner, ID, select);
+  try {
+    assert.equal(retry.config.version, '0.1.32');
+    assert.throws(() => launches.bindCommand(abandoned.token, owner, 'late', launchCommand(abandoned.config)),
+      { code: 'SUBAPP_LAUNCH_EXPIRED' });
+    assert.equal(owner.listenerCount('destroyed'), 0);
+  } finally { launches.finish(retry.token, retryOwner); }
+});
+
+test('a spawned but unready runtime frees selection for another host and its update', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 200 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  await f.manager.downloadUpdate({ id: ID });
+  const launches = createSubappLaunchReservations();
+  const owner = launchOwner();
+  const select = signal => f.manager.prepareLaunch({ id: ID, deferPreparedUpdate: true }, signal);
+  const started = await launches.prepare(owner, ID, select);
+  let stopped = 0;
+  const command = launchCommand(started.config);
+  assert.throws(() => launches.bindCommand(started.token, launchOwner(), 'unowned', command),
+    { code: 'SUBAPP_LAUNCH_EXPIRED' });
+  const binding = launches.bindCommand(started.token, owner, 'starting', command, () => { stopped++; });
+  binding.spawned();
+  // The renderer has sent neither ready registration nor finish. A separate
+  // manager must still be able to switch the active locator to a new generation.
+  const other = createSubappManager(f.managerOptions);
+  await other.installUpdate({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+  assert.ok(fs.existsSync(command.args[0]));
+
+  const nextOwner = launchOwner();
+  let entered = false;
+  const next = launches.prepare(nextOwner, ID, signal => { entered = true; return select(signal); });
+  assert.equal(entered, false, 'windows still serialize startup of the same tool');
+  owner.emit('render-process-gone');
+  assert.equal(stopped, 1);
+  const registration = { toolId: ID, streamId: 'starting', hostInfo: { packagePath: command.cwd } };
+  assert.throws(() => launches.checkRegistration(started.token, owner, registration), { code: 'SUBAPP_LAUNCH_EXPIRED' });
+  const replacement = await next;
+  launches.finish(replacement.token, nextOwner);
+});
+
+test('navigation while requesting selection cannot leave a lock or return a launch token', { timeout: 5000 }, async t => {
+  const f = fixture(t);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const launches = createSubappLaunchReservations();
+  const owner = launchOwner();
+  const abandoned = launches.prepare(owner, ID, async signal => {
+    const selection = await f.manager.prepareLaunch({ id: ID }, signal);
+    owner.emit('did-start-navigation', {}, 'file:///next', false, true);
+    return selection;
+  });
+  await assert.rejects(abandoned, { code: 'SUBAPP_LAUNCH_OWNER_CLOSED' });
+  const next = await f.manager.prepareLaunch({ id: ID });
+  next.release();
+});
+
+test('a live renderer which abandons a spawned runtime cannot register it later', { timeout: 5000 }, async t => {
+  const f = fixture(t);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const launches = createSubappLaunchReservations({ runtimeGraceMs: 20 });
+  const owner = launchOwner();
+  const prepared = await launches.prepare(owner, ID, async signal => {
+    const result = await f.manager.prepareLaunch({ id: ID }, signal);
+    return { ...result, config: { ...result.config, startupTimeoutMs: 20 } };
+  });
+  let finishStop;
+  const stopped = new Promise(resolve => { finishStop = resolve; });
+  launches.bindCommand(prepared.token, owner, 'abandoned', launchCommand(prepared.config), finishStop).spawned();
+  const retryOwner = launchOwner();
+  const retry = launches.prepare(retryOwner, ID, signal => f.manager.prepareLaunch({ id: ID }, signal));
+  await stopped;
+  const registration = { toolId: ID, streamId: 'abandoned', hostInfo: { packagePath: prepared.config.packagePath } };
+  assert.throws(() => launches.checkRegistration(prepared.token, owner, registration), { code: 'SUBAPP_LAUNCH_EXPIRED' });
+  const next = await retry;
+  launches.finish(next.token, retryOwner);
+  assert.equal(next.config.version, '0.1.32');
+});
+
 test('unconfirmed npm termination retains only its package guard until the process closes', { timeout: 10000 }, async t => {
   const archive = npmTarball({
     'package.json': JSON.stringify({ name: PACKAGE, version: '0.1.33', main: 'index.js', scripts: { postinstall: 'node build.js' } }),
@@ -848,7 +951,7 @@ test('unconfirmed npm termination retains only its package guard until the proce
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
 });
 
-test('a slow uninstall does not block another app and closes a registration that races preflight', { timeout: 5000 }, async t => {
+test('a slow uninstall fences new launches without blocking another app', { timeout: 5000 }, async t => {
   let unblock, reportMarked, calls = 0;
   const blocked = new Promise(resolve => { unblock = resolve; });
   const marked = new Promise(resolve => { reportMarked = resolve; });
@@ -873,6 +976,20 @@ test('a slow uninstall does not block another app and closes a registration that
   } finally { unblock(); }
   await uninstall;
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('uninstall protects a starting process which appeared before the uninstall marker', async t => {
+  let stops = 0;
+  const f = fixture(t, { managerOptions: {
+    forceStopChildToolByCatalogId: async () => { stops++; return { success: true }; },
+    listChildToolHolders: () => stops >= 2 ? [{ pid: 43210, source: 'child-tool-startup' }] : [],
+    listBusyHolders: async () => [],
+  } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  await assert.rejects(f.manager.uninstall({ id: ID }), error => error.requiresForceClose === true);
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.ok(fs.existsSync(path.join(legacy, 'package.json')));
 });
 
 test('a Windows-style deletion failure remains retryable in a new manager and never strands the global lock', { timeout: 5000 }, async t => {
