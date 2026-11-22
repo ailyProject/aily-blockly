@@ -50,6 +50,13 @@ if (mode === 'old-host') {
 } else if (mode === 'descendant') {
   writeJson(path.join(project, '.build', 'descendant-ready.json'), { pid: process.pid });
   setInterval(() => fs.appendFileSync(path.join(project, '.build', 'old-writes'), 'old\n'), 15);
+} else if (mode === 'finish-build') {
+  const original = execution.validateSharedBuildLaunch(configPath, project, 'compile');
+  const lease = acquireBuildWorkspace(project, 'compile');
+  try {
+    execution.startBuildExecution(original, lease);
+    execution.finishBuildExecution(original, false);
+  } finally { lease.release(); }
 } else {
   test('a restarted host retires the exact managed tree before a new request can reuse or clear the real .build', {
     skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 35000,
@@ -105,5 +112,62 @@ if (mode === 'old-host') {
       assert.match(path.basename(owned), /^aily-shared-build-/);
       fs.rmSync(owned, { recursive: true, force: true });
     }
+  });
+
+  test('a drained native build with a partial legacy receipt releases only its original admission', {
+    skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 25000,
+  }, async t => {
+    const temp = fs.realpathSync(os.tmpdir());
+    const owned = fs.realpathSync(fs.mkdtempSync(path.join(temp, 'aily-shared-build-')));
+    const appData = path.join(owned, 'app-data'), project = path.join(owned, 'fixture');
+    const priorAppData = process.env.AILY_APPDATA_PATH;
+    fs.mkdirSync(appData);
+    process.env.AILY_APPDATA_PATH = appData;
+    t.after(() => {
+      if (priorAppData === undefined) delete process.env.AILY_APPDATA_PATH;
+      else process.env.AILY_APPDATA_PATH = priorAppData;
+      assert.equal(path.dirname(fs.realpathSync(owned)), temp);
+      assert.match(path.basename(owned), /^aily-shared-build-/);
+      fs.rmSync(owned, { recursive: true, force: true });
+    });
+    writeJson(path.join(project, 'package.json'), { type: 'blockly', dependencies: { [boardModule]: '1' } });
+    writeJson(path.join(project, 'node_modules', boardModule, 'package.json'), { name: boardModule });
+    writeJson(path.join(project, 'node_modules', boardModule, 'board.json'), { compilerParam: '-b test:test:test' });
+    writeJson(path.join(project, 'project.abi'), { saved: 'legacy-unchanged' });
+    const old = execution.prepareBuildExecution(compileConfig(project, 'legacy-damaged-outcome'), undefined, 'compile', { shared: true });
+    let receiptPath;
+    const child = await withSharedBuildAdmission(project, { operation: 'compile' }, admission => {
+      const supervisor = createBuildWorkspaceSupervisor(project);
+      const binding = admission.bind(supervisor.environment.AILY_BUILD_WORKSPACE_SUPERVISOR, 'legacy-damaged-outcome', old.execution);
+      receiptPath = binding.receiptPath;
+      return spawnManagedBuild(process.execPath, [__filename, 'finish-build', project, old.configFilePath], {
+        cwd: project, windowsHide: true, stdio: 'ignore', env: { ...process.env, ...supervisor.environment },
+      }, binding);
+    });
+    assert.equal((await once(child, 'exit'))[0], 0);
+    await until(() => fs.existsSync(receiptPath));
+    const outcomePath = path.join(path.dirname(old.configFilePath), 'outcome.json');
+    const damaged = Buffer.from('{"version":');
+    fs.writeFileSync(outcomePath, damaged);
+    fs.writeFileSync(path.join(project, '.build', 'old-cache.bin'), 'old');
+    const next = execution.prepareBuildExecution(compileConfig(project, 'after-damaged-outcome'), undefined, 'compile', { shared: true });
+    const competing = acquireBuildWorkspace(project, 'verify');
+    try {
+      await assert.rejects(withSharedBuildAdmission(project, { operation: 'compile' }, () => assert.fail('An active owner was released')),
+        { code: 'BUILD_WORKSPACE_BUSY' });
+      competing.assertOwned();
+    } finally { competing.release(); }
+    await withSharedBuildAdmission(project, { operation: 'compile' }, () => {
+      assert.equal(execution.validateSharedBuildLaunch(next.configFilePath, project, 'compile').execution.id, next.execution.id);
+    });
+    const original = execution.inspectBuildExecution(project, 'legacy-damaged-outcome');
+    assert.equal(original.executionId, old.execution.id);
+    assert.equal(original.status, 'unconfirmed');
+    assert.equal(original.ownerState, 'outcome-unreadable');
+    assert.deepEqual(fs.readFileSync(outcomePath), damaged);
+    await withSharedBuildAdmission(project, { operation: 'clean' }, () => execution.clearSharedBuildCache(project));
+    assert.equal(fs.existsSync(path.join(project, '.build', 'old-cache.bin')), false);
+    assert.deepEqual(readJson(path.join(project, 'project.abi')), { saved: 'legacy-unchanged' });
+    assert.deepEqual(fs.readFileSync(outcomePath), damaged);
   });
 }

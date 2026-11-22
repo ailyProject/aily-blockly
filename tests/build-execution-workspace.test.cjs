@@ -225,6 +225,55 @@ test('shared cache clear removes an exited legacy recovery marker under the curr
     assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), 'original user program');
 });
 
+for (const selector of ['current.json', 'pending-compile.json', 'pending-preprocess.json']) {
+    test(`a broken shared ${selector} does not strand a new execution or clear`, t => {
+        const f = sharedFixture(t), original = f.prepare('completed-before-selector-damage');
+        complete(original);
+        const { store, folder } = api.recordFor(original);
+        const oldOutcome = fs.readFileSync(path.join(folder, 'outcome.json'));
+        const broken = path.join(store.parent, selector);
+        fs.writeFileSync(broken, '{"version":');
+        const next = f.prepare('next-after-selector-damage', undefined, selector.includes('preprocess') ? 'preprocess' : 'compile');
+        const lease = acquireBuildWorkspace(f.root, next.execution.operation);
+        try { api.startBuildExecution(next, lease); }
+        finally { lease.release(); }
+        api.finishBuildExecution(next, false);
+        fs.writeFileSync(broken, '{"version":');
+        assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+        assert.equal(fs.existsSync(broken), false);
+        assert.equal(fs.existsSync(path.join(f.root, '.build', 'firmware.bin')), false);
+        assert.deepEqual(fs.readFileSync(path.join(folder, 'outcome.json')), oldOutcome);
+        assert.equal(api.inspectBuildExecution(f.root, original.execution.buildRequestId).status, 'completed');
+        assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'failed');
+    });
+}
+
+test('shared cleanup retires a missing current target without erasing original receipts', t => {
+    const f = sharedFixture(t), original = f.prepare('receipt-before-missing-selector-target');
+    complete(original);
+    const { store, folder } = api.recordFor(original);
+    const outcome = fs.readFileSync(path.join(folder, 'outcome.json'));
+    fs.writeFileSync(store.pointer, JSON.stringify({ version: 1, id: randomUUID(), buildRequestId: 'missing-current-target' }));
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.equal(fs.existsSync(store.pointer), false);
+    assert.deepEqual(fs.readFileSync(path.join(folder, 'outcome.json')), outcome);
+});
+
+test('a non-file shared selector is refused before any cache or pending selector is removed', t => {
+    const f = sharedFixture(t), original = f.prepare('unaltered-selector');
+    complete(original);
+    const { store } = api.recordFor(original);
+    const queued = path.join(store.parent, 'pending-compile.json');
+    const pending = fs.readFileSync(queued);
+    fs.unlinkSync(store.pointer);
+    fs.mkdirSync(store.pointer);
+    assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_EXECUTION_INVALID' });
+    assert.equal(fs.lstatSync(store.pointer).isDirectory(), true);
+    assert.deepEqual(fs.readFileSync(queued), pending);
+    assert.equal(fs.readFileSync(path.join(f.root, '.build/firmware.bin'), 'utf8'), 'trusted firmware');
+    assert.equal(fs.existsSync(path.join(f.root, '.temp', 'preprocess.json')), true);
+});
+
 test('shared build rejects a redirected cache directory before taking over the writer', t => {
     const f = sharedFixture(t);
     const request = f.prepare('redirected');

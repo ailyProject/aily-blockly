@@ -264,14 +264,29 @@ export class NativeSavePublications {
       if (!final || proofText === null) return pending();
       guard(); return { state: 'completed', ref, result: final.result, current: false };
     };
-    const pointer = await this.port.read('committed.json'), disk = await output.store.captureDisk();
+    // Only current projection files may be unreadable after the original proof.
+    // Drain parallel reads so a separate ABI or storage error is still rejected.
+    let unreadableCurrent = false;
+    const currentFiles = { read: async (key: string) => {
+      try { return await this.port.read(key); }
+      catch (error) {
+        const code = (error as { code?: string })?.code;
+        const mirror = key === 'project.abs' || key === 'project.abs.map.json';
+        if (!(mirror && code === 'ABS_STORAGE_ENCODING_INVALID')
+          && !(key === 'prepared.json' && code === 'ABS_BASELINE_CORRUPT')) throw error;
+        unreadableCurrent = true;
+        return null;
+      }
+    } };
+    const pointer = await this.port.read('committed.json'), disk = await output.store.captureDisk(currentFiles);
+    if (unreadableCurrent) return withoutCurrentCanvas();
     const pointerHash = await hash(pointer);
     const sameGeneration = pointerHash === proof.committedHash;
     if (sameGeneration && !await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk))
       return withoutCurrentCanvas();
     if (await this.port.read('committed.json') !== pointer) return withoutCurrentCanvas();
     let acceptedSource;
-    try { acceptedSource = await output.store.acceptedSourceProof(staged.record.evidence.binding.generation, undefined, true); }
+    try { acceptedSource = await output.store.acceptedSourceProof(staged.record.evidence.binding.generation, currentFiles, true); }
     catch (error) {
       if (error instanceof AbsSyncError && error.code === 'ABS_BASELINE_STALE') return withoutCurrentCanvas();
       throw error;
@@ -281,8 +296,9 @@ export class NativeSavePublications {
         ? acceptedSourceMatches(acceptedSource, staged.record.evidence.binding, this.port.attachment)
           && acceptedSource.committedHash === pointerHash
         : disk.abs === output.ancestor.projection.abs)
-      && await this.port.read('prepared.json') === null
+      && await currentFiles.read('prepared.json') === null
       && await this.port.read('committed.json') === pointer;
+    if (unreadableCurrent) return withoutCurrentCanvas();
     // The terminal receipt remains immutable; this read-only projection reports
     // the author's current pending draft independently of that original commit.
     const result: NativeSaveResultFacts = final ? { ...final.result, ...(acceptedSource ? { acceptedSource,

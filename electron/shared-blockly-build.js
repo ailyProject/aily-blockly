@@ -107,6 +107,9 @@ async function withSharedBuildAdmission(projectPath, { signal, assertCurrent, be
     assertCurrent?.();
     const bootId = source('system-boot-id.js').getSystemBootId();
     const previous = readBinding(store, project);
+    if (!bootId && (previous || operation !== 'clean')) {
+      throw fault('BUILD_BOOT_ID_UNAVAILABLE', 'The current Windows boot identity could not be verified. No managed build was dispatched.');
+    }
     if (previous) {
       const observeOnly = operation === 'preprocess' || operation === 'upload' || previous.execution.operation === 'upload';
       if (!observeOnly) beforeStop?.(previous);

@@ -44,18 +44,18 @@ function json(filename, limit = 1024 * 1024) {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > limit) fail('Invalid execution record.');
     return JSON.parse(fs.readFileSync(filename, 'utf8'));
 }
-function write(filename, value) {
+function write(filename, value, assertOwned) {
     const temp = `${filename}.${randomUUID()}.tmp`;
     try {
         const fd = fs.openSync(temp, 'wx', 0o600);
         try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        renameForAtomicReplace(temp, filename);
+        renameForAtomicReplace(temp, filename, assertOwned);
     } finally { try { fs.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
 }
 function locked(store, action) {
     const guard = tryAcquireFileLock(store.anchor);
     if (!guard) throw Object.assign(new Error('BUILD_WORKSPACE_BUSY: Another execution transition is running.'), { code: 'BUILD_WORKSPACE_BUSY' });
-    try { return action(); } finally { guard.close(); }
+    try { return action(guard); } finally { guard.close(); }
 }
 function executionTransition(value, action) {
     // Only requests/current publication shares the project admission guard.
@@ -72,9 +72,24 @@ function sharedDispatchPath(store, operation) {
     return path.join(store.parent, operation === 'compile' ? 'pending-compile.json' : 'pending-preprocess.json');
 }
 
+// These files only select current work. A malformed selector provides no
+// execution identity. Path, file type, and IO failures remain hard errors.
+function readSharedSelector(filename) {
+    try {
+        const value = json(filename);
+        const valid = value?.version === 1 && typeof value.id === 'string' && UUID.test(value.id)
+            && typeof value.buildRequestId === 'string' && REQUEST_ID.test(value.buildRequestId);
+        return { filename, value: valid ? value : null };
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        if (error instanceof SyntaxError) return { filename, value: null };
+        throw error;
+    }
+}
+
 function isSharedDispatchCurrent({ store, record }) {
-    const pending = readOptional(json, sharedDispatchPath(store, record.operation));
-    return pending?.version === 1 && pending.id === record.id && pending.buildRequestId === record.buildRequestId;
+    const pending = readSharedSelector(sharedDispatchPath(store, record.operation))?.value;
+    return !!pending && pending.id === record.id && pending.buildRequestId === record.buildRequestId;
 }
 
 function ownsStandalonePreprocess(store, record) {
@@ -311,22 +326,20 @@ function prepareBuildExecution(config, workspace, operation = 'compile', { share
     write(configFilePath, prepared);
     let previousPending;
     if (index || shared) locked(store, () => {
+        const pendingPath = shared && sharedDispatchPath(store, operation);
+        if (pendingPath) previousPending = readSharedSelector(pendingPath)?.value;
         if (index) {
             assertIndexAvailable();
             write(index, { version: 1, id, buildRequestId, ...(explicitPreprocess ? { operation } : {}) });
         }
-        if (shared) {
-            const pendingPath = sharedDispatchPath(store, operation);
-            previousPending = readOptional(json, pendingPath);
-            write(pendingPath, { version: 1, id, buildRequestId });
-        }
+        if (pendingPath) write(pendingPath, { version: 1, id, buildRequestId });
         if (operation === 'compile' && !shared) write(store.pointer, { version: 1, id, buildRequestId });
     });
     if (previousPending?.version === 1) {
         try {
             // The latest preparation owns dispatch. A running original still
             // belongs to its supervisor until the host proves its tree stopped.
-            settleSharedBuild(store, previousPending, true);
+            settleSharedBuild(store, previousPending, { requirePrepared: true });
         } catch { /* Dispatch still checks the durable pending pointer. */ }
     }
     return shared ? { ...prepared, configFilePath } : prepared;
@@ -386,12 +399,13 @@ function removeSharedConfig(folder) {
 
 function retirePreviousSharedConfig(store, pointer, except) {
     if (!pointer || pointer.version !== 1 || !UUID.test(pointer.id) || pointer.id === except) return;
-    const folder = directory(store.parent, pointer.id, false), record = json(path.join(folder, 'execution.json'));
-    if (record.layout === SHARED && record.id === pointer.id && record.buildRequestId === pointer.buildRequestId
+    const folder = readOptional(directory, store.parent, pointer.id, false);
+    const record = folder && readOptional(json, path.join(folder, 'execution.json'));
+    if (record?.layout === SHARED && record.id === pointer.id && record.buildRequestId === pointer.buildRequestId
         && samePath(record.logicalProjectPath, store.root)) removeSharedConfig(folder);
 }
 
-function settleSharedBuild(store, { id, buildRequestId, operation } = {}, requirePrepared = false, refusal) {
+function settleSharedBuild(store, { id, buildRequestId, operation } = {}, { requirePrepared = false, refusal, drained = false } = {}) {
     if (typeof id !== 'string' || !UUID.test(id) || typeof buildRequestId !== 'string' || !REQUEST_ID.test(buildRequestId)) return null;
     const folder = readOptional(directory, store.parent, id, false);
     if (!folder) return null;
@@ -400,7 +414,14 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, requir
         if (record.version !== 1 || record.layout !== SHARED || record.id !== id
             || record.buildRequestId !== buildRequestId || !samePath(record.logicalProjectPath, store.root)
             || (operation !== undefined && record.operation !== operation)) return null;
-        const existing = readOutcome({ folder, record });
+        let existing;
+        try { existing = readOutcome({ folder, record }); }
+        catch (error) {
+            // The host has already verified the original Job drain and released
+            // that workspace binding. Keep the damaged receipt as unknown.
+            if (drained && error.code === 'BUILD_OUTCOME_UNREADABLE') return { status: 'unconfirmed' };
+            throw error;
+        }
         const status = refusal ? 'not-started' : 'cancelled';
         if (existing && existing.status !== status) return existing;
         if (requirePrepared && (record.status !== 'prepared' || record.owner)) return existing;
@@ -415,7 +436,7 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, requir
 }
 
 function settleStoppedSharedBuild(projectPath, request) {
-    return settleSharedBuild(storage(projectPath), request);
+    return settleSharedBuild(storage(projectPath), request, { drained: true });
 }
 
 /** Denial releases only this original, unstarted execution's request file. */
@@ -425,7 +446,7 @@ function settleUnstartedSharedBuild(projectPath, request, error) {
     const message = code === 'BUILD_WORKSPACE_RECOVERY_REQUIRED'
         ? 'A previous build still owns the project cache; it can be reused after its exit is verified.'
         : String(error?.message || 'The build was refused before starting.').slice(0, REFUSAL_MESSAGE_LIMIT);
-    return settleSharedBuild(storage(projectPath), request, true, { code, message });
+    return settleSharedBuild(storage(projectPath), request, { requirePrepared: true, refusal: { code, message } });
 }
 
 function assertSharedBuildSupervisor(config) {
@@ -433,9 +454,14 @@ function assertSharedBuildSupervisor(config) {
         fail('Shared build must be dispatched by its native supervisor.');
 }
 function readOutcome({ folder, record }) {
-    const outcome = readOptional(json, path.join(folder, 'outcome.json'));
-    if (!outcome) return null;
-    if (outcome.version !== 1 || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
+    let outcome;
+    try { outcome = json(path.join(folder, 'outcome.json')); }
+    catch (error) {
+        if (error.code === 'ENOENT') return null;
+        if (error instanceof SyntaxError) error.code = 'BUILD_OUTCOME_UNREADABLE';
+        throw error;
+    }
+    if (outcome?.version !== 1 || outcome.id !== record.id || outcome.buildRequestId !== record.buildRequestId
         || outcome.inputDigest !== record.inputDigest || !TERMINAL_STATUSES.includes(outcome.status)
         || (TERMINAL_STATUSES.includes(record.status) && record.status !== outcome.status)) fail('Terminal execution receipt changed.');
     if (outcome.status === 'not-started' && (typeof outcome.code !== 'string' || !REFUSAL_CODE.test(outcome.code) || typeof outcome.message !== 'string'
@@ -446,19 +472,25 @@ function readOutcome({ folder, record }) {
 function claimOutcome(value, status, refusal) {
     // Cancellation and completion use one immutable first-writer receipt. A
     // late Stop cannot rewrite a completed build, and a late compiler cannot
-    // undo cancellation. Neither contender waits on the mutable status guard.
+    // undo cancellation. This guard is separate from the mutable status guard.
     const filename = path.join(value.folder, 'outcome.json');
     const receipt = { version: 1, id: value.record.id, buildRequestId: value.record.buildRequestId,
         inputDigest: value.record.inputDigest, status, ...(refusal ?? {}) };
+    const existing = readOutcome(value);
+    if (existing) return existing;
     try {
-        const fd = fs.openSync(filename, 'wx', 0o600);
-        try { fs.writeFileSync(fd, JSON.stringify(receipt)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        return receipt;
+        return locked({ anchor: path.join(value.folder, 'outcome.guard') }, guard => {
+            const current = readOutcome(value);
+            if (current) return current;
+            write(filename, receipt, guard.assertHeld);
+            return receipt;
+        });
     } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        const existing = readOutcome(value);
-        if (!existing) fail('Terminal execution receipt disappeared.');
-        return existing;
+        if (error.code === 'BUILD_WORKSPACE_BUSY') {
+            const winner = readOutcome(value);
+            if (winner) return winner;
+        }
+        throw error;
     }
 }
 function startBuildExecution(config, lease) {
@@ -478,10 +510,11 @@ function startBuildExecution(config, lease) {
                 if (writer.token !== lease.buildId || writer.supervisor !== process.env[supervisorEnvironment]
                     || !isSharedDispatchCurrent(value)) fail('Shared build lost its original dispatch or writer binding.');
             }
+            const sharedCompile = current.layout === SHARED && current.operation === 'compile';
+            const previous = sharedCompile ? readSharedSelector(value.store.pointer)?.value : null;
             write(filename, { ...current, status: 'running', owner });
             activeOwners.set(value.record.id, owner.token);
-            if (current.layout === SHARED && current.operation === 'compile') {
-                const previous = readOptional(json, value.store.pointer);
+            if (sharedCompile) {
                 if (readOutcome(value)) fail('Build was cancelled before its shared workspace started.');
                 write(value.store.pointer, { version: 1, id: current.id, buildRequestId: current.buildRequestId });
                 try { retirePreviousSharedConfig(value.store, previous, current.id); }
@@ -681,9 +714,15 @@ function inspectBuildExecution(projectPath, buildRequestId) {
             || !samePath(record.logicalProjectPath, store.root)) return null;
         let current;
         try { current = json(store.pointer); } catch { /* The exact request remains observable if pointer publication was interrupted. */ }
-        const outcome = readOutcome({ folder, record });
-        if (!outcome && !['prepared', 'running'].includes(record.status)) return null;
-        let status = outcome?.status ?? record.status, ownerState;
+        let outcome, unreadableOutcome = false;
+        try { outcome = readOutcome({ folder, record }); }
+        catch (error) {
+            if (record.layout !== SHARED || error.code !== 'BUILD_OUTCOME_UNREADABLE') throw error;
+            unreadableOutcome = true;
+        }
+        if (!outcome && !unreadableOutcome && !['prepared', 'running'].includes(record.status)) return null;
+        let status = unreadableOutcome ? 'unconfirmed' : outcome?.status ?? record.status;
+        let ownerState = unreadableOutcome ? 'outcome-unreadable' : undefined;
         const isCurrent = operation === 'compile' && current?.id === record.id && current.buildRequestId === buildRequestId;
         const resolved = status === 'completed' && isCurrent ? resolveBuildExecution(projectPath) : null;
         const selected = resolved?.buildRequestId === buildRequestId
@@ -704,7 +743,7 @@ function inspectBuildExecution(projectPath, buildRequestId) {
                 else { status = 'unconfirmed'; ownerState = 'identity-unavailable'; }
             }
         }
-        const buildLog = outcome && readBuildLogReference(store, projectPath, buildRequestId);
+        const buildLog = (outcome || unreadableOutcome) && readBuildLogReference(store, projectPath, buildRequestId);
         if (JSON.stringify(json(indexPath)) !== JSON.stringify(index)) return null;
         return { version: 1, operation, executionId: record.id, buildRequestId, status, inputDigest: record.inputDigest,
             ...(record.buildSnapshot ? { buildSnapshot: record.buildSnapshot } : {}),
@@ -762,9 +801,18 @@ function clearSharedBuildCache(projectPath, { preserveSketch = false } = {}) {
     if (json(path.join(store.root, 'package.json'), 2 * 1024 * 1024).type === 'coder') fail('Coder cache uses its own build contract.');
     const lease = acquireBuildWorkspace(store.root, 'clean');
     try {
-        lease.clearLegacyRecovery();
-        clearBuildDirectory(store.root, lease.assertBuilderIdle);
         const temporary = readOptional(directory, store.root, '.temp', false);
+        const { previous, pending } = locked(store, () => {
+            lease.assertBuilderIdle();
+            const current = readSharedSelector(store.pointer);
+            const dispatch = ['compile', 'preprocess'].map(operation => readSharedSelector(sharedDispatchPath(store, operation)));
+            lease.clearLegacyRecovery();
+            for (const selector of [current, ...dispatch]) {
+                if (selector) fs.unlinkSync(selector.filename);
+            }
+            return { previous: current?.value, pending: dispatch.map(selector => selector?.value).filter(Boolean) };
+        });
+        clearBuildDirectory(store.root, lease.assertBuilderIdle);
         if (temporary) {
             const clear = preserveSketch ? ['libraries', 'library-archives', 'library-cache.json', 'preprocess.json', 'target-compile.json']
                 .map(name => path.join(temporary, name)) : [temporary];
@@ -773,33 +821,18 @@ function clearSharedBuildCache(projectPath, { preserveSketch = false } = {}) {
                 fs.rmSync(target, { recursive: true, force: true });
             }
         }
-        const invalidated = locked(store, () => {
-            lease.assertOwned();
-            const pointer = readOptional(json, store.pointer);
-            if (pointer) {
-                retirePreviousSharedConfig(store, pointer);
-                fs.unlinkSync(store.pointer);
-            }
-            const pending = [];
-            for (const operation of ['compile', 'preprocess']) {
-                const filename = sharedDispatchPath(store, operation);
-                const request = readOptional(json, filename);
-                if (!request) continue;
-                fs.unlinkSync(filename);
-                if (request.version === 1) pending.push(request);
-            }
-            return pending;
-        });
-        const retainedExecutionIds = [];
-        for (const request of invalidated) {
-            try { settleSharedBuild(store, request, true); }
-            catch { retainedExecutionIds.push(request.id); }
+        const retainedExecutionIds = new Set();
+        try { retirePreviousSharedConfig(store, previous); }
+        catch { retainedExecutionIds.add(previous.id); }
+        for (const request of pending) {
+            try { settleSharedBuild(store, request, { requirePrepared: true }); }
+            catch { retainedExecutionIds.add(request.id); }
         }
         for (const id of fs.readdirSync(store.parent).filter(name => UUID.test(name))) {
-            try { if (!retireLegacyBuildInputs(store, id)) retainedExecutionIds.push(id); }
-            catch { retainedExecutionIds.push(id); }
+            try { if (!retireLegacyBuildInputs(store, id)) retainedExecutionIds.add(id); }
+            catch { retainedExecutionIds.add(id); }
         }
-        return { cleared: true, retainedExecutionIds };
+        return { cleared: true, retainedExecutionIds: [...retainedExecutionIds] };
     } finally { lease.release(); }
 }
 
