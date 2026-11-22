@@ -2,6 +2,7 @@ import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, absBaselineKey, type AbsSyncStorageAccess, type AbsSyncStoragePort } from './abs-baseline-store';
 import { generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
+import { AbsSyncError } from './abs-state';
 import { acceptedSourceMatches } from './abs-workspace-mode';
 import type { AbsOperationSnapshot } from './abs-operation-journal';
 import { assertNativeSaveRef, nativeSaveCapability, nativeSaveError, nativeSaveSettlementKey, readNativeSaveRequest, blockStatePublicationIdentity,
@@ -192,6 +193,15 @@ export class NativeSavePublications {
       || facts.acceptedSource !== undefined && !acceptedSourceMatches(facts.acceptedSource, facts.evidence.binding, this.port.attachment)
       || facts.publication.generation !== facts.evidence.binding.generation) throw nativeSaveError('Invalid native committed terminal facts.');
   }
+  private validateCommittedFacts(facts: NativeSaveResultFacts, stage: NativeSaveStageRecord,
+    proof: { committedHash: string; mode: 'changed' | 'unchanged' }) {
+    if (!same(facts.evidence, stage.evidence)) throw nativeSaveError('Final native evidence differs from its original stage.');
+    if (facts.acceptedSource && facts.acceptedSource.committedHash !== proof.committedHash)
+      throw nativeSaveError('The accepted source proof points at another native commit.');
+    if (proof.mode === 'changed' && (facts.publication.status !== 'COMMITTED' || !facts.publication.abiSaved))
+      throw nativeSaveError('A changed save lacks its ABI commit fact.');
+    if (!same(facts.blockState ?? null, stage.blockState ?? null)) throw nativeSaveError('Final state readback differs from the sealed native stage.');
+  }
   async completeNativeSave(ref: NativeSaveOperationRef, facts: NativeSaveResultFacts, guard: () => void): Promise<void> {
     facts = JSON.parse(absJson(facts)); this.validateFacts(facts);
     await this.port.withLock(async access => {
@@ -201,13 +211,10 @@ export class NativeSavePublications {
       const staged = await this.stage(ref, access);
       if (facts.publication.status === 'COMMITTED') {
         const proofText = await access.read(proofKey(ref.operationId));
-        if (!staged.record || proofText === null || !same(staged.record.evidence, facts.evidence)) throw nativeSaveError('Native completion has no original source proof.');
+        if (!staged.record || proofText === null) throw nativeSaveError('Native completion has no original source proof.');
         const proof = json(proofText);
         this.validateProof(proof, ref, staged, await hashAbsText(staged.text!));
-        if (facts.acceptedSource && facts.acceptedSource.committedHash !== proof.committedHash)
-          throw nativeSaveError('The accepted source proof points at another native commit.');
-        if (proof.mode === 'changed' && !facts.publication.abiSaved) throw nativeSaveError('A changed save lacks its ABI commit fact.');
-        if (!same(facts.blockState ?? null, staged.record.blockState ?? null)) throw nativeSaveError('Final state readback differs from the sealed native stage.');
+        this.validateCommittedFacts(facts, staged.record, proof);
       } else {
         const disk = { abi: await access.read('project.abi'), abs: await access.read('project.abs'), map: await access.read('project.abs.map.json') };
         if (await access.read('prepared.json') !== null || !same(disk, original.snapshot.disk)
@@ -250,20 +257,32 @@ export class NativeSavePublications {
       proof = (await this.changedProof(staged))?.value;
       if (!proof) return pending(); // Unchanged saves need their original under-lock seal.
     }
+    if (final) this.validateCommittedFacts(final.result, staged.record, proof);
+    const withoutCurrentCanvas = (): NativeSaveObservation => {
+      // A later writer can replace the ABI before publishing its pointer. The
+      // original sealed result is still authoritative for its own request.
+      if (!final || proofText === null) return pending();
+      guard(); return { state: 'completed', ref, result: final.result, current: false };
+    };
     const pointer = await this.port.read('committed.json'), disk = await output.store.captureDisk();
-    if (await hash(pointer) === proof.committedHash
-      && !await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk)) return pending();
-    if (await this.port.read('committed.json') !== pointer) return pending();
-    const acceptedSource = await output.store.acceptedSourceProof(staged.record.evidence.binding.generation, undefined, true);
     const pointerHash = await hash(pointer);
-    const current = pointerHash === proof.committedHash
-      && await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk)
+    const sameGeneration = pointerHash === proof.committedHash;
+    if (sameGeneration && !await output.store.matchesAcceptedDisk({ projection: output.ancestor.projection, abi: output.abi }, disk))
+      return withoutCurrentCanvas();
+    if (await this.port.read('committed.json') !== pointer) return withoutCurrentCanvas();
+    let acceptedSource;
+    try { acceptedSource = await output.store.acceptedSourceProof(staged.record.evidence.binding.generation, undefined, true); }
+    catch (error) {
+      if (error instanceof AbsSyncError && error.code === 'ABS_BASELINE_STALE') return withoutCurrentCanvas();
+      throw error;
+    }
+    const current = sameGeneration
       && (await output.store.workspaceMode() === 'project-v1'
         ? acceptedSourceMatches(acceptedSource, staged.record.evidence.binding, this.port.attachment)
           && acceptedSource.committedHash === pointerHash
         : disk.abs === output.ancestor.projection.abs)
-      && await this.port.read('committed.json') === pointer
-      && await this.port.read('prepared.json') === null;
+      && await this.port.read('prepared.json') === null
+      && await this.port.read('committed.json') === pointer;
     // The terminal receipt remains immutable; this read-only projection reports
     // the author's current pending draft independently of that original commit.
     const result: NativeSaveResultFacts = final ? { ...final.result, ...(acceptedSource ? { acceptedSource,
@@ -274,11 +293,7 @@ export class NativeSavePublications {
       requiresReload: false, evidence: staged.record.evidence,
       warnings: ['The original source commit is verified; its post-save outputs were not observed.'],
       derivedOutputs: { published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING' } };
-    if (staged.record.blockState) {
-      if (final && !same(result.blockState, staged.record.blockState)) throw nativeSaveError('Observed state readback differs from its original native stage.');
-      if (!final) result.blockState = staged.record.blockState;
-    }
-    if (final && !same(result.evidence, staged.record.evidence)) throw nativeSaveError('Final native evidence differs from its original stage.');
+    if (!final && staged.record.blockState) result.blockState = staged.record.blockState;
     guard(); return { state: 'completed', ref, result, current };
   }
 }

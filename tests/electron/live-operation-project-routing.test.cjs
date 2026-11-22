@@ -82,15 +82,17 @@ test('explicit recovery Stop keeps its original absolute project after navigatio
   }
 });
 
-test('empty marker retirement requires an explicit and current physical project', t => {
+test('empty and complete marker retirement require an explicit and current physical project', t => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-marker-route-'));
   t.after(() => fs.rmdirSync(project));
-  const params = { version: 2, action: 'retire_empty_project_lock', requestId: 'retire-lock-route-proof' };
-  const route = (requested, current = project) => routeLiveOperationProject('abs_recovery', requested, current, path.resolve, params);
-  assert.deepEqual(route(undefined), { path: '', parameterScoped: true });
-  assert.deepEqual(route('relative'), { path: '', parameterScoped: true });
-  assert.equal(route(project).originalAdmissionAttachment?.root, fs.realpathSync.native(project));
-  assert.equal(route(project, path.dirname(project)).originalAdmissionAttachment, undefined);
+  for (const action of ['retire_empty_project_lock', 'retire_project_file_lock']) {
+    const params = { version: 2, action, requestId: 'retire-lock-route-proof' };
+    const route = (requested, current = project) => routeLiveOperationProject('abs_recovery', requested, current, path.resolve, params);
+    assert.deepEqual(route(undefined), { path: '', parameterScoped: true });
+    assert.deepEqual(route('relative'), { path: '', parameterScoped: true });
+    assert.equal(route(project).originalAdmissionAttachment?.root, fs.realpathSync.native(project));
+    assert.equal(route(project, path.dirname(project)).originalAdmissionAttachment, undefined);
+  }
 });
 
 test('a lifecycle-bound Blockly reload never routes a different path as open', () => {

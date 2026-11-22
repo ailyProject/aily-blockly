@@ -4,8 +4,9 @@ import { SerialOperationQueue } from '@shared/public-api';
 import { BlocklyLiveOperationBridgeService } from '../../../services/integrations/automation/blockly-live-operation-bridge.service';
 import { AbsApplicationJournal } from './abs-application-journal';
 import { AbsGenerationToolsService } from './abs-generation-tools.service';
-import type { AbsSyncStoragePort } from './abs-baseline-store';
-import { hashAbsText } from './abs-identity-map';
+import { AbsBaselineStore, absBaselineKey, type AbsSyncStoragePort } from './abs-baseline-store';
+import { generationEvidence } from './abs-generation-protocol';
+import { absJson, createAbsProjection, hashAbsText } from './abs-identity-map';
 import { nativeSaveIdentity } from './abs-native-save-result';
 import { blockStatePublicationIdentity, nativeSaveIndexKey } from './abs-native-save-protocol';
 import { AbsOperationJournal } from './abs-operation-journal';
@@ -78,6 +79,90 @@ describe('original project admission settlement', () => {
   const stateObservation = (state: ReturnType<typeof stateRequest>, originalTargetPid = 101) => ({
     operation: 'abs_recovery', path: project,
     params: { version: 2, requestId: crypto.randomUUID(), action: 'observe_state', state, originalTargetPid },
+  });
+
+  it('observes an original completed save while the same-project successor still owns publication', async () => {
+    const scope = { projectKey: project, pageId: 'main' };
+    port.observeExecutor = async () => ({ version: 1, state: 'active', reason: 'process-matched' });
+    const journal = new AbsOperationJournal(port, project);
+    const application = new AbsApplicationJournal(port, project);
+    const store = new AbsBaselineStore(port, scope);
+    const host = bridge();
+    const observe = (saveRequest: ProjectSaveRequest, originalTargetPid = port.executor!.hostPid) => host.execute({
+      operation: 'project_publication_status', path: project, params: { saveRequest, originalTargetPid },
+    });
+    const save = async (value: string, afterAbi?: () => Promise<void>) => {
+      const request = { version: 2 as const, operation: 'project_save' as const, requestId: `pub2-${crypto.randomUUID()}` };
+      const identity = await nativeSaveIdentity(project, request), disk = await store.captureDisk();
+      const page = { blocks: { blocks: [{ id: 'existing-block', type: 'text', fields: { TEXT: value } }] } };
+      const document = { schemaVersion: 3, activePageId: 'main', openedPageIds: ['main'],
+        pages: [{ id: 'main', title: 'main', content: page }], sharedModel: { procedureBlocks: [] } };
+      const abi = absJson(document), generation = crypto.randomUUID();
+      const projection = await createAbsProjection(page, { document, scope, generation,
+        baselineRef: absBaselineKey(generation), savedAbiHash: await hashAbsText(abi) });
+      const evidence = await generationEvidence(projection, abi);
+      await new OriginalRequestAdmissions(port, project).reserveSave(identity, 0, guard);
+      const { ref } = await journal.beginDocumentSave({ request: identity, document, disk }, guard);
+      await store.stage({ projection, mode: 'import', inputAbs: projection.abs, abi, expected: disk });
+      await application.stageNativeSave({ ref, evidence, inputAbiHash: disk.abi === null ? null : await hashAbsText(disk.abi) }, guard);
+      const publication = await store.commit(generation, guard, async (text, hash, storage) => {
+        expect(await storage.replace('project.abi', hash, text)).toBeTrue();
+        await afterAbi?.();
+      });
+      expect(publication.status).toBe('COMMITTED');
+      expect(await application.sealNativeSave(ref, guard)).toBeTrue();
+      await application.completeNativeSave(ref, { projectSaved: true, generatedCodePublished: true, partial: false,
+        publication: { ...publication, status: 'COMMITTED' }, requiresReload: false, evidence }, guard);
+      await journal.finish(ref.operationId, guard);
+      return { request, generation, ref };
+    };
+
+    const original = await save('original');
+    const beforeSuccessor = await observe(original.request);
+    expect(beforeSuccessor.publicationObservation.current).toBeTrue();
+    const originalPointer = await port.read('committed.json');
+    const withLock = port.withLock.bind(port);
+    let readingDuringWrite = false;
+    const lock = spyOn(port, 'withLock').and.callFake(operation => {
+      if (readingDuringWrite) throw Object.assign(new Error('Successor still holds the file lock'), { code: 'PROJECT_FILE_BUSY' });
+      return withLock(operation);
+    });
+    const successor = await save('successor', async () => {
+      expect(files.get('project.abi')).toContain('successor');
+      expect(files.has('prepared.json')).toBeTrue();
+      expect(await port.read('committed.json')).toBe(originalPointer);
+      const duringWrite = [...files];
+      const lockCalls = lock.calls.count();
+      readingDuringWrite = true;
+      try {
+        const late = await observe(original.request);
+        expect(late).toEqual(jasmine.objectContaining({ ok: true,
+          saveReceipt: jasmine.objectContaining({ requestId: original.request.requestId, state: 'completed' }),
+          publicationObservation: jasmine.objectContaining({ operationId: original.ref.operationId, current: false }),
+          result: jasmine.objectContaining({ projectSaved: true,
+            publication: jasmine.objectContaining({ status: 'COMMITTED', generation: original.generation }),
+            absPersistence: { verified: false, originalPublicationVerified: true },
+          }),
+        }));
+        expect(late.writerObservation).toBeUndefined();
+        expect((await observe(original.request, 999)).result).toBeUndefined();
+        const key = `recoveries/application-commit-${original.ref.operationId}.json`;
+        const originalSeal = files.get(key)!, wrongSeal = JSON.parse(originalSeal);
+        wrongSeal.ref.executor.hostPid = 999;
+        files.set(key, absJson(wrongSeal));
+        try {
+          const rejected = await observe(original.request);
+          expect(rejected.code).toBe('ABS_NATIVE_SAVE_OBSERVATION_INVALID');
+          expect(rejected.result).toBeUndefined();
+        } finally { files.set(key, originalSeal); }
+        expect(lock.calls.count()).toBe(lockCalls);
+        expect([...files]).toEqual(duringWrite);
+      } finally { readingDuringWrite = false; }
+    });
+    expect((await observe(original.request)).publicationObservation.current).toBeFalse();
+    expect((await observe(successor.request)).publicationObservation).toEqual(jasmine.objectContaining({
+      requestId: successor.request.requestId, operationId: successor.ref.operationId, current: true,
+    }));
   });
 
   it('reads an unknown or mismatched original state request without opening a publication lock', async () => {

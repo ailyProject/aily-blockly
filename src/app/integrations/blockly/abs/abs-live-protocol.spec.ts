@@ -130,6 +130,39 @@ describe('ABS live protocol admission', () => {
     }
   });
 
+  it('only passes a complete lock proof from its original current physical project to storage', async () => {
+    const service = bridge();
+    service.executeOperation = BlocklyLiveOperationBridgeService.prototype['executeOperation'];
+    service.projectService.projectViewRevision = 1;
+    service.projectService.captureCurrentProjectGuard = () => () => true;
+    service.projectService.getProjectMode = () => 'blockly';
+    service.electronService.currentRendererGeneration = 1;
+    const project = '/a', attachment = { version: 1, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
+    const identity = { version: 2, action: 'retire_project_file_lock', requestId: 'retire-lock-wire-proof' };
+    const marker = { token: '00000000-0000-4000-8000-000000000abc', sha256: 'sha256:' + '1'.repeat(64), ino: '4', birthtimeNs: '5' };
+    const params = { ...identity, attachment, marker };
+    const retire = jasmine.createSpy('retire').and.resolveTo({ ok: true, value: true });
+    const open = jasmine.createSpy('open').and.resolveTo({ attachment, read() {}, withLock() { throw new Error('Unexpected writer'); },
+      retireProjectFileLockResult: retire });
+    const saved = { path: window['path'], fs: window['fs'] };
+    try {
+      window['path'] = { isAbsolute: (value: string) => value.startsWith('/') };
+      window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: open };
+      const call = (fields: Record<string, unknown> = {}) => service.execute({ operation: 'abs_recovery', path: project,
+        rendererGeneration: 1, originalAdmissionAttachment: attachment, params, ...fields });
+      expect((await call({ params: identity })).code).toBe('ABS_REQUEST_INVALID');
+      expect((await call({ originalAdmissionAttachment: undefined })).code).toBe('PROJECT_ADMISSION_CONTEXT_STALE');
+      expect((await call({ params: { ...params, attachment: { ...attachment, identity: { ...attachment.identity, ino: '9' } } } })).code)
+        .toBe('PROJECT_ADMISSION_CONTEXT_STALE');
+      expect(retire).not.toHaveBeenCalled();
+      expect(await call()).toEqual({ ok: true, operation: 'abs_recovery', project, receipt: identity, retired: true });
+      expect(retire).toHaveBeenCalledOnceWith({ attachment, marker });
+    } finally {
+      window['path'] = saved.path;
+      window['fs'] = saved.fs;
+    }
+  });
+
   it('retires base-only apply and old baseline mutations before touching the coordinator', async () => {
     const service = bridge(), old: any = request();
     delete old.workingCandidate; delete old.validation.workingCandidate;

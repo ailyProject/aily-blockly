@@ -82,6 +82,7 @@ const PROJECT_MUTATIONS = new Set([
   'project_build', 'project_upload',
   'project_media_import',
 ]);
+const projectLockMaintenance = new Set(['retire_empty_project_lock', 'retire_project_file_lock']);
 
 // Backup/observation and environment-only operations are not program writers.
 function publishesProjectProgram(payload: BlocklyLiveOperationPayload): boolean {
@@ -774,7 +775,8 @@ export class BlocklyLiveOperationBridgeService {
     const candidateBackup = payload.operation === 'abs_recovery'
       && ['preserve_candidate', 'read_candidate'].includes(payload.params?.['action']);
     const runtimeRecovery = payload.operation === 'abs_recovery'
-      && ['recover_runtime', 'recover_project', 'observe_apply', 'cancel_project', 'retire_empty_project_lock'].includes(payload.params?.['action']);
+      && (['recover_runtime', 'recover_project', 'observe_apply', 'cancel_project'].includes(payload.params?.['action'])
+        || projectLockMaintenance.has(payload.params?.['action']));
     const recoveryPath = payload.path || this.projectService.currentProjectPath;
     // A navigation can already own the target even though its editor failed or
     // is still loading. Advertise only the verified on-disk engine in that case.
@@ -823,12 +825,14 @@ export class BlocklyLiveOperationBridgeService {
       && this.projectService.ownsLibraryHistoryNavigation(payload.params['token'], projectPath);
   }
 
-  private async retireEmptyProjectLock(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+  private async retireProjectLock(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
     const { path, params = {}, originalAdmissionAttachment } = payload;
-    const { version, action, requestId } = params;
+    const { version, action, requestId, attachment, marker } = params;
     const result = { operation: 'abs_recovery', project: path };
+    const complete = action === 'retire_project_file_lock';
+    const allowed = complete ? ['version', 'action', 'requestId', 'attachment', 'marker'] : ['version', 'action', 'requestId'];
     if (version !== 2 || !path || !window['path']?.isAbsolute(path)
-      || Object.keys(params).some(key => !['version', 'action', 'requestId'].includes(key))) {
+      || Object.keys(params).some(key => !allowed.includes(key)) || complete && (!attachment || !marker)) {
       return { ...result, ok: false, code: 'ABS_REQUEST_INVALID' };
     }
     const stale = () => Object.assign(new Error('The project no longer owns this lock recovery.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
@@ -843,9 +847,11 @@ export class BlocklyLiveOperationBridgeService {
           || this.projectService.isProjectTransitionInProgress(scope.project)) throw stale();
       };
       const port = await openAbsHostStorage(scope.project, current);
-      if (absJson(port.attachment) !== absJson(originalAdmissionAttachment)) throw stale();
-      if (!port.retireEmptyProjectFileLock) return { ...result, ok: false, code: 'PROJECT_LOCK_RECOVERY_UNSUPPORTED' };
-      const retired = await port.retireEmptyProjectFileLock();
+      if (absJson(port.attachment) !== absJson(originalAdmissionAttachment)
+        || complete && absJson(port.attachment) !== absJson(attachment)) throw stale();
+      const retire = complete ? port.retireProjectFileLock : port.retireEmptyProjectFileLock;
+      if (!retire) return { ...result, ok: false, code: 'PROJECT_LOCK_RECOVERY_UNSUPPORTED' };
+      const retired = await retire({ attachment, marker });
       return { ...result, project: scope.project, ok: true, receipt: { version, action, requestId }, retired };
     } catch (error) {
       return { ...result, ok: false, code: (error as { code?: string })?.code ?? 'PROJECT_LOCK_RECOVERY_UNAVAILABLE' };
@@ -905,8 +911,8 @@ export class BlocklyLiveOperationBridgeService {
         inProgress: this.absApplyInProgress,
       };
     }
-    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'retire_empty_project_lock') {
-      return this.retireEmptyProjectLock(payload);
+    if (payload.operation === 'abs_recovery' && projectLockMaintenance.has(payload.params?.['action'])) {
+      return this.retireProjectLock(payload);
     }
     if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'cancel_project') {
       const { path, params } = payload;
