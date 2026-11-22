@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const {
   bridgeFixture,
   mainRouteFixture,
@@ -12,6 +13,179 @@ const snapshot = (sourceProject = null, rendererGeneration = 7) => ({
   version: 1,
   sourceProject,
   rendererGeneration,
+});
+
+function navigationFixture() {
+  const source = path.resolve('fixtures/navigation-source'), target = path.resolve('fixtures/navigation-target');
+  const f = bridgeFixture(source), { domain, bridge, window } = f;
+  let current = source, revision = 0;
+  Object.defineProperties(domain, {
+    currentProjectPath: { get: () => current, set: project => { current = project; revision++; } },
+    projectViewRevision: { get: () => revision },
+  });
+  const identities = new Map([[source, '1'], [target, '2']]);
+  window.fs = { captureProjectAttachment: root => ({ version: 1, root,
+    identity: { dev: '1', ino: identities.get(root), birthtimeNs: '1' } }) };
+  bridge.electronService.exists = () => true;
+  bridge.electronService.pathJoin = path.join;
+  bridge.configService.init = async () => undefined;
+  bridge.configService.getPreferredChatAgentRuntimeMode = () => 'blockly';
+  bridge.executeProjectOpen = f.originalMethods.executeProjectOpen;
+  bridge.executeProjectClose = f.originalMethods.executeProjectClose;
+  domain.getBlocklyProjectLoadStatus = () => ({ ready: true, state: 'loaded' });
+  const request = (operation, sourceProject, targetProject) =>
+    ({ version: 1, requestId: randomUUID(), rendererGeneration: f.generation, deadlineAt: Date.now() + 100_000,
+      operation, sourceProject, targetProject });
+  const send = (original, reopenFrom) => bridge.executeOperation({ operation: original.operation,
+    path: original.targetProject ?? original.sourceProject, rendererGeneration: f.generation,
+    lifecycle: snapshot(original.sourceProject), params: { navigationRequest: original, ...(reopenFrom ? { reopenFrom } : {}) } });
+  const observe = (original) => bridge.executeOperation({ operation: 'project_navigation_status',
+    rendererGeneration: f.generation, params: { navigationRequest: original } });
+  return { ...f, source, target, identities, request, send, observe };
+}
+
+test('a fresh open from the blank view accepts only the exact recovered source proof', async () => {
+  const f = navigationFixture(), sessionId = randomUUID();
+  const original = f.request('project_open', f.source, f.target);
+  const proof = { version: 1, originalTargetPid: 41000, originalInstanceId: randomUUID(), sessionId, navigationRequest: original };
+  f.domain.currentProjectPath = '';
+  let opens = 0, approved = false;
+  f.window.projectLock = { canReopenNavigation: async (received, target) => {
+    assert.equal(received, proof);
+    assert.equal(target, f.source);
+    return approved;
+  } };
+  f.domain.projectOpen = async (target, options) => {
+    opens++;
+    f.domain.currentProjectPath = target;
+    await options.onViewActivated(target, f.domain.projectViewRevision);
+    return true;
+  };
+  const send = (target, navigationSessionId = sessionId) => f.bridge.executeOperation({ operation: 'project_open',
+    path: target, rendererGeneration: f.generation, lifecycle: snapshot(null),
+    params: { navigationRequest: f.request('project_open', null, target), navigationSessionId, reopenProof: proof } });
+  assert.equal((await send(f.target)).code, 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID');
+  assert.equal((await send(f.source, randomUUID())).code, 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID');
+  assert.equal((await send(f.source)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  assert.equal(opens, 0);
+  approved = true;
+  const reopened = await send(f.source);
+  assert.equal(reopened.activationCurrent, true);
+  assert.equal(reopened.navigationReceipt.state, 'completed');
+  assert.equal(opens, 1);
+});
+
+test('ordinary open reports exact activation before editor readiness, then retains it after load failure and lost reply', async () => {
+  const f = navigationFixture(), id = f.request('project_open', f.source, f.target);
+  let opened = 0, markStarted, finish;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const loaded = new Promise(resolve => { finish = resolve; });
+  f.domain.projectOpen = async (target, options) => {
+    opened++;
+    f.domain.currentProjectPath = target;
+    options.onViewActivated(target, f.domain.projectViewRevision);
+    markStarted();
+    return loaded;
+  };
+  f.domain.getBlocklyProjectLoadStatus = () => ({ ready: false, state: 'error', error: 'Editor initialization failed' });
+  const start = f.send(id);
+  await started;
+  const pending = await f.observe(id);
+  assert.equal(pending.navigationReceipt.state, 'pending');
+  assert.equal(pending.navigationReceipt.activation.state, 'open');
+  assert.equal(pending.navigationReceipt.activation.attachment.identity.ino, '2');
+  assert.equal(pending.activationCurrent, true);
+  finish(false);
+  // Discard the original response as if its HTTP acknowledgement was lost.
+  await start;
+  const recovered = await f.observe(id);
+  assert.equal(recovered.navigationReceipt.state, 'failed');
+  assert.equal(recovered.result.reason, 'project_load_failed');
+  assert.equal(recovered.result.loadStatus.ready, false);
+  assert.equal(recovered.result.nextAction.input.action, 'inspect');
+  assert.equal(recovered.activationCurrent, true);
+  assert.equal((await f.send(id)).navigationReceipt.state, 'failed');
+  assert.equal(opened, 1);
+  f.domain.currentProjectPath = f.source;
+  f.domain.currentProjectPath = f.target;
+  assert.equal((await f.observe(id)).activationCurrent, false);
+  assert.equal((await f.observe({ ...id, targetProject: f.source })).navigationReceipt.state, 'unknown');
+});
+
+test('ordinary close authorizes only reopening the physically identical project in the same empty view', async () => {
+  const f = navigationFixture(), closed = f.request('project_close', f.source, null);
+  let openCalls = 0, closeCalls = 0;
+  f.domain.close = async options => {
+    closeCalls++;
+    f.domain.currentProjectPath = '';
+    options.onViewActivated(null, f.domain.projectViewRevision);
+    return true;
+  };
+  f.domain.projectOpen = async (target, options) => {
+    openCalls++;
+    f.domain.currentProjectPath = target;
+    options.onViewActivated(target, f.domain.projectViewRevision);
+    return true;
+  };
+  await f.send(closed);
+  const status = await f.observe(closed);
+  assert.equal(status.navigationReceipt.activation.state, 'closed');
+  assert.equal(status.navigationReceipt.sourceAttachment.identity.ino, '1');
+  assert.equal(status.result.project, null);
+  assert.equal(status.activationCurrent, true);
+  assert.equal((await f.send(closed)).ok, true);
+  assert.equal(closeCalls, 1);
+  assert.equal((await f.send(f.request('project_open', null, f.target), closed)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  f.identities.set(f.source, '19');
+  assert.equal((await f.observe(closed)).activationCurrent, false);
+  assert.equal((await f.send(f.request('project_open', null, f.source), closed)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  f.identities.set(f.source, '1');
+  const reopened = await f.send(f.request('project_open', null, f.source), closed);
+  assert.equal(reopened.ok, true);
+  assert.equal(reopened.navigationReceipt.activation.project, f.source);
+  assert.equal(openCalls, 1);
+  f.domain.currentProjectPath = '';
+  assert.equal((await f.send(f.request('project_open', null, f.source), closed)).code, 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED');
+  assert.equal(openCalls, 1);
+});
+
+test('Main forwards the original navigation status without substituting the active project', async () => {
+  const f = mainRouteFixture(path.resolve('fixtures/another-project'));
+  const request = navigationFixture().request('project_close', path.resolve('fixtures/navigation-source'), null);
+  const reply = await f.handleCliBridgeCommand('blockly-live-operation', { operation: 'project_navigation_status',
+    params: { navigationRequest: request } });
+  assert.equal(reply.ok, true);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].path, '');
+  assert.equal(f.calls[0].params.navigationRequest, request);
+  assert.equal(f.calls[0].lifecycle, undefined);
+});
+
+test('an activated failed view reports its static workspace protocol without preparing or publishing', async () => {
+  const project = path.resolve('fixtures/activated-failed-project');
+  const reads = [];
+  const f = bridgeFixture(project, 7, {
+    rejectAbsLiveRequest: () => null,
+    absWorkspaceProtocol: async (scope, params, guard) => {
+      guard();
+      reads.push([scope, Object.keys(params)]);
+      return { ok: true, operation: 'abs_protocol', project: scope, protocol: { version: 1, workspaceMode: 'overlay-v1' } };
+    },
+  });
+  f.domain.captureCurrentProjectGuard = () => () => f.domain.currentProjectPath === project;
+  f.domain.getBlocklyProjectLoadStatus = () => ({ ready: false, state: 'error', error: 'Editor initialization failed' });
+  f.domain.isProjectTransitionInProgress = () => true;
+  f.bridge.absGenerationTools = { workspaceMigration: () => assert.fail('would enter the workspace preparer') };
+  f.bridge.aiOperations = { setActive: () => assert.fail('would acquire an editor mutation mask') };
+  const payload = { operation: 'abs_protocol', path: project, params: { version: 1, action: 'prepare_workspace_migration' } };
+  const result = await f.bridge.executeAdmittedOperation(payload);
+  assert.equal(result.ok, true);
+  assert.equal(result.protocol.workspaceMode, 'overlay-v1');
+  assert.equal(result.migrationDeferred.reason, 'editor-not-ready');
+  assert.deepEqual(reads, [[project, ['version']]]);
+  const wrongScope = await f.bridge.executeAdmittedOperation({ ...payload, path: path.join(project, 'different') });
+  assert.equal(wrongScope.code, 'PROJECT_ADMISSION_CONTEXT_STALE');
+  assert.equal(reads.length, 1);
 });
 
 test('idle app_info advertises lifecycle admission separately from project-bound ABS protocol', async () => {
@@ -131,6 +305,22 @@ test('cancellation before Main dispatch sends no lifecycle business request', as
   );
   assert.equal(result.errorCode, 'RENDERER_REQUEST_CANCELLED');
   assert.equal(f.sent.length, 0);
+});
+
+test('Main assigns create navigation only at actual current-generation dispatch', async () => {
+  const create = mainRequestFixture(8), actual = [];
+  const dispatch = (generation) => {
+    assert.equal(create.sent.length, 0, 'the main process owns the claim before renderer execution');
+    actual.push(generation);
+  };
+  const send = (generation, signal) => create.requestMainWindow('request', 'response', {
+    operation: 'project_create', lifecycle: snapshot('/source', generation),
+  }, 100, signal, undefined, dispatch);
+  assert.equal((await send(7)).code, 'PROJECT_LIFECYCLE_CONTEXT_CHANGED');
+  assert.equal((await send(8, AbortSignal.abort())).errorCode, 'RENDERER_REQUEST_CANCELLED');
+  assert.deepEqual(actual, []);
+  assert.equal((await send(8)).ok, true);
+  assert.deepEqual(actual, [8]);
 });
 
 test('timed-out library preparation releases that request on its original renderer generation', async () => {
@@ -360,6 +550,7 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   const originalProject = path.join('/projects', 'first'), nextProject = path.join('/projects', 'second');
   const saved = new Set(), locked = new Set(source ? [source] : []);
   const touchedSource = [], activated = [], recordedNavigation = [], lateWrites = [];
+  const recoverySessionId = '01a1f768-6bb5-703d-9496-344d2845159f', durableClaims = [];
   let enteredPreparation, finishPreparation, originalFinished;
   const entered = new Promise(resolve => { enteredPreparation = resolve; });
   const stalled = new Promise(resolve => { finishPreparation = resolve; });
@@ -383,6 +574,16 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
     release: async project => { locked.delete(project); return { ok: true }; },
     recordActive: async project => { recordedNavigation.push(project); return { ok: true }; },
   };
+  if (source) {
+    f.window.fs = { captureProjectAttachment: project => ({ version: 1, root: project,
+      identity: { dev: '1', ino: project === originalProject ? '10' : '11', birthtimeNs: '1' } }) };
+    f.window.projectLock.recordCreatedActive = async claim => {
+      assert.equal(f.domain.currentProjectPath, source, 'the proof precedes the renderer project switch');
+      assert.deepEqual(activated, []);
+      durableClaims.push(claim);
+      return { ok: true };
+    };
+  }
   Object.assign(f.domain, {
     electronService: { isElectron: true, exists: project => saved.has(project) },
     ensureProjectModeAllowed: async () => true,
@@ -424,7 +625,8 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   const request = () => ({ version: 1, requestId: randomUUID(), rendererGeneration: 7, deadlineAt: Date.now() + 10_000 });
   const call = (operation, createRequest, name) => f.bridge.executeOperation({
     operation, rendererGeneration: 7, lifecycle: snapshot(source || null),
-    params: { createRequest, ...(name ? { name, boardName: '@aily-project/board-test' } : {}) },
+    params: { createRequest, ...(name ? { name, boardName: '@aily-project/board-test',
+      ...(source ? { recoverySessionId } : {}) } : {}) },
   });
   const old = request();
   const first = call('project_create', old, 'first');
@@ -444,7 +646,7 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   assert.equal(f.domain.currentProjectPath, source);
   assert.deepEqual(touchedSource, []);
 
-  const second = await call('project_create', request(), 'second');
+  const newer = request(), second = await call('project_create', newer, 'second');
   assert.equal(second.createReceipt.state, 'completed');
   assert.equal(second.createReceipt.activationCommitted, true);
   finishPreparation();
@@ -453,7 +655,14 @@ for (const source of ['', '/active']) test(`stopping a create during linked envi
   assert.deepEqual([...saved], [originalProject, nextProject]);
   assert.deepEqual(lateWrites, []);
   assert.deepEqual(activated, [nextProject]);
-  assert.deepEqual(recordedNavigation, [nextProject]);
+  assert.deepEqual(recordedNavigation, source ? [] : [nextProject]);
+  if (source) {
+    assert.equal(durableClaims.length, 1);
+    assert.equal(durableClaims[0].projectPath, nextProject);
+    assert.equal(durableClaims[0].attachment.identity.ino, '11');
+    assert.equal(durableClaims[0].recoverySessionId, recoverySessionId);
+    assert.equal(durableClaims[0].request.requestId, newer.requestId);
+  }
   assert.deepEqual(touchedSource, source ? ['close-graph', source, 'retire'] : []);
   assert.equal(f.domain.currentProjectPath, nextProject);
   assert.equal(f.domain.projectLifecycle.owners.size, 0);

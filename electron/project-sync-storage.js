@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { storageExecutor, observeStorageExecutor } = require('./project-file-lock-owner');
+const { storageExecutor, observeStorageExecutor, retireEmptyProjectFileLock, retireProjectFileLock } = require('./project-file-lock-owner');
 const { assertNoPreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
@@ -20,6 +20,37 @@ const historyHash = key => {
   const match = typeof key === 'string' ? historyObject.exec(key) : null;
   return match && match[0] === key ? match[1] : null;
 };
+const isDigest = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+const sameRecord = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+function copiedCommittedSaveMatches(read, expected, pointer, journal, snapshot) {
+  const request = snapshot.nativeSave;
+  if (snapshot.version !== 1 || snapshot.kind !== 'document-save' || request?.version !== 2 || !isDigest(request.inputDigest)
+    || typeof request.requestId !== 'string' || !/^pub2-[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/.test(request.requestId)) return false;
+  const indexKey = `recoveries/request-${hash('native-save-v2\0' + request.requestId).slice(7)}.json`;
+  const stageKey = `recoveries/application-${snapshot.id}.json`;
+  if (!isDigest(expected[indexKey]) || !isDigest(expected[stageKey])) return false;
+  const index = JSON.parse(read(indexKey)), stage = JSON.parse(read(stageKey));
+  const generation = JSON.parse(read(`baselines/${pointer.generation}.json`));
+  if (!generation || !snapshot.disk || !index || !stage) return false;
+  const binding = stage.evidence?.binding;
+  const scope = generation.context?.scope ?? generation.projection?.map?.scope;
+  const abs = generation.snapshot ?? generation.projection?.abs;
+  const original = { operationId: snapshot.id, request, attachment: snapshot.attachment, executor: snapshot.executor };
+  return index.version === 2 && index.kind === 'native-save' && index.project === snapshot.project
+    && index.snapshotHash === journal.hash && index.sourceStageVersion === snapshot.sourceStageVersion
+    && Object.entries(original).every(([key, value]) => sameRecord(index[key], value))
+    && stage.version === 2 && stage.kind === 'native-save' && stage.project === snapshot.project
+    && stage.snapshotHash === journal.hash && Object.entries(original).every(([key, value]) => sameRecord(stage.ref?.[key], value))
+    && binding?.generation === pointer.generation && scope?.projectKey === snapshot.project && sameRecord(binding.scope, scope)
+    && isDigest(binding.absHash) && typeof abs === 'string' && hash(abs) === binding.absHash
+    && stage.evidence.absBytes === Buffer.byteLength(abs)
+    && stage.inputAbiHash === hash(snapshot.disk.abi) && expected['project.abi'] === binding.abiHash
+    && expected['project.abs.map.json'] === binding.mapHash && expected['project.abs'] === (generation.authorSource?.hash ?? binding.absHash)
+    && generation.mode === 'import' && generation.previousPointer === snapshot.committed
+    && generation.previousCommitted === hash(snapshot.committed)
+    && ['abi', 'abs', 'map'].every(key => generation.expected?.[key] === hash(snapshot.disk[key]));
+}
 
 /** A project-bound, revocable host capability, not an IPC lock token or a second transaction engine. */
 async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) {
@@ -88,11 +119,12 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     if (!Buffer.from(text, 'utf8').equals(bytes)) throw fault('ABS_STORAGE_ENCODING_INVALID', 'Sync files must contain exact UTF-8; invalid bytes were retained.');
     return text;
   };
-  const retireCopiedLock = async ({ original, expected } = {}) => {
-    const required = ['prepared.json', 'committed.json', 'operation.json', ...mirrors];
-    const sha256 = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+  const retireCopiedLock = async ({ original, expected, phase = 'prepared' } = {}) => {
+    const required = ['committed.json', 'operation.json', ...mirrors];
     if (!original?.attachment || !original.executor || !expected || Array.isArray(expected)
-      || required.some(key => !sha256(expected[key]))
+      || !['prepared', 'committed'].includes(phase) || required.some(key => !isDigest(expected[key]))
+      || !Object.hasOwn(expected, 'prepared.json')
+      || (phase === 'prepared' ? !isDigest(expected['prepared.json']) : expected['prepared.json'] !== null)
       || !Object.keys(expected).some(key => baseline.test(key))
       || !Object.keys(expected).some(key => /^recoveries\/operation-[a-f0-9-]{36}\.json$/.test(key)))
       throw fault('PROJECT_FILE_LOCK_CHANGED', 'Missing exact source and journal evidence for the copied lock.');
@@ -103,14 +135,14 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
           throw fault('ABS_TRANSACTION_CONFLICT', 'The copied journal changed before lock recovery.');
       }
       const pointer = JSON.parse(readText('operation.json'));
-      const prepared = JSON.parse(readText('prepared.json'));
+      const generation = JSON.parse(readText(phase === 'prepared' ? 'prepared.json' : 'committed.json'));
       const snapshotKey = `recoveries/operation-${pointer.id}.json`;
       const snapshot = JSON.parse(readText(snapshotKey));
       if (expected[snapshotKey] !== pointer.hash || snapshot.id !== pointer.id
-        || !sha256(prepared.hash) || expected[`baselines/${prepared.generation}.json`] !== prepared.hash
+        || !isDigest(generation.hash) || expected[`baselines/${generation.generation}.json`] !== generation.hash
         || snapshot.project !== original.attachment.root
-        || JSON.stringify(snapshot.attachment) !== JSON.stringify(original.attachment)
-        || JSON.stringify(snapshot.executor) !== JSON.stringify(original.executor))
+        || !sameRecord(snapshot.attachment, original.attachment) || !sameRecord(snapshot.executor, original.executor)
+        || phase === 'committed' && !copiedCommittedSaveMatches(readText, expected, generation, pointer, snapshot))
         throw fault('PROJECT_FILE_LOCK_CHANGED', 'The copied journal does not bind the retained native lock owner.');
     };
     verify();
@@ -132,6 +164,8 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       guard(); return result;
     },
     read: async key => { guard(); return readText(key); },
+    retireEmptyProjectFileLock: async () => retireEmptyProjectFileLock(access, ownerGuard),
+    retireProjectFileLock: async observation => retireProjectFileLock(access, ownerGuard, observation),
     retireCopiedLock,
     withLock: async (operation, observeScope = false) => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
@@ -276,6 +310,8 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
     read: key => storage.read(key),
     withLock: operation => withBridgeLock(operation, false),
     readResult: key => resultOf(() => storage.read(key)),
+    retireEmptyProjectFileLockResult: () => resultOf(() => storage.retireEmptyProjectFileLock()),
+    retireProjectFileLockResult: observation => resultOf(() => storage.retireProjectFileLock(observation)),
     retireCopiedLockResult: proof => resultOf(() => storage.retireCopiedLock(proof)),
     withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),
   };

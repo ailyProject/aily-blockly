@@ -67,7 +67,7 @@ function readPureModule(relative, globals) {
   if (!fs.existsSync(path.join(root, relative))) return {};
   return evaluate(fs.readFileSync(path.join(root, relative), 'utf8'), globals);
 }
-function bridgeFixture(sourceProject = '', generation = 7) {
+function bridgeFixture(sourceProject = '', generation = 7, testPorts = {}) {
   const window = {
     path,
     platform: { type: 'darwin', isWindows: false },
@@ -90,19 +90,25 @@ function bridgeFixture(sourceProject = '', generation = 7) {
       .map((item) => item.getText(protocolTree))
       .join('\n'),
   );
+  const recoveryTree = sourceTree('src/app/services/integrations/automation/project-load-recovery.ts');
+  const loadGuidance = evaluate(recoveryTree.statements.find(item =>
+    ts.isFunctionDeclaration(item) && item.name?.text === 'projectLoadFailureGuidance').getText(recoveryTree));
   const globals = {
     window,
     ...protocol,
+    ...loadGuidance,
     ...readPureModule('src/app/services/integrations/automation/project-lifecycle-admission.ts'),
     ...readPureModule('src/app/services/integrations/automation/project-create-receipts.ts'),
+    ...readPureModule('src/app/services/integrations/automation/project-navigation-receipts.ts'),
   };
   const Domain = sourceClass(
     'src/app/services/domains/project/project.service.ts',
     'ProjectService',
     { window, normalizeProjectOpenPath: (value) => value },
-    ['withProjectLifecycleAdmission', 'acquireProjectLifecycle', 'projectOpen', 'projectOpenInternal'],
+    ['withProjectLifecycleAdmission', 'acquireProjectLifecycle', 'projectOpen', 'projectOpenInternal', 'beginExplicitNavigation'],
   );
   const domain = new Domain();
+  domain.projectNavigationIntentRevision = 0;
   domain.currentProjectPath = sourceProject;
   domain.projectLifecycle = new ProjectLifecycleGate();
   domain.dependencyLifecycle = { isStopping: () => false };
@@ -118,6 +124,7 @@ function bridgeFixture(sourceProject = '', generation = 7) {
       ...globals,
       sameAbsProjectDirectory: async (left, right) => left === right,
       getProjectCreationModeError: () => null,
+      ...testPorts,
     },
   );
   const bridge = new Bridge(),
@@ -165,6 +172,7 @@ function mainRouteFixture(sourceProject = '/source', transport = async () => ({ 
     globals = {
       fs: { existsSync: () => true },
       path,
+      getBuildProduct: () => 'blockly',
       getOpenedProjectPathFromWindow: () => sourceProject,
       requestMainWindow: async (...args) => {
         calls.push(args[2]);

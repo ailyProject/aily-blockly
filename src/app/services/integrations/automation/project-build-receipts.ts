@@ -126,11 +126,14 @@ export function readNativeBuildReceipt(project: string, requestId: string): Pers
   if (value?.version !== 1 || value.buildRequestId !== requestId) return undefined;
   if (value.status === 'running' && value.ownerState === 'live') return { state: 'running' };
   if (!['completed', 'failed', 'cancelled'].includes(value.status)) return { state: 'unknown' };
+  const isPreprocess = value.operation === 'preprocess';
+  const operationName = isPreprocess ? '预处理' : '编译';
   return { state: 'completed', result: { project, operation: 'project_build', ok: value.status === 'completed',
+    ...(isPreprocess ? { buildExecutionKind: 'preprocessing' } : {}),
     ...(value.status === 'completed' && value.result && value.buildInput ? { buildInput: value.buildInput } : {}),
     ...(value.buildSnapshot ? { buildSnapshot: value.buildSnapshot } : {}),
     ...(value.buildHistory ? { buildHistory: value.buildHistory } : {}),
     ...(value.buildLog ? { buildLog: value.buildLog } : {}),
-    ...(value.status === 'failed' ? { buildOutcome: 'failed', message: '原编译失败。' } : {}),
-    ...(value.status === 'cancelled' ? { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', message: '原编译已取消。' } : {}) } };
+    ...(value.status === 'failed' ? { buildOutcome: 'failed', message: `原${operationName}失败。` } : {}),
+    ...(value.status === 'cancelled' ? { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', message: `原${operationName}已取消。` } : {}) } };
 }

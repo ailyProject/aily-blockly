@@ -26,9 +26,10 @@ const { createWindowStateController } = require('./window-state');
 const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
-const { createProjectCrashResume } = require('./project-crash-resume');
+const { createProjectCrashResume, readProjectCreateRecovery, readProjectNavigationRecovery } = require('./project-crash-resume');
+const { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { startCliBridge } = require("./cli-bridge");
-const { routeLiveOperationProject, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
+const { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
 const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
@@ -435,6 +436,7 @@ for (const protocol of repairBootstrap ? [] : PROTOCOLS) {
 
 // 文件关联处理
 let pendingFileToOpen = null;
+const startupProjectOpen = require('./project-open-path').createProjectStartupOpen();
 let projectOpenRendererReady = false;
 ipcMain.on('project-open-ready', (event) => {
   if (mainWindow && event.sender === mainWindow.webContents) {
@@ -571,6 +573,7 @@ async function resolveProjectLockOrPrompt(projectDir, parentWindow) {
 function handleCommandLineArgs(argv, cwd = process.cwd()) {
   const projectPath = require('./project-open-path').projectDirectoryFromArgs(argv, cwd);
   if (projectPath) {
+    startupProjectOpen.invalidate();
     pendingFileToOpen = projectPath;
     return true;
   }
@@ -578,6 +581,8 @@ function handleCommandLineArgs(argv, cwd = process.cwd()) {
   // 处理路由参数
   const routeArg = argv.find(arg => arg.startsWith('--route='));
   if (routeArg) {
+    startupProjectOpen.invalidate();
+    if (pendingFileToOpen && typeof pendingFileToOpen !== 'string') pendingFileToOpen = null;
     pendingRoute = routeArg.replace('--route=', '');
     console.log('Found route parameter:', pendingRoute);
   }
@@ -887,6 +892,59 @@ function summarizeAppProcessMetrics() {
 // === CLI Bridge：供外部 CLI 通过本地回环接口驱动主程序（附加能力） ===
 let cliBridge = null;
 let projectCrashResume = null;
+const dispatchedProjectCreates = new Map();
+const dispatchedProjectNavigations = new Map();
+const PROJECT_CREATE_RECOVERY_RETENTION_MS = 600_000;
+
+function retainDispatchedProjectCreate(payload, generation) {
+  const reference = readProjectCreateRecovery({ ...payload.params, originalInstanceId: cliBridge?.getInstanceId?.() });
+  const sourceProject = payload.lifecycle?.sourceProject;
+  const now = Date.now();
+  if (!reference || reference.createRequest.rendererGeneration !== generation
+    || reference.createRequest.deadlineAt <= now || reference.createRequest.deadlineAt > now + 310_000
+    || sourceProject !== null && (typeof sourceProject !== 'string' || !path.isAbsolute(sourceProject))) return;
+  for (const [id, candidate] of dispatchedProjectCreates) {
+    if (candidate.createRequest.deadlineAt + PROJECT_CREATE_RECOVERY_RETENTION_MS < now) dispatchedProjectCreates.delete(id);
+  }
+  const id = reference.createRequest.requestId;
+  if (dispatchedProjectCreates.size < 512 && !dispatchedProjectCreates.has(id)) {
+    dispatchedProjectCreates.set(id, { ...reference, sourceProject });
+  }
+}
+
+function retainDispatchedNavigation(payload, generation) {
+  const { navigationRequest, navigationSessionId } = payload.params;
+  const reference = readProjectNavigationRecovery({ version: 1, navigationRequest, sessionId: navigationSessionId,
+    originalTargetPid: process.pid, originalInstanceId: cliBridge?.getInstanceId?.() });
+  const now = Date.now(), source = payload.lifecycle?.sourceProject;
+  const active = getOpenedProjectPathFromWindow();
+  const current = source === null ? !active : ownsProjectNavigation(source)
+    && projectLock.normalizeProjectPathLoose(source) === projectLock.normalizeProjectPathLoose(active);
+  if (!reference || !current || navigationRequest.rendererGeneration !== generation
+    || navigationRequest.deadlineAt <= now || navigationRequest.deadlineAt > now + 310_000
+    || navigationRequest.sourceProject !== source || navigationRequest.operation !== payload.operation) {
+    return { ok: false, code: 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID', commandDispatched: false };
+  }
+  for (const [id, claim] of dispatchedProjectNavigations) {
+    if (claim.reference.navigationRequest.deadlineAt + PROJECT_CREATE_RECOVERY_RETENTION_MS < now)
+      dispatchedProjectNavigations.delete(id);
+  }
+  const id = navigationRequest.requestId;
+  if (dispatchedProjectNavigations.has(id) || dispatchedProjectNavigations.size >= 512)
+    return { ok: false, code: 'PROJECT_NAVIGATION_REQUEST_REUSED', commandDispatched: false };
+  let sourceAttachment;
+  if (source) {
+    try { sourceAttachment = require('./project-file-lock-owner').rootAttachment(source); }
+    catch { return { ok: false, code: 'PROJECT_NAVIGATION_SOURCE_CHANGED', commandDispatched: false }; }
+    if (!sourceAttachment)
+      return { ok: false, code: 'PROJECT_NAVIGATION_SOURCE_CHANGED', commandDispatched: false };
+  }
+  const retained = projectCrashResumeController()?.recordNavigation(reference, null, sourceAttachment);
+  if (!retained?.ok) return { ok: false, code: retained?.code || 'PROJECT_NAVIGATION_STORAGE_UNAVAILABLE', commandDispatched: false };
+  dispatchedProjectNavigations.set(id, { reference, sourceAttachment });
+  return undefined;
+}
+
 function projectCrashResumeController() {
   if (!projectCrashResume && process.env.AILY_APPDATA_PATH) {
     projectCrashResume = createProjectCrashResume({ stateDirectory: process.env.AILY_APPDATA_PATH,
@@ -895,7 +953,7 @@ function projectCrashResumeController() {
   }
   return projectCrashResume;
 }
-app.on('quit', () => { projectCrashResume?.clear(); });
+app.on('quit', () => { projectCrashResume?.suspend(); });
 
 /** 导航主窗口到指定 hash（复用 dev/prod 既有加载方式） */
 function navigateMainWindowHash(targetHash) {
@@ -924,6 +982,61 @@ function getOpenedProjectPathFromWindow() {
   }
 }
 
+function observeOriginalProjectCreate(operation, params) {
+  const acknowledge = operation === 'project_create_acknowledge';
+  const unconfirmed = { ok: true, operation, ...(acknowledge ? { acknowledged: false } : { activationCurrent: false }) };
+  const query = readProjectCreateRecovery(params);
+  if (!query || Object.keys(params).some(name => !['createRequest', 'recoverySessionId', 'originalInstanceId'].includes(name))) {
+    return { ok: false, operation, code: 'PROJECT_CREATE_RECOVERY_SCOPE_INVALID', commandDispatched: false };
+  }
+  const opened = getOpenedProjectPathFromWindow();
+  const observedView = isCurrentRendererGenerationReady() && opened && ownsProjectNavigation(opened) ? opened : null;
+  const navigation = projectCrashResumeController();
+  if (acknowledge) {
+    if (!observedView) return unconfirmed;
+    const acknowledged = navigation?.acknowledgeCreation(observedView, query)?.acknowledged === true;
+    if (acknowledged) mainWindow.webContents.send('project-create-recovery-acknowledged', {
+      project: opened, sessionId: query.recoverySessionId,
+    });
+    return { ok: true, operation, acknowledged };
+  }
+  const observed = navigation?.observeOriginalCreation(observedView, query);
+  if (!observed?.ok || !observed.project || !observed.creation) return unconfirmed;
+  const { project, attachment, creation } = observed;
+  return { ok: true, operation, rendererGeneration, activationCurrent: observed.activationCurrent,
+    ...(observed.activationViewId ? { activationViewId: observed.activationViewId } : {}), projectType: 'blockly',
+    recovery: { version: 1, recoverySessionId: creation.recoverySessionId,
+      originalInstanceId: creation.originalInstanceId, sourceProject: creation.sourceProject },
+    createReceipt: { ...creation.createRequest, state: 'completed', activationCommitted: true,
+      createdProject: project, createdAttachment: attachment },
+    result: { ok: true, project, projectType: 'blockly' } };
+}
+
+function observeOriginalProjectNavigation(operation, params) {
+  const reference = readProjectNavigationRecovery(params);
+  if (!reference) return { ok: false, operation, code: 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID', commandDispatched: false };
+  const opened = getOpenedProjectPathFromWindow();
+  const ready = isCurrentRendererGenerationReady();
+  const navigation = projectCrashResumeController();
+  if (operation === 'project_navigation_acknowledge') {
+    const acknowledged = !!opened && ready && ownsProjectNavigation(opened)
+      && navigation?.acknowledgeNavigation(opened, reference)?.acknowledged === true;
+    if (acknowledged) mainWindow.webContents.send('project-create-recovery-acknowledged', { project: opened, sessionId: reference.sessionId });
+    return { ok: true, operation, acknowledged };
+  }
+  const observed = navigation?.observeNavigation(opened || null, reference);
+  if (!observed?.ok || !observed.navigationReceipt) return { ok: true, operation, activationCurrent: false, rendererGeneration };
+  const { version, originalTargetPid, originalInstanceId, sessionId } = reference;
+  const activationCurrent = observed.activationCurrent && ready && (!opened || ownsProjectNavigation(opened));
+  const activationDisposition = ready && (!opened || ownsProjectNavigation(opened)) ? observed.activationDisposition : 'unconfirmed';
+  return { ok: true, operation, rendererGeneration, activationCurrent,
+    activationDisposition, ...(observed.writerDisposition ? { writerDisposition: observed.writerDisposition } : {}),
+    ...(ready && !opened && observed.resumeSource ? { resumeSource: observed.resumeSource } : {}),
+    ...(activationCurrent && observed.activationViewId ? { activationViewId: observed.activationViewId } : {}),
+    navigationRecovery: { version, originalTargetPid, originalInstanceId, sessionId },
+    navigationReceipt: observed.navigationReceipt, result: observed.result };
+}
+
 function rendererCommandAvailability() {
   if (!mainWindow || !mainWindow.webContents || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
     return 'closed';
@@ -931,7 +1044,7 @@ function rendererCommandAvailability() {
   return isCurrentRendererGenerationReady() ? 'ready' : '';
 }
 
-function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal, onDispatchedTimeout) {
+function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal, onDispatchedTimeout, onDispatch) {
   const deadline = Date.now() + timeoutMs;
   const startupDeadline = Date.now() + Math.min(Math.max(timeoutMs, 0), RENDERER_STARTUP_WAIT_MS);
 
@@ -1003,6 +1116,14 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
       return;
     }
     signal?.addEventListener('abort', onAbort, { once: true });
+    const refusal = onDispatch?.(requestGeneration);
+    if (refusal?.commandDispatched === false) {
+      signal?.removeEventListener('abort', onAbort);
+      clearTimeout(timer);
+      ipcMain.removeListener(responseChannel, listener);
+      resolve(refusal);
+      return;
+    }
     mainWindow.webContents.send(channel, {
       ...payload,
       requestId,
@@ -1118,11 +1239,12 @@ async function handleCliBridgeCommand(action, payload) {
     }
     case 'reload':
     case 'refresh': {
-      const dir = requestedPath ? path.resolve(requestedPath) : getOpenedProjectPathFromWindow();
+      const route = routeProjectReload(requestedPath, getOpenedProjectPathFromWindow(),
+        payload.lifecycle !== undefined && getBuildProduct() === 'blockly');
+      const dir = route.path;
       if (!dir) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
       if (!fs.existsSync(dir)) return { ok: false, message: `项目目录不存在: ${dir}` };
-      const current = getOpenedProjectPathFromWindow();
-      if (current && path.resolve(current) === dir) {
+      if (route.operation === 'project_reload') {
         const result = await requestMainWindow(
           'cli-bridge:blockly-live-operation',
           'cli-bridge:blockly-live-operation:response',
@@ -1139,6 +1261,8 @@ async function handleCliBridgeCommand(action, payload) {
             ? { ...result, message: `已重载项目(刷新库/积木): ${dir}`, project: dir }
             : result;
         }
+        if (!route.canFallbackToOpen) return { ok: false, operation: 'project_reload',
+          code: 'PROJECT_RELOAD_RESULT_UNCONFIRMED', message: 'The original project reload result could not be confirmed.' };
       }
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
@@ -1204,8 +1328,76 @@ async function handleCliBridgeCommand(action, payload) {
         return { ...identity, ownerStatus: { idle: status?.ok === true } };
       }
       if (['project_repair_bootstrap', 'project_repair_shutdown_admission', 'project_repair_adoption_admission'].includes(operation)) return { ok: false, code: 'PROJECT_REPAIR_BOOTSTRAP_PRIVATE', message: 'Repair bootstrap is an internal host operation.' };
-      const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow());
+      if (operation === 'project_create_recover' || operation === 'project_create_acknowledge')
+        return observeOriginalProjectCreate(operation, payload?.params);
+      if (operation === 'project_navigation_recover' || operation === 'project_navigation_acknowledge')
+        return observeOriginalProjectNavigation(operation, payload?.params);
+      if (operation === 'project_navigation_workspace_mode' && getBuildProduct() === 'blockly') {
+        const currentView = () => isCurrentRendererGenerationReady() && !getOpenedProjectPathFromWindow()
+          ? rendererGeneration : null;
+        return projectCrashResumeController()?.observeClosedWorkspaceProtocol(requestedPath, payload?.params, currentView,
+          (project, generation) => requestMainWindow(
+            'cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+            { operation, path: project, lifecycle: { version: 1, sourceProject: null, rendererGeneration: generation } }, 4000,
+          )) ?? { ok: false, operation, code: 'PROJECT_LIFECYCLE_TARGET_UNCONFIRMED' };
+      }
+      if (operation === 'abs_workspace_migration_status' && getBuildProduct() === 'blockly')
+        return observeProjectWorkspaceMigration(requestedPath, payload?.params);
+      if (operation === 'abs_workspace_migration_replace' && getBuildProduct() === 'blockly') {
+        const generation = rendererGeneration;
+        const refusal = projectLifecycleRequestRejection(payload?.lifecycle, generation);
+        if (refusal) return refusal;
+        const proveCurrent = () => {
+          const current = projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow());
+          const target = projectLock.normalizeProjectPathLoose(requestedPath);
+          if (!current || current !== target || rendererGeneration !== generation || !isCurrentRendererGenerationReady()
+            || payload?.lifecycle && projectLock.normalizeProjectPathLoose(payload.lifecycle.sourceProject) !== current)
+            throw Object.assign(new Error('The original migration canvas is no longer active.'), { code: 'PROJECT_LIFECYCLE_CONTEXT_CHANGED' });
+        };
+        return replacePreparedWorkspaceMigration(requestedPath, payload?.params, proveCurrent);
+      }
+      const prepareSave = operation === 'project_publication_prepare';
+      const saveRequest = payload?.params?.saveRequest;
+      const saveWriterEnabled = getBuildProduct() === 'blockly';
+      const suppliedSaveWriter = saveWriterEnabled ? payload?.params?.saveWriter : undefined;
+      const preparedBoardSave = suppliedSaveWriter !== undefined && ['set_board_config', 'board_switch'].includes(operation);
+      const originalSave = (['project_save', 'blocks_tidy'].includes(operation) || preparedBoardSave) && saveRequest?.version === 2;
+      if (suppliedSaveWriter !== undefined && (!originalSave || !path.isAbsolute(requestedPath || '')
+        || suppliedSaveWriter?.version !== 1 || suppliedSaveWriter.kind !== 'admitted-save' || !suppliedSaveWriter.attachment
+        || !Number.isSafeInteger(suppliedSaveWriter.viewRevision) || suppliedSaveWriter.viewRevision < 0
+        || !/^sha256:[a-f0-9]{64}$/.test(suppliedSaveWriter.intentHash))) {
+        return { ok: false, operation, commandDispatched: false, code: 'PROJECT_SAVE_RECEIPT_INVALID' };
+      }
+      if (prepareSave && (!saveWriterEnabled || !path.isAbsolute(requestedPath || '')
+        || !['project_save', 'blocks_tidy'].includes(saveRequest?.operation) || saveRequest?.version !== 2)) {
+        return { ok: false, operation, commandDispatched: false, code: 'PROJECT_SAVE_RECEIPT_INVALID' };
+      }
+      const route = routeLiveOperationProject(prepareSave || preparedBoardSave ? saveRequest.operation : operation,
+        requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
       const dir = route.path;
+      if (saveWriterEnabled && operation === 'blocks_set_state' && route.originalPublication && !route.originalAdmissionAttachment)
+        return { ok: false, operation, commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE' };
+      let nativeSaveWriter = suppliedSaveWriter, saveLifecycle;
+      if (prepareSave || originalSave && saveWriterEnabled && !suppliedSaveWriter) {
+        if (!route.originalAdmissionAttachment || originalSave && saveRequest.operation !== operation) {
+          return { ok: false, operation, commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE' };
+        }
+        const prepared = await requestMainWindow(
+          'cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+          { operation: 'project_publication_prepare', path: dir, params: payload.params,
+            originalAdmissionAttachment: route.originalAdmissionAttachment, lifecycle: payload.lifecycle }, 5000);
+        if (prepareSave) return prepared;
+        if (prepared?.code === 'PROJECT_SAVE_REQUEST_CONSUMED') {
+          return requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+            { operation: 'project_save_status', path: dir, params: payload.params }, 12000);
+        }
+        if (!prepared?.ok || !prepared.saveWriter) return { ...prepared, ok: false, operation, commandDispatched: false };
+        nativeSaveWriter = prepared.saveWriter;
+        saveLifecycle = { version: 1, sourceProject: dir, rendererGeneration: prepared.rendererGeneration };
+      }
+      const originalAdmissionAttachment = route.originalAdmissionAttachment ?? suppliedSaveWriter?.attachment;
+      const cliParams = suppliedSaveWriter ? { ...payload.params } : payload?.params;
+      if (suppliedSaveWriter) delete cliParams.saveWriter;
       const projectOptionalOperations = new Set([
         'search_boards_libraries',
         'project_create',
@@ -1272,19 +1464,66 @@ async function handleCliBridgeCommand(action, payload) {
           lifecycle: { version: 1, rendererGeneration: generation, sourceProject: dir || null },
         }, 5000)
         : undefined;
+      let rendererSendStarted = false;
+      const durableNavigation = ['project_open', 'project_close'].includes(operation) && payload?.params?.navigationSessionId !== undefined;
+      const onDispatch = operation === 'project_create' ? generation => retainDispatchedProjectCreate(payload, generation)
+        : durableNavigation ? generation => retainDispatchedNavigation(payload, generation)
+        : route.originalPublication ? () => { rendererSendStarted = true; } : undefined;
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
         {
           path: dir || '',
           operation,
-          params: payload && payload.params,
-          ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
+          params: cliParams,
+          ...(nativeSaveWriter ? { nativeSaveWriter } : {}),
+          ...(originalAdmissionAttachment ? { originalAdmissionAttachment } : {}),
+          ...(payload.lifecycle !== undefined || saveLifecycle ? { lifecycle: payload.lifecycle ?? saveLifecycle } : {}),
         },
         liveOperationTimeoutMs,
         undefined,
         releasePreparation,
+        onDispatch,
       );
+      if (route.originalPublication && !rendererSendStarted && result?.ok === false)
+        return { ...result, commandDispatched: false };
+      if (durableNavigation && result?.navigationReceipt) {
+        const id = payload.params.navigationRequest?.requestId, claim = dispatchedProjectNavigations.get(id);
+        if (claim && result.navigationReceipt.requestId === id
+          && result.navigationReceipt.rendererGeneration === claim.reference.navigationRequest.rendererGeneration) {
+          const navigation = projectCrashResumeController();
+          const activation = result.navigationReceipt.activation;
+          if (activation && result.activationCurrent === true) navigation?.recordNavigation(claim.reference, activation, claim.sourceAttachment);
+          const recorded = navigation?.finishNavigation(claim.reference, result);
+          if (recorded?.ok) dispatchedProjectNavigations.delete(id);
+          if (recorded?.activationViewId && result.activationCurrent === true)
+            result.activationViewId = recorded.activationViewId;
+        }
+      }
+      if (operation === 'app_info' && result?.lifecycle?.version === 1) {
+        const active = result.lifecycle.sourceProject;
+        if (active === null || ownsProjectNavigation(active)) {
+          const viewId = projectCrashResumeController()?.viewIdentity(active);
+          if (viewId) result.activationViewId = viewId;
+        }
+      }
+      if ((operation === 'project_create' || operation === 'project_create_status') && result?.activationCurrent === true) {
+        const receipt = result.createReceipt, created = receipt?.createdProject;
+        const navigation = projectCrashResumeController();
+        if (receipt?.activationRetained === false && ownsProjectNavigation(created)) {
+          const claim = dispatchedProjectCreates.get(receipt.requestId);
+          if (claim && claim.createRequest.rendererGeneration === receipt.rendererGeneration && claim.createRequest.deadlineAt === receipt.deadlineAt
+            && projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow()) === projectLock.normalizeProjectPathLoose(created)) {
+            const retained = navigation?.record(created, { creation: claim, createdAttachment: receipt.createdAttachment });
+            if (retained?.ok) {
+              receipt.activationRetained = true;
+              dispatchedProjectCreates.delete(receipt.requestId);
+            }
+          }
+        }
+        const viewId = receipt?.activationRetained !== false && ownsProjectNavigation(created) && navigation?.viewIdentity(created);
+        if (viewId) result.activationViewId = viewId;
+      }
       if ((operation === 'project_build_status' || operation === 'project_build' && payload?.params?.buildRequest)
         && !result?.buildReceipt && ['RENDERER_RESPONSE_TIMEOUT', 'RENDERER_REQUEST_CANCELLED',
           'RENDERER_UNAVAILABLE', 'RENDERER_NOT_READY'].includes(result?.errorCode)) {
@@ -1414,6 +1653,7 @@ function getCliBridgeStatus() {
     project: getOpenedProjectPathFromWindow(),
     projects: coderOpenProjects,
     serve: !!serve,
+    ...(getBuildProduct() === 'blockly' ? { nativeSaveWriterVersion: 1 } : {}),
   };
 }
 
@@ -1596,6 +1836,7 @@ function invalidateRendererGeneration(reason) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     void cloudBuildController?.invalidateOwner(mainWindow.webContents, rendererGeneration);
   }
+  dispatchedProjectCreates.clear();
   readyRendererGeneration = 0;
   console.info('[RendererLifecycle] unavailable', {
     generation: rendererGeneration,
@@ -2575,9 +2816,10 @@ async function updateMainWindowWithPendingData() {
 
   if (pendingFileToOpen) {
     if (!projectOpenRendererReady) return;
-    const dir = pendingFileToOpen;
+    const request = pendingFileToOpen;
     pendingFileToOpen = null;
-    mainWindow.webContents.send('open-project-from-file', dir);
+    if (typeof request !== 'string' && !startupProjectOpen.dispatch(request, rendererGeneration)) return;
+    mainWindow.webContents.send('open-project-from-file', request);
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
     return;
@@ -2698,12 +2940,8 @@ function createWindow() {
   // 根据是否有待打开的项目路径或路由参数来决定加载的页面
   let targetUrl = null;
 
-  if (pendingFileToOpen) {
-    const routePath = `main/guide?openProject=${encodeURIComponent(pendingFileToOpen)}`;
-    console.log('Loading with project path:', routePath);
-    targetUrl = `#/${routePath}`;
-    pendingFileToOpen = null;
-  } else if (pendingRoute) {
+  // File opens use one receiver even on startup, after the renderer subscribes.
+  if (!pendingFileToOpen && pendingRoute) {
     // 构建路由URL
     let routePath = pendingRoute;
 
@@ -3234,7 +3472,9 @@ app.on("ready", async () => {
   process.env.AILY_LIBRARY_HOST_PID = String(process.pid);
   if (!repairBootstrap && !pendingFileToOpen && !pendingRoute) {
     const interrupted = projectCrashResumeController()?.interruptedProject();
-    if (interrupted?.ok && interrupted.project) pendingFileToOpen = interrupted.project;
+    if (interrupted?.ok && interrupted.project) {
+      pendingFileToOpen = startupProjectOpen.stage(interrupted);
+    }
   }
   createWindow();
   registerPowerMonitorLifecycle();
@@ -3466,12 +3706,9 @@ app.on('open-file', (event, filePath) => {
     console.log('macOS open-file:', filePath);
     console.log('Project directory:', projectDir);
 
-    if (mainWindow && mainWindow.webContents) {
-      pendingFileToOpen = projectDir;
-      void updateMainWindowWithPendingData();
-    } else {
-      pendingFileToOpen = projectDir;
-    }
+    startupProjectOpen.invalidate();
+    pendingFileToOpen = projectDir;
+    if (mainWindow && mainWindow.webContents) void updateMainWindowWithPendingData();
   }
 });
 
@@ -3571,17 +3808,82 @@ ipcMain.handle("project-lock-release", (event, data) => {
 
 // Navigation records identify the accepted project only. They never select a
 // program version, recover a transaction or open a copy. Reloads retain them.
-ipcMain.handle('project-navigation-active', (event, projectPath) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string'
-    || !path.isAbsolute(projectPath) || !heldProjectLockNormalized
-    || projectLock.normalizeProjectPathLoose(projectPath) !== projectLock.normalizeProjectPathLoose(heldProjectLockNormalized))
-    return { ok: false, reason: 'project-not-owned' };
-  return projectCrashResumeController()?.record(projectPath) ?? { ok: false, reason: 'navigation-storage-unavailable' };
+function ownsProjectNavigation(projectPath) {
+  return typeof projectPath === 'string' && path.isAbsolute(projectPath) && !!heldProjectLockNormalized
+    && projectLock.normalizeProjectPathLoose(projectPath) === projectLock.normalizeProjectPathLoose(heldProjectLockNormalized);
+}
+
+ipcMain.on('project-navigation-startup-cancel', (event) => {
+  if (mainWindow && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame)
+    startupProjectOpen.invalidate();
 });
-ipcMain.handle('project-navigation-clear', (event, projectPath) => {
+ipcMain.handle('project-navigation-startup-check', (event, projectPath, ticket) => (
+  !!mainWindow && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame
+  && startupProjectOpen.isCurrent(ticket, projectPath, rendererGeneration)
+));
+ipcMain.handle('project-navigation-active', (event, projectPath, startupTicket) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || !ownsProjectNavigation(projectPath))
+    return { ok: false, reason: 'project-not-owned' };
+  let restore;
+  if (startupTicket !== undefined) {
+    if (event.senderFrame !== mainWindow.webContents.mainFrame
+      || !(restore = startupProjectOpen.consume(startupTicket, projectPath, rendererGeneration)))
+      return { ok: false, reason: 'startup-superseded' };
+  } else startupProjectOpen.invalidate();
+  const result = projectCrashResumeController()?.record(projectPath, { restore, explicit: startupTicket === undefined });
+  return result ?? { ok: false, reason: 'navigation-storage-unavailable' };
+});
+ipcMain.handle('project-navigation-created-active', (event, { projectPath, request, recoverySessionId, attachment } = {}) => {
+  if (!getCurrentRendererOwner(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+    || !ownsProjectNavigation(projectPath)) return { ok: false, reason: 'project-not-owned' };
+  const claim = dispatchedProjectCreates.get(request?.requestId), original = claim?.createRequest;
+  const supplied = claim && readProjectCreateRecovery({ createRequest: request, recoverySessionId,
+    originalInstanceId: claim.originalInstanceId });
+  if (!supplied || recoverySessionId !== claim.recoverySessionId || original.rendererGeneration !== rendererGeneration
+    || original.deadlineAt !== supplied.createRequest.deadlineAt
+    || original.rendererGeneration !== supplied.createRequest.rendererGeneration
+    || original.deadlineAt + PROJECT_CREATE_RECOVERY_RETENTION_MS < Date.now()) return { ok: false, reason: 'original-create-not-authorized' };
+  const navigation = projectCrashResumeController();
+  const save = () => navigation?.record(projectPath, { creation: claim, createdAttachment: attachment });
+  let result = save();
+  if (['EIO', 'EPERM', 'EBUSY', 'PROJECT_CRASH_RESUME_BUSY'].includes(result?.code)) result = save();
+  if (result?.ok) {
+    dispatchedProjectCreates.delete(request.requestId);
+    startupProjectOpen.invalidate();
+  }
+  return result ?? { ok: false, reason: 'navigation-storage-unavailable' };
+});
+ipcMain.handle('project-navigation-record-original', (event, { requestId, activation } = {}) => {
+  if (!getCurrentRendererOwner(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+    || (activation?.state === 'open' && !ownsProjectNavigation(activation.project)))
+    return { ok: false, reason: 'project-not-owned' };
+  const claim = dispatchedProjectNavigations.get(requestId);
+  if (!claim || claim.reference.navigationRequest.rendererGeneration !== rendererGeneration)
+    return { ok: false, reason: 'original-navigation-not-authorized' };
+  const navigation = projectCrashResumeController();
+  const recorded = navigation?.recordNavigation(claim.reference, activation, claim.sourceAttachment);
+  if (recorded?.ok && activation?.state === 'closed') {
+    const hint = navigation.closedSessionHint();
+    if (hint) event.sender.send('project-navigation-closed', hint);
+  }
+  return recorded ?? { ok: false, reason: 'navigation-storage-unavailable' };
+});
+ipcMain.handle('project-navigation-closed-session', event => (mainWindow && !mainWindow.isDestroyed()
+  && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame
+  && !getOpenedProjectPathFromWindow() ? projectCrashResumeController()?.closedSessionHint() ?? null : null));
+ipcMain.handle('project-navigation-can-reopen', (event, { proof, project } = {}) => (
+  !!getCurrentRendererOwner(event.sender) && event.senderFrame === mainWindow.webContents.mainFrame && !getOpenedProjectPathFromWindow()
+  && projectCrashResumeController()?.canReopenFrom(proof, project) === true
+));
+ipcMain.handle('project-navigation-clear', (event, projectPath, options) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string' || !path.isAbsolute(projectPath))
     return { ok: false, reason: 'project-not-owned' };
-  return projectCrashResume?.clear(projectPath) ?? { ok: true, cleared: false };
+  if ((options?.retainInterruptedSource || options?.expectedViewId) && event.senderFrame !== mainWindow.webContents.mainFrame)
+    return { ok: false, reason: 'project-not-owned' };
+  if (options?.expectedViewId && projectCrashResume?.viewIdentity(projectPath) !== options.expectedViewId)
+    return { ok: true, cleared: false, reason: 'different-view' };
+  return projectCrashResume?.clear(projectPath, { retainInterruptedSource: options?.retainInterruptedSource === true })
+    ?? { ok: true, cleared: false };
 });
 
 ipcMain.handle("project-lock-focus", (event, data) => {

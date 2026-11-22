@@ -10,6 +10,39 @@ import { projectResourceGc } from './services/project-resource-gc.service';
 import { ProjectApplicationAdapter } from '../../integrations/project/project-application.adapter';
 
 describe('Blockly startup source and environment settlement', () => {
+  it('keeps a host-activated view revision while the editor accepts its route', async () => {
+    const route = new Subject<{ path: string }>();
+    const board = new Subject<never>();
+    let projectPath = '/activated';
+    const registerRoute = jasmine.createSpy('registerRoute').and.callFake((path: string) => { projectPath = path; });
+    const component: any = Object.create(BlocklyEditorComponent.prototype);
+    Object.assign(component, {
+      activatedRoute: { queryParams: route }, projectLoadSequence: 0,
+      _projectService: { init() {}, bindPreprocessSaveGuard: () => () => {} },
+      _builderService: { init() {} }, _uploadService: { init() {} },
+      projectService: {
+        get currentProjectPath() { return projectPath; }, set currentProjectPath(path: string) { registerRoute(path); },
+        boardConfigUpdatedSubject: board, beginBlocklyProjectLoad() {},
+      },
+      generatorRuntime: { isActive: () => false },
+      loadProject: async (_path: string, assertCurrent: () => void) => assertCurrent(),
+    });
+    spyOn(projectDataRuntime, 'configure');
+    spyOn(projectDataRuntime, 'getSessionToken').and.returnValue('session');
+    spyOn(window.history, 'replaceState'); spyOn(window.history, 'pushState');
+    component.ngOnInit();
+    try {
+      route.next({ path: '/activated' });
+      await Promise.resolve();
+      expect(component.loadedProjectPath).toBe('/activated');
+      expect(registerRoute).not.toHaveBeenCalled();
+      route.next({ path: '/route-only' });
+      await Promise.resolve();
+      expect(registerRoute).toHaveBeenCalledOnceWith('/route-only');
+      expect(component.loadedProjectPath).toBe('/route-only');
+    } finally { component.projectRouteSubscription.unsubscribe(); component.boardConfigUpdatedSubscription.unsubscribe(); }
+  });
+
   it('checks the original ABS journal before asking the dependency owner even without a linked environment', async () => {
     const originalStorage = window['fs'], originalLibraries = window['libraryDependencies'];
     const order: string[] = [];

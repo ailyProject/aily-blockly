@@ -332,6 +332,39 @@ test('the actual preprocess command retires failed standalone inputs without hid
     assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
 });
 
+test('explicit preprocess is observed by its original request without replacing current firmware', t => {
+    const f = fixture(t);
+    const compile = api.prepareBuildExecution(f.config);
+    complete(compile);
+    const original = api.resolveBuildExecution(f.root);
+    const options = { ...f.config, buildRequestId: 'explicit-preprocess', explicitPreprocess: true };
+    const prepared = api.prepareBuildExecution(options, undefined, 'preprocess');
+    assert.equal(api.inspectBuildExecution(f.root, options.buildRequestId).status, 'prepared');
+    assert.throws(() => api.prepareBuildExecution(options, undefined, 'preprocess'), { code: 'BUILD_EXECUTION_EXISTS' });
+    const lease = acquireBuildWorkspace(prepared.currentProjectPath, 'preprocess');
+    try {
+        api.startBuildExecution(prepared, lease);
+        const folder = path.join(prepared.currentProjectPath, '.temp', 'sketch');
+        fs.mkdirSync(folder, { recursive: true });
+        fs.writeFileSync(path.join(folder, 'sketch.ino'), options.code);
+        api.finishBuildExecution(prepared, true);
+    } finally { lease.release(); }
+    api.retireStandalonePreprocessInputs(prepared);
+    const receipt = api.inspectBuildExecution(f.root, options.buildRequestId);
+    assert.equal(receipt.status, 'completed');
+    assert.equal(receipt.buildHistory.operation, 'preprocess');
+    assert.equal(receipt.buildHistory.sourceSha256, createHash('sha256').update(options.code).digest('hex'));
+    assert.equal(receipt.nextAction, 'terminal');
+    assert.equal(receipt.current, false);
+    for (const field of ['result', 'buildInput', 'buildSnapshot']) assert.equal(receipt[field], undefined);
+    assert.equal(fs.existsSync(path.join(prepared.currentProjectPath, 'node_modules')), false);
+    assert.equal(fs.readFileSync(path.join(prepared.currentProjectPath, '.temp', 'sketch', 'sketch.ino'), 'utf8'), options.code);
+    assert.deepEqual(api.resolveBuildExecution(f.root), original);
+    const stopped = api.prepareBuildExecution({ ...options, buildRequestId: 'explicit-preprocess-stopped' }, undefined, 'preprocess');
+    assert.equal(api.abandonPreparedPreprocess(stopped), true);
+    assert.equal(api.inspectBuildExecution(f.root, stopped.execution.buildRequestId).status, 'cancelled');
+});
+
 test('a new build worker prunes verifiable terminal preprocess inputs from a moved archive', async t => {
     const source = fixture(t), target = fixture(t);
     const prepare = buildRequestId => api.prepareBuildExecution({ ...source.config, buildRequestId }, undefined, 'preprocess');

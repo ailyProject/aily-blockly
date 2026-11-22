@@ -43,6 +43,7 @@ import {
   isAilyLibraryPackageName,
   isAilyScopedPackageName,
   requireProjectProgramPublication,
+  type ProjectStorageAttachment,
 } from '@shared/public-api';
 import {
   CODER_TEMPLATE_DIRECTORY,
@@ -76,7 +77,8 @@ import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './proj
 import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRecoveryTargetReload } from './project-recovery-targets';
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
 import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, type ProjectSaveReceiptResponse } from './project-save-receipts';
-import { ProjectRecoveryRequests } from './project-recovery-request';
+import { ProjectRecoveryRequests, sameRecoveryAttachment } from './project-recovery-request';
+import { openProjectRecoveryBackup } from './project-recovery-backup';
 import { withCurrentProjectRecoveryStatus } from './project-recovery-status';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
@@ -138,6 +140,13 @@ export interface CoderWorkspaceContext {
   activeProject: string;
 }
 
+interface ProjectRecoveryOwner {
+  path: string;
+  attachment?: ProjectStorageAttachment;
+  stopped: boolean;
+  task?: Promise<Record<string, any>>;
+}
+
 interface ProjectOpenOptions {
   reason?: ProjectActivationReason;
   saveBeforeReload?: boolean;
@@ -146,12 +155,15 @@ interface ProjectOpenOptions {
   interactive?: boolean;
   /** In-process ownership only; never accepted from IPC/Agent parameters. */
   lifecycleOwner?: symbol;
+  onViewActivated?: (project: string | null, revision: number) => void | Promise<void>;
   /** Host-only exact journal authority. Never accepted from IPC/Agent options. */
   recoveryReopen?: { assertCurrent(): void };
   /** Recovery-copy navigation preserves the original source recovery view. */
   retainRecovery?: true;
   /** Internal create-only authority. The final activation checks before changing the view. */
-  createActivation?: { signal: AbortSignal; assertCurrent(): void; beginHandoff(): void; markActivated(): void };
+  createActivation?: { signal: AbortSignal; assertCurrent(): void; beginHandoff(): void; recordActivation?(): Promise<boolean>; markActivated(): void };
+  /** One-time Main claim, supplied only by the cold-start file receiver. */
+  startupRestore?: string;
 }
 
 interface ProjectCreationOptions {
@@ -185,7 +197,8 @@ export interface BlocklyProjectLoadStatus {
 export class ProjectService {
   private independentRepairNormalization?: { project: string; transitions: Record<string, any>[] };
   private recoveryTargets?: ProjectRecoveryTargets;
-  private failedLoadRecoveries?: Map<string, { path: string; task: Promise<Record<string, any>> }>;
+  private failedLoadRecoveries?: Map<string, ProjectRecoveryOwner>;
+  private pendingRecoveryStops?: Map<string, { attachment: ProjectStorageAttachment; until: number }>;
   private get savedRecoveryTargets(): ProjectRecoveryTargets { return this.recoveryTargets ??= new ProjectRecoveryTargets(); }
 
   stateSubject = new BehaviorSubject<ProjectState>('default');
@@ -197,6 +210,8 @@ export class ProjectService {
   // 当前项目路径的订阅源
   private currentProjectPathSubject = new BehaviorSubject<string>('');
   currentProjectPath$ = this.currentProjectPathSubject.asObservable();
+  private viewRevision = 0;
+  private recoveredCreateSession?: { project: string; sessionId: string };
 
   private readonly coderOperations = new Map<symbol, CoderProjectOperation>();
   readonly coderOperationSubject = new BehaviorSubject<CoderProjectOperation | null>(null);
@@ -1058,7 +1073,10 @@ export class ProjectService {
 
   private projectActivationSubject = new Subject<ProjectActivationEvent>();
   projectActivation$ = this.projectActivationSubject.asObservable();
-  private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease } | null = null;
+  private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease;
+    startupRestore?: string; startupPreparation?: AbortController } | null = null;
+  private projectNavigationIntentRevision = 0;
+  private closedRestartSession?: { project: string; sessionId: string };
   private readonly projectLifecycle = new ProjectLifecycleGate();
   private dependencyLifecycleState?: ProjectDependencyLifecycle;
   private projectCommandStopCloud?: WeakMap<ProjectDependencySession, Promise<void>>;
@@ -1099,9 +1117,31 @@ export class ProjectService {
     if (path && this.getProjectMode(path) === 'coder') {
       this.registerCoderProject(path);
     }
+    if (this.recoveredCreateSession && !this.isSameProjectPath(path, this.recoveredCreateSession.project)) {
+      this.recoveredCreateSession = undefined;
+    }
+    this.viewRevision += 1;
     this.currentProjectPathSubject.next(path);
     if (!this.isCoderProjectContext) this.publishCoderWorkspaceContext();
     if (!this.isCoderProjectContext) this.publishCoderOperations();
+  }
+
+  get projectViewRevision(): number {
+    return this.viewRevision;
+  }
+
+  get closedRestartSessionHint(): { project: string; sessionId: string } | undefined {
+    return this.currentProjectPath ? undefined : this.closedRestartSession;
+  }
+
+  getRecoveredCreateSessionId(project: string): string | undefined {
+    const binding = this.recoveredCreateSession;
+    return binding && this.isSameProjectPath(project, binding.project) && this.isSameProjectPath(project, this.currentProjectPath)
+      ? binding.sessionId : undefined;
+  }
+
+  private clearRecoveredCreateSessionId(project: string, sessionId: string): void {
+    if (sessionId && this.getRecoveredCreateSessionId(project) === sessionId) this.recoveredCreateSession = undefined;
   }
 
   get isProjectOpening(): boolean {
@@ -1435,6 +1475,11 @@ export class ProjectService {
   async init() {
     if (this.electronService.isElectron) {
       this.registerProjectRootPathSettingListener();
+      window['ipcRenderer'].on('project-create-recovery-acknowledged', (_event, receipt) => {
+        if (typeof receipt?.project === 'string' && typeof receipt.sessionId === 'string') {
+          this.clearRecoveredCreateSessionId(receipt.project, receipt.sessionId);
+        }
+      });
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         if (message.data.action == 'open-project' || message.data.action === 'open-project-in-coder') {
@@ -1461,11 +1506,14 @@ export class ProjectService {
       });
 
       // 监听来自文件关联的打开请求
-      window['ipcRenderer'].on('open-project-from-file', async (event, projectPath) => {
+      window['ipcRenderer'].on('open-project-from-file', async (_event, request) => {
+        const projectPath = typeof request === 'string' ? request : request?.projectPath;
+        const startupRestore = typeof request === 'object' ? request?.startupTicket : undefined;
+        if (typeof projectPath !== 'string' || typeof request !== 'string' && typeof startupRestore !== 'string') return;
         console.log('Received open-project-from-file event:', projectPath);
         try {
-          await this.projectOpen(projectPath);
-          console.log('Successfully opened project from file association');
+          if (await this.projectOpen(projectPath, startupRestore ? { startupRestore } : {}))
+            console.log('Successfully opened project from file association');
         } catch (error) {
           console.error('Error opening project from file association:', error);
           this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + error.message);
@@ -1940,14 +1988,16 @@ export class ProjectService {
    * keeps its existing policy; this path neither saves nor discards edits. */
   async reopenRecoveredBlocklyProject(path: string, assertCurrent: () => void): Promise<{ project: string; activated: boolean }> {
     const source = this.currentProjectPath;
-    let reopening = false;
     const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
-    const check = () => {
+    const assertView = () => {
       assertCurrent();
       if (!source || path !== source || this.currentProjectPath !== source || this.getProjectMode(source) !== 'blockly') {
         fail('ABS_REOPEN_CONTEXT_STALE', 'Recovered project is not the exact active Blockly project.');
       }
-      if ((!reopening && this.isProjectOpening) || this.dependencyLifecycle.isBusy(source)
+    };
+    const check = () => {
+      assertView();
+      if (this.isProjectOpening || this.dependencyLifecycle.isBusy(source)
         || this.getCoderOperation(source) || this.application.hasActiveProjectMutation(source)
         || this.application.hasActiveBlocklyBuildOrUpload(source)) {
         fail('ABS_REOPEN_BUSY', 'A project task is still active; recovery did not save, discard or stop it.');
@@ -1963,9 +2013,8 @@ export class ProjectService {
         fail('ABS_REOPEN_LIBRARY_STATE_UNAVAILABLE', 'Recovery requires verified library-manager state.');
       }
       if (libraries.dirty || libraries.busy) fail('ABS_REOPEN_LIBRARY_CHANGES', 'Pending library edits are retained; reopen cannot discard them.');
-      reopening = true;
       const activated = await this.projectOpen(source, { reason: 'abs-journal-reopen', lifecycleOwner: lifecycle.token,
-        recoveryReopen: { assertCurrent: check } });
+        recoveryReopen: { assertCurrent: assertView } });
       // projectOpen already awaits normal editor load completion. Never call
       // the retired canvas guard after teardown; the coordinator verifies the
       // replacement activation and mirrors after this returns.
@@ -1977,21 +2026,33 @@ export class ProjectService {
   // 打开项目
   async projectOpen(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}) {
     options.createActivation?.assertCurrent();
+    options.recoveryReopen?.assertCurrent();
     const selectedSketch = /\.ino$/i.test(projectPath) ? projectPath : undefined;
     projectPath = normalizeProjectOpenPath(projectPath);
+    const startupRestore = options.startupRestore;
+    const navigationRevision = startupRestore ? 0 : this.beginExplicitNavigation();
+    if (startupRestore) {
+      const available = () => !this.projectNavigationIntentRevision && !this.currentProjectPath && !this.projectOpenTask;
+      if (!available()
+        || !await window['projectLock']?.checkStartupRestore?.(projectPath, startupRestore)
+        || !available()) return false;
+    }
     if (selectedSketch && this.getProjectMode(projectPath) === 'blockly') {
       await this.configService.init();
       if (this.configService.getPreferredChatAgentRuntimeMode() === 'coder') {
         return this.openProjectInCoder(selectedSketch);
       }
     }
-    if (this.projectOpenTask) {
+    const opening = this.projectOpenTask;
+    if (opening?.startupRestore && !this.currentProjectPath) {
+      await opening.promise.catch(() => false);
+    } else if (opening) {
       if (options.interactive === false) throw projectViewOpenError(projectPath, { code: 'PROJECT_VIEW_BUSY',
         error: 'An existing project navigation is still in progress; no replacement was queued.' });
-      if (this.isSameProjectPath(this.projectOpenTask.path, projectPath)) {
-        return this.projectOpenTask.promise;
+      if (this.isSameProjectPath(opening.path, projectPath)) {
+        return opening.promise;
       }
-      await this.projectOpenTask.promise;
+      await opening.promise;
     }
 
     // Coder activation retains editors; only reload destroys the selected runtime.
@@ -2005,12 +2066,18 @@ export class ProjectService {
       const stopping = paths.filter(path => this.dependencyLifecycle.isStopping(path));
       if (stopping.length) await Promise.all(stopping.map(path => this.observeProjectCommandStop(path)));
       options.createActivation?.assertCurrent();
+      if (navigationRevision !== this.projectNavigationIntentRevision) return false;
       lease = this.acquireProjectLifecycle(paths, options.lifecycleOwner, !coderActivation);
     }
     catch (error) { this.message.warning((error as Error).message); return false; }
     let session: ProjectDependencySession | undefined;
-    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; });
-    const task = { path: projectPath, paths, promise, lease };
+    const startupPreparation = startupRestore ? new AbortController() : undefined;
+    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }, startupPreparation?.signal).catch(error => {
+      if (startupRestore && (error as { code?: string })?.code === 'PROJECT_STARTUP_OPEN_SUPERSEDED') return false;
+      if (startupPreparation?.signal.aborted && error === startupPreparation.signal.reason) return false;
+      throw error;
+    });
+    const task = { path: projectPath, paths, promise, lease, startupRestore, startupPreparation };
     this.projectOpenTask = task;
     const release = () => {
       task.lease.release();
@@ -2038,6 +2105,13 @@ export class ProjectService {
       signal?.removeEventListener('abort', release);
       release();
     }
+  }
+
+  private beginExplicitNavigation(): number {
+    if (!this.projectNavigationIntentRevision) window['projectLock']?.cancelStartupRestore?.();
+    const revision = ++this.projectNavigationIntentRevision;
+    this.projectOpenTask?.startupPreparation?.abort();
+    return revision;
   }
 
   async rebuildBlocklyRuntimeAfterLibraryChange(projectPath = this.currentProjectPath, assertOwner?: () => void): Promise<void> {
@@ -2297,12 +2371,20 @@ export class ProjectService {
     });
   }
 
-  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}, onPreparation?: (session: ProjectDependencySession) => void): Promise<boolean> {
+  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {},
+    onPreparation?: (session: ProjectDependencySession) => void, startupSignal?: AbortSignal): Promise<boolean> {
     const previousProjectPath = this.currentProjectPath;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
     const isSwitchingProject = !!previousProjectPath
       && !this.isSameProjectPath(previousProjectPath, projectPath);
     const creation = options.createActivation;
+    const startup = options.startupRestore;
+    const superseded = () => Object.assign(new Error('A newer project navigation superseded startup restoration.'), {
+      code: 'PROJECT_STARTUP_OPEN_SUPERSEDED',
+    });
+    const assertStartup = () => {
+      if (startup && (this.projectNavigationIntentRevision || this.currentProjectPath)) throw superseded();
+    };
     const checkCreation = async () => {
       try {
         creation?.assertCurrent();
@@ -2323,14 +2405,16 @@ export class ProjectService {
     // Reject before acquiring locks, closing windows, changing routes or publishing activation.
     if (!(await this.ensureProjectModeAllowed(projectPath))) return false;
     creation?.assertCurrent();
+    assertStartup();
 
     const recovery = activationReason === 'abs-journal-reopen' ? options.recoveryReopen : undefined;
     if (activationReason === 'abs-journal-reopen' && !recovery) throw new Error('Journal reopen requires in-process recovery authority.');
-    recovery?.assertCurrent();
+    options.recoveryReopen?.assertCurrent();
 
     // Coder tabs keep their iframe and in-flight operations. Activating another
     // project only changes the host projection; it does not save or recreate editors.
     if (this.getProjectMode(projectPath) === 'coder') {
+      if (startup) return false;
       const reload = activationReason === 'reload' || activationReason === 'chat-tool-reload';
       if (reload && this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
         if (this.getCoderOperation(projectPath)) throw new Error('工程正在编译或上传，请等待完成后重新加载');
@@ -2411,12 +2495,14 @@ export class ProjectService {
       // same target now owns the shared native view lock.
       if (this.isSameProjectPath(projectPath, this.currentProjectPath)
         || this.projectOpenTask && this.projectOpenTask !== originalOpen
+          && (!startup || this.projectOpenTask.startupRestore !== startup)
           && this.isSameProjectPath(projectPath, this.projectOpenTask.path)) return;
       try { await window['projectLock']?.release(projectPath); }
       catch (error) { console.warn('project-lock release after create preparation:', error); }
     };
     if (this.electronService.isElectron && window['projectLock']) {
       let r = await window['projectLock'].tryAcquire(projectPath);
+      if (!r.ok && startup) return false;
       if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
       if (!r.ok && options.interactive === false) throw projectViewOpenError(projectPath, r);
       if (!r.ok && r.conflict && r.holder) {
@@ -2437,9 +2523,9 @@ export class ProjectService {
         this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
         return false;
       }
-      if (creation) {
+      if (creation || startup) {
         ownsNewTargetLock = !r.alreadyHeld;
-        try { creation.assertCurrent(); }
+        try { creation?.assertCurrent(); assertStartup(); }
         catch (error) { await releasePreparedTargetLock(); throw error; }
       }
     }
@@ -2537,41 +2623,83 @@ export class ProjectService {
     }
 
     const session = preparedSession ?? beginPreparation();
-    if (!preparedSession && this.getProjectMode(projectPath) === 'blockly') {
-      await this.application.settleEnvironmentBeforeOpen?.(projectPath, () => this.assertProjectDependencySession(session));
-      this.assertProjectDependencySession(session);
-    }
-    if (!creation) this.beginBlocklyProjectLoad(projectPath);
-
     const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
+    let startupViewId: string | undefined;
     const recordNavigation = async () => {
       try {
-        const navigation = await window['projectLock'].recordActive(projectPath);
+        const navigation = await window['projectLock'].recordActive(projectPath, startup);
+        if (startup) {
+          if (navigation?.ok !== true) throw superseded();
+          startupViewId = navigation.activationViewId;
+          assertStartup();
+        }
         if (navigation?.ok !== true) console.warn('Project crash navigation could not be recorded:', navigation);
-      } catch (error) { console.warn('Project crash navigation could not be recorded:', error); }
+        else if (typeof navigation.recoverySessionId === 'string') {
+          this.recoveredCreateSession = { project: projectPath, sessionId: navigation.recoverySessionId };
+        }
+      } catch (error) {
+        if (startup) throw error;
+        console.warn('Project crash navigation could not be recorded:', error);
+      }
       this.assertProjectDependencySession(session);
     };
-    if (!creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
-    const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
-    if (blocklyRouteIsBeingReused) {
-      // Angular reuses the component when only query params change. Take an
-      // awaited SPA hop so ngOnDestroy can dispose the old workspace/runtime
-      // before currentProjectPath starts pointing at the next project.
-      await this.router.navigate(['/main/guide'], { replaceUrl: true });
-      this.assertProjectDependencySession(session);
+    try {
+      const guard = () => { this.assertProjectDependencySession(session); assertStartup(); };
+      const preparing = () => { guard(); recovery?.assertCurrent(); };
+      if (!preparedSession && abiIsExist) {
+        preparing();
+        await this.application.settleEnvironmentBeforeOpen?.(projectPath, preparing, startupSignal);
+        preparing();
+      }
+      if (!creation && !startup && !recovery) this.beginBlocklyProjectLoad(projectPath);
+      if (!creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
+      if (recovery) {
+        // This is the last point before disposing the source editor. Its
+        // session token changes on purpose when the accepted reopen proceeds.
+        recovery.assertCurrent();
+        this.beginBlocklyProjectLoad(projectPath);
+      }
+      if (abiIsExist && this.router.url.startsWith('/main/blockly-editor')) {
+        // Dispose the reused editor before currentProjectPath changes.
+        await this.router.navigate(['/main/guide'], { replaceUrl: true });
+      }
+      guard();
+    } catch (error) {
+      if (startup) {
+        this.dependencyLifecycle.release(session);
+        if (startupViewId) {
+          try { await window['projectLock']?.clearActive?.(projectPath, { expectedViewId: startupViewId }); }
+          catch (clearError) { console.warn('Project crash navigation could not be cleared:', clearError); }
+        }
+        await releasePreparedTargetLock();
+      }
+      throw error;
     }
 
+    let createNavigationRecorded = false;
     // 更新当前项目路径和包数据
     if (creation) {
-      try { creation.assertCurrent(); creation.markActivated(); }
+      try {
+        creation.assertCurrent();
+        if (abiIsExist && creation.recordActivation) {
+          // Once the exact handoff is durable, Stop must settle that request instead of revoking it.
+          creation.beginHandoff();
+          try { createNavigationRecorded = await creation.recordActivation(); }
+          catch (error) { console.warn('Original create navigation could not be recorded:', error); }
+          this.assertProjectDependencySession(session);
+        }
+        creation.markActivated();
+      }
       catch (error) {
         this.dependencyLifecycle.release(session);
         await releasePreparedTargetLock();
         throw error;
       }
-      this.beginBlocklyProjectLoad(projectPath);
     }
+    if (creation || startup) this.beginBlocklyProjectLoad(projectPath);
+    this.closedRestartSession = undefined;
     this.currentProjectPath = projectPath;
+    await options.onViewActivated?.(projectPath, this.projectViewRevision);
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
     this.projectActivationSubject.next({
       path: projectPath,
@@ -2579,7 +2707,7 @@ export class ProjectService {
       reason: activationReason,
       sessionResource: options.sessionResource ?? null,
     });
-    if (creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
+    if (creation && abiIsExist && !createNavigationRecorded && window['projectLock']?.recordActive) await recordNavigation();
 
     if (activationReason === 'reload' || activationReason === 'chat-tool-reload') {
       // Angular ignores navigation to the exact same route and query params. Move off the
@@ -2693,9 +2821,10 @@ export class ProjectService {
 
   /** The observer may disconnect; the admitted task still owns its real save. */
   startProjectSaveReceipt(path: string, request: ProjectSaveRequest,
-    run: () => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
+    run: () => Promise<Record<string, any>>,
+    rejectBeforeWriter?: (failure: { code: string; message: string }) => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
     const context = this.saveContext(path);
-    return this.projectSaveReceipts.start(path, request, context, this.guardSaveContext(path, context, run));
+    return this.projectSaveReceipts.start(path, request, context, this.guardSaveContext(path, context, run, rejectBeforeWriter));
   }
 
   getProjectSaveReceipt(path: string, request: ProjectSaveRequest): Promise<ProjectSaveReceiptResponse> {
@@ -2711,12 +2840,16 @@ export class ProjectService {
       await this.application.observeProjectPublication?.(project, original, originalTargetPid) ?? null);
   }
 
-  private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>) {
+  private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>,
+    rejectBeforeWriter?: (failure: { code: string; message: string }) => Promise<Record<string, any>>) {
     return async () => {
       const current = this.saveContext(path);
-      if (current[1] === true || context.some((value, i) => value !== current[i])) throw Object.assign(
-        new Error('The original save project session changed before execution. No save was started.'),
-        { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE' });
+      if (current[1] === true || context.some((value, i) => value !== current[i])) {
+        const failure = { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE',
+          message: 'The original save project session changed before execution. No save was started.' };
+        if (rejectBeforeWriter) return rejectBeforeWriter(failure);
+        throw Object.assign(new Error(failure.message), { code: failure.code });
+      }
       return run();
     };
   }
@@ -2902,10 +3035,12 @@ export class ProjectService {
   /** Same-project recovery owns its own exact request. A lost response can only
    * observe that request; it cannot replay navigation or apply an AI candidate. */
   recoverFailedBlocklyProject(requestId: string, observe = false,
-    recoverReadyProject?: () => Promise<Record<string, any>>,
-    prepareRecovery?: () => Promise<void>): Promise<Record<string, any>> {
-    const path = this.currentProjectPath;
-    if (!/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
+    recoverReadyProject?: (assertCurrent: () => void) => Promise<Record<string, any>>,
+    prepareRecovery?: (assertCurrent: () => void) => Promise<void>,
+    originalProject?: string): Promise<Record<string, any>> {
+    const path = observe && originalProject ? originalProject : this.currentProjectPath;
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,96}$/.test(requestId) || !path)
+      return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
     const currentResult = (task: Promise<Record<string, any>>) => task.then(result => {
       const sameProject = this.currentProjectPath === path;
       const status = this.getBlocklyProjectLoadStatus(path);
@@ -2919,52 +3054,51 @@ export class ProjectService {
     });
     const receipts = this.failedLoadRecoveries ??= new Map();
     const original = receipts.get(requestId);
-    if (original) return original.path === path ? currentResult(original.task) : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    if (original?.task) return this.isSameProjectPath(original.path, path) ? currentResult(original.task) :
+      Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    const owner: ProjectRecoveryOwner = { path, stopped: false };
+    const view = this.projectViewRevision, session = projectDataRuntime.getSessionToken(), generation = this.electronService?.currentRendererGeneration;
+    const current = () => {
+      const pendingStop = this.pendingRecoveryStops?.get(requestId);
+      if (owner.stopped || pendingStop && pendingStop.until > Date.now() && sameRecoveryAttachment(owner.attachment, pendingStop.attachment))
+        throw Object.assign(new Error('The original recovery was stopped.'), { code: 'PROJECT_RECOVERY_CANCELLED' });
+      if (this.currentProjectPath !== path || this.projectViewRevision !== view
+        || projectDataRuntime.getSessionToken() !== session || this.electronService?.currentRendererGeneration !== generation)
+        throw Object.assign(new Error('The original recovery view is no longer current.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+      const capture = window['fs']?.captureProjectAttachment;
+      if (owner.attachment && capture) {
+        let attached = false;
+        try { attached = sameRecoveryAttachment(owner.attachment, capture(path)); }
+        catch { /* A missing path cannot retain the original physical authority. */ }
+        if (!attached) throw Object.assign(new Error('The original recovery attachment changed.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+      }
+    };
+    if (!observe) receipts.set(requestId, owner);
     const task = (async () => {
       const receipt = { version: 2, requestId, action: 'recover_project', candidateApplied: false };
-      const current = () => {
-        if (this.currentProjectPath !== path) throw new Error('The original recovery project is no longer current.');
-      };
-      const journal = new ProjectRecoveryRequests(path, current);
+      const journal = new ProjectRecoveryRequests(path, observe ? () => {} : current);
       let owned = false;
       const unknown = () => ({ ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'unknown',
         code: 'PROJECT_RECOVERY_REQUEST_UNKNOWN', candidateApplied: false,
         loadStatus: this.getBlocklyProjectLoadStatus(path),
         message: 'The original recovery has no completed receipt. Inspect the current project; no recovery was replayed.' });
       try {
-        const previous = await journal.observe(requestId);
+        if (!observe) owner.attachment = (await openProjectRecoveryBackup(path, current)).attachment;
+        const previous = await journal.observe(requestId, observe && !this.isSameProjectPath(path, this.currentProjectPath));
         if (previous.result) return { ...previous.result, recoveryObservation: { durable: true, resultKnown: true } };
-        if (observe || previous.started || !await journal.begin(requestId)) return unknown();
+        if (observe || previous.started || !await journal.begin(requestId, attachment => {
+          if (owner.attachment && !sameRecoveryAttachment(owner.attachment, attachment))
+            throw Object.assign(new Error('The original recovery attachment changed.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+        })) return unknown();
         owned = true;
-        await prepareRecovery?.();
+        await prepareRecovery?.(current);
         current();
-        const result = await (async () => {
-        if (recoverReadyProject) {
-          const result = await recoverReadyProject();
-          return { ...result, operation: 'abs_recovery', project: path, receipt, recoveryState: result['ready'] ? 'completed' : 'failed', candidateApplied: false };
-        }
-        this.assertSavedRecoveryContext(path);
-        // A fresh, byte-bound repair admission is independent from persistent
-        // lineage. It is valid for this current failed activation only.
-        let saved = await this.savedRecoveryTargets.inspect(path, () => this.assertSavedRecoveryContext(path));
-        if (!saved) {
-          const check = () => this.assertSavedRecoveryContext(path);
-          const fragment = await this.application.captureBlocklyRecoveryFragment?.(path) ?? { error: 'Partial view capture is unavailable.' };
-          const snapshot = await captureProjectDiskRecovery(path, check, fragment);
-          try {
-            const outcome = await snapshot.publish(path);
-            if (snapshot.activationBlocked) throw new Error(snapshot.activationBlocked.message);
-            await this.savedRecoveryTargets.remember({ ...outcome, project: path, sourceProject: path, activated: false }, check);
-          } finally { snapshot.dispose(); }
-          saved = await this.savedRecoveryTargets.inspect(path, check);
-        }
-        if (!saved) throw new Error('No complete current saved document could be verified.');
-        const result = await this.reloadSavedRecoveryTarget(path);
-        return { ...result, operation: 'abs_recovery', receipt, recoveryState: result.ready ? 'completed' : 'failed', candidateApplied: false,
-          ...(result.ready ? {} : { code: 'PROJECT_RECOVERY_LOAD_FAILED', message: result.loadStatus?.error ?? result.message ?? 'The same project is not ready.' }) };
-        })();
-        await journal.complete(requestId, result);
-        return result;
+        const outcome = await (recoverReadyProject ? recoverReadyProject(current) : this.recoverSavedBlocklyView(path, current));
+        const result = { ...outcome, operation: 'abs_recovery', project: path, receipt,
+          recoveryState: outcome['ready'] ? 'completed' : 'failed', candidateApplied: false };
+        try { await journal.complete(requestId, result); }
+        catch { return { ...unknown(), code: 'PROJECT_RECOVERY_RECEIPT_UNCERTAIN' }; }
+        return { ...result, recoveryObservation: { durable: true, resultKnown: true } };
       } catch (error) {
         const result = { ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'failed', candidateApplied: false,
           code: typeof (error as any)?.code === 'string' ? (error as any).code : 'PROJECT_RECOVERY_LOAD_FAILED',
@@ -2973,11 +3107,70 @@ export class ProjectService {
           try { await journal.complete(requestId, result); }
           catch { return { ...unknown(), code: 'PROJECT_RECOVERY_RECEIPT_UNCERTAIN' }; }
         }
-        return result;
+        return owned ? { ...result, recoveryObservation: { durable: true, resultKnown: true } } : result;
       }
     })();
-    if (!observe) receipts.set(requestId, { path, task });
+    if (!observe) {
+      owner.task = task;
+      void task.then(() => { if (receipts.get(requestId) === owner) receipts.delete(requestId); });
+    }
     return currentResult(task);
+  }
+
+  private async recoverSavedBlocklyView(path: string, assertCurrent: () => void): Promise<Record<string, any>> {
+    const check = () => { assertCurrent(); this.assertSavedRecoveryContext(path); };
+    check();
+    // Fresh byte-bound repair admission belongs to this failed activation.
+    let saved = await this.savedRecoveryTargets.inspect(path, check);
+    if (!saved) {
+      check();
+      const fragment = await this.application.captureBlocklyRecoveryFragment?.(path) ?? { error: 'Partial view capture is unavailable.' };
+      const snapshot = await captureProjectDiskRecovery(path, check, fragment);
+      try {
+        const outcome = await snapshot.publish(path);
+        if (snapshot.activationBlocked) throw new Error(snapshot.activationBlocked.message);
+        await this.savedRecoveryTargets.remember({ ...outcome, project: path, sourceProject: path, activated: false }, check);
+      } finally { snapshot.dispose(); }
+      saved = await this.savedRecoveryTargets.inspect(path, check);
+    }
+    if (!saved) throw new Error('No complete current saved document could be verified.');
+    check();
+    const result = await this.reloadSavedRecoveryTarget(path, assertCurrent);
+    return result.ready ? { ...result } : { ...result, code: 'PROJECT_RECOVERY_LOAD_FAILED',
+      message: result.loadStatus?.error ?? result.message ?? 'The same project is not ready.' };
+  }
+
+  async cancelFailedBlocklyProject(path: string, requestId: string): Promise<Record<string, any>> {
+    const response = { operation: 'abs_recovery', project: path };
+    const refused = { ...response, ok: false, code: 'PROJECT_RECOVERY_CONTEXT_STALE' };
+    if (!path || typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return refused;
+    const eligible = () => {
+      const original = this.failedLoadRecoveries?.get(requestId);
+      return original ? this.isSameProjectPath(original.path, path) : this.isSameProjectPath(this.currentProjectPath, path);
+    };
+    if (!eligible()) return refused;
+    const { attachment } = await openProjectRecoveryBackup(path, () => {});
+    if (!attachment || !eligible()) return refused;
+    let owner = this.failedLoadRecoveries?.get(requestId);
+    if (!owner) {
+      const original = await new ProjectRecoveryRequests(path, () => {}).observe(requestId);
+      if (original.started) return { ...response, ok: true, recoveryCancellation: { requestId, accepted: false } };
+      if (!eligible()) return refused;
+      owner = this.failedLoadRecoveries?.get(requestId);
+    }
+    if (owner?.attachment && !sameRecoveryAttachment(owner.attachment, attachment)) return refused;
+    const pending = this.pendingRecoveryStops ??= new Map();
+    const now = Date.now();
+    for (const [id, stop] of pending) if (stop.until <= now) pending.delete(id);
+    const prior = pending.get(requestId);
+    if (prior && !sameRecoveryAttachment(prior.attachment, attachment)) return refused;
+    // Retain a short exact fence if Stop crossed the dispatch on its way to
+    // this Host. It grants no write or terminal receipt authority.
+    if (pending.size >= 128 && !pending.has(requestId) && !owner?.attachment) return refused;
+    if (pending.size < 128 || pending.has(requestId))
+      pending.set(requestId, { attachment, until: now + 30000 });
+    if (owner?.attachment) owner.stopped = true;
+    return { ...response, ok: true, recoveryCancellation: { requestId, accepted: true } };
   }
 
   /** Native bootstrap is available only in the exact same-build child created
@@ -3050,8 +3243,10 @@ export class ProjectService {
 
   /** Reload the exact current saved source after fresh byte-bound admission;
    * persistent history never replaces this per-operation verification. */
-  async reloadSavedRecoveryTarget(path = this.currentProjectPath): Promise<SavedRecoveryTargetReload> {
+  async reloadSavedRecoveryTarget(path = this.currentProjectPath, assertCurrent?: () => void): Promise<SavedRecoveryTargetReload> {
+    assertCurrent?.();
     const before = await this.inspectSavedRecoveryTarget(path);
+    assertCurrent?.();
     if (!before) throw Object.assign(new Error('No current saved-recovery admission exists; inspect and recover this same project from verified current content.'),
       { code: 'PROJECT_RECOVERY_TARGET_UNVERIFIED' });
     if (before.unsavedLibraryChanges) throw new Error('Pending library-manager edits remain; recovery does not discard or save them implicitly.');
@@ -3061,6 +3256,7 @@ export class ProjectService {
       const primary = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');
       if (`sha256:${await sha256Hex(primary)}` !== before.abiHash) throw new Error('Recovery target bytes changed before reload.');
       const check = () => {
+        assertCurrent?.();
         this.assertSavedRecoveryContext(path);
         if (window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== primary) {
           throw Object.assign(new Error('The recovery primary changed during partial capture. Preserve the newer document and inspect again.'),
@@ -3075,11 +3271,14 @@ export class ProjectService {
         ?? { error: 'The partial native capture API is unavailable.' };
       check(); snapshot = await captureProjectDiskRecovery(path, check, fragment);
       const archive = await snapshot.publish(path);
+      check();
       if (snapshot.activationBlocked) return { ok: false, project: path, ready: false,
         activationBlocked: snapshot.activationBlocked, recoveryArchive: archive.recoveryArchive,
         message: snapshot.activationBlocked.message };
       release = snapshot.freezeForActivation?.();
-      const activated = await this.projectOpen(path, { reason: 'reload', saveBeforeReload: false, lifecycleOwner: lease.token });
+      const activated = await this.projectOpen(path, { reason: assertCurrent ? 'abs-journal-reopen' : 'reload',
+        saveBeforeReload: false, lifecycleOwner: lease.token,
+        ...(assertCurrent ? { recoveryReopen: { assertCurrent } } : {}) });
       const ready = activated === true && this.isSameProjectPath(path, this.currentProjectPath)
         && this.getBlocklyProjectLoadStatus(path).ready;
       const afterAbi = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');
@@ -3377,7 +3576,8 @@ export class ProjectService {
     return targetProjectPath;
   }
 
-  async close(options: { save?: boolean; lifecycleOwner?: symbol } = {}) {
+  async close(options: { save?: boolean; lifecycleOwner?: symbol;
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void> } = {}) {
     if (this.coderOperationsSubject.value.size) {
       this.message.warning('工程正在编译或上传');
       return false;
@@ -3387,6 +3587,10 @@ export class ProjectService {
       this.message.warning('项目正在写入或执行宿主操作，请等待完成后再关闭。');
       return false;
     }
+    const navigationRevision = this.beginExplicitNavigation();
+    const pendingStartup = this.projectOpenTask;
+    if (pendingStartup?.startupRestore && !this.currentProjectPath) await pendingStartup.promise.catch(() => false);
+    if (navigationRevision !== this.projectNavigationIntentRevision) return false;
     const opening = this.projectOpenTask;
     if (opening && !this.boardSwitchLifecycle && this.dependencyLifecycle.get(opening.path)) {
       // Transfer admission to close so it can cancel an opening that waits for editor readiness.
@@ -3427,7 +3631,7 @@ export class ProjectService {
           if (!(await this.discardDepartingBlocklyProject(project, false, options.save !== true))) return false;
         } else await this.discardLibraryChanges(project);
       }
-      return await this.closeInternal(closingPaths);
+      return await this.closeInternal(closingPaths, options.onViewActivated);
     } finally { lease.release(); }
   }
 
@@ -3509,9 +3713,13 @@ export class ProjectService {
     }
   }
 
-  private async closeInternal(paths: string[]) {
+  private async closeInternal(paths: string[], onViewActivated?: (project: string | null, revision: number) => void | Promise<void>) {
+    let closedRestartSession: typeof this.closedRestartSession;
     if (this.currentProjectPath && window['projectLock']?.clearActive) {
-      try { await window['projectLock'].clearActive(this.currentProjectPath); }
+      try {
+        const cleared = await window['projectLock'].clearActive(this.currentProjectPath, { retainInterruptedSource: !onViewActivated });
+        if (cleared?.ok && cleared.cleared) closedRestartSession = cleared.closedSession;
+      }
       catch (error) { console.warn('Project crash navigation could not be cleared:', error); }
     }
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {
@@ -3528,7 +3736,9 @@ export class ProjectService {
     this.coderWorkspaceSubject.next(null);
     this.coderProjectContexts.clear();
     this.publishCoderProjects();
+    this.closedRestartSession = closedRestartSession;
     this.currentProjectPath = '';
+    await onViewActivated?.(null, this.projectViewRevision);
     this.loadingBlocklyProjectPath = '';
     this.loadedBlocklyProjectPath = '';
     this.blocklyProjectLoadFailure = null;

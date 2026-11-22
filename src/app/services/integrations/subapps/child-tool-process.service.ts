@@ -27,6 +27,7 @@ export interface ChildToolHostInfo {
 }
 
 export type ChildToolRuntimeState = 'unknown' | 'starting' | 'ready' | 'stopped' | 'error';
+type BlocklyChatProbe = 'verified' | 'incompatible' | 'unavailable';
 
 export interface ChildToolRuntimeSnapshot {
   toolId: string;
@@ -686,12 +687,18 @@ export class ChildToolProcessService implements OnDestroy {
       return null;
     }
 
-    if (config.blocklyChatFingerprint && !await this.verifyBlocklyChat(config, hostInfo)) {
-      this.log(config, 'replace shared Chat without matching ABS capability or build fingerprint', {
-        streamId: String(sharedSession.streamId || ''),
-      });
-      await this.discardIncompatibleSharedSession(config, session, sharedSession, true);
-      return null;
+    if (config.blocklyChatFingerprint) {
+      const result = await this.probeBlocklyChat(config, hostInfo, true);
+      const streamId = String(sharedSession.streamId || '');
+      if (result === 'incompatible') {
+        this.log(config, 'replace shared Chat without matching ABS capability or build fingerprint', { streamId });
+        await this.discardIncompatibleSharedSession(config, session, sharedSession, true);
+        return null;
+      }
+      if (result !== 'verified') {
+        await window['childToolSession']?.release?.({ toolId: config.id, streamId, leaseId: session.leaseId });
+        throw new Error('The shared Chat could not confirm that it is ready');
+      }
     }
 
     const selectedApiServer = this.selectedApiServerFor(config);
@@ -824,9 +831,20 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   private async verifyBlocklyChat(config: ChildToolConfig, hostInfo: ChildToolHostInfo): Promise<boolean> {
+    return await this.probeBlocklyChat(config, hostInfo) === 'verified';
+  }
+
+  private async probeBlocklyChat(
+    config: ChildToolConfig, hostInfo: ChildToolHostInfo, retryUnavailable = false,
+  ): Promise<BlocklyChatProbe> {
     const fingerprint = config.blocklyChatFingerprint;
     const api = (window as any).electronAPI?.subapps;
-    return !!fingerprint && await api?.verifyBlocklyChat?.({ url: hostInfo.url, fingerprint }) === true;
+    if (!fingerprint) return 'unavailable';
+    try {
+      return await api?.verifyBlocklyChat?.({ url: hostInfo.url, fingerprint, retryUnavailable }) ?? 'unavailable';
+    } catch {
+      return 'unavailable';
+    }
   }
 
   private async startServer(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {

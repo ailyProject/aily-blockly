@@ -45,6 +45,7 @@ export interface NativeSaveSnapshot {
   version: 1; id: string; project: string; kind: 'document-save'; document: unknown;
   disk: AbsDiskSnapshot; committed: string | null; nativeSave: NativeSaveIdentity;
   attachment: AbsProjectAttachment; executor: AbsStorageExecutor;
+  sourceStageVersion?: 1;
 }
 const hash = (value: unknown) => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
 export async function blockStatePublicationIdentity(project: string, request: AbsBlockStateUpdateRequest): Promise<NativeSaveIdentity> {
@@ -52,6 +53,10 @@ export async function blockStatePublicationIdentity(project: string, request: Ab
   const projectKey = /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
   return { version: 2, requestId: `pub2-${request.requestId}`, operation: 'blocks_set_state',
     inputDigest: await hashAbsText(absJson({ version: 2, project: projectKey, operation: 'blocks_set_state', request })) };
+}
+
+export function blockStatePublicationReference(request: AbsBlockStateUpdateRequest, identity: NativeSaveIdentity) {
+  return { version: 1 as const, requestId: request.requestId, nativeRequestId: identity.requestId, inputDigest: identity.inputDigest };
 }
 export const nativeSaveError = (message: string, code = 'ABS_NATIVE_SAVE_OBSERVATION_INVALID') => new AbsSyncError(code, message);
 export function assertNativeSaveIdentity(value: NativeSaveIdentity): void {
@@ -74,6 +79,7 @@ export function nativeSaveCapability(port: Pick<AbsSyncStoragePort, 'attachment'
 export async function nativeSaveIndexKey(requestId: string): Promise<string> {
   return `recoveries/request-${(await hashAbsText('native-save-v2\0' + requestId)).slice(7)}.json`;
 }
+export const nativeSaveSettlementKey = (operationId: string) => `recoveries/save-settlement-${operationId}.json`;
 
 /** Shared lookup: an immutable index consumes the request even if the later
  * operation pointer was never written. A copied root cannot adopt its result. */
@@ -104,13 +110,15 @@ export async function readNativeSaveAtAttachment(port: Pick<AbsSyncStoragePort, 
       || snapshot.committed !== null && typeof snapshot.committed !== 'string') throw new Error('Invalid original native snapshot.');
     if (absJson(index.request) !== absJson(snapshot.nativeSave) || absJson(index.attachment) !== absJson(snapshot.attachment)
       || absJson(index.executor) !== absJson(snapshot.executor)) throw new Error('Native request bindings differ from the snapshot.');
+    if (index.sourceStageVersion !== snapshot.sourceStageVersion
+      || snapshot.sourceStageVersion !== undefined && snapshot.sourceStageVersion !== 1) throw new Error('Native source stage protocol differs.');
     assertNativeSaveIdentity(snapshot.nativeSave);
     nativeSaveCapability({ attachment: snapshot.attachment, executor: snapshot.executor });
   } catch (error) { throw nativeSaveError((error as Error).message); }
   if (absJson(snapshot.nativeSave) !== absJson(request)) throw nativeSaveError('This original ID belongs to a different native input.', 'ABS_NATIVE_SAVE_REQUEST_CONFLICT');
   if (absJson(snapshot.attachment) !== absJson(attachment))
     throw nativeSaveError('The original native request belongs to a different physical project attachment.', 'ABS_NATIVE_SAVE_ATTACHMENT_CHANGED');
-  return { snapshot, snapshotHash: index.snapshotHash as string, ref: {
+  return { snapshot, snapshotHash: index.snapshotHash as string, sourceStageVersion: index.sourceStageVersion === 1 ? 1 as const : undefined, ref: {
     operationId: snapshot.id, request: snapshot.nativeSave, attachment: snapshot.attachment, executor: snapshot.executor,
   } as NativeSaveOperationRef };
 }

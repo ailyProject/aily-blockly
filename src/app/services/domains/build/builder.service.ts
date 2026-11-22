@@ -90,6 +90,7 @@ export class BuilderService {
       if (coder) return await this.buildFromProjectPath(targetPath, options);
       return await this.buildCurrentBlocklyProject(targetPath, {
         source: options.source, requestId: options.requestId, clearCache: options.clearCache,
+        ...(options.preprocessOnly ? { preprocessOnly: true } : {}),
       });
     } finally {
       finish();
@@ -140,6 +141,7 @@ export class BuilderService {
       graphSemanticRevision?: string;
       requestId?: string;
       clearCache?: boolean;
+      preprocessOnly?: boolean;
     },
   ) {
     let checkpoint: BuildCheckpoint | undefined;
@@ -170,6 +172,7 @@ export class BuilderService {
         throw error;
       }
 
+      if (payload.preprocessOnly) return buildResult;
       this.notifyBuildCompletion(buildResult, true);
       if (checkpoint?.startedAt) persistBuildResult(projectPath, true, buildResult, undefined, checkpoint, payload.source);
       this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
@@ -178,6 +181,7 @@ export class BuilderService {
       if (!error || typeof error !== 'object') error = new Error(String(error));
       // Editor admission (busy/stale/unmounted) does not attest a compiler exit.
       if (!checkpoint?.startedAt) error.buildOutcome = 'not-started';
+      if (payload.preprocessOnly) throw error;
       // console.error('编译失败:', error);
       this.notifyBuildCompletion(error, false);
       if (checkpoint?.startedAt && error?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);

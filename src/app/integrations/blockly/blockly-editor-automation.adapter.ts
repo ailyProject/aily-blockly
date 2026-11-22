@@ -66,6 +66,11 @@ export class BlocklyEditorAutomationAdapter implements
     return this.projectService.getAbiRevisionSnapshot();
   }
 
+  readCanvasWorkingRevision(): number | undefined {
+    if (!this.blocklyService.isWorkspaceEditBlocked())
+      return this.blocklyService.getProjectPersistenceRevision();
+  }
+
   getRuntimeBlockMetadataSnapshot(): BlocklyRuntimeMetadataSnapshot {
     return this.blocklyService.getRuntimeBlockMetadataSnapshot();
   }

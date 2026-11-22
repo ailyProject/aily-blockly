@@ -17,6 +17,20 @@ interface LinkedEnvironmentHost {
     & { successor?: Awaited<ReturnType<typeof inspectEnvironmentSuccessor>> }): Promise<unknown>;
 }
 
+/** Only a read may outlive this wait. Native journal writes keep their own
+ * transaction ownership until completion. */
+export async function observeOpenEnvironment<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return read();
+  signal.throwIfAborted();
+  let abort!: () => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try { return await Promise.race([cancelled, read()]); }
+  finally { signal.removeEventListener('abort', abort); }
+}
+
 /** Only retires an older environment observation. It grants no completion or
  * candidate authority to that older native request. */
 export async function inspectEnvironmentSuccessor(io: AbsSyncStoragePort, project: string, guard: () => void) {
@@ -56,10 +70,10 @@ export async function inspectEnvironmentSuccessor(io: AbsSyncStoragePort, projec
 /** Source observation and dependency restoration share a physical lock, so
  * these two existing owners are called sequentially, never inside each other. */
 export async function settleLinkedProjectEnvironment(project: string, assertCurrent: () => void,
-  completed?: NativeSaveOperationRef): Promise<void> {
+  completed?: NativeSaveOperationRef, startupSignal?: AbortSignal): Promise<void> {
   const host = window['libraryDependencies'];
   if (host?.environmentVersion !== 2 || typeof host.pendingEnvironment !== 'function') return;
-  const originals: LinkedEnvironmentReference[] = await host.pendingEnvironment(project);
+  const originals: LinkedEnvironmentReference[] = await observeOpenEnvironment(() => host.pendingEnvironment(project), startupSignal);
   assertCurrent();
   const pending = completed ? originals.filter(value => value.programRef.request.requestId === completed.request.requestId) : originals;
   if (!pending.length) return;

@@ -10,12 +10,12 @@ import type { HistoryEnvironmentPlan } from '../history-environment';
 import { settleLinkedProjectEnvironment } from '../environment-settlement';
 import { observeRuntimePublication } from './abs-runtime-publication-observation';
 import { AbsOperationJournal, type NativeSaveOperationRef } from './abs-operation-journal';
-import { assertWorkspaceMigrationWritable, captureWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
+import { assertWorkspaceMigrationWritable, prepareWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
 import { absWorkspaceProtocol } from './abs-workspace-protocol';
 import { AbsApplicationJournal } from './abs-application-journal';
-import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse, nativeSaveAdmissionResponse } from './abs-native-save-result';
-import { nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
-import { blockStatePublicationIdentity, type NativeSaveResultFacts, type NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
+import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse } from './abs-native-save-result';
+import { observeNativePublication } from './abs-native-save-observation';
+import { blockStatePublicationIdentity, blockStatePublicationReference, type NativeSaveResultFacts, type NativeSaveBlockStateReceipt } from './abs-native-save-protocol';
 import type { ProjectSaveRequest, ProjectSaveOutcome, ProjectSaveReceiptResponse } from '@domain/project/public-api';
 import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent, requireProjectProgramPublication } from '@shared/public-api';
 import { publishAbsRecoveryCopy, type AbsRecoveryCopyCapture } from './abs-recovery-copy';
@@ -85,6 +85,7 @@ import { normalizeProjectDataDocument } from '@domain/project/public-api';
 import { captureAbsNativeValues } from './abs-native-resources';
 import { AbsNativeCandidateFailures } from './abs-native-candidate-failures';
 import { readWorkingCandidate, workingCandidateBinding } from './abs-working-candidate';
+import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { mergeAbsStrictDocument } from './abs-strict-document-merge';
 import { readLegacyCandidateCapture } from './abs-legacy-candidate-capture';
 import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
@@ -167,21 +168,15 @@ export class AbsWorkspaceSyncService {
 
   /** Read-only across renderer/host restarts. PID addresses an executor; the
    * durable request and its physical attachment establish the saved fact. */
-  async observeNativeSave(path: string, request: ProjectSaveRequest, originalTargetPid?: number): Promise<ProjectSaveReceiptResponse | null> {
+  async observeNativeSave(path: string, request: ProjectSaveRequest, originalTargetPid?: number,
+    viewRevision?: () => number): Promise<ProjectSaveReceiptResponse | null> {
     if (request.version !== 2) return null;
     request = structuredClone(request);
     const guard = () => undefined;
     const port = await openAbsHostStorage(path, guard);
     const project = port.attachment?.root ?? path;
     const identity = await nativeSaveIdentity(project, request);
-    const admission = nativeSaveAdmissionIdentity(identity);
-    if (admission) {
-      const rejected = await new OriginalRequestAdmissions(port, project).observe(admission);
-      if (rejected) return nativeSaveAdmissionResponse(rejected, request, port.executor, originalTargetPid);
-    }
-    const observed = await new AbsApplicationJournal(port, project).observeNativeSave(identity, guard);
-    const response = nativeSaveObservationResponse(project, identity, observed, port.executor, originalTargetPid);
-    return response && request.input ? { ...response, saveReceipt: { ...response.saveReceipt, input: structuredClone(request.input) } } : response;
+    return observeNativePublication(port, project, identity, { originalTargetPid, viewRevision, input: request.input });
   }
 
   /** One native writer for the original request, including tidy's transform.
@@ -353,6 +348,12 @@ export class AbsWorkspaceSyncService {
       const guard = () => { check(); };
       const port = await openAbsHostStorage(context.path, guard);
       const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard, port); guard();
+      if (await store.workspaceMode() === 'project-v1') {
+        if (protocol.ok || !('code' in protocol) || protocol.code !== 'ABS_WORKSPACE_MODE_UNINITIALIZED') return protocol;
+        await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard, 'project-v1'));
+        guard();
+        return absWorkspaceProtocol(context.path, { version: 1 }, guard, port);
+      }
       if (!protocol.ok) return protocol;
       const accepted = await store.readCommittedSnapshot();
       const pending = await store.inspectPending(), journal = await new AbsOperationJournal(port, context.path).inspect(); guard();
@@ -364,7 +365,8 @@ export class AbsWorkspaceSyncService {
         const disk = await store.captureDisk(); guard();
         const reason = disk.abi === null ? 'saved-program-unavailable'
           : disk.abs !== null || disk.map !== null ? 'source-projection-present'
-          : absJson(this.editor.normalizeProjectAbi(JSON.parse(disk.abi))) !== absJson(this.editor.normalizeProjectAbi(working.document))
+          : (this.project.hasUnsavedChangesAtLoadedAbi(context.path, disk.abi, working.document)
+            ?? (absJson(this.editor.normalizeProjectAbi(JSON.parse(disk.abi))) !== absJson(this.editor.normalizeProjectAbi(working.document))))
             ? 'saved-working-differs' : undefined;
         if (reason) return deferred(reason);
         // Only a pristine saved canvas can establish its first accepted state.
@@ -377,7 +379,7 @@ export class AbsWorkspaceSyncService {
         working = this.editor.captureProjectSnapshot(lease);
         check = this.atRevision(context.assertCurrent, lease, working);
       }
-      const migration = await captureWorkspaceMigrationProof(port, working, guard); guard();
+      const migration = await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard)); guard();
       return { ...protocol, migration };
     }, false, true, false, false, true);
   }
@@ -436,19 +438,17 @@ export class AbsWorkspaceSyncService {
       project: path, operation: 'abs_recovery', historyPublication: historyPublicationReference(request, identity) };
   }
 
-  async observeBlockState(input: unknown, originalTargetPid?: number): Promise<AbsObservedProgramPublication> {
+  async observeBlockState(input: unknown, originalTargetPid?: number,
+    path = this.project.currentProjectPath, viewRevision?: () => number): Promise<AbsObservedProgramPublication> {
     const request = readAbsBlockStateRequest(input);
     if (request.action !== 'update') throw new AbsSyncError('ABS_REQUEST_INVALID', 'State observation requires the original update request.');
-    const path = this.project.currentProjectPath, guard = () => {
-      if (!path || this.project.currentProjectPath !== path) throw new AbsSyncError('ABS_CONTEXT_STALE', 'The state observer project changed.');
-    };
-    const port = await openAbsHostStorage(path, guard), project = port.attachment?.root ?? path;
+    const port = await openAbsHostStorage(path, () => undefined), project = port.attachment?.root ?? path;
     const identity = await blockStatePublicationIdentity(project, request);
-    const observed = await new AbsApplicationJournal(port, project).observeNativeSave(identity, guard);
-    return { ...(nativeSaveObservationResponse(project, identity, observed, port.executor, originalTargetPid)
+    const observed = await observeNativePublication(port, project, identity, { originalTargetPid, viewRevision });
+    return { ...(observed
       ?? { ok: true, saveReceipt: { version: 2, requestId: identity.requestId, project, operation: 'blocks_set_state', state: 'unknown' },
-        code: 'ABS_BLOCK_STATE_PUBLICATION_NOT_FOUND' }), operation: 'abs_recovery', project: path,
-      statePublication: { version: 1, requestId: request.requestId, nativeRequestId: identity.requestId, inputDigest: identity.inputDigest } };
+        code: 'ABS_BLOCK_STATE_PUBLICATION_NOT_FOUND' }), operation: 'abs_recovery', project,
+      statePublication: blockStatePublicationReference(request, identity) };
   }
 
   private async prepareHistoryDocument(request: AbsHistoryPublicationRequest<HistoryEnvironmentPlan>, working: unknown,
@@ -1040,7 +1040,7 @@ export class AbsWorkspaceSyncService {
 
   /** Only explicit manual-disable/collapse intents. Ordinary ABS edits retain all
    * user state. IDs come from bounded inspection, never guessed from block order. */
-  setBlockState(input: unknown): Promise<any> {
+  setBlockState(input: unknown, markWriter?: () => void): Promise<any> {
     const request = readAbsBlockStateRequest(input);
     return this.run(async (context, lease, store) => {
       const assertCurrent = () => { context.assertCurrent(); lease.assertCurrent(); };
@@ -1086,7 +1086,7 @@ export class AbsWorkspaceSyncService {
       const publicationPort = await openAbsHostStorage(context.path, assertCurrent);
       const publicationProject = publicationPort.attachment?.root ?? context.path;
       const identity = await blockStatePublicationIdentity(publicationProject, request);
-      const statePublication = { version: 1, requestId: request.requestId, nativeRequestId: identity.requestId, inputDigest: identity.inputDigest };
+      const statePublication = blockStatePublicationReference(request, identity);
       const journal = new AbsOperationJournal(publicationPort, publicationProject);
       const applicationJournal = new AbsApplicationJournal(publicationPort, publicationProject);
       const withPublication = async (result: Record<string, any>, known?: Awaited<ReturnType<AbsApplicationJournal['observeNativeSave']>>) => {
@@ -1151,6 +1151,7 @@ export class AbsWorkspaceSyncService {
         }
         checkpoint = { journal, id: admitted.ref.operationId, native: { ref: admitted.ref, application: applicationJournal,
           blockState: evidence => ({ ...stateReceipt(evidence), output: evidence }) } };
+        markWriter?.();
         mutated = true;
         this.withViewChecks(() => operation.apply());
         assertAbsReadback(plan.workspace, captureState());
@@ -1244,7 +1245,7 @@ export class AbsWorkspaceSyncService {
           requiresReload: application === 'UNKNOWN', partial: application === 'UNKNOWN',
           ...(rollbackError ? { rollbackError: serializeAbsFailure(rollbackError) } : {}),
           recovery: 'Resume the original request in this project and preserve later edits.' };
-        return checkpoint && application === 'ROLLED_BACK'
+        return checkpoint && application !== 'UNKNOWN'
           ? withPublication({ ...failed, publication: { status: 'NOT_COMMITTED' }, projectSaved: false }) : failed;
       }
     }, request.action !== 'inspect');
@@ -1350,8 +1351,10 @@ export class AbsWorkspaceSyncService {
       const blockContract = (type: string, extra?: unknown, fields?: Readonly<Record<string, unknown>>) => custom.get(type, extra) ?? procedures.get(type, extra) ?? shapes.get(type, extra, fields);
       const expected = await store.captureDisk();
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover or explicitly abandon the pending generation first.');
+      const readDefinitions = context.definitions.withSynchronousRead ?? (<T>(read: () => T) => read());
       const fixed = binding?.workingCandidate ? await readWorkingCandidate(binding.workingCandidate,
-        await openAbsHostStorage(context.path, context.assertCurrent), context.scope, source, store) : undefined;
+        await openAbsHostStorage(context.path, context.assertCurrent), context.scope, source, store,
+        (baseline, input) => readDefinitions(() => acceptedInputEditProof(baseline, input, shapes.get))) : undefined;
       const published = await store.readCommittedSnapshot(), committed = published?.projection ?? null;
       if (committed && !fixed) assertCurrentAbsProjection(committed);
       if (!fixed && !committed) throw new AbsSyncError('ABS_BASELINE_MISSING', 'An authoritative committed generation is required.');
@@ -1419,11 +1422,11 @@ export class AbsWorkspaceSyncService {
         assertAbsContractsCompatible(retained(baseline.contracts), retained(rollback.contracts), rollback.state);
       } else assertAbsContractsCompatible(baseline.contracts, rollback.contracts, rollback.state);
       assertPreparing();
-      const readDefinitions = context.definitions.withSynchronousRead ?? (<T>(read: () => T) => read());
       const functionSyntax = readDefinitions(() => custom.syntax(source, baseline.workspace));
       const reconcileOptions: AbsReconcileOptions = {
         withSynchronousRead: readDefinitions,
         sourceEdits: fixed?.sourceEdits ?? binding?.sourceEdits,
+        sourceEditOrigin: fixed?.sourceEditOrigin,
         ...(fixed?.readonlyStateOrigin !== undefined ? { readonlyStateOrigin: fixed.readonlyStateOrigin } : {}),
         requireDeletionEvidence: !!binding,
         prepareExtraState: functionSyntax.prepareExtraState,
@@ -1546,7 +1549,8 @@ export class AbsWorkspaceSyncService {
           if (draftBase.map.scope.pageId !== candidatePageId) throw new AbsSyncError('ABS_DOCUMENT_MERGE_CONFLICT',
             'A retained public draft belongs to another page; both immutable sources are preserved.', undefined, [], { reason: 'public-draft-page-identity', field: '/pages' });
           const draft = await this.reconcile(draftBase, expected.abs, absJson({ runtimeRevision: context.runtimeRevision, session: context.session }))
-            .draft({ ...reconcileOptions, sourceEdits: undefined, readonlyStateOrigin: undefined, requireDeletionEvidence: false });
+            .draft({ ...reconcileOptions, sourceEdits: undefined, sourceEditOrigin: undefined,
+              readonlyStateOrigin: undefined, requireDeletionEvidence: false });
           const user = await prepareAbsReconciledResources(expected.abs, draft, assertPreparing);
           currentWorkspace = mergeAbsRequestWorkspace(draftBase.workspace, currentWorkspace, user.workspace);
           historyContracts = { ...rollback.contracts,

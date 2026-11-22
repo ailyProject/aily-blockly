@@ -19,6 +19,7 @@ describe('exact host journal reopen provenance', () => {
     service.loadedBlocklyProjectPath = source;
     service.projectLifecycle = new ProjectLifecycleGate();
     service.projectOpenTask = null;
+    service.projectNavigationIntentRevision = 0;
     service.coderOperations = new Map();
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.coderProjectsSubject = new BehaviorSubject([]);
@@ -118,17 +119,29 @@ describe('exact host journal reopen provenance', () => {
     expect(service.isProjectTransitionInProgress(source)).toBeFalse(); expect(service.stopProjectCommands).not.toHaveBeenCalled();
   });
 
-  it('keeps reopen and read-only inspect free of self-owned writer masks without exempting recovery writes or another writer', async () => {
+  it('rechecks the exact recovery owner after preflight and before retiring the editor', async () => {
+    let current = true;
+    application.settleEnvironmentBeforeOpen = async () => { current = false; };
+    const guard = () => { if (!current) throw new Error('original recovery stopped'); };
+    await expectAsync(service.reopenRecoveredBlocklyProject(source, guard)).toBeRejectedWithError('original recovery stopped');
+    expect(service.router.navigate).not.toHaveBeenCalled();
+    expect(service.getBlocklyProjectLoadStatus(source).ready).toBeTrue();
+    expect(service.isProjectTransitionInProgress(source)).toBeFalse();
+  });
+
+  it('keeps project recovery, Stop, and inspect free of self-owned masks while observing another writer', async () => {
     const registry = new AiOperationRegistryService();
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     bridge.projectService = service; bridge.aiOperations = registry; bridge.mutationSequence = 0;
     bridge.executeOperation = jasmine.createSpy('dispatch').and.callFake(async () => ({ blocked: registry.hasBlocking(source) }));
-    const params = { version: 2, requestId: 'journal-reopen-test', action: 'reopen', generation: 'g1', token: 'host-owned' };
+    const params = { version: 2, requestId: 'journal-reopen-test', action: 'recover_project' };
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source, params })).blocked).toBeFalse();
+    expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,
+      params: { ...params, action: 'cancel_project' } })).blocked).toBeFalse();
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,
       params: { version: 2, requestId: 'journal-inspect-test', action: 'inspect' } })).blocked).toBeFalse();
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,
-      params: { ...params, action: 'repair' } })).blocked).toBeTrue();
+      params: { ...params, action: 'history_publish' } })).blocked).toBeTrue();
     registry.setActive('foreign writer', true, { projectPath: source, blocksProjectLifecycle: true });
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source, params })).blocked).toBeTrue();
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,

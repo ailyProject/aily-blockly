@@ -42,7 +42,9 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
   if (await port.read('prepared.json') !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending ABS transaction before opening.');
   if (expected.abs === null) throw new AbsSyncError('ABS_SOURCE_MISSING', 'Complete ABS is missing; retain the committed recovery snapshot.');
   let source = expected.abs;
-  if (!publicState) source = baseline!.abs;
+  // In project-v1 the public ABS is an author draft, even if it can decode
+  // as a complete snapshot. The committed program still supplies the canvas.
+  if (!publicState || baseline && await lookup.workspaceMode() === 'project-v1') source = baseline!.abs;
   // A copied private generation is still foreign. Load its committed content so
   // the workspace can offer explicit rebind, without publishing a new identity
   // or consuming the public draft before that decision.

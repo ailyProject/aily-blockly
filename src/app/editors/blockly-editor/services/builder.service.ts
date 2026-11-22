@@ -22,7 +22,8 @@ import { _ProjectService as BlocklyProjectService } from './project.service';
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { BuilderService, CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint, type BlocklyBuildInput, type BuildSnapshot } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
-import { debounceTime } from 'rxjs/operators';
+import { firstValueFrom } from 'rxjs';
+import { debounceTime, filter } from 'rxjs/operators';
 import {
   AilyBuilderOutputLineBuffer,
   AilyBuilderProgressEvent,
@@ -63,6 +64,7 @@ export class _BuilderService {
   private buildAttempt = 0;
   private activeBuildLog?: ProjectBuildLog;
   private activeExecutionConfig?: any;
+  private explicitPreprocess?: { requestId: string; cancellation: AbortController; config?: any };
 
   private isolatedBuilds(): boolean { return window['builder']?.isolatedBuildExecutionVersion === 1; }
 
@@ -573,10 +575,10 @@ export class _BuilderService {
         const graphSemanticRevision =
           action.payload?.graphSemanticRevision as string | undefined;
         const requestId = action.payload?.requestId as string | undefined;
-        const result = await this.build(graphSemanticRevision, requestId, checkpoint, {
-          projectPath: action.payload?.projectPath,
-          clearCache: action.payload?.clearCache === true,
-        });
+        const preparation = { projectPath: action.payload?.projectPath, clearCache: action.payload?.clearCache === true };
+        const result = action.payload?.preprocessOnly === true
+          ? await this.preprocessProject(requestId ?? crypto.randomUUID(), checkpoint, preparation)
+          : await this.build(graphSemanticRevision, requestId, checkpoint, preparation);
         return { success: true, result, checkpoint };
       } catch (msg) {
         return { success: false, result: msg, checkpoint };
@@ -980,6 +982,7 @@ export class _BuilderService {
 
   destroy() {
     ++this.codePreparationSequence;
+    if (this.explicitPreprocess) this.cancel(this.explicitPreprocess.requestId);
     this.actionService.unlisten('builder-compile-begin');
     this.actionService.unlisten('builder-compile-cancel');
     this.actionService.unlisten('builder-compile-reset');
@@ -2524,7 +2527,122 @@ export class _BuilderService {
   /**
    * 取消当前编译过程
    */
+  private async preprocessProject(requestId: string, checkpoint: BuildCheckpoint, preparation: BuildPreparation): Promise<ActionState> {
+    const project = preparation.projectPath;
+    const rejectAdmission = (text: string) => Object.assign(new Error(text), { buildOutcome: 'not-started' });
+    if (!project || project !== this.projectService.currentProjectPath || !this.blocklyService.workspace
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)
+      || !this.isolatedBuilds() || this.isCloudBuild()
+      || resolveLinuxBoardProjectRoute(this.projectService.currentPackageData)) {
+      throw rejectAdmission('当前项目没有可用的本地 Blockly 预处理器。');
+    }
+    if (!this.workflowService.startBuild()) throw rejectAdmission('已有项目操作正在运行。');
+    checkpoint.startedAt = Date.now();
+    const owner: NonNullable<typeof this.explicitPreprocess> = { requestId, cancellation: new AbortController() };
+    this.explicitPreprocess = owner;
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const settings = this.compileSettingsKey();
+    const { signal } = owner.cancellation;
+    const contextCurrent = () => projectCurrent() && this.explicitPreprocess === owner && this.compileSettingsKey() === settings;
+    const assertCurrent = () => {
+      if (signal.aborted) throw signal.reason;
+      if (!contextCurrent()) throw buildSourceStale('project', 'Project changed before preprocessing.');
+    };
+    let dispatched = false;
+    try {
+      const log = await createProjectBuildLog(project, requestId);
+      return await log.run(async () => {
+        assertCurrent();
+        await this.waitForAilyBuilderReady();
+        assertCurrent();
+        const boardModule = await this.projectService.getBoardModule();
+        assertCurrent();
+        const { code, projectMacros, generatedArtifacts, sourceWorkspace, assertFresh } =
+          await this.generateWorkspaceBuildSnapshotForPreprocess(this.blocklyService.workspace, 'explicit_preprocess',
+            checkpoint, () => signal.aborted || !contextCurrent());
+        assertCurrent();
+        assertFresh();
+        if (!code || !boardModule) throw rejectAdmission('无法捕获预处理所需的源码或板包。');
+        if (preparation.clearCache) await this.clearOwnedBuildCache(project, () => !signal.aborted && contextCurrent());
+        assertCurrent();
+        assertFresh();
+        owner.config = await this.prepareExecution({
+          currentProjectPath: project, boardModule, code, projectMacros, generatedArtifacts, buildRequestId: requestId,
+          explicitPreprocess: true, appDataPath: window['path'].getAppDataPath(), za7Path: this.platformService.za7,
+          devmode: this.configService.data.devmode || false,
+        }, sourceWorkspace, 'preprocess');
+        assertCurrent();
+        assertFresh();
+        const file = await this.writeCompileRequest(owner.config);
+        assertCurrent();
+        assertFresh();
+        const script = this.electronService.pathJoin(window['path'].getAilyChildPath(), 'scripts', 'preprocess.js');
+        dispatched = true;
+        let exit: CmdOutput | undefined, commandError: unknown;
+        try {
+          exit = await firstValueFrom(this.cmdService.spawn('node', [script, file], {
+            ...this.projectService.getProjectDependencySession?.(project),
+            streamId: `builder_preprocess_${owner.config.execution.id}`, forwardStdout: true,
+            buildWorkspace: owner.config.currentProjectPath, signal, observeExit: true,
+            onOutput: output => { if (output.data) log.append(output.data); },
+          }, true).pipe(filter(output => output.type === 'close' || output.type === 'error')));
+        } catch (error) { commandError = error; }
+        if (exit?.recovered || !exit) log.markIncomplete('The original process output may be incomplete.');
+        const observed = window['builder'].inspectBuildExecution(project, requestId);
+        const history = observed?.buildHistory;
+        if (observed?.executionId !== owner.config.execution.id || history?.operation !== 'preprocess'
+          || history.inputDigest !== owner.config.execution.inputDigest || history.buildRequestId !== requestId) {
+          if (signal.aborted) throw signal.reason;
+          throw Object.assign(new Error('预处理原请求的结果未确认。'), { buildOutcome: 'unknown', cause: commandError });
+        }
+        if (observed.status === 'cancelled') {
+          const cancelled = buildCancelledResult('预处理已取消。');
+          throw Object.assign(new Error(cancelled.text), cancelled, { buildHistory: history });
+        }
+        if (observed.status !== 'completed') {
+          throw Object.assign(new Error('预处理失败。'), { buildOutcome: 'failed', buildHistory: history, fullStdErr: exit?.stderr });
+        }
+        return { state: 'done', text: '预处理成功。', buildHistory: history };
+      });
+    } catch (error) {
+      const failure = signal.aborted && !dispatched
+        ? Object.assign(signal.reason, { buildLog: (error as { buildLog?: unknown })?.buildLog }) : error;
+      if (!dispatched && failure && typeof failure === 'object' && !('buildOutcome' in failure)) {
+        Object.assign(failure, { buildOutcome: 'not-started' });
+      }
+      throw failure;
+    } finally {
+      try { if (owner.config && !dispatched) await this.abandonPreparedPreprocess(owner.config); }
+      finally {
+        this.explicitPreprocess = undefined;
+        // The workflow reserves the shared editor; the receipt owns preprocessing status.
+        this.workflowService.finishBuild(true);
+      }
+    }
+  }
+
   cancel(requestId?: string) {
+    const preprocessing = this.explicitPreprocess;
+    if (preprocessing) {
+      if (requestId !== undefined && requestId !== preprocessing.requestId) return;
+      const config = preprocessing.config;
+      if (config) {
+        let outcome;
+        try { outcome = window['builder'].cancelBuildExecution(config); }
+        catch { /* Release the renderer observation if cancellation proof is unavailable. */ }
+        const execution = config.execution;
+        const matching = outcome?.version === 1 && outcome.id === execution.id
+          && outcome.buildRequestId === execution.buildRequestId && outcome.inputDigest === execution.inputDigest;
+        if (matching && ['completed', 'failed'].includes(outcome.status)) return;
+        if (!matching || outcome.status !== 'cancelled') {
+          preprocessing.cancellation.abort(Object.assign(new Error('原预处理停止结果未确认。'), { buildOutcome: 'unknown' }));
+          return;
+        }
+      }
+      const cancelled = buildCancelledResult('预处理已取消。');
+      preprocessing.cancellation.abort(Object.assign(new Error(cancelled.text), cancelled));
+      return;
+    }
     if (
       requestId !== undefined
       && requestId !== this.activeBuildRequestId

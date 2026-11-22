@@ -1,5 +1,5 @@
 import { absJson, fingerprintAbsNodeGroups, indexAbsSyntax } from './abs-identity-map';
-import { inspectAbsSourceEdits, type AbsSourceEdits } from './abs-edit-provenance';
+import { inspectAbsSourceEdits, type AbsSourceEditOrigin, type AbsSourceEdits } from './abs-edit-provenance';
 import { AbsSyncError, type AbsSyntaxNode } from './abs-state';
 
 type Node = AbsSyntaxNode;
@@ -22,7 +22,8 @@ function group<T>(items: readonly T[], key: (item: T) => string): Map<string, T[
 export async function matchAbsIdentities(beforeText: string, afterText: string,
   original: Node[], edited: Node[], sourceEdits?: AbsSourceEdits,
   requiresIdentity: (node: Node) => boolean = () => false,
-  fingerprint: typeof fingerprintAbsNodeGroups = fingerprintAbsNodeGroups): Promise<ReadonlyMap<Node, Node>> {
+  fingerprint: typeof fingerprintAbsNodeGroups = fingerprintAbsNodeGroups,
+  sourceEditOrigin?: AbsSourceEditOrigin): Promise<ReadonlyMap<Node, Node>> {
   const groups = [indexAbsSyntax(original), indexAbsSyntax(edited)];
   const [oldNodes, newNodes] = groups.map(entries => entries.map(entry => entry.node));
   const signatures = new Map<Node, string>();
@@ -47,7 +48,7 @@ export async function matchAbsIdentities(beforeText: string, afterText: string,
     }
     used.add(before); matches.set(after, before);
   };
-  const evidence = inspectAbsSourceEdits(beforeText, afterText, original, edited, sourceEdits);
+  const evidence = inspectAbsSourceEdits(beforeText, afterText, original, edited, sourceEdits, sourceEditOrigin);
   for (const [after, before] of evidence.matches) match(before, after);
 
   const pairs = (): Array<[Node[], Node[]]> => {

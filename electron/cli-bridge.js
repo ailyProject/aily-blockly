@@ -68,6 +68,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
     safeWriteDiscoveryFile(discoveryFile, {
       version: BRIDGE_VERSION,
       nativeSaveReceiptVersion: 2,
+      ...(getStatus?.()?.nativeSaveWriterVersion === 1 ? { nativeSaveWriterVersion: 1 } : {}),
       pid,
       port,
       token,
@@ -190,6 +191,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
   process.on('exit', cleanup);
 
   return {
+    getInstanceId: () => instanceId,
     close: () => {
       closed = true;
       cleanup();
