@@ -4,13 +4,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { fork, spawn } = require('node:child_process');
+const { fork, spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
 const api = require('../child/scripts/build-execution-workspace');
 const upload = require('../child/scripts/blockly-upload-state');
 const { acquireBuildWorkspace } = require('../child/scripts/build-workspace-lease');
 const { createHash, randomUUID } = require('node:crypto');
 const { prepareCompileSource, captureBlocklyCompileSource } = require('../child/scripts/compile-source');
+const { holdWindowsFileWithoutDeleteSharing } = require('./fixtures/windows-file-sharing.cjs');
 
 function fixture(t) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-execution-')));
@@ -199,6 +200,32 @@ test('shared cache clear waits for the writer, removes legacy payloads and prese
     assert.equal(api.inspectBuildExecution(f.root, 'queued').status, 'cancelled');
     assert.equal(fs.existsSync(pending.configFilePath), false);
     assert.equal(api.resolveBuildExecution(f.root), null);
+});
+
+test('an exact revoked request remains terminal after Windows cache cleanup fails and restarts', {
+    skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 20000,
+}, async t => {
+    const f = sharedFixture(t);
+    const pending = [f.prepare('queued-compile'), f.prepare('queued-preprocess', undefined, 'preprocess')];
+    const restartedStatus = request => execFileSync(process.execPath, ['-e',
+        'const [file, root, request] = process.argv.slice(1); process.stdout.write(require(file).inspectBuildExecution(root, request).status);',
+        require.resolve('../child/scripts/build-execution-workspace'), f.root, request], { encoding: 'utf8', windowsHide: true });
+    const file = path.join(f.root, '.build', 'held-object.obj');
+    f.put('.build/held-object.obj', 'cache object');
+    const release = await holdWindowsFileWithoutDeleteSharing(file);
+    try {
+        assert.throws(() => api.clearSharedBuildCache(f.root), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
+        assert.equal(fs.readFileSync(file, 'utf8'), 'cache object');
+        for (const original of pending) {
+            assert.throws(() => api.validateSharedBuildLaunch(original.configFilePath, f.root, original.execution.operation));
+            assert.equal(restartedStatus(original.execution.buildRequestId), 'cancelled');
+        }
+    } finally { await release(); }
+    assert.equal(api.clearSharedBuildCache(f.root).cleared, true);
+    assert.equal(fs.existsSync(file), false);
+    const next = f.prepare('new-after-clear-retry');
+    assert.equal(api.validateSharedBuildLaunch(next.configFilePath, f.root, 'compile').execution.id, next.execution.id);
+    for (const original of pending) assert.equal(restartedStatus(original.execution.buildRequestId), 'cancelled');
 });
 
 test('shared cache clear removes an exited legacy recovery marker under the current cleaning lease', async t => {

@@ -13,6 +13,7 @@ const { withSharedBuildAdmission } = require('../../electron/shared-blockly-buil
 const { spawnManagedBuild } = require('../../electron/owned-process');
 const execution = require('../../child/scripts/build-execution-workspace');
 const { createBuildWorkspaceSupervisor, acquireBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
+const { holdWindowsFileWithoutDeleteSharing } = require('../fixtures/windows-file-sharing.cjs');
 
 const boardModule = '@aily-project/board-shared-test';
 const writeJson = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value)); };
@@ -51,12 +52,12 @@ if (mode === 'old-host') {
 } else if (mode === 'descendant') {
   writeJson(path.join(project, '.build', 'descendant-ready.json'), { pid: process.pid });
   setInterval(() => fs.appendFileSync(path.join(project, '.build', 'old-writes'), 'old\n'), 15);
-} else if (mode === 'finish-build' || mode === 'finish-before-workspace-release') {
+} else if (mode === 'finish-build' || mode === 'finish-before-workspace-release' || mode === 'exit-unsettled') {
   const original = execution.validateSharedBuildLaunch(configPath, project, 'compile');
   const lease = acquireBuildWorkspace(project, 'compile');
   try {
     execution.startBuildExecution(original, lease);
-    execution.finishBuildExecution(original, false);
+    if (mode !== 'exit-unsettled') execution.finishBuildExecution(original, false);
   } finally { if (mode === 'finish-build') lease.release(); }
 } else {
   test('a restarted host retires the exact managed tree before a new request can reuse or clear the real .build', {
@@ -170,6 +171,65 @@ if (mode === 'old-host') {
     assert.equal(fs.existsSync(path.join(project, '.build', 'old-cache.bin')), false);
     assert.deepEqual(readJson(path.join(project, 'project.abi')), { saved: 'legacy-unchanged' });
     assert.deepEqual(fs.readFileSync(outcomePath), damaged);
+  });
+
+  test('a drained native build releases admission even when Windows cannot delete its old config', {
+    skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 25000,
+  }, async t => {
+    const temp = fs.realpathSync(os.tmpdir());
+    const owned = fs.realpathSync(fs.mkdtempSync(path.join(temp, 'aily-shared-build-')));
+    const appData = path.join(owned, 'app-data'), project = path.join(owned, 'fixture');
+    const priorAppData = process.env.AILY_APPDATA_PATH;
+    fs.mkdirSync(appData);
+    process.env.AILY_APPDATA_PATH = appData;
+    t.after(() => {
+      if (priorAppData === undefined) delete process.env.AILY_APPDATA_PATH;
+      else process.env.AILY_APPDATA_PATH = priorAppData;
+      assert.equal(path.dirname(fs.realpathSync(owned)), temp);
+      assert.match(path.basename(owned), /^aily-shared-build-/);
+      fs.rmSync(owned, { recursive: true, force: true });
+    });
+    writeJson(path.join(project, 'package.json'), { type: 'blockly', dependencies: { [boardModule]: '1' } });
+    writeJson(path.join(project, 'node_modules', boardModule, 'package.json'), { name: boardModule });
+    writeJson(path.join(project, 'node_modules', boardModule, 'board.json'), { compilerParam: '-b test:test:test' });
+    const old = execution.prepareBuildExecution(compileConfig(project, 'old-sharing-refusal'), undefined, 'compile', { shared: true });
+    let receiptPath;
+    const child = await withSharedBuildAdmission(project, { operation: 'compile' }, admission => {
+      const supervisor = createBuildWorkspaceSupervisor(project);
+      const binding = admission.bind(supervisor.environment.AILY_BUILD_WORKSPACE_SUPERVISOR, 'old-sharing-refusal', old.execution);
+      receiptPath = binding.receiptPath;
+      return spawnManagedBuild(process.execPath, [__filename, 'exit-unsettled', project, old.configFilePath], {
+        cwd: project, windowsHide: true, stdio: 'ignore', env: { ...process.env, ...supervisor.environment },
+      }, binding);
+    });
+    assert.equal((await once(child, 'exit'))[0], 0);
+    await until(() => fs.existsSync(receiptPath));
+    const bindingPath = path.join(path.dirname(receiptPath), createHash('sha256').update(project.toLowerCase()).digest('hex') + '.json');
+    assert.equal(fs.readFileSync(receiptPath, 'utf8'), readJson(bindingPath).proof.job);
+    const workspaceOwner = path.join(project, '.build', 'aily-workspace.lock');
+    assert.ok(fs.existsSync(workspaceOwner));
+    const next = execution.prepareBuildExecution(compileConfig(project, 'next-after-sharing-refusal'), undefined, 'compile', { shared: true });
+
+    const originalConfig = fs.readFileSync(old.configFilePath);
+    fs.unlinkSync(old.configFilePath);
+    fs.mkdirSync(old.configFilePath);
+    await assert.rejects(withSharedBuildAdmission(project, { operation: 'compile' }, () => assert.fail('Unsafe history was accepted')),
+      { code: 'BUILD_EXECUTION_INVALID' });
+    assert.ok(fs.lstatSync(old.configFilePath).isDirectory());
+    assert.ok(fs.existsSync(bindingPath));
+    fs.rmdirSync(old.configFilePath);
+    fs.writeFileSync(old.configFilePath, originalConfig);
+
+    const release = await holdWindowsFileWithoutDeleteSharing(old.configFilePath);
+    try {
+      await withSharedBuildAdmission(project, { operation: 'compile' }, () => {
+        assert.equal(execution.validateSharedBuildLaunch(next.configFilePath, project, 'compile').execution.id, next.execution.id);
+      });
+      assert.equal(execution.inspectBuildExecution(project, old.execution.buildRequestId).status, 'cancelled');
+      assert.deepEqual(fs.readFileSync(old.configFilePath), originalConfig);
+      assert.ok(!fs.existsSync(workspaceOwner));
+      assert.ok(!fs.existsSync(bindingPath));
+    } finally { await release(); }
   });
 
   for (const fault of ['truncated', 'missing', 'wrong-type']) {

@@ -68,6 +68,8 @@ export interface AbsGenerationInput {
   /** Internal publisher intent: validated input acceptance, or History's
    * semantic-only publication whose author transition belongs to Lex. */
   authorIntent?: 'candidate' | 'preserve';
+  /** Exact separate public source included in the validated import. */
+  mergedAuthor?: string;
 }
 interface GenerationRecord extends Omit<AbsGenerationInput, 'expected'> {
   schemaVersion: 1;
@@ -164,6 +166,7 @@ export class AbsBaselineStore {
     const savedHash = savedAbi === null ? null : await hashAbsText(absJson(JSON.parse(savedAbi)));
     if (input.projection.map.savedAbiHash !== savedHash) throw new AbsSyncError('ABS_MAP_INVALID', 'Saved ABI hash does not match the prepared save shape.');
     const expected = await this.hashDisk(input.expected);
+    const mergedFrom = await this.mergedAuthorHash(input, expected.abs);
     await this.assertDraftArchive({ ...input, expected });
     if (input.recoveryArchive) await this.readRepairArchive(input.recoveryArchive);
     if (input.inputMap !== undefined && (typeof input.inputMap !== 'string' && input.inputMap !== null
@@ -171,7 +174,7 @@ export class AbsBaselineStore {
     await this.port.withLock(async storage => {
       const workspaceMode = await this.workspaceMode(storage);
       if (input.authorIntent !== undefined && !['candidate', 'preserve'].includes(input.authorIntent)
-        || input.authorIntent === 'preserve' && workspaceMode !== 'project-v1')
+        || (input.authorIntent === 'preserve' || mergedFrom) && workspaceMode !== 'project-v1')
         throw new AbsSyncError('ABS_GENERATION_INVALID', 'Author preservation requires its project-v1 History publisher.');
       const previousPointer = await storage.read(COMMITTED);
       const previousCommitted = await hashNullable(previousPointer);
@@ -188,9 +191,11 @@ export class AbsBaselineStore {
         const accepted = input.authorIntent === 'candidate' && input.mode === 'import' && current === await hashNullable(input.inputAbs);
         const clean = current === null || current === await hashNullable(previous?.projection.abs ?? null)
           || !!previous?.authorSource && previous.authorSource.disposition !== 'preserved' && current === previous.authorSource.hash;
-        const disposition = input.authorIntent === 'preserve' ? 'preserved' : accepted ? 'accepted' : clean ? 'refreshed' : 'preserved';
+        const disposition = input.authorIntent === 'preserve' ? 'preserved' : accepted ? 'accepted'
+          : clean || mergedFrom ? 'refreshed' : 'preserved';
         authorSource = { version: 1, inputHash: current, disposition,
-          hash: disposition === 'refreshed' ? await hashAbsText(input.projection.abs) : current };
+          hash: disposition === 'refreshed' ? await hashAbsText(input.projection.abs) : current,
+          ...(mergedFrom ? { mergedFrom } : {}) };
       }
       const record: GenerationRecord = { ...input, schemaVersion: 1, expected,
         ...(authorSource ? { workspaceMode: 'project-v1', authorSource } : {}),
@@ -426,6 +431,16 @@ export class AbsBaselineStore {
     if (await this.port.read(COMMITTED) !== text) throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed during capture.');
     return { projection: loaded.record.projection, abi: loaded.record.abi, pointerHash: await hashAbsText(text),
       ...(loaded.record.workspaceMode ? { workspaceMode: loaded.record.workspaceMode, authorSource: loaded.record.authorSource } : {}) };
+  }
+
+  private async mergedAuthorHash(input: Pick<AbsGenerationInput, 'mode' | 'authorIntent' | 'mergedAuthor' | 'inputAbs'>,
+    expectedHash: string | null): Promise<string | undefined> {
+    if (input.mergedAuthor === undefined) return undefined;
+    if (input.mode !== 'import' || input.authorIntent !== 'candidate' || typeof input.mergedAuthor !== 'string'
+      || input.mergedAuthor === input.inputAbs || !expectedHash || await hashAbsText(input.mergedAuthor) !== expectedHash) {
+      throw new AbsSyncError('ABS_GENERATION_INVALID', 'The merged author must be the exact separate public input.');
+    }
+    return expectedHash;
   }
 
   /** The accepted semantic output and the author's current draft are separate
@@ -839,12 +854,14 @@ export class AbsBaselineStore {
       if (record.mode === 'import' && await hashAbsText(absJson(JSON.parse(record.abi!))) !== record.projection.map.savedAbiHash) {
         throw new Error('Prepared save shape changed.');
       }
-      if (record.workspaceMode !== undefined || record.authorSource !== undefined) {
+      const mergedFrom = await this.mergedAuthorHash(record, record.expected.abs);
+      if (record.workspaceMode !== undefined || record.authorSource !== undefined || mergedFrom) {
         const author = record.authorSource;
         if (record.workspaceMode !== 'project-v1' || author?.version !== 1
           || !['accepted', 'refreshed', 'preserved'].includes(author.disposition)
           || author.inputHash !== record.expected.abs
           || author.hash !== (author.disposition === 'refreshed' ? await hashAbsText(record.projection.abs) : author.inputHash)
+          || author.mergedFrom !== mergedFrom || mergedFrom && author.disposition !== 'refreshed'
           || record.authorIntent === 'preserve' && author.disposition !== 'preserved'
           || author.disposition === 'accepted' && (record.authorIntent !== 'candidate' || record.mode !== 'import'
             || await hashNullable(record.inputAbs) !== author.hash)) throw new Error('Invalid author/accepted source separation.');

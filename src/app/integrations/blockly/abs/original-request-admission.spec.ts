@@ -116,7 +116,7 @@ describe('original project admission settlement', () => {
     });
   }
 
-  it('keeps a lost first ABS journal write acknowledgement uncertain', async () => {
+  it('keeps a lost first ABS journal acknowledgement uncertain for the caller and observes no start', async () => {
     spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
     const candidateHash = await hashAbsText(applyParams().abs);
     const apply = applyThroughCoordinator(new BlocklyWorkspaceEditGate(), jasmine.createSpy('prepare').and.resolveTo({
@@ -135,7 +135,9 @@ describe('original project admission settlement', () => {
     await admissions.reserveApplication(requestId, candidateHash, guard);
     expect(await apply()).toEqual(jasmine.objectContaining({ code: 'ABS_COMMIT_UNCERTAIN',
       application: { status: 'UNKNOWN' }, publication: { status: 'UNKNOWN' } }));
-    expect(await admissions.observe({ operation: 'abs_apply', requestId })).toBeNull();
+    expect(await admissions.observe({ operation: 'abs_apply', requestId })).toEqual(jasmine.objectContaining({
+      kind: 'not-started', code: 'ABS_APPLY_NOT_STARTED', request: { operation: 'abs_apply', requestId },
+    }));
     expect(await port.read(await applicationRequestKey(requestId))).toBeNull();
     expect([...files.keys()].filter(key => key.startsWith('recoveries/operation-')).length).toBe(1);
   });

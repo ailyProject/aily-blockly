@@ -44,6 +44,7 @@ async function receiptKey(request: OriginalRequestAdmissionIdentity): Promise<st
 type AdmissionRecord = {
   version: 1; kind: 'not-started'; operationId: string; project: string;
   request: OriginalRequestAdmissionIdentity; code: string; message: string;
+  unstartedIndexHash?: string;
 } & ReturnType<typeof nativeSaveCapability>;
 
 type ApplicationWriter = { version: 1; kind: 'validated-writer'; project: string; requestId: string;
@@ -54,8 +55,8 @@ type SaveWriter = { version: 1; kind: 'admitted-save'; project: string; request:
 const exited = (observation: Awaited<ReturnType<NonNullable<AbsSyncStoragePort['observeExecutor']>>>) =>
   observation.state === 'exited' && ['system-restarted', 'process-exited', 'process-reused'].includes(observation.reason);
 
-/** A rejection and its original writer index are mutually exclusive under the
- * existing project storage lock. Absence provides no evidence of a rejection. */
+/** A rejection excludes an execution record. The exact immutable index of an
+ * apply that never published its operation pointer may remain as metadata. */
 export class OriginalRequestAdmissions {
   constructor(private readonly port: AbsSyncStoragePort, private readonly project: string) {}
 
@@ -70,8 +71,17 @@ export class OriginalRequestAdmissions {
       || absJson(record.request) !== absJson(request) || absJson(record.attachment) !== absJson(observed.attachment)
       || !/^[a-f0-9-]{36}$/.test(record.operationId) || typeof record.code !== 'string' || record.code.length === 0
       || typeof record.message !== 'string') throw admissionFault('The rejection belongs to a different original request or physical project.');
-    const index = await this.writerIndex(request);
-    if (await reader.read(index) !== null) throw admissionFault('The original request also has an execution record.');
+    const index = await reader.read(await this.writerIndex(request));
+    if (record.unstartedIndexHash !== undefined) {
+      if (request.operation !== 'abs_apply' || index === null || await hashAbsText(index) !== record.unstartedIndexHash)
+        throw admissionFault('The original unstarted application index changed.');
+      const linked = JSON.parse(index);
+      const snapshot = await reader.read(`recoveries/operation-${record.operationId}.json`);
+      if (linked.version !== 1 || linked.project !== this.project || linked.requestId !== request.requestId
+        || linked.operationId !== record.operationId || linked.sourceStageVersion !== 1
+        || snapshot === null || await hashAbsText(snapshot) !== linked.snapshotHash)
+        throw admissionFault('The original unstarted application snapshot changed.');
+    } else if (index !== null) throw admissionFault('The original request also has an execution record.');
     return record;
   }
 
@@ -96,6 +106,24 @@ export class OriginalRequestAdmissions {
       throw admissionFault('The original rejection changed during settlement.');
     }
     return record;
+  }
+
+  /** Called by the original journal writer under its lock before it attempts
+   * to publish the pending operation pointer. */
+  async recordUnstartedApplication(input: { requestId: string; operationId: string; candidateHash: string;
+    index: string | null }, guard: () => void, storage: AbsSyncStorageAccess): Promise<void> {
+    const request = { operation: 'abs_apply' as const, requestId: input.requestId };
+    const context = nativeSaveCapability(this.port), retained = await this.applicationWriter(input.requestId, storage);
+    if (!retained || retained.writer.candidateHash !== input.candidateHash
+      || absJson(retained.writer.executor) !== absJson(context.executor)
+      || await storage.read(await applicationRequestKey(input.requestId)) !== input.index) return;
+    const key = await receiptKey(request);
+    const record: AdmissionRecord = { version: 1, kind: 'not-started', operationId: input.operationId,
+      project: this.project, request, ...context, code: 'ABS_APPLY_NOT_STARTED',
+      message: 'The original application stopped before starting the Blockly operation.',
+      ...(input.index === null ? {} : { unstartedIndexHash: await hashAbsText(input.index) }) };
+    guard();
+    if (!await storage.replace(key, null, absJson(record))) throw admissionFault('The original application rejection changed.');
   }
 
   /** The preparing renderer alone can prove its own view was superseded.

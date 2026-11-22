@@ -1324,16 +1324,23 @@ export class AbsWorkspaceSyncService {
         if (!port.attachment) throw new AbsSyncError('ABS_CANDIDATE_ATTACHMENT_STALE', 'Working capture requires the physical project attachment.');
         const captureStore = new AbsBaselineStore(port, context.scope), workspaceMode = await captureStore.workspaceMode();
         let published: AbsGenerationEvidence['binding'] | null = null;
+        let mergedFrom: string | undefined;
         let publishedObservation: { status: string; code?: string } = { status: 'none' };
         try {
           const saved = await captureStore.readCommittedSnapshot();
-          if (saved) { published = (await generationEvidence(saved.projection, saved.abi)).binding; publishedObservation = { status: 'captured' }; }
+          if (saved) {
+            published = (await generationEvidence(saved.projection, saved.abi)).binding;
+            if (saved.projection.map.scope.projectKey === context.scope.projectKey) mergedFrom = saved.authorSource?.mergedFrom;
+            publishedObservation = { status: 'captured' };
+          }
         } catch (error) { publishedObservation = { status: 'unavailable', code: (error as any)?.code ?? 'ABS_PUBLISHED_UNAVAILABLE' }; }
         if (workspaceMode === 'project-v1' && (!published || published.abiHash === null))
           throw new AbsSyncError('ABS_WORKSPACE_MODE_UNINITIALIZED', 'Project mode requires a verified accepted program.');
         const author = workspaceMode === 'project-v1' ? await port.read('project.abs') : null;
+        const authorHash = author === null ? null : await hashAbsText(author);
         const authorSource = workspaceMode === 'project-v1' ? { version: 1, path: 'project.abs', text: author,
-          hash: author === null ? null : await hashAbsText(author), bytes: author === null ? null : new TextEncoder().encode(author).byteLength } : undefined;
+          hash: authorHash, bytes: author === null ? null : new TextEncoder().encode(author).byteLength,
+          ...(mergedFrom && mergedFrom !== authorHash && authorHash === published?.absHash ? { mergedFrom } : {}) } : undefined;
         guard();
         return { version: 1, document: absJson(document), abs: projection.abs, map: absMapJson(projection.map), contracts: absJson(projection.contracts),
           scope: { kind: 'pages', pageIds: [context.scope.pageId] }, attachment: port.attachment,
@@ -1592,6 +1599,7 @@ export class AbsWorkspaceSyncService {
       }
       assertPreparing();
       let historyBase: AbsWorkspaceSyncOutcome['historyBase'];
+      let mergedAuthor: string | undefined;
       let fullDocument: BlocklyProjectDocument | undefined;
       if (requestPriority) {
         let currentWorkspace = composeBlocklyPage(compact, candidatePageId);
@@ -1612,6 +1620,7 @@ export class AbsWorkspaceSyncService {
               readonlyStateOrigin: undefined, requireDeletionEvidence: false });
           const user = await prepareAbsReconciledResources(expected.abs, draft, assertPreparing);
           currentWorkspace = mergeAbsRequestWorkspace(draftBase.workspace, currentWorkspace, user.workspace);
+          if (await store.workspaceMode() === 'project-v1') mergedAuthor = expected.abs;
           historyContracts = { ...rollback.contracts,
             fields: { ...rollback.contracts.fields, ...user.contracts.fields },
             procedures: { ...rollback.contracts.procedures, ...user.contracts.procedures } };
@@ -1677,7 +1686,7 @@ export class AbsWorkspaceSyncService {
         assertPreparing();
       }
       return { expected, expectedPublished: published?.pointerHash ?? null, baselineSource: baseline.abs,
-        before: current, rollback, candidate, materialized, fullDocument, preparedModels, assertRuntimeCurrent, historyBase };
+        before: current, rollback, candidate, materialized, fullDocument, preparedModels, assertRuntimeCurrent, historyBase, mergedAuthor };
   }
 
   private validationKey(value: AbsGenerationValidation): string {
@@ -1720,6 +1729,8 @@ export class AbsWorkspaceSyncService {
         return this.prepareGeneration(context, lease, store, source, generation, validation);
       throw new AbsSyncError('ABS_DISK_CONFLICT', 'Project files changed after candidate validation.');
     }
+    if (prepared.mergedAuthor !== undefined && expected.abs !== prepared.mergedAuthor)
+      return this.prepareGeneration(context, lease, store, source, generation, validation);
     if (baseline && !validation.workingCandidate) this.assertMirrors(baseline, expected, false);
     await this.assertDisk(store, expected, assertCurrent);
     // Layout may change while the disk checks await. Capture it only after the
@@ -1742,7 +1753,7 @@ export class AbsWorkspaceSyncService {
     options = { ...options };
     if (validation) validation = JSON.parse(absJson(validation));
     return this.run(async (context, lease, store) => {
-      const { expected, expectedPublished, before, rollback, candidate, materialized, fullDocument, historyBase } = await this.withoutViewChecks(async () => {
+      const { expected, expectedPublished, before, rollback, candidate, materialized, fullDocument, historyBase, mergedAuthor } = await this.withoutViewChecks(async () => {
         try {
           const prepared = await this.prepareApplication(context, lease, store, source, generation, validation);
           // Validation is read-only and may inspect any candidate. Application
@@ -1822,7 +1833,8 @@ export class AbsWorkspaceSyncService {
         const evidence = await generationEvidence(projection, prepared.abiText);
         const projectTree = await store.workspaceMode() === 'project-v1';
         await store.stage({ projection, mode: 'import', inputAbs: source, abi: prepared.abiText, expected,
-          ...(projectTree ? { authorIntent: 'candidate' as const } : {}) }, expectedPublished);
+          ...(projectTree ? { authorIntent: 'candidate' as const } : {}),
+          ...(mergedAuthor === undefined ? {} : { mergedAuthor }) }, expectedPublished);
         assertApplied();
         if (validation) await application.stage(operationId, validation, {
           publication: { status: 'COMMITTED', generation: projection.map.generation, abiSaved: true,

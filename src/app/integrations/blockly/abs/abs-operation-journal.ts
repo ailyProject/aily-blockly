@@ -452,10 +452,10 @@ export class AbsOperationJournal {
     const id = crypto.randomUUID();
     return this.port.withLock(async storage => {
       assertCurrent();
+      const admissions = input.application ? new OriginalRequestAdmissions(this.port, this.project) : undefined;
       let requestKey: string | undefined;
-      if (input.application) {
+      if (input.application && admissions) {
         const { requestId } = input.application;
-        const admissions = new OriginalRequestAdmissions(this.port, this.project);
         if (await admissions.observe({ operation: 'abs_apply', requestId }, storage))
           throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED', 'The original apply request was rejected before starting.');
         requestKey = await applicationRequestKey(requestId);
@@ -471,13 +471,34 @@ export class AbsOperationJournal {
         // A validated apply's immutable application stage always precedes commit.
         ...(input.kind === 'abs-apply' && input.application ? { sourceStageVersion: 1 as const } : {}) };
       const text = absJson(record), hash = await hashAbsText(text);
+      const indexText = requestKey !== undefined && record.application
+        ? absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,
+          requestId: record.application.requestId,
+          ...(record.sourceStageVersion ? { sourceStageVersion: record.sourceStageVersion } : {}) })
+        : undefined;
       assertCurrent();
       markWriteAttempt?.();
-      if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
-      if (requestKey !== undefined && record.application) {
-        if (!await storage.replace(requestKey, null, absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,
-          requestId: record.application.requestId,
-          ...(record.sourceStageVersion ? { sourceStageVersion: record.sourceStageVersion } : {}) }))) throw applicationAlreadyIndexed();
+      try {
+        if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
+        if (requestKey !== undefined && indexText !== undefined && !await storage.replace(requestKey, null, indexText))
+          throw applicationAlreadyIndexed();
+      } catch (error) {
+        // begin() has not handed the operation to the program writer. The
+        // live original executor can settle before leaving this project lock.
+        if ((error as { code?: string })?.code === 'ABS_COMMIT_UNCERTAIN' && admissions && record.application
+          && record.candidate && record.attachment && record.executor && requestKey && indexText) {
+          try {
+            assertCurrent();
+            const snapshot = await storage.read(snapshotKey(id)), index = await storage.read(requestKey);
+            if ((snapshot === null || snapshot === text)
+              && (index === null || index === indexText && snapshot === text)
+              && await storage.read(currentKey) === previous) {
+              await admissions.recordUnstartedApplication({ requestId: record.application.requestId, operationId: id,
+                candidateHash: record.candidate.hash, index }, assertCurrent, storage);
+            }
+          } catch { /* Keep the original error if the writer cannot prove settlement. */ }
+        }
+        throw error;
       }
       assertCurrent();
       if (!await storage.replace(currentKey, previous === null ? null : await hashAbsText(previous),

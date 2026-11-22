@@ -155,6 +155,23 @@ describe('ABS immutable baseline and commit recovery', () => {
     expect(await store.recover(assertCurrent)).toBeNull();
   });
 
+  it('archives the exact public input merged with an independent import before refreshing its author mirror', async () => {
+    host.files.set('workspace-mode.json', '{"mode":"project-v1","version":1}');
+    store = new AbsBaselineStore(host, scope);
+    const draft = input.expected.abs!, imported = '# ABS Schema: 2\n# independent source';
+    const request = { ...input, inputAbs: imported, authorIntent: 'candidate' as const, mergedAuthor: draft };
+    await expectAsync(store.stage({ ...request, mergedAuthor: 'unrelated draft' }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_GENERATION_INVALID' }));
+    await store.stage(request);
+    const staged = JSON.parse(host.files.get(absBaselineKey('g1'))!);
+    expect(staged.inputAbs).toBe(imported);
+    expect(staged.mergedAuthor).toBe(draft);
+    expect(await host.read('project.abs')).toBe(draft);
+    expect((await store.commit('g1', assertCurrent, save)).absMirrored).toBeTrue();
+    expect(await host.read('project.abs')).toBe(input.projection.abs);
+    expect((await store.readCommittedSnapshot())?.authorSource?.mergedFrom).toBe(await hashAbsText(draft));
+  });
+
   it('uses the callback-scoped capability for every locked read/write and the ABI commit', async () => {
     let held = false;
     const scoped: AbsSyncStorageAccess = {

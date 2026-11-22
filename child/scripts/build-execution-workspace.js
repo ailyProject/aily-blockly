@@ -394,18 +394,33 @@ function confirmSharedBuildInputs(config) {
 }
 
 function removeSharedConfig(folder) {
-    fs.rmSync(path.join(folder, 'config.json'), { force: true });
+    const filename = path.join(folder, 'config.json');
+    const stat = readOptional(fs.lstatSync, filename);
+    if (!stat) return true;
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) fail('Invalid execution configuration.');
+    try { fs.unlinkSync(filename); }
+    catch (error) {
+        if (error.code === 'ENOENT') return true;
+        // A Windows reader can keep a retired config open after the matching
+        // request has already settled. The file is not a writer lease.
+        if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) return false;
+        throw error;
+    }
+    return true;
 }
 
 function retirePreviousSharedConfig(store, pointer, except) {
-    if (!pointer || pointer.version !== 1 || !UUID.test(pointer.id) || pointer.id === except) return;
+    if (!pointer || pointer.version !== 1 || !UUID.test(pointer.id) || pointer.id === except) return true;
     const folder = readOptional(directory, store.parent, pointer.id, false);
     const record = folder && readOptional(json, path.join(folder, 'execution.json'));
     if (record?.layout === SHARED && record.id === pointer.id && record.buildRequestId === pointer.buildRequestId
-        && samePath(record.logicalProjectPath, store.root)) removeSharedConfig(folder);
+        && samePath(record.logicalProjectPath, store.root)) return removeSharedConfig(folder);
+    return true;
 }
 
-function settleSharedBuild(store, { id, buildRequestId, operation } = {}, { requirePrepared = false, refusal, drained = false } = {}) {
+function settleSharedBuild(store, { id, buildRequestId, operation } = {}, {
+    requirePrepared = false, refusal, allowUnreadableHistory = false, retainedConfigs,
+} = {}) {
     if (typeof id !== 'string' || !UUID.test(id) || typeof buildRequestId !== 'string' || !REQUEST_ID.test(buildRequestId)) return null;
     const folder = readOptional(directory, store.parent, id, false);
     if (!folder) return null;
@@ -414,9 +429,9 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, { requ
         let record;
         try { record = json(filename); }
         catch (error) {
-            // Job and workspace release are already verified on this path.
-            // Preserve unreadable history without tying it to the next admission.
-            if (drained && (error.code === 'ENOENT' || error instanceof SyntaxError)) return { status: 'unconfirmed' };
+            // A drained Job or an exclusive cleanup lease excludes a writer.
+            // Preserve unreadable history without assigning it a result.
+            if (allowUnreadableHistory && (error.code === 'ENOENT' || error instanceof SyntaxError)) return { status: 'unconfirmed' };
             throw error;
         }
         if (record.version !== 1 || record.layout !== SHARED || record.id !== id
@@ -425,9 +440,7 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, { requ
         let existing;
         try { existing = readOutcome({ folder, record }); }
         catch (error) {
-            // The host has already verified the original Job drain and released
-            // that workspace binding. Keep the damaged receipt as unknown.
-            if (drained && error.code === 'BUILD_OUTCOME_UNREADABLE') return { status: 'unconfirmed' };
+            if (allowUnreadableHistory && error.code === 'BUILD_OUTCOME_UNREADABLE') return { status: 'unconfirmed' };
             throw error;
         }
         const status = refusal ? 'not-started' : 'cancelled';
@@ -437,14 +450,14 @@ function settleSharedBuild(store, { id, buildRequestId, operation } = {}, { requ
         const outcome = existing ?? claimOutcome({ folder, record }, status, refusal);
         if (outcome.status === status) {
             if (record.status !== status) write(filename, { ...record, status: outcome.status });
-            removeSharedConfig(folder);
+            if (!removeSharedConfig(folder)) retainedConfigs?.add(id);
         }
         return outcome;
     });
 }
 
 function settleStoppedSharedBuild(projectPath, request) {
-    return settleSharedBuild(storage(projectPath), request, { drained: true });
+    return settleSharedBuild(storage(projectPath), request, { allowUnreadableHistory: true });
 }
 
 /** Denial releases only this original, unstarted execution's request file. */
@@ -796,8 +809,7 @@ function retireLegacyBuildInputs(store, id) {
                 idle.assertIdle();
                 fs.rmSync(path.join(root, name), { recursive: true, force: true });
             }
-            removeSharedConfig(folder);
-            return true;
+            return removeSharedConfig(folder);
         } finally { idle.release(); }
     });
 }
@@ -810,15 +822,25 @@ function clearSharedBuildCache(projectPath, { preserveSketch = false } = {}) {
     const lease = acquireBuildWorkspace(store.root, 'clean');
     try {
         const temporary = readOptional(directory, store.root, '.temp', false);
-        const { previous, pending } = locked(store, () => {
+        const retainedExecutionIds = new Set();
+        const previous = locked(store, () => {
             lease.assertBuilderIdle();
             const current = readSharedSelector(store.pointer);
-            const dispatch = ['compile', 'preprocess'].map(operation => readSharedSelector(sharedDispatchPath(store, operation)));
+            const dispatch = ['compile', 'preprocess'].map(operation => ({
+                operation, selector: readSharedSelector(sharedDispatchPath(store, operation)),
+            }));
             lease.clearLegacyRecovery();
-            for (const selector of [current, ...dispatch]) {
+            // Revoke each exact pending request durably before removing its
+            // selector or touching cache files. A failed cleanup can then be retried.
+            for (const { operation, selector } of dispatch) {
+                if (selector?.value) settleSharedBuild(store, { ...selector.value, operation }, {
+                    requirePrepared: true, allowUnreadableHistory: true, retainedConfigs: retainedExecutionIds,
+                });
+            }
+            for (const selector of [current, ...dispatch.map(entry => entry.selector)]) {
                 if (selector) fs.unlinkSync(selector.filename);
             }
-            return { previous: current?.value, pending: dispatch.map(selector => selector?.value).filter(Boolean) };
+            return current?.value;
         });
         clearBuildDirectory(store.root, lease.assertBuilderIdle);
         if (temporary) {
@@ -829,13 +851,8 @@ function clearSharedBuildCache(projectPath, { preserveSketch = false } = {}) {
                 fs.rmSync(target, { recursive: true, force: true });
             }
         }
-        const retainedExecutionIds = new Set();
-        try { retirePreviousSharedConfig(store, previous); }
+        try { if (!retirePreviousSharedConfig(store, previous)) retainedExecutionIds.add(previous.id); }
         catch { retainedExecutionIds.add(previous.id); }
-        for (const request of pending) {
-            try { settleSharedBuild(store, request, { requirePrepared: true }); }
-            catch { retainedExecutionIds.add(request.id); }
-        }
         for (const id of fs.readdirSync(store.parent).filter(name => UUID.test(name))) {
             try { if (!retireLegacyBuildInputs(store, id)) retainedExecutionIds.add(id); }
             catch { retainedExecutionIds.add(id); }
