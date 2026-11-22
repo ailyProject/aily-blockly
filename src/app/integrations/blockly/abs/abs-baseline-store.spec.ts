@@ -172,6 +172,21 @@ describe('ABS immutable baseline and commit recovery', () => {
     expect((await store.readCommittedSnapshot())?.authorSource?.mergedFrom).toBe(await hashAbsText(draft));
   });
 
+  it('continues from the merged projection when the exact submitted draft lacks a committed canvas edit', async () => {
+    host.files.set('workspace-mode.json', '{"mode":"project-v1","version":1}');
+    store = new AbsBaselineStore(host, scope);
+    const submitted = input.expected.abs!;
+    await store.stage({ ...input, inputAbs: submitted, authorIntent: 'candidate' }, undefined, { mergedCandidate: true });
+    expect(await host.read('project.abs')).toBe(submitted);
+    expect(JSON.parse(host.files.get(absBaselineKey('g1'))!).inputAbs).toBe(submitted);
+    expect((await store.commit('g1', assertCurrent, save)).absMirrored).toBeTrue();
+    expect(await host.read('project.abs')).toBe(input.projection.abs);
+    expect((await store.readCommittedSnapshot())?.authorSource?.disposition).toBe('refreshed');
+    host.files.set('project.abs', '# subsequent edit');
+    await store.recover(assertCurrent);
+    expect(await host.read('project.abs')).toBe('# subsequent edit');
+  });
+
   describe('committed merged author observation', () => {
     let sourceHash: string, canonical: string, snapshot: NonNullable<Awaited<ReturnType<AbsBaselineStore['readCommittedSnapshot']>>>;
     beforeEach(async () => {

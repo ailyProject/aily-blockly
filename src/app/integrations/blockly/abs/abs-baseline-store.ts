@@ -153,7 +153,7 @@ export class AbsBaselineStore {
   }
 
   /** Creates a generation only. Does not publish ABS, mark it ready, or save ABI. */
-  async stage(input: AbsGenerationInput, expectedCommitted?: string | null): Promise<string> {
+  async stage(input: AbsGenerationInput, expectedCommitted?: string | null, options: { mergedCandidate?: boolean } = {}): Promise<string> {
     input = cloneProjectJson(input);
     this.assertScope(input.projection);
     await validateAbsProjection(input.projection);
@@ -197,7 +197,7 @@ export class AbsBaselineStore {
         const accepted = input.authorIntent === 'candidate' && input.mode === 'import' && current === await hashNullable(input.inputAbs);
         const clean = current === null || current === await hashNullable(previous?.projection.abs ?? null)
           || !!previous?.authorSource && previous.authorSource.disposition !== 'preserved' && current === previous.authorSource.hash;
-        const disposition = input.authorIntent === 'preserve' ? 'preserved' : accepted ? 'accepted'
+        const disposition = input.authorIntent === 'preserve' ? 'preserved' : accepted ? (options.mergedCandidate ? 'refreshed' : 'accepted')
           : clean || mergedFrom ? 'refreshed' : 'preserved';
         authorSource = { version: 1, inputHash: current, disposition,
           hash: disposition === 'refreshed' ? await hashAbsText(input.projection.abs) : current,

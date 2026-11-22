@@ -1607,6 +1607,7 @@ export class AbsWorkspaceSyncService {
       assertPreparing();
       let historyBase: AbsWorkspaceSyncOutcome['historyBase'];
       let mergedAuthor: string | undefined;
+      let mergedCandidate = false;
       let fullDocument: BlocklyProjectDocument | undefined;
       if (requestPriority) {
         let currentWorkspace = composeBlocklyPage(compact, candidatePageId);
@@ -1647,6 +1648,7 @@ export class AbsWorkspaceSyncService {
           block => historyContracts.procedures?.[block.id]?.role);
         const mergedDocument = mergeAbsStrictDocument(baseline.document as BlocklyProjectDocument, currentDocument, targetDocument,
           { referenceContracts: { [candidatePageId]: candidate.contracts } });
+        mergedCandidate = !sameAbsProgram(targetDocument, mergedDocument);
         const resources = await prepareAbsProjectData(mergedDocument, assertPreparing);
         fullDocument = await resources.materialize();
         materialized = composeBlocklyPage(fullDocument, context.scope.pageId);
@@ -1693,7 +1695,7 @@ export class AbsWorkspaceSyncService {
         assertPreparing();
       }
       return { expected, expectedPublished: published?.pointerHash ?? null, baselineSource: baseline.abs,
-        before: current, rollback, candidate, materialized, fullDocument, preparedModels, assertRuntimeCurrent, historyBase, mergedAuthor };
+        before: current, rollback, candidate, materialized, fullDocument, preparedModels, assertRuntimeCurrent, historyBase, mergedAuthor, mergedCandidate };
   }
 
   private validationKey(value: AbsGenerationValidation): string {
@@ -1760,7 +1762,7 @@ export class AbsWorkspaceSyncService {
     options = { ...options };
     if (validation) validation = JSON.parse(absJson(validation));
     return this.run(async (context, lease, store) => {
-      const { expected, expectedPublished, before, rollback, candidate, materialized, fullDocument, historyBase, mergedAuthor } = await this.withoutViewChecks(async () => {
+      const { expected, expectedPublished, before, rollback, candidate, materialized, fullDocument, historyBase, mergedAuthor, mergedCandidate } = await this.withoutViewChecks(async () => {
         try {
           const prepared = await this.prepareApplication(context, lease, store, source, generation, validation);
           // Validation is read-only and may inspect any candidate. Application
@@ -1841,11 +1843,11 @@ export class AbsWorkspaceSyncService {
         const projectTree = await store.workspaceMode() === 'project-v1';
         await store.stage({ projection, mode: 'import', inputAbs: source, abi: prepared.abiText, expected,
           ...(projectTree ? { authorIntent: 'candidate' as const } : {}),
-          ...(mergedAuthor === undefined ? {} : { mergedAuthor }) }, expectedPublished);
+          ...(mergedAuthor === undefined ? {} : { mergedAuthor }) }, expectedPublished, { mergedCandidate });
         assertApplied();
         if (validation) await application.stage(operationId, validation, {
           publication: { status: 'COMMITTED', generation: projection.map.generation, abiSaved: true,
-            absMirrored: !projectTree || expected.abs === projection.abs, mapPublished: true },
+            absMirrored: !projectTree || expected.abs === projection.abs || (mergedCandidate && expected.abs === source), mapPublished: true },
           appliedRevision: applied.revision, requiresReload: false, evidence, abs: projection.abs,
           warnings: ['The original derived-code publication was not observed; source application is independently verified.'],
           derivedOutputs: { published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING' }, ...(historyBase ? { historyBase } : {}),

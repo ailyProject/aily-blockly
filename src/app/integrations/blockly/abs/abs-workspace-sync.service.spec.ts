@@ -5140,6 +5140,24 @@ describe('v2 actual workspace generation coordinator', () => {
 
   describe('project-v1 author tree', () => {
     const select = () => disk.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
+    it('publishes a merged canvas edit to the submitted primary ABS without consuming a later draft', async () => {
+      const base = await baseline(); select();
+      editor.workspace.getBlockById('child').setFieldValue('720', 'NUM');
+      await service.exportGeneration({ save: true });
+      const source = base.source.replace('TEXT="before"', 'TEXT="candidate"');
+      disk.set('project.abs', source);
+      const result = await priorityApply(base, source);
+      expect(result.publication.status).toBe('COMMITTED');
+      const merged = (await service.captureWorkingCandidate()).authorSource!.text!;
+      expect(merged).toContain('720');
+      expect(merged).toContain('TEXT="candidate"');
+      const later = merged.replace('720', '721');
+      disk.set('project.abs', later);
+      const read = await service.captureWorkingCandidate();
+      expect(read.authorSource!.text).toBe(later);
+      expect(read.abs).toContain('720');
+      expect(editor.workspace.getBlockById('child').getFieldValue('NUM')).toBe(720);
+    });
     const captureWithUnchangedAuthorState = async (repeated = 0) => {
       const replay = enableNative();
       let options: [string, string][] = [['Port A', 'A'], ['Port B', 'B']];
