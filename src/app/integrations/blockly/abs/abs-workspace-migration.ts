@@ -36,12 +36,14 @@ export async function captureWorkspaceMigrationProof(port: AbsSyncStoragePort,
       throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
     const map = absMapJson(snapshot.projection.map);
     if (disk.map !== map) {
-      if (!repairMap || snapshot.projection.map.scope.projectKey !== port.attachment.root
-        || (mode === 'overlay-v1' && disk.abs !== snapshot.projection.abs)) {
+      if (!repairMap || (mode === 'overlay-v1' && disk.abs !== snapshot.projection.abs)) {
         throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_CONFLICT', 'Migration requires the verified accepted ABI/map and no prepared generation.');
       }
       await assertWorkspaceMigrationWritable(scoped);
-      await store.restoreCommittedMap(assertCurrent, { disk, pointerHash: snapshot.pointerHash });
+      // Repair the old generation's cache, then let the location rebind below
+      // prove and publish the new scope. The storage still belongs to this copy.
+      const original = new AbsBaselineStore(scoped, snapshot.projection.map.scope);
+      await original.restoreCommittedMap(assertCurrent, { disk, pointerHash: snapshot.pointerHash });
       disk.map = map;
     }
     const accepted = (await generationEvidence(snapshot.projection, snapshot.abi)).binding;

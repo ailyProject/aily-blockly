@@ -671,7 +671,7 @@ export class ProjectService {
     try {
       if (!(await this.retireBlocklyEditor(projectPath))) return false;
       await discard?.commit();
-      await this.discardLibraryChanges(projectPath, reconcile);
+      if (!discard?.preserveRecovery) await this.discardLibraryChanges(projectPath, reconcile);
       return true;
     } catch (error) {
       // Keep the main-process edit session for a subsequent close/reopen retry.

@@ -8,7 +8,7 @@ import { readAbsWorkspaceMode, type AbsWorkspaceMode, type AbsAuthorSourceRecord
 import { generationEvidence, type AbsGenerationEvidence } from './abs-generation-protocol';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
 import type { AbsProgramDriftObservation } from './abs-program-drift';
-import type { CopiedProjectLockRecovery, LegacyProjectFileLockObservation, ProjectFileLockObservation, ProjectStorageAttachment, ProjectStorageExecutor,
+import type { CopiedProjectLockRecovery, InvalidAbsMirrorRecovery, LegacyProjectFileLockObservation, ProjectFileLockObservation, ProjectStorageAttachment, ProjectStorageExecutor,
   ProjectStorageExecutorObservation } from '@shared/project-sync-storage-bridge';
 export type AbsProjectAttachment = ProjectStorageAttachment;
 export type AbsStorageExecutor = ProjectStorageExecutor;
@@ -25,6 +25,7 @@ export interface AbsSyncStorageAccess {
   readonly executor?: AbsStorageExecutor;
   read(key: string): Promise<string | null>;
   replace(key: string, expectedByteHash: string | null, content: string | null): Promise<boolean>;
+  retireInvalidAbsMirror?(request: InvalidAbsMirrorRecovery): Promise<boolean>;
 }
 export interface AbsSyncStoragePort {
   readonly attachment?: AbsProjectAttachment;
@@ -294,7 +295,9 @@ export class AbsBaselineStore {
 
   async readArchivedDraft(generation: string): Promise<{ generation: string; baseGeneration: string | null;
     origin?: 'initial-baseline' | 'legacy-mirrors'; abs: string; hash: string; bytes: number }> {
-    const { record } = await this.readGeneration(this.port, generation);
+    const { record } = await this.readGeneration(this.port, generation, true);
+    if (record.projection.map.scope.projectKey !== this.scope.projectKey)
+      throw new AbsSyncError('ABS_SCOPE_INVALID', 'Archived draft belongs to a different project.');
     const legacy = record.legacyMirrorArchive === true && record.expected.abs !== null;
     const initial = !record.draftBaseGeneration && record.previousCommitted === null && record.expected.map === null
       && record.expected.abs !== null && typeof record.inputAbs === 'string'

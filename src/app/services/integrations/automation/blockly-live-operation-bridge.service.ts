@@ -1156,6 +1156,9 @@ export class BlocklyLiveOperationBridgeService {
           loadStatus,
         };
       }
+      if (isBlocklyProject && payload.operation === 'abs_recovery' && payload.params?.['action'] === 'read_draft') {
+        return this.executeAbsRecovery(payload.params);
+      }
       if (!editorReady) {
         if (isBlocklyProject && payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project') {
           const params = payload.params || {};

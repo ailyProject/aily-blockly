@@ -4963,6 +4963,8 @@ describe('v2 actual workspace generation coordinator', () => {
         } else {
           const draft = await store.readArchivedDraft(generation);
           expect(draft).toEqual(jasmine.objectContaining({ origin: 'legacy-mirrors', baseGeneration: null, abs: original }));
+          expect(prepared.draftArchive).toEqual(jasmine.objectContaining({ generation, hash: draft.hash, bytes: draft.bytes }));
+          expect(await service.inspectGeneration()).toEqual(jasmine.objectContaining({ draftArchive: prepared.draftArchive }));
           expect(JSON.parse(disk.get(absBaselineKey(generation))!).inputMap).toBe(map);
         }
       });
@@ -5022,6 +5024,20 @@ describe('v2 actual workspace generation coordinator', () => {
       const after = [...disk];
       expect(await service.prepareWorkspaceModeMigration()).toEqual(prepared);
       expect([...disk]).toEqual(after);
+    });
+    it('restores an outdated public map in a copied project before rebinding the original generation', async () => {
+      const original = await foreignBaseline(), oldMap = absJson({ projectionVersion: 'abs-v2.preview.4', generation: 'overwritten' });
+      disk.set('project.abs.map.json', oldMap);
+      expect(await service.inspectGeneration()).toEqual(jasmine.objectContaining({
+        diagnostics: jasmine.objectContaining({ status: 'rebind-required' }),
+      }));
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue();
+      expect(prepared.migration.accepted.accepted.scope).toEqual(scope);
+      expect(prepared.migration.accepted.accepted.generation).not.toBe(original.generation);
+      expect(disk.get('project.abs')).toBe(original.source);
+      expect(disk.get('project.abi')).toBe(original.abi);
+      expect([...disk].filter(([key]) => key.startsWith('recoveries/map-')).some(([, value]) => JSON.parse(value).map === oldMap)).toBeTrue();
     });
     it('prepares a copied project-v1 without replaying engine selection or replacing its author draft', async () => {
       const original = await foreignBaseline(), draft = '\uFEFF' + original.source + '\r\n# copied author draft\r\n';

@@ -1,7 +1,9 @@
 import { absMapJson } from './abs-map-json';
 import { readSavedBlocklyAbi } from './abs-project-open';
 import { absJson, hashAbsText } from './abs-identity-map';
-import type { AbsDiskSnapshot } from './abs-baseline-store';
+import { AbsBaselineStore, type AbsDiskSnapshot, type AbsSyncStoragePort } from './abs-baseline-store';
+import { AbsOperationJournal } from './abs-operation-journal';
+import { AbsSyncError } from './abs-state';
 import type { AbsIdentityMap, AbsProjection } from './abs-state';
 
 /** These projections predate complete ABS. An old map can identify the
@@ -35,4 +37,48 @@ export async function inspectLegacyAbsMirrors(disk: AbsDiskSnapshot, baseline?: 
     retainMap: !absClean || !mapClean,
     retainDraft: disk.abs !== null && (!absClean || !mapClean),
   };
+}
+
+/** Retire only undecodable public mirrors. Their bytes never become a text
+ * draft, accepted source, or an input to the normal publisher. */
+export async function refreshInvalidAbsMirrors(port: AbsSyncStoragePort, project: string,
+  checkSavedCanvas: (abi: string) => Promise<void>, assertCurrent: () => void) {
+  const settings = ['project.abs', 'project.abs.map.json'] as const;
+  const invalid = Symbol('invalid mirror');
+  return port.withLock(async storage => {
+    const scope = { ...port, read: key => storage.read(key) };
+    const lookup = new AbsBaselineStore(scope, { projectKey: project, pageId: '' });
+    const observed = await Promise.all(settings.map(async key => {
+      try { return await storage.read(key); }
+      catch (error) { if ((error as { code?: string })?.code !== 'ABS_STORAGE_ENCODING_INVALID') throw error; return invalid; }
+    }));
+    if (!observed.includes(invalid)) return;
+    if (!storage.retireInvalidAbsMirror)
+      throw new AbsSyncError('ABS_STORAGE_HOST_UNAVAILABLE', 'Legacy byte preservation requires the matching host.');
+    const [abi, committed, operation] = await Promise.all(['project.abi', 'committed.json', 'operation.json'].map(key => storage.read(key)));
+    if (abi === null || !readSavedBlocklyAbi(abi))
+      throw new AbsSyncError('ABS_STORAGE_ENCODING_INVALID', 'Invalid mirror bytes require an independently saved ABI.');
+    if (await storage.read('prepared.json') !== null || await new AbsOperationJournal(scope, project).inspect())
+      throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'The original transaction still owns the program.');
+    await checkSavedCanvas(abi); assertCurrent();
+    const accepted = await lookup.readCommittedSnapshot(), mode = await lookup.workspaceMode(storage);
+    const canonical = accepted && (mode === 'project-v1' || !isLegacyAbsProjection(accepted.projection.map.projectionVersion)) ? accepted : null;
+    if ((canonical && canonical.abi !== abi) || (!canonical && mode === 'project-v1'))
+      throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'The original accepted program cannot verify mirror recovery.');
+    if (canonical && mode === 'overlay-v1' && observed[1] === invalid && observed[0] !== invalid
+      && observed[0] !== canonical.projection.abs)
+      throw new AbsSyncError('ABS_SOURCE_CONFLICT', 'The current draft and invalid map require distinct recovery evidence.');
+    const replacements = canonical ? [canonical.projection.abs, absMapJson(canonical.projection.map)] : [null, null];
+    const digest = (value: string | null) => value === null ? null : hashAbsText(value);
+    const abiHash = await hashAbsText(abi), committedHash = await digest(committed), operationHash = await digest(operation);
+    const canonicalOverlay = canonical && mode === 'overlay-v1' ? await hashAbsText(canonical.projection.abs) : undefined;
+    for (const [index, key] of settings.entries()) {
+      if (observed[index] !== invalid) continue;
+      assertCurrent();
+      if (!await storage.retireInvalidAbsMirror({ key, abiHash, committedHash, operationHash,
+        ...(key === 'project.abs.map.json' && canonicalOverlay ? { absHash: canonicalOverlay } : {}), replacement: replacements[index] }))
+        throw new AbsSyncError('ABS_DISK_CONFLICT', 'The original invalid mirror changed before recovery.');
+    }
+    assertCurrent();
+  });
 }

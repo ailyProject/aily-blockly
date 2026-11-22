@@ -39,6 +39,33 @@ after(() => { for (const root of roots) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 
+test('legacy mirror recovery preserves exact malformed bytes before replacement and leaves strict reads in place', async () => {
+  const root = project(), abi = '{"blocks":{}}', invalid = Buffer.from([0xef, 0xbb, 0xbf, 0xff, 0, 0x0d, 0x0a]);
+  fs.writeFileSync(path.join(root, 'project.abi'), abi);
+  fs.writeFileSync(path.join(root, 'project.abs'), invalid);
+  fs.writeFileSync(path.join(root, 'project.abs.map.json'), invalid);
+  const store = await openProjectSyncStorage(root, guard);
+  await assert.rejects(store.read('project.abs'), { code: 'ABS_STORAGE_ENCODING_INVALID' });
+  const expected = { abiHash: hash(abi), committedHash: null, operationHash: null };
+  await store.withLock(async locked => {
+    await locked.replace('prepared.json', null, 'live');
+    await assert.rejects(locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs', replacement: null }), { code: 'ABS_TRANSACTION_PENDING' });
+    await locked.replace('prepared.json', hash('live'), null);
+    await assert.rejects(locked.retireInvalidAbsMirror({ ...expected, abiHash: hash('other'), key: 'project.abs', replacement: null }), { code: 'ABS_DISK_CONFLICT' });
+    assert.equal(await locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs', replacement: 'verified projection' }), true);
+    assert.equal(await locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs.map.json', replacement: null }), true);
+    assert.equal(await locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs', replacement: 'never replaced' }), false);
+  });
+  const suffix = `raw-${hash(invalid).slice(7)}.bin`;
+  for (const name of [`abs-${suffix}`, `map-${suffix}`]) {
+    assert.deepEqual(fs.readFileSync(path.join(root, '.aily', 'abs-sync', 'recoveries', name)), invalid);
+    await assert.rejects(store.read(`recoveries/${name}`), { code: 'ABS_STORAGE_KEY_INVALID' });
+  }
+  assert.equal(await store.read('project.abi'), abi);
+  assert.equal(await store.read('project.abs'), 'verified projection');
+  assert.equal(await store.read('project.abs.map.json'), null);
+});
+
 test('read-only open creates nothing; locked UTF-8 writes survive reopening the capability', async () => {
   const root = project(); const store = await openProjectSyncStorage(root, guard);
   assert.equal(await store.read('prepared.json'), null); assert.deepEqual(fs.readdirSync(root), []);

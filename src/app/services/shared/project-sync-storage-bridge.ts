@@ -25,15 +25,25 @@ export interface CopiedProjectLockRecovery {
   readonly expected: Readonly<Record<string, string | null>>;
   readonly phase?: 'prepared' | 'committed';
 }
+export interface InvalidAbsMirrorRecovery {
+  key: 'project.abs' | 'project.abs.map.json';
+  abiHash: string;
+  committedHash: string | null;
+  operationHash: string | null;
+  absHash?: string;
+  replacement: string | null;
+}
 export interface ProjectStorageAccess {
   readonly attachment?: ProjectStorageAttachment;
   readonly executor?: ProjectStorageExecutor;
   read(key: string): Promise<string | null>;
   replace(key: string, expected: string | null, content: string | null): Promise<boolean>;
+  retireInvalidAbsMirror?(request: InvalidAbsMirrorRecovery): Promise<boolean>;
 }
 interface NativeProjectStorageAccess extends ProjectStorageAccess {
   readResult?(key: string): Promise<ProjectStorageSettlement<string | null>>;
   replaceResult?(key: string, expected: string | null, content: string | null): Promise<ProjectStorageSettlement<boolean>>;
+  retireInvalidAbsMirrorResult?(request: InvalidAbsMirrorRecovery): Promise<ProjectStorageSettlement<boolean>>;
 }
 export interface ProjectStorageBridge {
   readonly attachment?: ProjectStorageAttachment;
@@ -100,6 +110,9 @@ export function projectStorageBridge(storage: NativeProjectStorageBridge, assert
             : { ok: true as const, value: await locked.replace(key, expected, content) };
           assertCurrent(); return value(result);
         },
+        ...(locked.retireInvalidAbsMirrorResult ? { retireInvalidAbsMirror: async (request: InvalidAbsMirrorRecovery) => {
+          assertCurrent(); const retired = value(await locked.retireInvalidAbsMirrorResult!(request)); assertCurrent(); return retired;
+        } } : {}),
       }, settle)).then(result => { assertCurrent(); return value(result); });
     },
   };

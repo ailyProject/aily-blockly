@@ -104,6 +104,18 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     expect(await service.close()).toBeFalse(); expect(commit).not.toHaveBeenCalled(); expect(dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('closes the saved canvas without publishing dependency changes when damaged ABS recovery stays in place', async () => {
+    const { service, events } = fixture();
+    const commit = jasmine.createSpy('accept departure').and.resolveTo();
+    const dispose = jasmine.createSpy('dispose');
+    service.application.prepareBlocklyRecoveryDiscard = async () => ({ commit, dispose, preserveRecovery: true });
+    expect(await service.close()).toBeTrue();
+    expect(events).toEqual(['stop', 'dispose', 'close']);
+    expect(service.discardLibraryChanges).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   for (const decision of ['cancel', 'focus']) it(`retains the source activation after target lock ${decision}`, async () => {
     const { service, mounted } = fixture();
     const previous = window['projectLock'];

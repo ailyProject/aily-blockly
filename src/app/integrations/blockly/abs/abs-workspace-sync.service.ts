@@ -37,10 +37,10 @@ import { assertAbsContractsCompatible } from './abs-contract-compatibility';
 import { inspectAbsDraft, canInspectAbsDraft, AbsDraftReadiness } from './abs-draft-readiness';
 import { orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
 import { createAbsProjectSnapshotGuard } from './abs-project-snapshot-guard';
-import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey, type AbsViewResolutionRecord } from './abs-baseline-store';
+import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey, type AbsSyncStoragePort, type AbsViewResolutionRecord } from './abs-baseline-store';
 import { openAbsHostStorage } from './abs-host-storage';
 import { absJson, assertAbsBaselineContext, assertCurrentAbsProjection, createAbsProjection, hashAbsText } from './abs-identity-map';
-import { AbsProjection, AbsProjectionContracts, AbsSyncError } from './abs-state';
+import { AbsProjection, AbsProjectionContracts, AbsSyncError, type AbsIdentityMap } from './abs-state';
 import { prepareAbsProjectData } from './abs-project-data';
 import { prepareAbsReconciledResources } from './abs-prepared-reconciliation';
 import { assertAbsResourceContracts } from './abs-resource-contracts';
@@ -88,7 +88,7 @@ import { readWorkingCandidate, workingCandidateBinding } from './abs-working-can
 import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { mergeAbsStrictDocument } from './abs-strict-document-merge';
 import { readLegacyCandidateCapture } from './abs-legacy-candidate-capture';
-import { inspectLegacyAbsMirrors } from './abs-legacy-mirrors';
+import { inspectLegacyAbsMirrors, refreshInvalidAbsMirrors } from './abs-legacy-mirrors';
 import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
 
 type AbsExportOptions = { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string;
@@ -350,7 +350,9 @@ export class AbsWorkspaceSyncService {
       const port = await openAbsHostStorage(context.path, guard);
       const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard, port); guard();
       if (await store.workspaceMode() === 'project-v1') {
-        if (protocol.ok || !('code' in protocol) || protocol.code !== 'ABS_WORKSPACE_MODE_UNINITIALIZED') return protocol;
+        if (!protocol.ok && (!('code' in protocol) || protocol.code !== 'ABS_WORKSPACE_MODE_UNINITIALIZED')) return protocol;
+        await this.captureReexportDisk(context, store, port, working.document, guard);
+        if (protocol.ok) return protocol;
         await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard, 'project-v1'));
         guard();
         return absWorkspaceProtocol(context.path, { version: 1 }, guard, port);
@@ -361,9 +363,10 @@ export class AbsWorkspaceSyncService {
       const deferred = (reason: 'saved-program-unavailable' | 'source-projection-present' | 'publication-pending' | 'saved-working-differs') =>
         ({ ...protocol, migrationDeferred: { version: 1 as const, reason } });
       if (pending || journal) return deferred('publication-pending');
-      const disk = await store.captureDisk();
+      const disk = await this.captureReexportDisk(context, store, port, working.document, guard);
       const legacy = await inspectLegacyAbsMirrors(disk, accepted?.projection); guard();
       if (accepted?.abi === null && !legacy) return deferred('saved-program-unavailable');
+      let draftArchive: AbsWorkspaceSyncOutcome['draftArchive'];
       if (!accepted || legacy) {
         const reason = disk.abi === null ? 'saved-program-unavailable'
           : !legacy && (disk.abs !== null || disk.map !== null) ? 'source-projection-present'
@@ -378,11 +381,12 @@ export class AbsWorkspaceSyncService {
           { expected: disk, generation: accepted?.projection.map.generation ?? null }); guard();
         if (initialized.publication.status !== 'COMMITTED') throw new AbsSyncError('ABS_WORKSPACE_MIGRATION_PENDING',
           'The first accepted publication must settle before workspace migration.');
+        draftArchive = initialized.draftArchive;
         working = this.editor.captureProjectSnapshot(lease);
         check = this.atRevision(context.assertCurrent, lease, working);
       }
       const migration = await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard)); guard();
-      return { ...protocol, migration };
+      return { ...protocol, migration, ...(draftArchive ? { draftArchive } : {}) };
     }, false, true, false, false, true);
   }
 
@@ -810,7 +814,33 @@ export class AbsWorkspaceSyncService {
     if (options.synchronize && (options.initialize || options.publish === false || options.rebind || options.preserveDraft)) {
       return Promise.reject(new AbsSyncError('ABS_REQUEST_INVALID', 'Turn synchronization cannot initialize, rebind or replace a draft.'));
     }
-    return this.run((context, lease, store) => this.exportInContext(context, lease, store, options));
+    const mayRefresh = options.publish !== false && !options.synchronize && options.rebind === undefined && options.preserveDraft === undefined;
+    return this.run(async (context, lease, store) => {
+      if (mayRefresh) {
+        const working = this.editor.captureProjectSnapshot(lease);
+        const guard = this.atRevision(context.assertCurrent, lease, working);
+        const port = await openAbsHostStorage(context.path, () => { guard(); });
+        await this.captureReexportDisk(context, store, port, working.document, guard);
+        store = await this.store(context, true, port);
+      }
+      return this.exportInContext(context, lease, store, options);
+    }, true, false, !mayRefresh);
+  }
+
+  private async captureReexportDisk(context: ReturnType<AbsWorkspaceSyncService['context']>, store: AbsBaselineStore,
+    port: AbsSyncStoragePort, working: BlocklyProjectDocument, assertCurrent: () => unknown): Promise<AbsDiskSnapshot> {
+    try { return await store.captureDisk(); }
+    catch (error) {
+      if ((error as { code?: string })?.code !== 'ABS_STORAGE_ENCODING_INVALID') throw error;
+      const guard = () => { assertCurrent(); };
+      await refreshInvalidAbsMirrors(port, port.attachment?.root ?? context.path, async abi => {
+        const dirty = this.project.hasUnsavedChangesAtLoadedAbi(context.path, abi, working);
+        if (dirty ?? !await sameAbsSavedProgram(JSON.parse(abi), working, {
+          normalize: value => this.editor.normalizeProjectAbi(value), resolve: ref => projectDataRuntime.resolve(ref), assertCurrent: guard,
+        })) throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'The saved ABI does not match the current canvas; original mirror bytes were retained.');
+      }, guard);
+      return store.captureDisk();
+    }
   }
 
   /** Shared by save/export and explicit state changes under the SAME FIFO lease. */
@@ -1984,7 +2014,8 @@ export class AbsWorkspaceSyncService {
 
   async inspectGeneration() {
     const context = this.context();
-    const inspection = await inspectAbsGenerationForRecovery(await this.store(context, false), context.scope)
+    const store = await this.store(context, false);
+    const inspection = await inspectAbsGenerationForRecovery(store, context.scope)
       .catch(error => { context.assertCurrent(); throw error; });
     context.assertCurrent();
     const completed = this.completedJournalReopen;
@@ -2025,22 +2056,41 @@ export class AbsWorkspaceSyncService {
           scope: context.scope, disk: current.disk, pointerHash: current.committed.pointerHash,
           snapshot, contracts: runtime.contracts, repairToken: diagnostics.repair?.token }) : undefined;
         const completed = await this.observeViewResolution(context, lease, store);
+        const draftArchive = await this.inspectDraftArchive(store, context.scope, current.committed?.projection.map);
         await this.assertDisk(store, current.disk, assertCurrent);
         if ((await store.inspectCommitted())?.pointerHash !== current.committed?.pointerHash || await store.inspectPending()) {
           throw new AbsSyncError('ABS_BASELINE_STALE', 'Generation changed during draft inspection. Inspect again.');
         }
         return { pending: current.pending, diagnostics, ...(conflictResolution ? { conflictResolution } : {}),
+          ...(draftArchive ? { draftArchive } : {}),
           ...(completed ? { completedResolution: { token: completed.resolution.token, choice: completed.choice,
             inputAbiHash: completed.inputAbiHash, source: { kind: completed.choice === 'keep_view' ? 'workspace' : 'saved-abi', abiHash: completed.inputAbiHash },
             output: completed.evidence, recoveryArchive: completed.recoveryArchive, candidateApplied: false } } : {}) };
       }, false, false, false);
     }
-    return { pending: inspection.pending, diagnostics: inspection.diagnostics as typeof inspection.diagnostics & AbsDraftReadiness };
+    const draftArchive = await this.inspectDraftArchive(store, context.scope, inspection.committed?.projection.map);
+    context.assertCurrent();
+    return { pending: inspection.pending, diagnostics: inspection.diagnostics as typeof inspection.diagnostics & AbsDraftReadiness,
+      ...(draftArchive ? { draftArchive } : {}) };
+  }
+
+  private async inspectDraftArchive(store: AbsBaselineStore, scope: AbsIdentityMap['scope'], map?: AbsIdentityMap) {
+    if (!map || map.scope.projectKey !== scope.projectKey) return;
+    const archived = await store.readArchivedDraft(map.generation).catch(error => {
+      if ((error as { code?: string })?.code !== 'ABS_DRAFT_ARCHIVE_MISSING') throw error;
+      return undefined;
+    });
+    return archived && { generation: archived.generation, baseGeneration: archived.baseGeneration,
+      ...(archived.origin ? { origin: archived.origin } : {}), hash: archived.hash, bytes: archived.bytes };
   }
 
   async readArchivedDraft(generation: string) {
-    const context = this.context(), store = await this.store(context);
-    const draft = await store.readArchivedDraft(generation); context.assertCurrent(); return draft;
+    const path = this.project.currentProjectPath, guard = () => {
+      if (!path || this.project.currentProjectPath !== path) throw new AbsSyncError('ABS_CONTEXT_STALE', 'The archive project changed.');
+    };
+    const port = await openAbsHostStorage(path, guard);
+    const store = new AbsBaselineStore(port, { projectKey: port.attachment?.root ?? path, pageId: '' });
+    const draft = await store.readArchivedDraft(generation); guard(); return draft;
   }
 
   /** Explicit, archived derivative rebuild. Never parses the old draft as authority. */

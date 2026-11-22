@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto');
 const { storageExecutor, observeStorageExecutor, retireEmptyProjectFileLock, retireProjectFileLock } = require('./project-file-lock-owner');
 const { assertNoPreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
-  createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
+  createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 
 const PROJECT_SYNC_STORAGE_VERSION = 2;
 const SCOPE_CHECK_INTERVAL_MS = 200;
@@ -13,6 +13,8 @@ const readOnlyInputs = new Set(['package.json', 'package-lock.json', '.npmrc', '
 const readableFiles = new Set([...mirrors, ...readOnlyInputs]);
 const baseline = /^baselines\/[A-Za-z0-9_-]{1,96}\.json$/;
 const recovery = /^recoveries\/[A-Za-z0-9_-]{1,96}\.json$/;
+const rawMirrorArchive = /^recoveries\/(abs|map)-raw-[a-f0-9]{64}\.bin$/;
+const repairableMirror = new Map([['project.abs', 'abs'], ['project.abs.map.json', 'map']]);
 const metadata = new Set(['operation.json', 'lineage.json']);
 const workspaceMetadata = new Set(['workspace-mode.json']);
 const historyObject = /^history-objects\/([a-f0-9]{64})$/;
@@ -75,9 +77,9 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     access.checkRoot();
     if (hash(modeBytes()) !== hash(selectedMode)) throw fault('ABS_WORKSPACE_MODE_CHANGED', 'The project execution mode changed; the original storage capability was revoked.');
   };
-  const locate = (key, create = false) => {
+  const locate = (key, create = false, raw = false) => {
     const objectHash = historyHash(key);
-    if (typeof key !== 'string' || !(objectHash || key === 'history-workspace.json' || readableFiles.has(key) || metadata.has(key) || workspaceMetadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
+    if (typeof key !== 'string' || !(objectHash || key === 'history-workspace.json' || readableFiles.has(key) || metadata.has(key) || workspaceMetadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key) || raw && rawMirrorArchive.test(key))) {
       throw fault('ABS_STORAGE_KEY_INVALID', 'Unsupported ABS sync storage key.');
     }
     if (objectHash && create) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
@@ -90,7 +92,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       return path.join(directory, 'workspace.json');
     }
     const parents = workspaceMetadata.has(key) ? [directories[0]] : objectHash ? [path.join(root, '.workspace-history'), path.join(root, '.workspace-history', 'objects'),
-      path.join(root, '.workspace-history', 'objects', objectHash.slice(0, 2))] : baseline.test(key) || recovery.test(key)
+      path.join(root, '.workspace-history', 'objects', objectHash.slice(0, 2))] : baseline.test(key) || recovery.test(key) || raw && rawMirrorArchive.test(key)
       ? [...directories, path.join(directories[1], key.split('/')[0])] : directories;
     for (const directory of parents) {
       if (create) {
@@ -102,8 +104,8 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     return workspaceMetadata.has(key) ? path.join(directories[0], key)
       : objectHash ? path.join(parents[2], objectHash + '.blob') : path.join(directories[1], ...key.split('/'));
   };
-  const readBytes = key => {
-    const file = locate(key);
+  const readBytes = (key, raw = false) => {
+    const file = locate(key, false, raw);
     if (file === null) return null;
     const bytes = access.readRegular(file);
     if (historyHash(key)) {
@@ -177,25 +179,15 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
         if (!active) throw fault('ABS_STORAGE_SCOPE_CLOSED', 'Storage write capability has expired.');
         guard(); lock.assertOwned();
       };
-      const replace = async (key, expectedHash, content) => {
+      const replaceBytes = async (key, expectedHash, bytes, raw = false, verify = () => {}) => {
         check();
         assertNoPreparedWorkspaceMigration(access);
-        if (historyHash(key)) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
-        // Validate keys even for no-op/delete requests. Baselines are append-only;
-        // only the prepared journal may be deleted by the sync protocol.
-        locate(key);
-        if (key === 'history-workspace.json' || readOnlyInputs.has(key) || workspaceMetadata.has(key) || !(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
-          || !(content === null || typeof content === 'string')
-          || (content === null && key !== 'prepared.json' && key !== 'operation.json')
-          || ((baseline.test(key) || recovery.test(key)) && expectedHash !== null)) {
-          throw fault('ABS_STORAGE_WRITE_INVALID', 'Invalid conditional sync write or immutable baseline mutation.');
-        }
-        const bytes = content === null ? null : Buffer.from(content, 'utf8');
         if (bytes && bytes.length > MAX_PROJECT_FILE_BYTES) throw fault('PROJECT_FILE_TOO_LARGE', 'Sync file exceeds the 128 MiB publication limit.');
-        const before = readBytes(key);
+        verify();
+        const before = readBytes(key, raw);
         if (hash(before) !== expectedHash) return false;
         if (bytes === null && before === null || bytes !== null && before?.equals(bytes)) return true;
-        const target = locate(key, true);
+        const target = locate(key, true, raw);
         let temporary;
         let owned = false;
         let attempted = false;
@@ -208,17 +200,17 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
             finally { await handle.close(); }
           }
           // No await from the final renderer guard/physical identity/CAS to rename.
-          check(); locate(key); assertNoPreparedWorkspaceMigration(access);
-          if (hash(readBytes(key)) !== expectedHash) return false;
+          check(); locate(key, false, raw); assertNoPreparedWorkspaceMigration(access); verify();
+          if (hash(readBytes(key, raw)) !== expectedHash) return false;
           attempted = true;
           if (bytes === null) files.unlinkSync(target);
           else { files.renameSync(temporary, target); owned = false; }
-          if (hash(readBytes(key)) !== hash(bytes)) throw fault('ABS_COMMIT_UNCERTAIN', 'Sync bytes changed during publication.');
+          if (hash(readBytes(key, raw)) !== hash(bytes)) throw fault('ABS_COMMIT_UNCERTAIN', 'Sync bytes changed during publication.');
           return true;
         } catch (error) {
           if (attempted) {
             try {
-              const actual = hash(readBytes(key));
+              const actual = hash(readBytes(key, raw));
               if (actual === hash(bytes)) return true;
               if (actual !== expectedHash) throw fault('ABS_COMMIT_UNCERTAIN', 'Sync publication outcome is unknown; retain the recovery journal.');
             } catch (inspectionError) { throw fault('ABS_COMMIT_UNCERTAIN', inspectionError.message); }
@@ -227,21 +219,61 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
         } finally {
           if (owned) {
             // Never clean by an old path after root/internal directory replacement.
-            locate(key);
+            locate(key, false, raw);
             try { files.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
           }
         }
+      };
+      const replace = async (key, expectedHash, content) => {
+        check();
+        if (historyHash(key)) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
+        locate(key);
+        if (key === 'history-workspace.json' || readOnlyInputs.has(key) || workspaceMetadata.has(key) || !(expectedHash === null || isDigest(expectedHash))
+          || !(content === null || typeof content === 'string')
+          || (content === null && key !== 'prepared.json' && key !== 'operation.json')
+          || ((baseline.test(key) || recovery.test(key)) && expectedHash !== null)) {
+          throw fault('ABS_STORAGE_WRITE_INVALID', 'Invalid conditional sync write or immutable baseline mutation.');
+        }
+        return replaceBytes(key, expectedHash, content === null ? null : Buffer.from(content, 'utf8'));
+      };
+      const retireInvalidAbsMirror = async ({ key, abiHash, committedHash, operationHash, absHash, replacement } = {}) => {
+        check();
+        if (!repairableMirror.has(key) || !isDigest(abiHash)
+          || [committedHash, operationHash].some(value => value !== null && !isDigest(value))
+          || absHash !== undefined && (key !== 'project.abs.map.json' || !isDigest(absHash))
+          || !(replacement === null || typeof replacement === 'string')) {
+          throw fault('ABS_STORAGE_WRITE_INVALID', 'Invalid legacy mirror recovery request.');
+        }
+        const verify = () => {
+          assertNoPendingAbsGeneration(access);
+          if (hash(readBytes('project.abi')) !== abiHash || hash(readBytes('committed.json')) !== committedHash
+            || hash(readBytes('operation.json')) !== operationHash
+            || absHash !== undefined && hash(readBytes('project.abs')) !== absHash)
+            throw fault('ABS_DISK_CONFLICT', 'The saved source changed before legacy mirror recovery.');
+        };
+        const bytes = readBytes(key);
+        if (bytes === null || Buffer.from(bytes.toString('utf8'), 'utf8').equals(bytes)) return false;
+        const originalHash = hash(bytes);
+        const archive = `recoveries/${repairableMirror.get(key)}-raw-${originalHash.slice(7)}.bin`;
+        verify();
+        if (hash(readBytes(archive, true)) !== originalHash && !await replaceBytes(archive, null, bytes, true, verify))
+          throw fault('ABS_RECOVERY_ARCHIVE_CONFLICT', 'Could not preserve the original mirror bytes.');
+        if (!await replaceBytes(key, originalHash, replacement === null ? null : Buffer.from(replacement, 'utf8'), false, verify))
+          throw fault('ABS_DISK_CONFLICT', 'The invalid mirror changed before recovery.');
+        return true;
+      };
+      const track = method => (...args) => {
+        const result = method(...args);
+        pending.add(result);
+        result.then(() => pending.delete(result), () => pending.delete(result));
+        return result;
       };
       const scoped = {
         attachment: access.attachment,
         executor,
         read: async key => { check(); return readText(key); },
-        replace: (...args) => {
-          const result = replace(...args);
-          pending.add(result);
-          result.then(() => pending.delete(result), () => pending.delete(result));
-          return result;
-        },
+        replace: track(replace),
+        retireInvalidAbsMirror: track(retireInvalidAbsMirror),
       };
       try {
         check();
@@ -294,7 +326,8 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
       try {
         if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a renderer callback.');
         const scoped = typed ? { ...locked, readResult: key => resultOf(() => locked.read(key)),
-          replaceResult: (...args) => resultOf(() => locked.replace(...args)) } : locked;
+          replaceResult: (...args) => resultOf(() => locked.replace(...args)),
+          retireInvalidAbsMirrorResult: request => resultOf(() => locked.retireInvalidAbsMirror(request)) } : locked;
         const returned = operation(scoped, settle);
         if (returned !== undefined) {
           if (returned && typeof returned.catch === 'function') returned.catch(() => undefined);

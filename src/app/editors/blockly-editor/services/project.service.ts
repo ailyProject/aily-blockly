@@ -27,6 +27,7 @@ import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-s
 import { AbsOperationJournal, type NativeSaveOperationRef } from '../../../integrations/blockly/abs/abs-operation-journal';
 import type { RuntimePublicationObservation } from '../../../integrations/blockly/abs/abs-runtime-publication-observation';
 import { settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
+import { readSavedAbiAfterRecoveryFailure } from '../../../integrations/blockly/abs/abs-project-open';
 import type { AbsLoadNormalizationInput, AbsLoadNormalizationOutcome } from '../../../integrations/blockly/abs/abs-load-normalization';
 import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent, requireProjectProgramPublication } from '@shared/public-api';
 import { publishAbsRecoveryCopy } from '../../../integrations/blockly/abs/abs-recovery-copy';
@@ -435,7 +436,7 @@ export class _ProjectService {
     try { await discard.commit(); } finally { discard.dispose(); }
   }
 
-  async prepareRetainedDiscard(path: string): Promise<{ commit(): Promise<void>; dispose(): void }> {
+  async prepareRetainedDiscard(path: string): Promise<{ commit(): Promise<void>; dispose(): void; preserveRecovery?: true }> {
     const context = this.captureSaveContext(path);
     return this.blocklyService.runRecoveryCopyOperation(async () => {
       context.assertCurrent();
@@ -446,10 +447,17 @@ export class _ProjectService {
         if (disposed || this.currentProjectPath !== path) throw new Error('The accepted recovery discard expired.');
       };
       const port = await openAbsHostStorage(path, guard);
-      await settleAbsProjectTransaction(port, path, guard);
-      const journal = new AbsOperationJournal(port, path), retained = await journal.inspect();
-      return { commit: async () => { guard(); if (retained) await journal.finish(retained.id, guard); },
-        dispose: () => { disposed = true; } };
+      const journal = new AbsOperationJournal(port, path);
+      const dispose = () => { disposed = true; };
+      try {
+        await settleAbsProjectTransaction(port, path, guard);
+        const retained = await journal.inspect();
+        return { commit: async () => { guard(); if (retained) await journal.finish(retained.id, guard); }, dispose };
+      } catch (error) {
+        await readSavedAbiAfterRecoveryFailure(port, error, guard);
+        // Preserve the unverified recovery record and its dependency state.
+        return { commit: async () => { guard(); }, dispose, preserveRecovery: true };
+      }
     });
   }
 

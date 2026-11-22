@@ -43,7 +43,10 @@ export async function openAbsHostStorage(
         if (['project.abi', 'project.abs', 'project.abs.map.json', 'prepared.json', 'committed.json'].includes(key)
           || key.startsWith('baselines/')) requireProjectProgramPublication(host);
         return locked.replace(key, expected, content);
-      } };
+      }, ...(locked.retireInvalidAbsMirror ? { retireInvalidAbsMirror: request => {
+        requireProjectProgramPublication(host);
+        return locked.retireInvalidAbsMirror!(request);
+      } } : {}) };
       Promise.resolve().then(() => operation(access)).then(
         value => settle({ ok: true, value }),
         error => settle({ ok: false, error: { ...(typeof error?.code === 'string' ? { code: error.code } : {}),
