@@ -148,6 +148,7 @@ export class ChildToolProcessService implements OnDestroy {
       this.ensureProcessMessageListener();
     }
     const session = this.ensureSession(config.id);
+    const reacquiringIdleRuntime = session.refCount === 0 && session.releaseTimer !== null;
     this.cancelReleaseTimer(session);
     session.refCount += 1;
     this.publishRuntimeState(
@@ -157,7 +158,7 @@ export class ChildToolProcessService implements OnDestroy {
     );
 
     try {
-      const hostInfo = await this.startSession(config, session, options);
+      const hostInfo = await this.startSession(config, session, options, reacquiringIdleRuntime);
       this.publishRuntimeState(config.id, 'ready', session);
       return hostInfo;
     } catch (error) {
@@ -536,17 +537,24 @@ export class ChildToolProcessService implements OnDestroy {
     config: ChildToolConfig,
     session: ChildToolSession,
     options: ChildToolAcquireOptions = {},
+    reacquiringIdleRuntime = false,
   ): Promise<ChildToolHostInfo> {
     this.assertUiRuntime(config);
     this.ensureSessionStateListener();
     if (this.hostShuttingDown) throw new Error('Host is shutting down');
-    if (session.running && session.hostInfo) {
+    // An idle development Runtime may still point at a different checkout during the release grace period.
+    const devSessionId = reacquiringIdleRuntime && session.running
+      ? this.readDevelopmentSessionId(config.packagePath) : '';
+    const staleDevelopmentRuntime = devSessionId && session.hostInfo?.devSessionId !== devSessionId;
+    if (session.running && session.hostInfo && !staleDevelopmentRuntime && !session.startPromise) {
       return session.hostInfo;
     }
 
     if (!session.startPromise) {
       session.version = config.version || '';
-      session.startPromise = this.startOrAcquireSession(config, session, options);
+      session.startPromise = staleDevelopmentRuntime
+        ? this.stopSession(config, session, 'restart').then(() => this.startOrAcquireSession(config, session, options))
+        : this.startOrAcquireSession(config, session, options);
     }
 
     const startPromise = session.startPromise;

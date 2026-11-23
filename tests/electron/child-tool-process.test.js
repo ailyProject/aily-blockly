@@ -48,6 +48,42 @@ test('a running shared Runtime keeps its pinned package after an update activate
   } finally { await service.stop('fixture'); global.window = originalWindow; }
 });
 
+test('reacquiring an idle Runtime replaces a relinked development generation once', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true, devSessionId: 'first-generation' });
+  harness.window.fs.readFileSync = () => JSON.stringify({ devSessionId: harness.devSessionId });
+  harness.window.childToolSession.release = async () => {
+    harness.releaseCalls += 1;
+    return { success: true }; // Main keeps the process alive during its own release grace period.
+  };
+  harness.window.childToolSession.restart = async payload => {
+    harness.restartCalls.push(payload);
+    return harness.window.childToolSession.unregister(payload);
+  };
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  try {
+    const first = await service.acquire('fixture');
+    await service.release('fixture');
+    assert.equal(await service.acquire('fixture'), first);
+    assert.equal(harness.runCalls.length, 1);
+
+    harness.devSessionId = 'second-generation';
+    assert.equal(await service.acquire('fixture'), first, 'keep the active editor lease');
+    await service.release('fixture');
+    await service.release('fixture');
+    const [second, concurrent] = await Promise.all([service.acquire('fixture'), service.acquire('fixture')]);
+    assert.equal(second.devSessionId, 'second-generation');
+    assert.equal(concurrent, second);
+    assert.equal(harness.runCalls.length, 2);
+    assert.equal(harness.releaseCalls, 1);
+    assert.equal(harness.restartCalls.length, 1);
+    assert.equal(harness.restartCalls[0].restartShared, undefined);
+  } finally { await service.stop('fixture'); global.window = originalWindow; }
+});
+
 test('stopping a window with no lease does not stop another window Runtime', async () => {
   const processModule = await processModulePromise;
   const originalWindow = global.window;
@@ -559,6 +595,7 @@ function createHarness(options) {
   let stateListener = null;
   const harness = {
     ready: options.ready,
+    devSessionId: options.devSessionId,
     acquireCalls: 0,
     runCalls: [],
     killCalls: [],
@@ -661,7 +698,7 @@ function createHarness(options) {
         harness.runCalls.push(input);
         if (harness.ready) {
           queueMicrotask(() => {
-            activeListeners.get(input.streamId)?.(readyOutput(4100));
+            activeListeners.get(input.streamId)?.(readyOutput(4100, harness.devSessionId));
           });
         }
         return { success: true, streamId: input.streamId, pid: 1000 + harness.runCalls.length };
@@ -677,7 +714,7 @@ function createHarness(options) {
   return harness;
 }
 
-function readyOutput(port) {
+function readyOutput(port, devSessionId) {
   return {
     type: 'stdout',
     data: `${JSON.stringify({
@@ -688,6 +725,7 @@ function readyOutput(port) {
         wsUrl: `ws://127.0.0.1:${port}/ws`,
         port,
         pid: 5000 + port,
+        devSessionId,
       },
     })}\n`,
   };
