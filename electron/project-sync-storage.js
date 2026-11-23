@@ -104,7 +104,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     if (typeof key !== 'string' || !(objectHash || key === 'history-workspace.json' || readableFiles.has(key) || metadata.has(key) || workspaceMetadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key) || raw && rawMirrorArchive.test(key))) {
       throw fault('ABS_STORAGE_KEY_INVALID', 'Unsupported ABS sync storage key.');
     }
-    if (objectHash && create) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
+    if (objectHash) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
     access.checkRoot();
     if (readableFiles.has(key)) return path.join(root, key);
     if (key === 'history-workspace.json') {
@@ -113,8 +113,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       catch (error) { if (error.code === 'ENOENT') return null; throw error; }
       return path.join(directory, 'workspace.json');
     }
-    const parents = workspaceMetadata.has(key) ? [directories[0]] : objectHash ? [path.join(root, '.workspace-history'), path.join(root, '.workspace-history', 'objects'),
-      path.join(root, '.workspace-history', 'objects', objectHash.slice(0, 2))] : baseline.test(key) || recovery.test(key) || raw && rawMirrorArchive.test(key)
+    const parents = workspaceMetadata.has(key) ? [directories[0]] : baseline.test(key) || recovery.test(key) || raw && rawMirrorArchive.test(key)
       ? [...directories, path.join(directories[1], key.split('/')[0])] : directories;
     for (const directory of parents) {
       if (create) {
@@ -124,21 +123,40 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       catch (error) { if (!create && error.code === 'ENOENT') return null; throw error; }
     }
     return workspaceMetadata.has(key) ? path.join(directories[0], key)
-      : objectHash ? path.join(parents[2], objectHash + '.blob') : path.join(directories[1], ...key.split('/'));
+      : path.join(directories[1], ...key.split('/'));
   };
-  const readPhysicalBytes = (key, raw = false) => {
-    const file = locate(key, false, raw);
-    if (file === null) return null;
-    const bytes = access.readRegular(file);
-    if (historyHash(key)) {
-      guard();
-      if (locate(key) !== file) throw fault('PROJECT_FILE_UNSAFE_PATH', 'History object ancestry changed during its read.');
+  const readHistoryObject = (digest, expand = true) => {
+    const history = path.join(root, '.workspace-history');
+    const readFrom = directory => {
+      const objects = path.join(directory, 'objects'), bucket = path.join(objects, digest.slice(0, 2));
+      const checkParents = () => {
+        for (const parent of new Set([history, directory, objects, bucket])) access.checkDirectory(parent);
+      };
+      try { checkParents(); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      const bytes = access.readRegular(path.join(bucket, digest + '.blob'));
+      guard(); checkParents();
+      return bytes;
+    };
+    let invalid = false;
+    for (const directory of [history, path.join(history, 'native-history')]) {
+      const bytes = readFrom(directory);
+      if (bytes === null) continue;
+      try {
+        const content = expand ? decodeHistoryAbs(bytes, digest, tail => readHistoryObject(tail, false)) : bytes;
+        if (hash(content) === 'sha256:' + digest) return content;
+      } catch (error) { if (error.code !== 'ABS_CANDIDATE_OBJECT_INVALID') throw error; }
+      invalid = true;
     }
-    return bytes;
+    if (invalid) throw fault('ABS_CANDIDATE_OBJECT_INVALID', 'History object digest changed.');
+    return null;
   };
   const readBytes = (key, raw = false) => {
-    const bytes = readPhysicalBytes(key, raw), object = historyHash(key);
-    return bytes && object ? decodeHistoryAbs(bytes, object, tail => readPhysicalBytes('history-objects/' + tail)) : bytes;
+    const object = historyHash(key);
+    if (object) return readHistoryObject(object);
+    const file = locate(key, false, raw);
+    if (file === null) return null;
+    return access.readRegular(file);
   };
   const readText = key => {
     const bytes = readBytes(key);
