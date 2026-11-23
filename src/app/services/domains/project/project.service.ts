@@ -1,5 +1,5 @@
 import { ensureProjectPartitionFile } from './project-partitions';
-import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
+import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, ensureCoderProjectFile, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { ProjectNavigationTransition, type ProjectViewReservation } from './project-navigation-transition';
@@ -1837,6 +1837,7 @@ export class ProjectService {
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
         coderEntry,
       });
+      if (isCoderTemplate) ensureCoderProjectFile(projectPath);
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
         this.metrics.record('project_created');
@@ -1871,6 +1872,7 @@ export class ProjectService {
 
       await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
+      if (mode === 'coder') ensureCoderProjectFile(projectPath);
       const created = await this.finishProjectCreation(projectPath, options);
       if (created) this.metrics.record('project_created');
       return created;
@@ -2457,6 +2459,12 @@ export class ProjectService {
         } catch (error) {
           await window['projectLock']?.release(projectPath);
           throw error;
+        }
+        try {
+          ensureCoderProjectFile(projectPath);
+        } catch (error) {
+          // A legacy project can still be opened from its folder when the launch file cannot be created.
+          console.warn('补齐 Coder 项目入口失败:', error);
         }
       }
       if (creation) {
@@ -3572,6 +3580,7 @@ export class ProjectService {
       try {
         await assertSnapshot();
         window['fs'].copyProjectDirectory(source, target);
+        ensureCoderProjectFile(target);
         const packageJson = JSON.parse(manifest);
         const name = window['path'].basename(target);
         delete packageJson.cloudId;

@@ -195,6 +195,7 @@ function convertBlocklyProjectToCoder(sourcePath, entryPath, generatedSource) {
     const previousNpmrc = fs.existsSync(npmrc) ? fs.readFileSync(npmrc, 'utf8') : '';
     fs.writeFileSync(npmrc, `${previousNpmrc.replace(/\n?$/, '\n')}install-links=true\n`);
     fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+    fs.writeFileSync(path.join(target, 'project.aci'), '', { flag: 'wx' });
     return target;
   } catch (error) {
     fs.rmSync(target, { recursive: true, force: true });

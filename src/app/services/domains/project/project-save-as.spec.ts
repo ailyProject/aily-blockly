@@ -44,6 +44,7 @@ describe('ProjectService save as mode isolation', () => {
           } }, result => result.ok ? resolve(result.value) : reject(new Error(result.error.message)))) };
       },
       existsSync: (path: string) => files.has(path) || directories.has(path),
+      lstatSync: (path: string) => ({ _isFile: files.has(path) }),
       realpathAsync: jasmine.createSpy('realpath').and.callFake(async (path: string) => path),
       readFileSync: jasmine.createSpy('read').and.callFake((path: string) => {
         if (!files.has(path)) throw new Error(`ENOENT: ${path}`);
@@ -174,6 +175,8 @@ describe('ProjectService save as mode isolation', () => {
     expect(files.get(`${source}/sketch/src/main.cpp`)).toBe('old code');
     expect(files.get(`${target}/sketch/src/main.cpp`)).toBe('unsaved dirty editor');
     expect(files.get(`${target}/sketch/libraries/Local/Local.h`)).toBe('local library');
+    expect(files.get(`${target}/project.aci`)).toBe('');
+    expect(files.has(`${source}/project.aci`)).toBeFalse();
     expect(JSON.parse(files.get(`${target}/package.json`)!)).toEqual({
       name: 'my_copy', nickname: 'My Copy', type: 'coder', path: target,
       dependencies: { '@aily-project/board-test': '1.0.0' },
