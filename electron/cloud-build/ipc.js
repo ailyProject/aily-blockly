@@ -11,7 +11,8 @@ const { CloudBuildBroker } = require('./broker');
 const { uploadCloudArtifact } = require('./uploader');
 // 集中接收云编译 IPC，校验窗口身份并管理取消；烧录仍调用本机轻量工具。
 function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => false, getGatewaySettings, getAuth, querySource, getRuntimeRoot, backend, powerSaveBlocker, uploadArtifact = uploadCloudArtifact,
-  platform = process.platform, getRegion = () => process.env.AILY_REGION, prepareCloudUpload = cloudRecipe.stageCloudRecipeUpload, runCloudUpload = uploadRuntime.runCloudUpload }) {
+  platform = process.platform, getRegion = () => process.env.AILY_REGION, buildFlavor = process.env.AILY_BUILD_FLAVOR,
+  prepareCloudUpload = cloudRecipe.stageCloudRecipeUpload, runCloudUpload = uploadRuntime.runCloudUpload }) {
   const uploads = new Map();
   const uploadSessions = new Map();
   const closeUploadSession = async key => {
@@ -47,8 +48,10 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
   };
   const broker = new CloudBuildBroker({ getOwner, getGatewaySettings, getAuth, querySource, acquirePowerSaveBlocker, getAppDataPath: () => path.dirname(getRuntimeRoot()) });
   const assertCloudSupported = () => {
-    if (platform !== 'win32' || getRegion() !== 'cn') {
-      throw Object.assign(new Error('Cloud compilation is currently available only on Windows in the cn region.'), { code: 'CLOUD_BUILD_UNAVAILABLE' });
+    const region = getRegion();
+    if (typeof platform !== 'string' || !platform || platform === 'darwin'
+      || typeof region !== 'string' || !region || region === 'eu' || buildFlavor === 'global') {
+      throw Object.assign(new Error('Cloud compilation is unavailable on macOS, in the international edition or before region initialization.'), { code: 'CLOUD_BUILD_UNAVAILABLE' });
     }
   };
   const assertCloudBackend = revision => {

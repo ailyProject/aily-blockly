@@ -5,8 +5,8 @@ import { expect, getMainWindow, launchAilyElectron, test } from '../fixtures/ele
 // Inject account states only in this disposable profile; use the real host IPC,
 // settings UI, configuration persistence and build-backend selection.
 for (const mode of ['blockly', 'coder'] as const) {
-  test(`${mode}: cloud compilation is restricted to Windows cn`, async () => {
-    const launch = await launchAilyElectron({ environment: { AILY_BUILD_PRODUCT: mode }, config: {
+  test(`${mode}: cloud compilation follows platform and edition`, async () => {
+    const launch = await launchAilyElectron({ environment: { AILY_BUILD_PRODUCT: mode, AILY_BUILD_FLAVOR: 'cn' }, config: {
       region: 'cn', selectedLanguage: 'zh_cn', blocklyOnboardingCompleted: true,
       compile: { backend: 'cloud' }, devmode: { enabled: true, autoSave: false },
     } });
@@ -24,14 +24,14 @@ for (const mode of ['blockly', 'coder'] as const) {
         const config = w.ng.getComponent(document.querySelector('app-header')).configService;
         return { platform: w.platform.type, backend: config.getCompileBackend() };
       });
-      expect(native.backend).toBe(native.platform === 'win32' ? 'cloud' : 'local');
+      expect(native.backend).toBe(native.platform === 'darwin' ? 'local' : 'cloud');
       await main.evaluate(() => (window as any).electronAPI.subWindow.open({ path: 'settings', windowClass: 'builtin', width: 700, height: 550 }));
       await expect.poll(() => launch.app.windows().some(page => page.url().includes('#/settings'))).toBe(true);
       const settings = launch.app.windows().find(page => page.url().includes('#/settings'))!;
       await settings.locator('app-settings').waitFor();
       for (const platform of ['darwin', 'linux', 'win32']) {
         for (const region of ['cn', 'eu', 'localhost', '']) {
-          const allowed = platform === 'win32' && region === 'cn';
+          const allowed = platform !== 'darwin' && (region === 'cn' || region === 'localhost');
           const backend = await main.evaluate(({ platform, region }) => {
             const w = window as any;
             w.platform = { ...w.platform, type: platform };
@@ -53,7 +53,7 @@ for (const mode of ['blockly', 'coder'] as const) {
           await expect(settings.locator('#cloud-compilation-enabled')).toHaveCount(allowed ? 1 : 0);
           // Send real IPC even with a forged Windows renderer. Native platform
           // and main-process region must reject before touching the network.
-          if (native.platform !== 'win32' || region !== 'cn') {
+          if (native.platform === 'darwin' || region === 'eu' || !region) {
             const result = await main.evaluate(async region => {
               const ipc = (window as any).ipcRenderer;
               await ipc.invoke('env-set', { key: 'AILY_REGION', value: region });
@@ -67,8 +67,8 @@ for (const mode of ['blockly', 'coder'] as const) {
     } finally { await launch.close(); }
   });
 
-  test(`${mode}: cloud compilation follows main-window Pro access`, async ({}, info) => {
-    const launch = await launchAilyElectron({ environment: { AILY_BUILD_PRODUCT: mode }, config: {
+  test(`${mode}: cloud compilation follows main-window sign-in state`, async ({}, info) => {
+    const launch = await launchAilyElectron({ environment: { AILY_BUILD_PRODUCT: mode, AILY_BUILD_FLAVOR: 'cn' }, config: {
       region: 'cn', selectedLanguage: 'zh_cn', blocklyOnboardingCompleted: true,
       compile: { backend: 'cloud' }, devmode: { enabled: true, autoSave: false },
     } });
@@ -97,8 +97,7 @@ for (const mode of ['blockly', 'coder'] as const) {
       await expect.poll(() => launch.app.windows().some(page => page.url().includes('#/settings'))).toBe(true);
       const settings = launch.app.windows().find(page => page.url().includes('#/settings'))!;
       await settings.locator('app-settings').waitFor();
-      // The product exposes this section on Windows. Exercise its rendering in
-      // macOS Electron too, without claiming Windows platform acceptance.
+      // Exercise the supported renderer branch when running on macOS.
       await settings.addInitScript(() => {
         const w = window as any;
         Object.defineProperty(w, 'platform', { configurable: true,
@@ -116,14 +115,11 @@ for (const mode of ['blockly', 'coder'] as const) {
         await settings.bringToFront();
         await settings.mouse.move(10, 10);
         await settings.locator('.cloud-build-switch').hover();
-        await expect(settings.locator('.ant-tooltip-inner')).toHaveText('登录 Pro 账号后可用', { timeout: 1000 });
+        await expect(settings.locator('.ant-tooltip-inner')).toHaveText('登录后可使用云编译', { timeout: 1000 });
       }).toPass({ timeout: 10_000 });
       await settings.screenshot({ path: info.outputPath(`${mode}-signed-out.png`) });
 
       await account(true, 'free');
-      await expect(toggle).toBeDisabled();
-      expect(await backend()).toBe('local');
-      await account(true, 'pro');
       await expect(toggle).toBeEnabled();
       await expect(toggle).toHaveClass(/ant-switch-checked/);
       expect(await backend()).toBe('cloud');
@@ -146,8 +142,9 @@ for (const mode of ['blockly', 'coder'] as const) {
       await expect(toggle).not.toHaveClass(/ant-switch-checked/);
       expect(await backend()).toBe('local');
       await account(true, 'free');
-      await expect(toggle).toBeDisabled();
-      expect(await backend()).toBe('local');
+      await expect(toggle).toBeEnabled();
+      await expect(toggle).toHaveClass(/ant-switch-checked/);
+      expect(await backend()).toBe('cloud');
       await settings.screenshot({ path: info.outputPath(`${mode}-free.png`) });
     } finally {
       await launch.close();

@@ -125,13 +125,13 @@ test('Gateway Pro and availability errors retain their error envelopes without r
   assert.equal(reads, 2);
 });
 
-test('IPC uses the current deployment instead of an old or renderer-supplied gateway', async t => {
+test('Linux IPC uses the current deployment instead of an old or renderer-supplied gateway', async t => {
   const previousFetch = global.fetch, calls = [], handlers = new Map(), frame = {};
   global.fetch = async url => { calls.push(String(url)); return json({ profiles: [] }); };
   t.after(() => { global.fetch = previousFetch; });
   const sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
   const controller = registerCloudBuildHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
-    platform: 'win32', getRegion: () => 'cn',
+    platform: 'linux', getRegion: () => 'cn', buildFlavor: 'cn',
     getOwner: () => ({ generation: 1 }), getGatewaySettings: () => ({ gatewayUrl: 'http://127.0.0.1:4318' }) });
   t.after(() => controller.shutdown());
   const result = await handlers.get('cloud-build')({ sender, senderFrame: frame }, { action: 'targets', settings: { gatewayUrl: 'https://old-origin.invalid' } });
@@ -139,18 +139,18 @@ test('IPC uses the current deployment instead of an old or renderer-supplied gat
   assert.deepEqual(calls, ['http://127.0.0.1:4318/api/v1/build/targets']);
 });
 
-test('IPC rejects cloud operations outside Windows cn before network, source or device access', async t => {
+test('IPC rejects cloud operations on macOS, in the international edition and before region initialization', async t => {
   const previousFetch = global.fetch;
   global.fetch = async () => { assert.fail('Unsupported clients must not contact the gateway.'); };
   t.after(() => { global.fetch = previousFetch; });
   for (const platform of ['darwin', 'linux', 'win32']) {
-    for (const region of ['cn', 'eu', 'localhost', undefined]) {
-      if (platform === 'win32' && region === 'cn') continue;
-      await t.test(`${platform}/${region}`, async t => {
+    for (const [region, buildFlavor] of [['cn', 'cn'], ['eu', 'global'], ['localhost', 'global'], [undefined, 'cn']]) {
+      if (platform !== 'darwin' && region === 'cn') continue;
+      await t.test(`${platform}/${region}/${buildFlavor}`, async t => {
         const handlers = new Map(), frame = {}, sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
         const controller = registerCloudBuildHandlers({
           ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
-          platform, getRegion: () => region, backend: 'cloud',
+          platform, getRegion: () => region, buildFlavor, backend: 'cloud',
           getOwner: () => ({ generation: 1 }),
           getGatewaySettings: () => ({ gatewayUrl: 'http://127.0.0.1:4318' }),
           getAuth: () => assert.fail('Must reject before reading credentials.'),
@@ -159,7 +159,7 @@ test('IPC rejects cloud operations outside Windows cn before network, source or 
         });
         t.after(() => controller.shutdown());
         const invoke = action => handlers.get('cloud-build')({ sender, senderFrame: frame }, {
-          action, requestId: 'old-cloud-preference', platform: 'win32', region: 'cn',
+          action, requestId: 'old-cloud-preference', platform: 'win32', region: 'cn', buildFlavor: 'cn',
           settings: { gatewayUrl: 'http://127.0.0.1:4318' },
         });
         for (const action of ['health', 'boardSupport', 'targets', 'compile', 'analysis', 'upload', 'reusable', 'artifactPath']) {

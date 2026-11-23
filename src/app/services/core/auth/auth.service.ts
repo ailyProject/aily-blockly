@@ -863,12 +863,9 @@ export class AuthService {
     return this.authSnapshotSubject.value;
   }
 
-  /** 云编译只对当前已登录的 Pro 账号开放，不能依赖磁盘中保留的编译偏好。 */
+  /** 云编译要求当前登录会话有效。 */
   get canUseCloudCompilation(): boolean {
-    if (!this.isAuthenticated || this.authSessionInvalidating) return false;
-    const snapshot = this.getAuthSnapshot();
-    const plan = snapshot?.quotaInfoSnapshot?.creditSnapshot?.subscription_plan ?? snapshot?.plan;
-    return /^pro(?:$|[_+ -])/i.test(plan?.trim() ?? '');
+    return this.isAuthenticated && !this.authSessionInvalidating;
   }
 
   async refreshAuthToken(): Promise<boolean> {

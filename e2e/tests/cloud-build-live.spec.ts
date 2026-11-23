@@ -10,7 +10,8 @@ const accessToken = process.env['AILY_E2E_CLOUD_ACCESS_TOKEN'];
 const boardModule = '@aily-project/board-esp32s3';
 
 for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud compilation, signed artifact reuse and source invalidation`, async ({}, info) => {
-  test.skip(!enabled || !seed || !accessToken, 'Opt in with AILY_E2E_CLOUD_LIVE=1, an installed package seed and a Pro test access token.');
+  test.skip(!enabled || !seed || !accessToken, 'Opt in with AILY_E2E_CLOUD_LIVE=1, an installed package seed and a valid test access token.');
+  test.skip(process.platform === 'darwin', 'Cloud compilation is unavailable on macOS.');
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'aily-cloud-merge-')));
   const project = path.join(root, 'project');
   const write = async (file: string, content: string) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, content); };
@@ -39,7 +40,7 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
   const probe = path.join(project, 'components/merge_probe/merge_probe.h');
   await write(probe, '#pragma once\n');
   const boardBefore = await readFile(path.join(project, 'node_modules', boardModule, 'board.json'), 'utf8');
-  const launch = await launchAilyElectron({ environment: { AILY_BUILD_PRODUCT: mode }, config: {
+  const launch = await launchAilyElectron({ environment: { AILY_BUILD_PRODUCT: mode, AILY_BUILD_FLAVOR: 'cn' }, config: {
     selectedLanguage: 'zh_cn', blocklyOnboardingCompleted: true, compile: { backend: 'local' },
     devmode: { enabled: true, autoSave: false },
   } });
@@ -61,12 +62,6 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
     await expect.poll(() => launch.app.windows().some(page => page.url().includes('#/settings'))).toBe(true);
     const settings = launch.app.windows().find(page => page.url().includes('#/settings'))!;
     await settings.locator('app-settings').waitFor();
-    await settings.evaluate(() => {
-      const w = window as any;
-      const component = w.ng.getComponent(document.querySelector('app-settings'));
-      Object.defineProperty(component, 'showCloudCompilation', { get: () => true });
-      w.ng.applyChanges(component);
-    });
     const toggle = settings.locator('#cloud-compilation-enabled');
     await toggle.scrollIntoViewIfNeeded();
     await expect(toggle).toBeEnabled();

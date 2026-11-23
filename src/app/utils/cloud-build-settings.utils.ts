@@ -9,9 +9,10 @@ export interface CloudBuildSettings {
   publicKey?: string;
 }
 
-/** 云编译目前仅开放国内 cn 区域的 Windows 客户端；未知环境按不开放处理。 */
-export function isCloudCompilationSupported(platform: unknown, region: unknown): boolean {
-  return platform === 'win32' && region === 'cn';
+/** macOS 与国际版不开放云编译，启动期间等候平台和区域初始化。 */
+export function isCloudCompilationSupported(platform: unknown, region: unknown, buildFlavor: unknown): boolean {
+  return typeof platform === 'string' && !!platform && platform !== 'darwin'
+    && typeof region === 'string' && !!region && region !== 'eu' && buildFlavor !== 'global';
 }
 
 export function getCompileBackend(config: any): CompileBackend {
