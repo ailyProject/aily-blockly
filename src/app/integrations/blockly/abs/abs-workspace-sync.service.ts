@@ -1002,8 +1002,12 @@ export class AbsWorkspaceSyncService {
       // Still verify current disk/contracts and republish derived outputs: a
       // clean canvas does not prove generated files or dependencies are intact.
       const unchangedSave = options.save && prepared?.abiText === expected.abi;
-      const reuseAuthor = projectTree && unchangedSave && !preserveAuthor && !!committed
-        && expected.abs === committed.abs && savedCommit?.abi === expected.abi;
+      const mirrored = expected.abs === committed?.abs;
+      const previousAuthor = savedCommit?.authorSource;
+      const reuseAuthor = projectTree && unchangedSave && !!savedCommit && savedCommit.abi === expected.abi
+        && (previousAuthor?.disposition === 'preserved'
+          ? (preserveAuthor || !mirrored) && expected.abs !== null && previousAuthor.hash === await hashAbsText(expected.abs)
+          : !preserveAuthor && mirrored);
       if (!legacy && (!projectTree || reuseAuthor) && (options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
@@ -1029,7 +1033,7 @@ export class AbsWorkspaceSyncService {
         }
         if (previewCurrent()) this.withViewChecks(() => this.editor.publishAbsContext(committed, assertCurrent().revision, context.assertCurrent));
         return { publication: { status: 'COMMITTED', generation: committed.map.generation,
-          abiSaved: false, absMirrored: true, mapPublished: true, ...(acceptedSource ? { acceptedSource } : {}) }, requiresReload: false,
+          abiSaved: false, absMirrored: mirrored, mapPublished: true, ...(acceptedSource ? { acceptedSource } : {}) }, requiresReload: false,
           warnings: derived.warnings, derivedOutputs: derived.output, evidence, abs: committed.abs, reused: true };
       }
       const savedAbi = prepared?.abiText ?? expected.abi;

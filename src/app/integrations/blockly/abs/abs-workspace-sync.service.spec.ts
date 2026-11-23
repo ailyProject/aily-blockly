@@ -5151,6 +5151,20 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(next.publication.acceptedSource?.authorSource.pending).toBeFalse();
       expect([...disk.keys()].filter(key => key.startsWith('baselines/'))).toEqual(before);
     });
+    it('acknowledges an unchanged author-tree save with a separately retained draft', async () => {
+      await baseline(); select();
+      const draft = disk.get('project.abs')! + '\n# pending edit';
+      disk.set('project.abs', draft);
+      const saved = await service.exportGeneration({ save: true });
+      const next = await service.exportGeneration({ save: true });
+      expect(next.reused).toBeTrue();
+      expect(next.publication.generation).toBe(saved.publication.generation);
+      expect(next.publication.absMirrored).toBeFalse();
+      expect(next.publication.acceptedSource?.authorSource.pending).toBeTrue();
+      expect(disk.get('project.abs')).toBe(draft);
+      disk.set('project.abs', draft + ' after saving');
+      expect((await service.exportGeneration({ save: true })).reused).toBeFalsy();
+    });
 
     it('publishes a merged canvas edit to the submitted primary ABS without consuming a later draft', async () => {
       const base = await baseline(); select();
