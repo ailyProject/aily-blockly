@@ -101,7 +101,7 @@ export class AbsGenerationToolsService {
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
         if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false,
-          capture: await this.sync.captureWorkingCandidate(readMergedAuthorSources(params['mergedAuthorSources'])) };
+          capture: await this.sync.captureWorkingCandidate(readMergedAuthorSources(params['mergedAuthorSources']), params['view'] === 'canvas') };
         if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false,
           capture: await this.sync.captureLegacyCandidate(params['legacy']) };
         if (params['originalTargetPid'] !== undefined

@@ -5663,6 +5663,60 @@ describe('v2 actual workspace generation coordinator', () => {
       await expectAsync(service.exportGeneration()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SOURCE_CONFLICT' }));
       expect(disk.get('project.abs')).toBe(draft); expect(disk.has('workspace-mode.json')).toBeFalse();
     });
+    it('reads the active canvas and negotiates its physical project without consulting the damaged commit', async () => {
+      await baseline(); select();
+      disk.set('committed.json', '{"schemaVersion":1,');
+      const prior = [...disk];
+      const readModeOnly = { ...port, read: async (key: string) => {
+        expect(key).toBe('workspace-mode.json');
+        return port.read(key);
+      } };
+      const reply: any = await absWorkspaceProtocol(scope.projectKey, { version: 1, binding: 'project' }, () => {}, readModeOnly);
+      expect(reply.protocol.workspaceModeBinding).toEqual({ version: 2, attachment: port.attachment });
+      const canvas = await service.captureWorkingCandidate([], true);
+      expect(canvas.abs).toContain('before'); expect(canvas.published).toBeNull();
+      expect([...disk]).toEqual(prior);
+    });
+
+    it('regenerates the saved projection from ABI after losing both the index and the old snapshot', async () => {
+      await baseline(); select();
+      const abi = disk.get('project.abi')!, pointer = disk.get('committed.json')!;
+      const draft = disk.get('project.abs')! + '\n# unapplied'; disk.set('project.abs', draft);
+      disk.delete(absBaselineKey(JSON.parse(pointer).generation));
+      disk.set('project.abs.map.json', '{'); disk.set('committed.json', '{');
+      roots().setFieldValue('unsaved change', 'TEXT');
+      const capture = await service.captureWorkingCandidate();
+      expect(capture.abs).toContain('unsaved change');
+      const saved = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(saved!.abi).toBe(abi); expect(saved!.projection.abs).toContain('before');
+      expect(disk.get('project.abs')).toBe(draft); expect(disk.get('project.abi')).toBe(abi);
+      expect(capture.published!.generation).not.toBe(JSON.parse(pointer).generation);
+      expect(disk.get('project.abs.map.json')).toBe(absMapJson(saved!.projection.map));
+      expect((await service.captureWorkingCandidate()).published).toEqual(capture.published);
+    });
+
+    it('refreshes only an obsolete host trailer when regenerating the saved projection', async () => {
+      await baseline(); select();
+      const current = disk.get('project.abs')!;
+      const old = current.replace(/# @project-state:[^\n]+/, '# @project-state:{"obsolete":true}');
+      expect(old).not.toBe(current);
+      disk.set('project.abs', old); disk.set('committed.json', '{');
+      const capture = await service.captureWorkingCandidate();
+      const saved = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(disk.get('project.abs')).toBe(saved!.projection.abs);
+      expect(capture.authorSource!.text).toBe(saved!.projection.abs);
+      expect(JSON.parse(disk.get(absBaselineKey(capture.published!.generation))!).inputAbs).toBe(old);
+    });
+
+    it('preserves an active publication during projection regeneration', async () => {
+      await baseline(); select();
+      const pointer = disk.get('committed.json')!; disk.set('prepared.json', pointer);
+      disk.delete('committed.json'); const before = [...disk];
+      await expectAsync(service.captureWorkingCandidate()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_TRANSACTION_PENDING' }));
+      expect([...disk]).toEqual(before); expect((await service.captureWorkingCandidate([], true)).abs).toContain('before');
+      disk.delete('prepared.json');
+      expect((await service.captureWorkingCandidate()).published).toBeTruthy();
+    });
     it('negotiates only a physically bound accepted generation and refuses a marker without initialization', async () => {
       select();
       const before = [...disk], missing = await absWorkspaceProtocol(scope.projectKey, { version: 1 }, () => {}, port);

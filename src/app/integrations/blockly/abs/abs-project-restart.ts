@@ -150,6 +150,8 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
 /** Opening a saved source with no pending transaction does not need its writer. */
 export async function settleAbsProjectOpen(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
   assertCurrent();
+  await port.retireMalformedPointers?.();
+  assertCurrent();
   const hasPending = async (scope: AbsSyncStoragePort) => await scope.read('prepared.json') !== null
     || await new AbsOperationJournal(scope, project).hasUnsettledOperation();
   const pending = await hasPending(port).catch(error => {

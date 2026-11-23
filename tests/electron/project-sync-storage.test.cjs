@@ -14,6 +14,36 @@ const project = () => {
 const guard = () => undefined;
 const request = root => ({ projectPath: root, fileName: 'project.abi', expectedHash: null, content: 'single writer' });
 
+test('retire malformed ABS pointers without touching a draft, valid staging or a newer writer', async () => {
+  const root = project(), store = await openProjectSyncStorage(root, guard);
+  const sync = path.join(root, '.aily', 'abs-sync');
+  fs.mkdirSync(sync, { recursive: true });
+  const prepared = path.join(sync, 'prepared.json'), committed = path.join(sync, 'committed.json');
+  const broken = Buffer.from([0xff, 0xf9]), valid = JSON.stringify({ schemaVersion: 1, generation: 'retained', hash: hash('saved') });
+  fs.writeFileSync(path.join(root, 'project.abs'), 'an independent draft');
+  fs.writeFileSync(prepared, valid);
+  fs.writeFileSync(committed, broken);
+  await store.retireMalformedPointers(true);
+  assert.deepEqual(fs.readFileSync(committed), broken);
+  assert.equal(fs.readFileSync(prepared, 'utf8'), valid);
+  fs.writeFileSync(prepared, '{"cut":');
+  let recovery;
+  await store.withLock(async locked => {
+    recovery = store.retireMalformedPointers(true);
+    assert.equal(await locked.replace('prepared.json', hash('{"cut":'), valid), true);
+  });
+  await recovery;
+  assert.equal(fs.readFileSync(prepared, 'utf8'), valid);
+  assert.deepEqual(fs.readFileSync(committed), broken);
+  fs.writeFileSync(prepared, '{"cut":');
+  await store.retireMalformedPointers();
+  assert.equal(fs.existsSync(prepared), false);
+  assert.deepEqual(fs.readFileSync(committed), broken);
+  await store.retireMalformedPointers(true);
+  assert.equal(fs.existsSync(committed), false);
+  assert.equal(fs.readFileSync(path.join(root, 'project.abs'), 'utf8'), 'an independent draft');
+});
+
 test('operation snapshot and discovery metadata survive reopening with exact conditional writes', async () => {
   const root = project(); let store = await openProjectSyncStorage(root, guard);
   const snapshot = JSON.stringify({ version: 1, document: { pages: [{ content: 'complete' }] }, candidate: 'unapplied' });

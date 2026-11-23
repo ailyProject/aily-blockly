@@ -198,10 +198,13 @@ export class AbsWorkspaceSyncService {
       const journal = new AbsOperationJournal(port, project), application = new AbsApplicationJournal(port, project);
       const original = await journal.findDocumentSave(identity, context.assertCurrent);
       if (original) return { original: await application.observeNativeSave(identity, context.assertCurrent), project, identity, port };
+      if (repairMirrors) await port.retireMalformedPointers?.(true);
       const before = this.editor.captureProjectSnapshot(lease);
       if (computation) await this.yieldBackgroundSave();
       const guard = this.atRevision(context.assertCurrent, lease, before);
       if (repairMirrors && !computation) store = new AbsBaselineStore(port, context.scope, true);
+      if (repairMirrors && await store.workspaceMode() === 'project-v1')
+        await this.ensureSavedProjection(context, store, guard);
       const disk = repairMirrors ? await this.captureRepairableDisk(context, store, port, before.document, guard, {
         repairLocation: () => computation ? computation.recoverLocation()
           : this.withoutViewChecks(() => recoverAbsLocationMetadata(port, context.scope, guard, store)),
@@ -210,7 +213,7 @@ export class AbsWorkspaceSyncService {
       const document = await materializeGenericProjectDataValues(before.document, {
         resolve: async <T>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<T>(ref); guard(); return value; },
       });
-      const admitted = await journal.beginDocumentSave({ request: identity, document, disk }, guard);
+      const admitted = await journal.beginDocumentSave({ request: identity, document, disk }, guard, repairMirrors && !request.input);
       if (!admitted.created) return { original: await application.observeNativeSave(identity, context.assertCurrent), project, identity, port };
       const checkpoint: AbsDocumentSaveCheckpoint = { journal, id: admitted.ref.operationId, native: { ref: admitted.ref, application } };
       let transformed = false;
@@ -354,6 +357,8 @@ export class AbsWorkspaceSyncService {
       let check = this.atRevision(context.assertCurrent, lease, working);
       const guard = () => { check(); };
       const port = await openAbsHostStorage(context.path, guard);
+      await port.retireMalformedPointers?.(true);
+      if (await store.workspaceMode() === 'project-v1') await this.ensureSavedProjection(context, store, guard);
       const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard, port); guard();
       if (await store.workspaceMode() === 'project-v1') {
         if (!protocol.ok && (!('code' in protocol) || protocol.code !== 'ABS_WORKSPACE_MODE_UNINITIALIZED')) return protocol;
@@ -1316,7 +1321,7 @@ export class AbsWorkspaceSyncService {
 
   /** Read-only Working capture. It deliberately avoids store(), location repair,
    * save preparation and publication, including when Published is unavailable. */
-  captureWorkingCandidate(mergedAuthorSources: readonly string[] = []) {
+  captureWorkingCandidate(mergedAuthorSources: readonly string[] = [], canvasOnly = false) {
     const context = this.context();
     return this.editor.runProjectOperation(async () => {
       context.assertCurrent();
@@ -1329,39 +1334,64 @@ export class AbsWorkspaceSyncService {
         const projection = await this.projection(document, runtime.contracts, null, context.scope, guard);
         const port = await openAbsHostStorage(context.path, () => { guard(); });
         if (!port.attachment) throw new AbsSyncError('ABS_CANDIDATE_ATTACHMENT_STALE', 'Working capture requires the physical project attachment.');
-        const captureStore = new AbsBaselineStore(port, context.scope), workspaceMode = await captureStore.workspaceMode();
-        let published: AbsGenerationEvidence['binding'] | null = null;
-        let saved: AbsCommittedProgramSnapshot | null = null;
-        let mergedFrom: string | undefined;
-        let publishedObservation: { status: string; code?: string } = { status: 'none' };
-        try {
-          saved = await captureStore.readCommittedSnapshot();
-          if (saved) {
-            published = (await generationEvidence(saved.projection, saved.abi)).binding;
-            if (saved.projection.map.scope.projectKey === context.scope.projectKey) mergedFrom = saved.authorSource?.mergedFrom;
-            publishedObservation = { status: 'captured' };
-          }
-        } catch (error) { publishedObservation = { status: 'unavailable', code: (error as any)?.code ?? 'ABS_PUBLISHED_UNAVAILABLE' }; }
-        if (workspaceMode === 'project-v1' && (!published || published.abiHash === null))
-          throw new AbsSyncError('ABS_WORKSPACE_MODE_UNINITIALIZED', 'Project mode requires a verified accepted program.');
-        const author = workspaceMode === 'project-v1' ? await port.read('project.abs') : null;
-        const authorHash = author === null ? null : await hashAbsText(author);
-        const authorSource = workspaceMode === 'project-v1' ? { version: 1, path: 'project.abs', text: author,
-          hash: authorHash, bytes: author === null ? null : new TextEncoder().encode(author).byteLength,
-          ...(mergedFrom && mergedFrom !== authorHash && authorHash === published?.absHash ? { mergedFrom } : {}) } : undefined;
-        let authorMerge: AbsMergedAuthorObservation | null = null;
-        if (authorSource && saved && mergedAuthorSources.length) {
-          // A damaged or unavailable old generation cannot invalidate current Working reads.
-          try { authorMerge = await captureStore.observeMergedAuthor(saved, mergedAuthorSources, author, guard); }
-          catch { guard(); }
-        }
         guard();
-        return { version: 1, document: absJson(document), abs: projection.abs, map: absMapJson(projection.map), contracts: absJson(projection.contracts),
-          scope: { kind: 'pages', pageIds: [context.scope.pageId] }, attachment: port.attachment,
-          ...(authorSource ? { workspaceMode, authorSource, accepted: published } : {}), ...(authorMerge ? { authorMerge } : {}),
-          published, publishedObservation, working: { revision: before.revision } };
+        const live = { version: 1 as const, document: absJson(document), abs: projection.abs, map: absMapJson(projection.map),
+          contracts: absJson(projection.contracts), scope: { kind: 'pages' as const, pageIds: [context.scope.pageId] },
+          attachment: port.attachment, working: { revision: before.revision } };
+        const facts = canvasOnly ? undefined : await this.captureCandidateHistory(port, context, mergedAuthorSources, guard);
+        guard();
+        return { ...live, published: null, ...facts };
       } finally { lease.release(); }
     });
+  }
+
+  private ensureSavedProjection(context: ReturnType<AbsWorkspaceSyncService['context']>, store: AbsBaselineStore, guard: () => void) {
+    return store.ensureSavedProjection(async abi => {
+      const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions, guard);
+      const parsed = JSON.parse(abi);
+      const { $ailyProjectData, ...saved } = parsed;
+      const document = saved.schemaVersion === 3 && Array.isArray(saved.pages) ? saved : this.editor.normalizeProjectAbi(parsed);
+      return this.projection(document, runtime.contracts, abi, context.scope, guard);
+    }, async port => !(await new AbsOperationJournal(port, context.path).inspect()), guard);
+  }
+
+  private async captureCandidateHistory(port: AbsSyncStoragePort, context: ReturnType<AbsWorkspaceSyncService['context']>,
+    mergedAuthorSources: readonly string[], guard: () => void) {
+    await port.retireMalformedPointers?.(true);
+    const scope = context.scope;
+    const captureStore = new AbsBaselineStore(port, scope), workspaceMode = await captureStore.workspaceMode();
+    let published: AbsGenerationEvidence['binding'] | null = null;
+    let saved: AbsCommittedProgramSnapshot | null = null;
+    let mergedFrom: string | undefined;
+    let publishedObservation: { status: string; code?: string } = { status: 'none' };
+    try {
+      saved = workspaceMode === 'project-v1' ? await this.ensureSavedProjection(context, captureStore, guard)
+        : await captureStore.readCommittedSnapshot();
+      if (saved) {
+        published = (await generationEvidence(saved.projection, saved.abi)).binding;
+        if (saved.projection.map.scope.projectKey === scope.projectKey) mergedFrom = saved.authorSource?.mergedFrom;
+        publishedObservation = { status: 'captured' };
+      }
+    } catch (error) {
+      if (workspaceMode === 'project-v1') throw error;
+      publishedObservation = { status: 'unavailable', code: (error as any)?.code ?? 'ABS_PUBLISHED_UNAVAILABLE' };
+    }
+    if (workspaceMode === 'project-v1' && (!published || published.abiHash === null))
+      throw new AbsSyncError('ABS_WORKSPACE_MODE_UNINITIALIZED', 'Project mode requires a verified accepted program.');
+    const author = workspaceMode === 'project-v1' ? await port.read('project.abs') : null;
+    const authorHash = author === null ? null : await hashAbsText(author);
+    const authorSource = workspaceMode === 'project-v1' ? { version: 1, path: 'project.abs', text: author,
+      hash: authorHash, bytes: author === null ? null : new TextEncoder().encode(author).byteLength,
+      ...(mergedFrom && mergedFrom !== authorHash && authorHash === published?.absHash ? { mergedFrom } : {}) } : undefined;
+    let authorMerge: AbsMergedAuthorObservation | null = null;
+    if (authorSource && saved && mergedAuthorSources.length) {
+      // A damaged or unavailable old generation cannot invalidate current Working reads.
+      try { authorMerge = await captureStore.observeMergedAuthor(saved, mergedAuthorSources, author, guard); }
+      catch { guard(); }
+    }
+    guard();
+    return { ...(authorSource ? { workspaceMode, authorSource, accepted: published } : {}), ...(authorMerge ? { authorMerge } : {}),
+      published, publishedObservation };
   }
 
   async captureLegacyCandidate(legacy: unknown) {

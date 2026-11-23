@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const { readSaveSnapshot } = require('./project-save-snapshot');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
@@ -146,6 +147,37 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     }
     return text;
   };
+  // These pointers are written by atomic rename. An unparsable file cannot be
+  // a partially published live generation. Keep valid (including newer) JSON
+  // for the normal version, ownership and checksum checks.
+  const malformedPointer = key => {
+    const bytes = readBytes(key);
+    if (bytes === null) return false;
+    try {
+      const text = bytes.toString('utf8');
+      JSON.parse(text);
+      return !Buffer.from(text, 'utf8').equals(bytes);
+    } catch (error) { if (error instanceof SyntaxError) return true; throw error; }
+  };
+  const retireMalformedPointers = async (includeCommitted = false) => {
+    guard();
+    const prepared = 'prepared.json', committed = 'committed.json';
+    if (!malformedPointer(prepared) && !(includeCommitted && malformedPointer(committed))) return;
+    const lock = await acquireProjectFileLock(access, guard, options.timeoutMs);
+    try {
+      const retire = key => {
+        guard(); lock.assertOwned();
+        if (!malformedPointer(key)) return;
+        assertNoPreparedWorkspaceMigration(access);
+        files.unlinkSync(locate(key));
+      };
+      retire(prepared);
+      if (includeCommitted && readBytes(prepared) === null) retire(committed);
+    } finally {
+      const warnings = lock.release();
+      if (warnings.length) throw fault('ABS_COMMIT_UNCERTAIN', warnings.join('; '));
+    }
+  };
   const retireCopiedLock = async ({ original, expected, phase = 'prepared' } = {}) => {
     const required = ['committed.json', 'operation.json', ...mirrors];
     if (!original?.attachment || !original.executor || !expected || Array.isArray(expected)
@@ -164,8 +196,8 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       const pointer = JSON.parse(readText('operation.json'));
       const generation = JSON.parse(readText(phase === 'prepared' ? 'prepared.json' : 'committed.json'));
       const snapshotKey = `recoveries/operation-${pointer.id}.json`;
-      const snapshot = JSON.parse(readText(snapshotKey));
-      if (expected[snapshotKey] !== pointer.hash || snapshot.id !== pointer.id
+      const snapshot = readSaveSnapshot(JSON.parse(readText(snapshotKey)), name => readBytes(`recoveries/${name}`));
+      if (expected[snapshotKey] !== pointer.hash || snapshot?.id !== pointer.id
         || !isDigest(generation.hash) || expected[`baselines/${generation.generation}.json`] !== generation.hash
         || snapshot.project !== original.attachment.root
         || !sameRecord(snapshot.attachment, original.attachment) || !sameRecord(snapshot.executor, original.executor)
@@ -194,6 +226,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     retireEmptyProjectFileLock: async observation => retireEmptyProjectFileLock(access, ownerGuard, observation),
     retireProjectFileLock: async observation => retireProjectFileLock(access, ownerGuard, observation),
     retireCopiedLock,
+    retireMalformedPointers,
     withLock: async (operation, observeScope = false) => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
       const lock = await acquireProjectFileLock(access, guard, options.timeoutMs);
@@ -380,6 +413,7 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
     retireEmptyProjectFileLockResult: observation => resultOf(() => storage.retireEmptyProjectFileLock(observation)),
     retireProjectFileLockResult: observation => resultOf(() => storage.retireProjectFileLock(observation)),
     retireCopiedLockResult: proof => resultOf(() => storage.retireCopiedLock(proof)),
+    retireMalformedPointersResult: includeCommitted => resultOf(() => storage.retireMalformedPointers(includeCommitted)),
     withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),
   };
 }

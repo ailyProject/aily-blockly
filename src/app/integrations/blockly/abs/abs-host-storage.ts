@@ -31,6 +31,10 @@ export async function openAbsHostStorage(
   return {
     attachment: storage.attachment,
     executor: storage.executor,
+    ...(storage.retireMalformedPointers ? { retireMalformedPointers: (includeCommitted = false) => {
+      requireProjectProgramPublication(host);
+      return storage.retireMalformedPointers!(includeCommitted);
+    } } : {}),
     ...(storage.observeExecutor ? { observeExecutor: (original: NonNullable<AbsSyncStoragePort['executor']>) => storage.observeExecutor!(original) } : {}),
     ...(storage.retireEmptyProjectFileLock ? { retireEmptyProjectFileLock: storage.retireEmptyProjectFileLock } : {}),
     ...(storage.retireProjectFileLock ? { retireProjectFileLock: storage.retireProjectFileLock } : {}),
