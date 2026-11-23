@@ -14,9 +14,7 @@ process.once('message', ({ config, workspace, operation, action, shared, project
         else if (abandoning) result = { ok: true, abandoned: abandonPreparedPreprocess(config) };
         else if (clearing) result = { ok: true, result: clearSharedBuildCache(projectPath, { preserveSketch }) };
         else if (resolving) result = { ok: true, execution: resolveBuildExecution(projectPath) };
-        else result = { ok: true, config: prepareBuildExecution(config, workspace, operation, {
-            shared, cache: shared === true && process.platform === 'win32',
-        }) };
+        else result = { ok: true, config: prepareBuildExecution(config, workspace, operation, { shared }) };
     }
     catch (error) { result = { ok: false, error: error.message, code: error.code }; }
     process.send(result, () => {

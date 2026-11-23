@@ -871,9 +871,18 @@ test('a dirty Blockly build retains its own source alongside the unchanged saved
     assert.deepEqual(historical.buildSnapshot, observed.buildSnapshot);
 });
 
-test('cache layout retains a compact original receipt after clear without a private execution tree', t => {
+test('the shared build worker retains a compact original receipt after cache clear', async t => {
     const f = sharedFixture(t);
-    const req = f.prepare('receipt-layout');
+    const worker = fork(require.resolve('../child/scripts/build-execution-worker'), [], {
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    });
+    const message = once(worker, 'message'), closed = once(worker, 'close');
+    worker.send({ config: { ...f.config, buildRequestId: 'receipt-layout' }, operation: 'compile', shared: true });
+    const [prepared] = await message;
+    assert.deepEqual(await closed, [0, null]);
+    assert.equal(prepared.ok, true, prepared.error);
+    const req = prepared.config;
+    assert.equal(req.execution.storage, 'cache');
     const legacy = path.join(f.root, '.aily', 'build-executions');
     const request = path.join(f.root, '.log/compile/requests',
         createHash('sha256').update('receipt-layout').digest('hex') + '.build.json');
