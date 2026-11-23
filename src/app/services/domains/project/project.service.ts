@@ -1704,22 +1704,22 @@ export class ProjectService {
   private updateNewProjectPackageJson(
     projectPath: string,
     newProjectData: NewProjectData,
-    options?: { removeCloudId?: boolean; coderTemplate?: boolean }
+    options?: { removeCloudId?: boolean; coderEntry?: string }
   ) {
     const inputName = String(newProjectData.name ?? '').trim();
     const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
     packageJson.name = deriveProjectPackageName(inputName);
     packageJson.nickname = inputName;
     // Coder 使用 Arduino 模板；框架固定为 arduino，不沿用 Blockly 表单中的其他 devmode。
-    if (!options?.coderTemplate && newProjectData.devmode) {
+    if (!options?.coderEntry && newProjectData.devmode) {
       packageJson.devmode = newProjectData.devmode;
     }
 
-    if (options?.coderTemplate) {
+    if (options?.coderEntry) {
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
       const boardRange = this.normalizeAilyCodeBoardDepRange(newProjectData.board.version);
       recordCoderBoardTemplateDependencies(packageJson, boardPackageName, packageJson.dependencies || {});
-      applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange);
+      applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange, { entry: options.coderEntry });
     }
 
     window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
@@ -1809,11 +1809,12 @@ export class ProjectService {
       }
       stage = 'project-files';
       check();
+      let coderEntry: string | undefined;
       if (isCoderTemplate) {
         window['fs'].mkdirSync(projectPath);
         copiedProjectPath = projectPath;
         authority?.markCreated(projectPath);
-        copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
+        coderEntry = copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
           useDefaultSource: creationTemplate?.useDefaultSource === true,
         });
       } else {
@@ -1830,7 +1831,7 @@ export class ProjectService {
       }
       check();
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
-        coderTemplate: isCoderTemplate,
+        coderEntry,
       });
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });

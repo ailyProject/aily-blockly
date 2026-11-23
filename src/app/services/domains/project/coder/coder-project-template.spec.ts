@@ -1,5 +1,6 @@
 import {
   DEFAULT_CODER_ARDUINO_SOURCE,
+  applyCoderProjectPackageConfig,
   copyCoderArduinoTemplate,
   resolveCoderProjectCreationTemplate,
   resolveCoderTemplatePath,
@@ -54,6 +55,7 @@ describe('Coder project template', () => {
       {
         copySync: (source, destination) => copied.push([source, destination]),
         mkdirSync: path => createdDirectories.push(path),
+        readFileSync: () => '{}',
         writeFileSync: (path, content) => written.push([path, content]),
       },
       { useDefaultSource: true },
@@ -97,6 +99,7 @@ void loop() {
       {
         copySync: (source, destination) => copied.push([source, destination]),
         mkdirSync: () => undefined,
+        readFileSync: () => '{}',
         writeFileSync: () => undefined,
       },
     );
@@ -118,8 +121,58 @@ void loop() {
       {
         copySync: () => undefined,
         mkdirSync: () => undefined,
+        readFileSync: () => '{}',
         writeFileSync: () => undefined,
       },
     )).toThrowError('Coder 板卡模板缺少 project.aci: /board/template_arduino/project.aci');
   });
+
+  it('generates the default source at the declared INO entry and saves that entry', () => {
+    const manifest = { entry: 'src/main.ino' };
+    const writeFileSync = jasmine.createSpy('writeFileSync');
+    const entry = copyCoderArduinoTemplate('/board/template', '/projects/demo', {
+      join, isExists: () => true,
+    }, {
+      copySync: () => undefined,
+      mkdirSync: () => undefined,
+      readFileSync: () => JSON.stringify(manifest),
+      writeFileSync,
+    }, { useDefaultSource: true });
+
+    expect(writeFileSync).toHaveBeenCalledOnceWith('/projects/demo/sketch/src/main.ino', DEFAULT_CODER_ARDUINO_SOURCE);
+    applyCoderProjectPackageConfig(manifest, '@aily-project/board-ci1306', '^1.0.18', { entry });
+    expect(manifest.entry).toBe('src/main.ino');
+  });
+
+  it('copies custom source to a declared nested entry and normalizes its separators', () => {
+    const copySync = jasmine.createSpy('copySync');
+    const mkdirSync = jasmine.createSpy('mkdirSync');
+    const entry = copyCoderArduinoTemplate('/board/template_arduino', '/projects/demo', {
+      join, isExists: () => true,
+    }, {
+      copySync,
+      mkdirSync,
+      readFileSync: () => JSON.stringify({ entry: 'src\\firmware\\demo.ino' }),
+      writeFileSync: () => undefined,
+    });
+
+    expect(entry).toBe('src/firmware/demo.ino');
+    expect(mkdirSync).toHaveBeenCalledWith('/projects/demo/sketch/src/firmware', { recursive: true });
+    expect(copySync).toHaveBeenCalledWith('/board/template_arduino/project.aci', '/projects/demo/sketch/src/firmware/demo.ino');
+  });
+
+  for (const entry of ['../main.ino', 'src\\..\\..\\main.ino', '/main.ino', 'C:\\main.ino', 'src/main.txt']) {
+    it(`rejects invalid template entry ${entry} before writing files`, () => {
+      const mkdirSync = jasmine.createSpy('mkdirSync');
+      expect(() => copyCoderArduinoTemplate('/board/template', '/projects/demo', {
+        join, isExists: () => true,
+      }, {
+        copySync: () => undefined,
+        mkdirSync,
+        readFileSync: () => JSON.stringify({ entry }),
+        writeFileSync: () => undefined,
+      }, { useDefaultSource: true })).toThrowError(/entry 必须是 sketch 内/);
+      expect(mkdirSync).not.toHaveBeenCalled();
+    });
+  }
 });

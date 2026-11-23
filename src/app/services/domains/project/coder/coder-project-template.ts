@@ -101,6 +101,7 @@ interface CoderTemplatePathApi {
 interface CoderTemplateFsApi {
   copySync(source: string, destination: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean }): void;
+  readFileSync(path: string): string;
   writeFileSync(path: string, content: string): void;
 }
 
@@ -176,11 +177,9 @@ export function findReusableCoderBoardTemplate(
 }
 
 /**
- * `template_arduino/project.aci` is Arduino source text, not the Coder project
- * configuration. Copy it to the persistent Coder source workspace as main.cpp;
- * all project configuration remains in the copied package.json. When the board
- * package has no Coder template directory, the caller may use its Blockly
- * package.json as the configuration base and request the default Arduino source.
+ * Write the Arduino source at the template's entry, relative to the sketch directory.
+ * Dedicated Coder templates supply the source in project.aci. The Blockly fallback
+ * supplies the manifest and uses the default Arduino source.
  */
 export function copyCoderArduinoTemplate(
   templatePath: string,
@@ -188,7 +187,7 @@ export function copyCoderArduinoTemplate(
   pathApi: CoderTemplatePathApi,
   fsApi: CoderTemplateFsApi,
   options: { useDefaultSource?: boolean } = {},
-): void {
+): string {
   const templatePackagePath = pathApi.join(templatePath, 'package.json');
   const templateSourcePath = pathApi.join(templatePath, 'project.aci');
   if (!pathApi.isExists(templatePackagePath)) {
@@ -198,14 +197,27 @@ export function copyCoderArduinoTemplate(
     throw new Error(`Coder 板卡模板缺少 project.aci: ${templateSourcePath}`);
   }
 
+  const { entry: declaredEntry = CODER_SOURCE_ENTRY } = JSON.parse(fsApi.readFileSync(templatePackagePath));
+  const entry = typeof declaredEntry === 'string' ? declaredEntry.replace(/\\/g, '/') : '';
+  const entryParts = entry.split('/');
+  if (!/\.(ino|cpp)$/i.test(entry) || /[<>:"|?*\x00-\x1f]/.test(entry)
+    || entryParts.some(part => !part || part.trim() !== part || part.endsWith('.'))) {
+    throw new Error(`Coder 板卡模板的 entry 必须是 sketch 内的 .ino 或 .cpp 相对路径: ${templatePackagePath}`);
+  }
+
   const sketchRoot = pathApi.join(projectPath, 'sketch');
-  const sourcePath = pathApi.join(sketchRoot, 'src', 'main.cpp');
+  const sourcePath = pathApi.join(sketchRoot, ...entryParts);
   fsApi.mkdirSync(pathApi.join(sketchRoot, 'src'), { recursive: true });
   fsApi.mkdirSync(pathApi.join(sketchRoot, 'libraries'), { recursive: true });
+  const sourceDirectory = entryParts.slice(0, -1);
+  if (sourceDirectory.join('/') !== 'src') {
+    fsApi.mkdirSync(pathApi.join(sketchRoot, ...sourceDirectory), { recursive: true });
+  }
   fsApi.copySync(templatePackagePath, pathApi.join(projectPath, 'package.json'));
   if (options.useDefaultSource) {
     fsApi.writeFileSync(sourcePath, DEFAULT_CODER_ARDUINO_SOURCE);
   } else {
     fsApi.copySync(templateSourcePath, sourcePath);
   }
+  return entry;
 }

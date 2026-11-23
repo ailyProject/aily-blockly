@@ -17,11 +17,11 @@ export async function installSimulatorProjects({ hostRoot, appRoot, index, outpu
     const template = path.join(source, developmentMode === 'coder' ? 'template_arduino' : 'template');
     const manifest = JSON.parse(fs.readFileSync(path.join(template, 'package.json')));
     if (developmentMode === 'coder') {
-      copyCoderArduinoTemplate(template, root, { join: path.join, isExists: fs.existsSync }, {
-        mkdirSync: fs.mkdirSync, writeFileSync: fs.writeFileSync, copySync: fs.copyFileSync,
+      const entry = copyCoderArduinoTemplate(template, root, { join: path.join, isExists: fs.existsSync }, {
+        mkdirSync: fs.mkdirSync, readFileSync: fs.readFileSync, writeFileSync: fs.writeFileSync, copySync: fs.copyFileSync,
       });
       const boardPackage = `@aily-project/board-${board}`;
-      applyCoderProjectPackageConfig(manifest, boardPackage, manifest.dependencies[boardPackage]);
+      applyCoderProjectPackageConfig(manifest, boardPackage, manifest.dependencies[boardPackage], { entry });
     } else fs.cpSync(template, root, { recursive: true });
     manifest.name = `simulator-lifecycle-${number}`;
     manifest.devmode = 'arduino';
