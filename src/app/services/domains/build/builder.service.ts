@@ -167,6 +167,7 @@ export class BuilderService {
         error.buildInput = (buildResult as any)?.buildInput;
         error.buildSnapshot = buildResult?.buildSnapshot;
         error.buildOutcome = (buildResult as any)?.buildOutcome;
+        if (typeof (buildResult as any)?.code === 'string') error.code = (buildResult as any).code;
         error.buildResult = buildResult;
         if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
         throw error;

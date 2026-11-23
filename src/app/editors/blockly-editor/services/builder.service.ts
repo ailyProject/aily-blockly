@@ -1035,12 +1035,18 @@ export class _BuilderService {
     this.preprocessFullError = '';
   }
 
-  private clearOwnedBuildCache(projectPath: string, projectCurrent: () => boolean): Promise<void> {
+  private async clearOwnedBuildCache(projectPath: string, projectCurrent: () => boolean): Promise<void> {
     if (!projectCurrent() || projectPath !== this.projectService.currentProjectPath
       || this.workflowService.currentState !== ProcessState.BUILDING) {
       throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed before cache preparation.'), { buildOutcome: 'not-started' });
     }
-    return this.builderService.clearBuildCache(projectPath);
+    try { await this.builderService.clearBuildCache(projectPath); }
+    catch (error) {
+      if (this.builderService.usesSharedBuildCache?.(projectPath) && error && typeof error === 'object') {
+        Object.assign(error, { buildOutcome: 'not-started' });
+      }
+      throw error;
+    }
   }
 
   /** Reserve the workflow only for the mutation, then schedule ordinary advisory preprocessing. */
@@ -1464,7 +1470,8 @@ export class _BuilderService {
           persistBuildResult(requestedProjectPath, true, result, undefined, checkpoint, 'manual');
           return result;
         } catch (error) {
-          if (checkpoint.startedAt) persistBuildResult(requestedProjectPath, false, undefined, error, checkpoint, 'manual');
+          if (checkpoint.startedAt && error?.buildOutcome !== 'not-started')
+            persistBuildResult(requestedProjectPath, false, undefined, error, checkpoint, 'manual');
           throw error;
         }
       },
@@ -1959,7 +1966,9 @@ export class _BuilderService {
                     const failureText = toolLoadFailure ? this.t(toolLoadFailure) : error.message || String(error);
                     this.handleCompileError(failureText, true, detail, undefined, true);
                     this.workflowService.finishBuild(false, failureText);
-                    reject({ state: 'error', text: failureText, fullStdErr: detail });
+                    reject({ state: 'error', text: failureText, fullStdErr: detail,
+                      ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+                      ...(error?.buildOutcome === 'not-started' ? { buildOutcome: error.buildOutcome } : {}) });
                   },
                   complete: async () => {
                     this.clearProgressTimer(); // 清理定时器
@@ -2032,6 +2041,17 @@ export class _BuilderService {
                       this.workflowService.finishBuild(true);
                       resolve({ state: 'done', text: this.t('COMPLETE_WITH_TIME', { seconds: buildDuration }) });
                     } else if (this.isErrored) {
+                      const identity = executionConfig.execution;
+                      const original = identity?.layout === 'shared'
+                        ? window['builder'].inspectBuildExecution(projectPath, requestId) : undefined;
+                      if (original?.status === 'not-started' && original.executionId === identity.id
+                        && original.buildRequestId === requestId && original.inputDigest === identity.inputDigest) {
+                        this.handleCompileError(original.message, true, fullStdErr);
+                        this.workflowService.finishBuild(false, original.message);
+                        reject({ state: 'error', text: original.message, code: original.code,
+                          buildOutcome: 'not-started', buildHistory: original.buildHistory, fullStdErr });
+                        return;
+                      }
                       console.log(`编译失败，耗时: ${buildDuration} 秒`);
 
                       lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
@@ -2131,7 +2151,8 @@ export class _BuilderService {
         this.handleCompileError(message, true, fullErrorMessage, cloudBuild ? retry : undefined, cloudBuild);
         this.workflowService.finishBuild(false, message);
         reject({ state: 'error', text: message, fullStdErr: fullErrorMessage,
-          ...(error?.code === 'BUILD_SOURCE_STALE' ? { code: error.code, sourceReason: error.sourceReason } : {}),
+          ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+          ...(error?.code === 'BUILD_SOURCE_STALE' ? { sourceReason: error.sourceReason } : {}),
           ...(error?.buildOutcome ? { buildOutcome: error.buildOutcome } : {}) });
       }
       })().catch(reject);
@@ -2609,6 +2630,10 @@ export class _BuilderService {
         if (observed.status === 'cancelled') {
           const cancelled = buildCancelledResult('预处理已取消。');
           throw Object.assign(new Error(cancelled.text), cancelled, { buildHistory: history });
+        }
+        if (observed.status === 'not-started') {
+          throw Object.assign(new Error(observed.message), { code: observed.code, buildOutcome: 'not-started',
+            buildHistory: history, fullStdErr: exit?.stderr });
         }
         if (observed.status !== 'completed') {
           throw Object.assign(new Error('预处理失败。'), { buildOutcome: 'failed', buildHistory: history, fullStdErr: exit?.stderr });

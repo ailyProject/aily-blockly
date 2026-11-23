@@ -90,6 +90,28 @@ test('cancellation remains the irreversible first-writer outcome while a transit
     assert.equal(JSON.parse(fs.readFileSync(path.join(folder, 'outcome.json'))).status, 'cancelled');
 });
 
+test('an interrupted terminal write never exposes a partial first-writer outcome', t => {
+    const f = fixture(t), config = execution.prepareBuildExecution({ ...f.config, buildRequestId: 'interrupted-outcome' });
+    const filename = path.join(execution.recordFor(config).folder, 'outcome.json');
+    const open = fs.openSync, write = fs.writeFileSync;
+    let candidate;
+    fs.openSync = (target, ...args) => {
+        const fd = open(target, ...args);
+        if (target === filename || typeof target === 'string' && target.startsWith(filename + '.')) candidate = fd;
+        return fd;
+    };
+    fs.writeFileSync = (target, ...args) => {
+        if (candidate !== undefined && target === candidate) throw new Error('Interrupted before the outcome is written');
+        return write(target, ...args);
+    };
+    try {
+        assert.throws(() => execution.cancelBuildExecution(config), /Interrupted before the outcome is written/);
+        assert.equal(fs.existsSync(filename), false);
+    } finally { fs.openSync = open; fs.writeFileSync = write; }
+    assert.equal(execution.cancelBuildExecution(config).status, 'cancelled');
+    assert.equal(execution.inspectBuildExecution(f.project, 'interrupted-outcome').status, 'cancelled');
+});
+
 test('a real global admission owner still fails closed with the original request and no published receipt', t => {
     const f = fixture(t), previous = execution.prepareBuildExecution({ ...f.config, buildRequestId: 'existing-request' });
     const { store } = execution.recordFor(previous), pointer = fs.readFileSync(store.pointer);

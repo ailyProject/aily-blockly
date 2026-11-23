@@ -271,7 +271,7 @@ test('a legacy orphan is observed once and recovered only after a different kern
   const beforeRestart = patchedModule({}, BOOT_A);
   assert.throws(() => beforeRestart.acquireBuildWorkspace(f.root, 'publish'), error => {
     assert.equal(error.code, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
-    assert.match(error.message, /isolated build execution/);
+    assert.match(error.message, /project build cache stays protected/);
     assert.doesNotMatch(error.message, /project_recover|action='fork'/);
     assert.doesNotMatch(error.message, /Restart the computer/);
     return true;
@@ -296,6 +296,28 @@ test('a restarted system recovers only its matching Builder phase despite PID re
   assert.equal(fs.existsSync(builder), false);
 });
 
+test('a drained launcher can settle while a different legacy root owner remains protected', t => {
+  const f = fixture(t, 'compile', true);
+  const legacy = JSON.parse(f.bytes);
+  delete legacy.bootId; delete legacy.delegationVersion; delete legacy.delegated;
+  const original = JSON.stringify(legacy);
+  fs.writeFileSync(f.marker, original);
+  const originalBuild = path.join(f.root, '.build/legacy-firmware.bin');
+  fs.writeFileSync(originalBuild, 'original');
+
+  const priorLauncher = randomUUID();
+  const currentBoot = patchedModule({}, BOOT_A);
+  assert.equal(currentBoot.releaseManagedBuildWorkspace(f.root, priorLauncher), true);
+  assert.equal(fs.readFileSync(f.marker, 'utf8'), original);
+  assert.throws(() => currentBoot.acquireBuildWorkspace(f.root, 'clean'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+  assert.equal(JSON.parse(fs.readFileSync(f.marker, 'utf8')).recoveryObservedBootId, BOOT_A);
+  assert.equal(fs.readFileSync(originalBuild, 'utf8'), 'original');
+
+  const nextBoot = patchedModule({}, BOOT_B);
+  nextBoot.acquireBuildWorkspace(f.root, 'compile').release();
+  assert.equal(fs.readFileSync(originalBuild, 'utf8'), 'original');
+});
+
 for (const invalid of ['foreign', 'incomplete']) test(`a reboot does not remove a ${invalid} Builder record`, t => {
   const f = fixture(t, 'compile', true), record = { ...JSON.parse(f.bytes), bootId: BOOT_A };
   fs.writeFileSync(f.marker, JSON.stringify(record));
@@ -313,7 +335,7 @@ test('unavailable boot identity and wall-clock changes cannot retire a granted o
   for (const bootId of [null, BOOT_A]) {
     assert.throws(() => patchedModule({}, bootId).acquireBuildWorkspace(f.root, 'publish'), error => {
       assert.equal(error.code, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
-      assert.match(error.message, /isolated build execution/);
+      assert.match(error.message, /project build cache stays protected/);
       assert.doesNotMatch(error.message, /project_recover|action='fork'/);
       return true;
     });

@@ -1,18 +1,69 @@
 import { absMapJson } from './abs-map-json';
 import { createProjectDataMarker } from '@domain/project/public-api';
 import { AbsBaselineStore, AbsSyncStorageAccess, AbsSyncStoragePort, absBaselineKey } from './abs-baseline-store';
-import { absJson, hashAbsText, reconstructAbsProjection } from './abs-identity-map';
+import { absJson, hashAbsText, reconstructAbsProjection, supportsAbsProjectionForEditing } from './abs-identity-map';
 import { decodeAbsState, splitAbsState } from './abs-full-state';
 import { sameAbsProgram } from './abs-program-state';
 import { AbsSyncError } from './abs-state';
 import { settleAbsProjectOpen } from './abs-project-restart';
 import { recoverAbsBaseline } from './abs-baseline-recovery';
 
+/** The normal editor supports both single-workspace ABI and paged projects.
+ * Recognition here only selects a read path. Native load still verifies the
+ * document, installed block definitions, project data and identities. */
+export function readSavedBlocklyAbi(text: string | null): Record<string, unknown> | undefined {
+  if (text === null) return undefined;
+  try {
+    const input = JSON.parse(text);
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+    const blockly = Array.isArray(input.pages)
+      ? input.pages.every((page: any) => page && typeof page === 'object' && !Array.isArray(page))
+      : !!input.blocks && typeof input.blocks === 'object' && !Array.isArray(input.blocks)
+        && (input.blocks.blocks === undefined || Array.isArray(input.blocks.blocks))
+        || Object.keys(input).every(key => ['variables', 'comments', '$ailyProjectData'].includes(key));
+    return blockly ? input : undefined;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return undefined;
+  }
+}
+
+/** A damaged historical record can defer recovery while a verified ABI opens. */
+export async function readSavedAbiAfterRecoveryFailure(port: Pick<AbsSyncStoragePort, 'read'>,
+  error: unknown, assertCurrent: () => void): Promise<{ abi: string; code: string }> {
+  assertCurrent();
+  const code = (error as { code?: string })?.code;
+  if (code !== 'ABS_BASELINE_CORRUPT' && code !== 'ABS_BASELINE_MISSING'
+    && code !== 'ABS_OPERATION_CORRUPT' && code !== 'ABS_OPERATION_SOURCE_CHANGED') throw error;
+  const abi = await port.read('project.abi');
+  assertCurrent();
+  if (abi === null || !readSavedBlocklyAbi(abi)) throw error;
+  return { abi, code };
+}
+
 /** Opening a complete ABS regenerates caches; a draft is retained and opens its committed snapshot. */
 export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectPath: string,
-  assertCurrent: () => void): Promise<string | null> {
+  assertCurrent: () => void, { preferSavedAbi = false } = {}): Promise<string | null> {
   await settleAbsProjectOpen(port, projectPath, assertCurrent);
   const lookup = new AbsBaselineStore(port, { projectKey: projectPath, pageId: '' });
+  if (preferSavedAbi) {
+    const abi = await port.read('project.abi');
+    if (readSavedBlocklyAbi(abi)) {
+      // The saved primary is the selected canvas. Even reading the public
+      // companions is unnecessary here. An exact, verified private record can
+      // mark this ABI as complete; ordinary legacy loading otherwise proceeds.
+      try {
+        const committed = await lookup.inspectCommitted(), baseline = committed?.projection;
+        if (!baseline || !supportsAbsProjectionForEditing(baseline.map.projectionVersion)
+          || abi !== await lookup.readDerivedAbi(baseline.map.generation)) return null;
+        assertCurrent();
+        return await port.read('project.abi') === abi ? abi : null;
+      } catch (error) {
+        if (!['ABS_BASELINE_CORRUPT', 'ABS_BASELINE_MISSING', 'ABS_STORAGE_ENCODING_INVALID', 'PROJECT_FILE_TOO_LARGE'].includes((error as any)?.code)) throw error;
+        return null;
+      }
+    }
+  }
   let expected = await lookup.captureDisk();
   let committed: Awaited<ReturnType<AbsBaselineStore['inspectCommitted']>>;
   try { committed = await lookup.inspectCommitted(); }

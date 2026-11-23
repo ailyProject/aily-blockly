@@ -17,7 +17,7 @@ const canonical = value => process.platform === 'win32' ? value.toLowerCase() : 
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const OPERATIONS = new Set(['compile', 'preprocess', 'publish', 'clean', 'verify']);
 const NON_DELEGATING_OPERATIONS = new Set(['publish', 'clean']);
-const ISOLATED_RECOVERY_GUIDANCE = 'Original build outputs remain protected. The host must prepare a new isolated build execution; keep this ownership evidence unchanged. Project document recovery or switching projects is not required.';
+const BUILD_RECOVERY_GUIDANCE = 'The project build cache stays protected until the previous build process tree is verified to have exited.';
 
 /** Cooperative host build lease, not a file-editor lock or a security boundary.
  * A dead parent does NOT prove that its compiler descendants stopped.
@@ -105,7 +105,7 @@ function writeOwner(workspace, record) {
     }
 }
 
-function assertBuilderAbsent(workspace, recovery = ISOLATED_RECOVERY_GUIDANCE) {
+function assertBuilderAbsent(workspace, recovery = BUILD_RECOVERY_GUIDANCE) {
     if (markerExists(workspace, path.join(workspace.directory, BUILDER_MARKER))) {
         throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Builder has not released its delegated phase. ${recovery}`);
     }
@@ -119,7 +119,7 @@ function assertLegacyClaimsStopped(previous) {
         if (item.kind === 'claim') claims.set(item.token, item.pid);
         if (item.kind === 'retire') claims.delete(item.token);
     }
-    if ([...claims.values()].some(processAlive)) throw fault('BUILD_WORKSPACE_BUSY', 'An older recovery owner is still alive. Keep its evidence protected; the host must wait or prepare an isolated build execution.');
+    if ([...claims.values()].some(processAlive)) throw fault('BUILD_WORKSPACE_BUSY', 'An older recovery owner is still active. The project build cache stays protected.');
 }
 
 function assertPreviousRecoverable(workspace) {
@@ -141,7 +141,7 @@ function assertPreviousRecoverable(workspace) {
         if (markerExists(workspace, builderPath)) {
             const builder = readOwner(workspace, builderPath);
             if (builder.record.ownerToken !== record.token || builder.record.supervisor !== record.supervisor) {
-                throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Build phase ownership is inconsistent. ${ISOLATED_RECOVERY_GUIDANCE}`);
+                throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Build phase ownership is inconsistent. ${BUILD_RECOVERY_GUIDANCE}`);
             }
             fs.unlinkSync(builderPath);
         }
@@ -155,7 +155,7 @@ function assertPreviousRecoverable(workspace) {
         assertLegacyClaimsStopped(previous);
         writeOwner(workspace, { ...record, recoveryObservedBootId: bootId });
     }
-    const recovery = `${bootId ? '' : 'Cannot verify the system boot identity. '}${ISOLATED_RECOVERY_GUIDANCE}`;
+    const recovery = `${bootId ? '' : 'Cannot verify the system boot identity. '}${BUILD_RECOVERY_GUIDANCE}`;
     assertBuilderAbsent(workspace, alive ? undefined : recovery);
     if (record.nativeLeaseVersion === 1 && (record.released === true || NON_DELEGATING_OPERATIONS.has(record.operation))) return;
     if (alive) throw fault('BUILD_WORKSPACE_BUSY', 'Another host build/preprocess owns this project.');
@@ -168,20 +168,28 @@ function assertPreviousRecoverable(workspace) {
     assertLegacyClaimsStopped(previous);
 }
 
-function checkLegacyRecovery(workspace) {
+function checkLegacyRecovery(workspace, { retire = false } = {}) {
     const filename = path.join(workspace.directory, LEGACY_RECOVERY_MARKER);
     if (!markerExists(workspace, filename)) return;
-    let record;
+    let stat, bytes, record;
     try {
-        const stat = fs.lstatSync(filename);
+        stat = fs.lstatSync(filename);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 4096) throw new Error('unsafe');
-        record = JSON.parse(fs.readFileSync(filename, 'utf8'));
+        bytes = fs.readFileSync(filename, 'utf8');
+        record = JSON.parse(bytes);
     } catch { throw fault('BUILD_WORKSPACE_BUSY', 'An unreadable legacy recovery marker requires verified cleanup.'); }
-    if (!Number.isSafeInteger(record.pid) || record.pid < 1 || !UUID.test(record.ownerToken) || processAlive(record.pid)) {
+    if (!Number.isSafeInteger(record?.pid) || record.pid < 1 || typeof record.ownerToken !== 'string'
+        || !UUID.test(record.ownerToken) || processAlive(record.pid)) {
         throw fault('BUILD_WORKSPACE_BUSY', 'Legacy workspace recovery may still be running.');
     }
-    // This old implementation cannot run after its process exits. Leave its
-    // evidence intact; it is no longer an acquisition gate in the new protocol.
+    if (retire) {
+        workspace.check();
+        const current = fs.lstatSync(filename);
+        if (!sameFile(stat, current) || current.nlink !== 1 || current.size !== stat.size || fs.readFileSync(filename, 'utf8') !== bytes) {
+            throw fault('BUILD_WORKSPACE_CHANGED', 'Legacy recovery marker changed before cleanup.');
+        }
+        fs.unlinkSync(filename);
+    }
 }
 
 function acquireBuildWorkspace(projectPath, operation, { inherited = undefined } = {}) {
@@ -240,6 +248,13 @@ function lease(workspace, owner, owns, guard) {
         buildId: owner.record.token,
         assertOwned,
         assertBuilderIdle,
+        clearLegacyRecovery: () => {
+            if (owner.record.operation !== 'clean') throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Legacy recovery cleanup requires the cache cleaning lease.');
+            // An old host checks the recovery marker, then reserves the owner
+            // file exclusively. Keep our published owner in place during removal.
+            assertBuilderIdle();
+            checkLegacyRecovery(workspace, { retire: true });
+        },
         markDelegated,
         childEnvironment: () => {
             assertOwned();
@@ -328,7 +343,11 @@ function releaseStoppedWorkspace(workspace, supervisor, jobDrained) {
         let owner;
         try { owner = readOwner(workspace); }
         catch (error) { if (error.code === 'ENOENT') return true; throw error; }
-        if (owner.record.supervisor !== supervisor || (!jobDrained && processAlive(owner.record.pid))) return false;
+        // A managed launcher can exit before it acquires the workspace. Its
+        // drained Job then owns no root record to remove. The next real lease
+        // still checks the other record under the same native lock.
+        if (owner.record.supervisor !== supervisor) return jobDrained;
+        if (!jobDrained && processAlive(owner.record.pid)) return false;
         const current = readOwner(workspace);
         if (!sameFile(owner.stat, current.stat) || owner.bytes !== current.bytes) return false;
         const builderPath = path.join(workspace.directory, BUILDER_MARKER);

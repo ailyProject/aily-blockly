@@ -106,6 +106,23 @@ function readBuildReceipt(proof) {
     return false;
   }
 }
+function publishBuildReceipt(proof) {
+  if (readBuildReceipt(proof)) return true;
+  const temporary = proof.receiptPath + '.' + randomUUID() + '.tmp';
+  const fd = fs.openSync(temporary, 'wx', 0o600);
+  try {
+    try { fs.writeFileSync(fd, proof.job); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    const { childScriptPath } = require('./child-script-path');
+    const { renameForAtomicReplace } = require(childScriptPath('atomic-replace.js'));
+    // A crashed monitor may have left a partial receipt. Publish only after
+    // the original Job is known stopped, then replace the incomplete file.
+    renameForAtomicReplace(temporary, proof.receiptPath);
+    return true;
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
 function spawnManagedBuild(file, args, options, { bootId, receiptPath, publish }) {
   const rt = managedBuildRuntime();
   const name = 'Global\\AilyBuild-' + randomUUID();
@@ -127,10 +144,13 @@ function spawnManagedBuild(file, args, options, { bootId, receiptPath, publish }
       proof.hostCreation, receiptPath, name, String(flags), record.file, record.options.argv0 || record.file,
       ...record.args], { ...record.options, detached: true });
   } catch (error) {
-    try { writeBuildTag(receiptPath, name); } finally { rt.binding.release(handle); }
+    try { publishBuildReceipt(proof); } finally { rt.binding.release(handle); }
     throw error;
   }
-  if (!child.pid) writeBuildTag(receiptPath, name);
+  if (!child.pid) {
+    try { publishBuildReceipt(proof); } finally { rt.binding.release(handle); }
+    return child;
+  }
   return register(child, record);
 }
 async function stopManagedBuild(proof, currentBootId, { observeOnly = false } = {}) {
@@ -142,7 +162,10 @@ async function stopManagedBuild(proof, currentBootId, { observeOnly = false } = 
     && record.durable.hostPid === proof.hostPid);
   if (readBuildReceipt(proof)) return true;
   if (local) {
-    if (observeOnly) return local.exited === true && (local.jobReleased || binding.query(local.handle).active === 0);
+    if (observeOnly) {
+      return local.exited === true && (local.jobReleased || binding.query(local.handle).active === 0)
+        && publishBuildReceipt(proof);
+    }
     return stopOwnedProcess(local.child);
   }
 
@@ -158,17 +181,18 @@ async function stopManagedBuild(proof, currentBootId, { observeOnly = false } = 
     // closed, before all pointer references are gone. Missing is definitive
     // here only when the stopped host's monitor never admitted a writer.
     try { fs.lstatSync(proof.receiptPath + '.admitted'); return false; }
-    catch (error) { if (error.code !== 'ENOENT') throw error; return true; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return publishBuildReceipt(proof);
   }
   try {
-    if (observeOnly) return binding.query(handle).active === 0;
+    if (observeOnly) return binding.query(handle).active === 0 && publishBuildReceipt(proof);
     binding.terminate(handle);
     const deadline = Date.now() + buildStopTimeout;
     while (binding.query(handle).active !== 0) {
       if (Date.now() >= deadline) return false;
       await wait(5);
     }
-    return true;
+    return publishBuildReceipt(proof);
   } finally {
     binding.release(handle);
   }
@@ -213,6 +237,7 @@ async function stopOwnedProcess(child) {
       if (Date.now() - started > 5000) return false;
       await new Promise(resolve => setTimeout(resolve, 1));
     }
+    if (record.durable && !drained) publishBuildReceipt(record.durable);
     if (!record.jobReleased) { record.binding.release(record.handle);record.jobReleased = true; }
     if (record.pty && !record.ptyDisposed) {
       await require('./windows-pty-disposal').disposeStoppedPty(child);record.ptyDisposed = true;
@@ -220,7 +245,6 @@ async function stopOwnedProcess(child) {
     if (!record.exited) {
       if (!await waitForChildExit(record)) return false;
     }
-    if (record.durable && !drained) writeBuildTag(record.durable.receiptPath, record.name);
     record.released = true;records.delete(record);
     console.info('[PROC_TRACE][JOB_STOP]', { pid: child.pid, success: true, durationMs: Date.now() - started });
     return true;

@@ -88,6 +88,28 @@ function publishBinding(store, entry) {
   } finally { fs.rmSync(temporary, { force: true }); }
 }
 
+function pruneDrainedProofFiles({ receiptPath, job }) {
+  const { isWindowsSharingError, retryDeferredWindowsFile } = source('atomic-replace.js');
+  for (const suffix of ['', '.admitted', '.stop']) {
+    const filename = receiptPath + suffix;
+    try { fs.rmSync(filename, { force: true }); }
+    catch (error) {
+      if (!isWindowsSharingError(error)) throw error;
+      const stat = fs.lstatSync(filename, { throwIfNoEntry: false });
+      if (stat && (!stat.isFile() || stat.nlink !== 1)) throw error;
+      if (!stat) continue;
+      const matches = () => {
+        const current = fs.lstatSync(filename, { throwIfNoEntry: false });
+        return current?.isFile() && current.nlink === 1 && current.dev === stat.dev && current.ino === stat.ino
+          && current.size === job.length && current.ctimeMs === stat.ctimeMs;
+      };
+      retryDeferredWindowsFile(() => {
+        if (matches() && fs.readFileSync(filename, 'utf8') === job && matches()) fs.unlinkSync(filename);
+      });
+    }
+  }
+}
+
 async function withSharedBuildAdmission(projectPath, { signal, assertCurrent, beforeStop, operation }, run) {
   const project = fs.realpathSync(projectPath);
   const store = storePath(project);
@@ -107,6 +129,9 @@ async function withSharedBuildAdmission(projectPath, { signal, assertCurrent, be
     assertCurrent?.();
     const bootId = source('system-boot-id.js').getSystemBootId();
     const previous = readBinding(store, project);
+    if (!bootId && (previous || operation !== 'clean')) {
+      throw fault('BUILD_BOOT_ID_UNAVAILABLE', 'The current Windows boot identity could not be verified. No managed build was dispatched.');
+    }
     if (previous) {
       const observeOnly = operation === 'preprocess' || operation === 'upload' || previous.execution.operation === 'upload';
       if (!observeOnly) beforeStop?.(previous);
@@ -121,7 +146,8 @@ async function withSharedBuildAdmission(projectPath, { signal, assertCurrent, be
         source('build-execution-workspace.js').settleStoppedSharedBuild(project, previous.execution);
       }
       fs.unlinkSync(store.record);
-      for (const suffix of ['', '.admitted', '.stop']) fs.rmSync(previous.proof.receiptPath + suffix, { force: true });
+      // The released supervisor's exact proof files are no longer authority.
+      pruneDrainedProofFiles(previous.proof);
     }
     signal?.throwIfAborted();
     return await run({

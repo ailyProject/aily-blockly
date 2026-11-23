@@ -666,12 +666,12 @@ export class ProjectService {
     return true;
   }
 
-  private async discardDepartingBlocklyProject(projectPath: string, reconcile = false, discardRecovery = false): Promise<boolean> {
-    const discard = discardRecovery ? await this.application.prepareBlocklyRecoveryDiscard?.(projectPath) : undefined;
+  private async discardDepartingBlocklyProject(projectPath: string, reconcile = false, recovery?: 'discard' | 'reload'): Promise<boolean> {
+    const discard = recovery && await this.application.prepareBlocklyRecoveryDiscard?.(projectPath, recovery);
     try {
       if (!(await this.retireBlocklyEditor(projectPath))) return false;
       await discard?.commit();
-      await this.discardLibraryChanges(projectPath, reconcile);
+      if (!discard?.preserveRecovery) await this.discardLibraryChanges(projectPath, reconcile);
       return true;
     } catch (error) {
       // Keep the main-process edit session for a subsequent close/reopen retry.
@@ -2467,7 +2467,7 @@ export class ProjectService {
         try {
           await this.stopProjectCommands(previousProjectPath);
           creation?.assertCurrent();
-          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, !options.retainRecovery))) {
+          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, options.retainRecovery ? undefined : 'discard'))) {
             if (!retained) await window['projectLock']?.release(projectPath);
             return false;
           }
@@ -2652,7 +2652,8 @@ export class ProjectService {
         const reconcilesHistory = activationReason === 'chat-tool-reload'
           && this.isSameProjectPath(previousProjectPath, projectPath);
         if (creation) await checkCreation();
-        if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, isSwitchingProject && !options.retainRecovery))) {
+        const recoveryMode = !isSwitchingProject ? 'reload' : options.retainRecovery ? undefined : 'discard';
+        if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, recoveryMode))) {
           if (!prepareBeforeHandoff && isSwitchingProject) await window['projectLock']?.release(projectPath);
           return false;
         }
@@ -3694,7 +3695,7 @@ export class ProjectService {
       }
       for (const project of closingPaths) {
         if (this.isSameProjectPath(project, path) && this.getProjectMode(project) === 'blockly') {
-          if (!(await this.discardDepartingBlocklyProject(project, false, options.save !== true))) return false;
+          if (!(await this.discardDepartingBlocklyProject(project, false, options.save === true ? undefined : 'discard'))) return false;
         } else await this.discardLibraryChanges(project);
       }
       return await this.closeInternal(closingPaths, options.onViewActivated);
@@ -3899,10 +3900,11 @@ export class ProjectService {
       const packagePath = window['path'].join(projectPath, 'package.json');
       const manifest = window['fs'].existsSync(packagePath)
         ? JSON.parse(window['fs'].readFileSync(packagePath, 'utf8')) : undefined;
+      const hasAbi = window['fs'].existsSync(window['path'].join(projectPath, 'project.abi'));
       return detectProjectMode({
         manifest,
-        hasAbi: window['fs'].existsSync(window['path'].join(projectPath, 'project.abi')),
-        hasCompleteAbs: window['fs'].existsSync(window['path'].join(projectPath, 'project.abs'))
+        hasAbi,
+        hasCompleteAbs: !hasAbi && window['fs'].existsSync(window['path'].join(projectPath, 'project.abs'))
           && window['fs'].readFileSync(window['path'].join(projectPath, 'project.abs'), 'utf8').includes('\n# @project-state:'),
         hasAci: window['fs'].existsSync(window['path'].join(projectPath, 'project.aci')),
         hasArduinoSketch: !!findArduinoSketchEntry(projectPath),

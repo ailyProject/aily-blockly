@@ -37,7 +37,9 @@ export function splitAbsState(source: string): { program: string; state: string 
 export function assertAbsStateUnchanged(candidate: string, baseline: string): void {
   const next = splitAbsState(candidate).state;
   if (next !== null && next !== splitAbsState(baseline).state) {
-    throw new AbsSyncError('ABS_STATE_EDIT_FORBIDDEN', 'Project state is host-owned. Edit the readable blocks; use history to restore a complete snapshot.');
+    throw new AbsSyncError('ABS_STATE_EDIT_FORBIDDEN',
+      'Project state is host-owned. Edit the readable blocks; use history to restore a complete snapshot.',
+      undefined, [], { reason: 'host-project-state' });
   }
 }
 

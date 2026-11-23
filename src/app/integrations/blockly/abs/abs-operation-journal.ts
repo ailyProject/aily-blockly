@@ -7,6 +7,7 @@ import { AbsSyncError } from './abs-state';
 import { assertNativeSaveIdentity, nativeSaveCapability, nativeSaveIndexKey, nativeSaveError, nativeSaveSettlementKey, readNativeSaveRequest,
   type NativeSaveIdentity, type NativeSaveOperationRef } from './abs-native-save-protocol';
 import { applicationRequestKey, nativeSaveAdmissionIdentity, OriginalRequestAdmissions } from './original-request-admission';
+import { encodeSaveSnapshot, readSaveSnapshot } from './abs-save-snapshot';
 export type { NativeSaveIdentity, NativeSaveOperationRef } from './abs-native-save-protocol';
 
 export interface AbsOperationSnapshot {
@@ -170,7 +171,7 @@ export class AbsOperationJournal {
     if (!this.port.observeExecutor) return;
     const text = await storage.read(snapshotKey(pointer.id));
     if (text === null || await hashAbsText(text) !== pointer.hash) throw conflict();
-    const snapshot = JSON.parse(text) as AbsOperationSnapshot;
+    const snapshot = await readSaveSnapshot(storage, text) as AbsOperationSnapshot;
     if (snapshot.kind !== 'document-save' || !snapshot.nativeSave || !snapshot.attachment || !snapshot.executor) return;
     await this.settleSaveWriter({ operationId: pointer.id, request: snapshot.nativeSave,
       attachment: snapshot.attachment, executor: snapshot.executor }, guard, storage);
@@ -267,7 +268,7 @@ export class AbsOperationJournal {
       || !await this.hasNoResult(storage, pointer.id)) return;
     const text = await storage.read(snapshotKey(pointer.id));
     if (text === null || await hashAbsText(text) !== pointer.hash) throw conflict();
-    const snapshot = JSON.parse(text) as AbsOperationSnapshot;
+    const snapshot = await readSaveSnapshot(storage, text) as AbsOperationSnapshot;
     if (snapshot.kind === 'document-save' && snapshot.nativeSave && nativeSaveAdmissionIdentity(snapshot.nativeSave)) {
       const original = await readNativeSaveRequest({ ...nativeSaveCapability(this.port), read: key => storage.read(key) },
         this.project, snapshot.nativeSave);
@@ -411,7 +412,7 @@ export class AbsOperationJournal {
   }
 
   async beginDocumentSave(input: { request: NativeSaveIdentity; document: unknown; disk: AbsDiskSnapshot },
-    assertCurrent: () => void): Promise<{ created: boolean; ref: NativeSaveOperationRef }> {
+    assertCurrent: () => void, shareSaveInput = false): Promise<{ created: boolean; ref: NativeSaveOperationRef }> {
     assertNativeSaveIdentity(input.request);
     input = JSON.parse(absJson(input));
     const context = nativeSaveCapability(this.port);
@@ -432,7 +433,8 @@ export class AbsOperationJournal {
       const record: AbsOperationSnapshot = { version: 1, id, project: this.project, kind: 'document-save',
         document: input.document, disk: input.disk, committed: await storage.read('committed.json'),
         nativeSave: input.request, ...(admission ? { sourceStageVersion: 1 as const } : {}), ...context };
-      const text = absJson(record), hash = await hashAbsText(text);
+      const text = shareSaveInput ? await encodeSaveSnapshot(storage, record) : absJson(record);
+      const hash = await hashAbsText(text);
       assertCurrent();
       if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
       const index = absJson({ version: 2, kind: 'native-save', project: this.project, operationId: id,
@@ -448,14 +450,14 @@ export class AbsOperationJournal {
   }
 
   async begin(input: Omit<AbsOperationSnapshot, 'version' | 'id' | 'project' | 'committed' | 'sourceStageVersion'>,
-    assertCurrent: () => void): Promise<string> {
+    assertCurrent: () => void, markWriteAttempt?: () => void): Promise<string> {
     const id = crypto.randomUUID();
     return this.port.withLock(async storage => {
       assertCurrent();
+      const admissions = input.application ? new OriginalRequestAdmissions(this.port, this.project) : undefined;
       let requestKey: string | undefined;
-      if (input.application) {
+      if (input.application && admissions) {
         const { requestId } = input.application;
-        const admissions = new OriginalRequestAdmissions(this.port, this.project);
         if (await admissions.observe({ operation: 'abs_apply', requestId }, storage))
           throw new AbsSyncError('ABS_APPLY_REQUEST_ALREADY_RECORDED', 'The original apply request was rejected before starting.');
         requestKey = await applicationRequestKey(requestId);
@@ -471,12 +473,34 @@ export class AbsOperationJournal {
         // A validated apply's immutable application stage always precedes commit.
         ...(input.kind === 'abs-apply' && input.application ? { sourceStageVersion: 1 as const } : {}) };
       const text = absJson(record), hash = await hashAbsText(text);
-      assertCurrent();
-      if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
-      if (requestKey !== undefined && record.application) {
-        if (!await storage.replace(requestKey, null, absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,
+      const indexText = requestKey !== undefined && record.application
+        ? absJson({ version: 1, project: this.project, operationId: id, snapshotHash: hash,
           requestId: record.application.requestId,
-          ...(record.sourceStageVersion ? { sourceStageVersion: record.sourceStageVersion } : {}) }))) throw applicationAlreadyIndexed();
+          ...(record.sourceStageVersion ? { sourceStageVersion: record.sourceStageVersion } : {}) })
+        : undefined;
+      assertCurrent();
+      markWriteAttempt?.();
+      try {
+        if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
+        if (requestKey !== undefined && indexText !== undefined && !await storage.replace(requestKey, null, indexText))
+          throw applicationAlreadyIndexed();
+      } catch (error) {
+        // begin() has not handed the operation to the program writer. The
+        // live original executor can settle before leaving this project lock.
+        if ((error as { code?: string })?.code === 'ABS_COMMIT_UNCERTAIN' && admissions && record.application
+          && record.candidate && record.attachment && record.executor && requestKey && indexText) {
+          try {
+            assertCurrent();
+            const snapshot = await storage.read(snapshotKey(id)), index = await storage.read(requestKey);
+            if ((snapshot === null || snapshot === text)
+              && (index === null || index === indexText && snapshot === text)
+              && await storage.read(currentKey) === previous) {
+              await admissions.recordUnstartedApplication({ requestId: record.application.requestId, operationId: id,
+                candidateHash: record.candidate.hash, index }, assertCurrent, storage);
+            }
+          } catch { /* Keep the original error if the writer cannot prove settlement. */ }
+        }
+        throw error;
       }
       assertCurrent();
       if (!await storage.replace(currentKey, previous === null ? null : await hashAbsText(previous),
@@ -645,7 +669,7 @@ export class AbsOperationJournal {
       throw new AbsSyncError('ABS_OPERATION_CORRUPT', 'The retained complete operation snapshot is missing or changed.');
     }
     let record: AbsOperationSnapshot;
-    try { record = JSON.parse(snapshot); }
+    try { record = await readSaveSnapshot(this.port, snapshot); }
     catch { throw new AbsSyncError('ABS_OPERATION_CORRUPT', 'Invalid retained operation encoding.'); }
     if (record.version !== 1 || record.id !== pointer.id || typeof record.project !== 'string' || !record.project
       || !['abs-apply', 'runtime-rebuild', 'document-save'].includes(record.kind) || !record.document || typeof record.document !== 'object'
@@ -756,7 +780,7 @@ export class AbsOperationJournal {
       if (pointer.state === 'completed') return;
       const snapshot = await storage.read(snapshotKey(id));
       if (snapshot === null || await hashAbsText(snapshot) !== pointer.hash) throw conflict();
-      const record = JSON.parse(snapshot) as AbsOperationSnapshot;
+      const record = await readSaveSnapshot(storage, snapshot) as AbsOperationSnapshot;
       if (record.kind !== 'document-save' || absJson(record.disk) !== absJson(expected)
         || absJson(await this.disk(storage)) !== absJson(expected) || await storage.read('committed.json') !== record.committed) {
         throw new AbsSyncError('ABS_DISK_CONFLICT', 'The saved source changed before the unchanged-save acknowledgement. Its complete view was retained.');

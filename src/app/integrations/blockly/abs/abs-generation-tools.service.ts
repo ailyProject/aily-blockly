@@ -2,7 +2,7 @@ import { AbsPrecheckFailure } from './abs-precheck';
 import { AbsComposeFailure } from './abs-compose';
 import { Injectable } from '@angular/core';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
-import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
+import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation, readMergedAuthorSources } from './abs-generation-protocol';
 import { AbsSyncError } from './abs-state';
 import { absJson } from './abs-identity-map';
 import { serializeAbsFailure } from './abs-diagnostics';
@@ -89,7 +89,7 @@ export class AbsGenerationToolsService {
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,
     activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string,
-    archiveContext?: { project: string; assertCurrent: () => void; prepareRuntime?: () => Promise<void> }) {
+    execution?: { archive?: { assertCurrent: () => void; prepareRuntime?: () => Promise<void> }; markApplyWriter?: () => void }) {
     if (operation === 'abs_recovery' && input['action'] === 'observe_state') return this.observeBlockState(requestedProject, input);
     const rejected = rejectAbsLiveRequest(operation, input);
     if (rejected) return rejected;
@@ -101,7 +101,7 @@ export class AbsGenerationToolsService {
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
         if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false,
-          capture: await this.sync.captureWorkingCandidate() };
+          capture: await this.sync.captureWorkingCandidate(readMergedAuthorSources(params['mergedAuthorSources']), params['view'] === 'canvas') };
         if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false,
           capture: await this.sync.captureLegacyCandidate(params['legacy']) };
         if (params['originalTargetPid'] !== undefined
@@ -119,7 +119,8 @@ export class AbsGenerationToolsService {
               recoveryArchive: result.recoveryArchive, candidateApplied: false } };
         }
         if (params['action'] === 'history_publish') return { ...reply, ...await this.sync.publishHistoryProgram(params) };
-        if (params['action'] === 'history_observe') return { ...reply, ...await this.sync.observeHistoryProgram(params, params['originalTargetPid']) };
+        if (params['action'] === 'history_observe') return { ...reply,
+          ...await this.sync.observeHistoryProgram(params, params['originalTargetPid'], requestedProject) };
         if (params['action'] === 'history_begin') return { ...reply, ok: true, ...await this.sync.beginHistoryNavigation() };
         if (['history_seal', 'history_release'].includes(params['action']) && typeof params['token'] === 'string') {
           if (params['action'] === 'history_seal') await this.sync.sealHistoryNavigation(params['token']);
@@ -200,9 +201,9 @@ export class AbsGenerationToolsService {
       if (operation === 'abs_validate') {
         assertGenerationCandidate(params);
         if (params['workingCandidate']) params = await this.sync.bindWorkingCandidate(source, params as any);
-        if (archiveContext) {
-          await archiveContext.prepareRuntime?.();
-          archiveContext.assertCurrent();
+        if (execution?.archive) {
+          await execution.archive.prepareRuntime?.();
+          execution.archive.assertCurrent();
         }
         const { syntaxAdvice, ...prepared } = await this.sync.validateGeneration(source, params as any);
         return { ok: true, operation, project: prepared.base.scope.projectKey, syntaxAdvice,
@@ -210,8 +211,8 @@ export class AbsGenerationToolsService {
       }
       if (operation !== 'abs_apply') throw new AbsSyncError('ABS_REQUEST_INVALID', 'Unknown ABS generation operation.');
       const validation = readGenerationApplyValidation(params);
-      applyStarted = true;
-      const result = await this.sync.applyGeneration(source, validation.base.generation, { chunk: params['chunk'] === true, onProgress }, validation);
+      const result = await this.sync.applyGeneration(source, validation.base.generation, { chunk: params['chunk'] === true, onProgress }, validation,
+        () => { execution?.markApplyWriter?.(); applyStarted = true; });
       const ok = result.publication.status === 'COMMITTED' && !result.requiresReload && result.appliedRevision !== undefined && !!result.evidence;
       return { ...result, ok, operation, project: validation.base.scope.projectKey,
         ...(ok ? { receipt: { ...validation, output: result.evidence,

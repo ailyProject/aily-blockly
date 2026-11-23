@@ -78,7 +78,9 @@ export interface ProjectApplicationPort {
   hasBlocklyRuntimeRecovery?(projectPath: string): boolean;
   recoverBlocklyRuntimeInPlace?(projectPath: string, signal?: AbortSignal): Promise<{ ready: boolean; cancelled?: boolean; code?: string; message?: string }>;
   acknowledgeBlocklyRecoveryDiscard?(projectPath: string): Promise<void>;
-  prepareBlocklyRecoveryDiscard?(projectPath: string): Promise<{ commit(): Promise<void>; dispose(): void }>;
+  prepareBlocklyRecoveryDiscard?(projectPath: string, mode?: 'discard' | 'reload'): Promise<{
+    commit(): Promise<void>; dispose(): void; preserveRecovery?: true;
+  }>;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
   /** Host-owned callback only, admitted by the existing durable document publisher. */

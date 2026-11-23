@@ -125,7 +125,7 @@ export function readNativeBuildReceipt(project: string, requestId: string): Pers
   const value = window['builder']?.inspectBuildExecution?.(project, requestId);
   if (value?.version !== 1 || value.buildRequestId !== requestId) return undefined;
   if (value.status === 'running' && value.ownerState === 'live') return { state: 'running' };
-  if (!['completed', 'failed', 'cancelled'].includes(value.status)) return { state: 'unknown' };
+  if (!['completed', 'failed', 'cancelled', 'not-started'].includes(value.status)) return { state: 'unknown' };
   const isPreprocess = value.operation === 'preprocess';
   const operationName = isPreprocess ? '预处理' : '编译';
   return { state: 'completed', result: { project, operation: 'project_build', ok: value.status === 'completed',
@@ -134,6 +134,7 @@ export function readNativeBuildReceipt(project: string, requestId: string): Pers
     ...(value.buildSnapshot ? { buildSnapshot: value.buildSnapshot } : {}),
     ...(value.buildHistory ? { buildHistory: value.buildHistory } : {}),
     ...(value.buildLog ? { buildLog: value.buildLog } : {}),
+    ...(value.status === 'not-started' ? { buildOutcome: 'not-started', code: value.code, message: value.message } : {}),
     ...(value.status === 'failed' ? { buildOutcome: 'failed', message: `原${operationName}失败。` } : {}),
     ...(value.status === 'cancelled' ? { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', message: `原${operationName}已取消。` } : {}) } };
 }

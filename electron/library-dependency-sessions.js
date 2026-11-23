@@ -26,9 +26,18 @@ class LibraryDependencySessions {
 
   async readStatus(project, reader) {
     const root = this.libraries.root(project);
-    const status = this.libraries.queues.has(root) || this.sessions.has(root)
-      ? this.libraries.status(root) : await this.libraries.settleEnvironment(root, reader);
-    return { ...status, busy: this.libraries.queues.has(root) || this.sessions.has(root) };
+    const busy = () => this.libraries.queues.has(root) || this.sessions.has(root);
+    try {
+      const status = busy() ? this.libraries.status(root) : await this.libraries.settleEnvironment(root, reader);
+      return { ...status, busy: busy() };
+    } catch (error) {
+      if (error?.code !== 'ABS_TRANSACTION_PENDING') throw error;
+      // Looking up the saved board and libraries can proceed without settling
+      // another writer. Keep admission blocked and preserve linked work.
+      const status = this.libraries.status(root);
+      if (status.dirty || status.environment) throw error;
+      return { ...status, busy: true };
+    }
   }
 
   async run(operation, project, request, token, control) {

@@ -4,13 +4,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { fork, spawn } = require('node:child_process');
+const { fork, spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
 const api = require('../child/scripts/build-execution-workspace');
 const upload = require('../child/scripts/blockly-upload-state');
 const { acquireBuildWorkspace } = require('../child/scripts/build-workspace-lease');
 const { createHash, randomUUID } = require('node:crypto');
 const { prepareCompileSource, captureBlocklyCompileSource } = require('../child/scripts/compile-source');
+const { holdWindowsFileWithoutDeleteSharing } = require('./fixtures/windows-file-sharing.cjs');
 
 function fixture(t) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-execution-')));
@@ -124,6 +125,37 @@ test('a later shared preparation retires only its pending original without chang
     assert.equal(api.resolveBuildExecution(f.root).executionId, next.execution.id);
 });
 
+for (const operation of ['compile', 'preprocess']) {
+    test(`shared ${operation} refusal settles only the original unstarted request`, async t => {
+        const f = sharedFixture(t);
+        const completed = f.prepare('previous-success');
+        complete(completed);
+        const owner = acquireBuildWorkspace(f.root, 'verify');
+        const pending = f.prepare('lock-refused', undefined, operation);
+        const originalMarker = fs.readFileSync(path.join(f.root, '.build', 'aily-workspace.lock'));
+        try {
+            const child = spawn(process.execPath, [require.resolve('../child/scripts/' + operation), pending.configFilePath],
+                { windowsHide: true, stdio: 'ignore' });
+            assert.deepEqual(await once(child, 'close'), [1, null]);
+            const refused = api.inspectBuildExecution(f.root, pending.execution.buildRequestId);
+            assert.equal(refused.executionId, pending.execution.id);
+            assert.equal(refused.status, 'not-started');
+            assert.equal(refused.code, 'BUILD_WORKSPACE_BUSY');
+            assert.equal(refused.nextAction, 'terminal');
+            assert.deepEqual(fs.readFileSync(path.join(f.root, '.build', 'aily-workspace.lock')), originalMarker);
+            assert.equal(fs.existsSync(pending.configFilePath), false);
+            assert.equal(api.inspectBuildExecution(f.root, completed.execution.buildRequestId).status, 'completed');
+            assert.equal(api.resolveBuildExecution(f.root).executionId, completed.execution.id);
+            assert.throws(() => f.prepare('lock-refused', undefined, operation), { code: 'BUILD_EXECUTION_EXISTS' });
+            assert.equal(api.settleStoppedSharedBuild(f.root, pending.execution).status, 'not-started');
+        } finally { owner.release(); }
+        const next = f.prepare('next-request');
+        complete(next);
+        assert.equal(api.resolveBuildExecution(f.root).executionId, next.execution.id);
+        assert.equal(api.inspectBuildExecution(f.root, 'lock-refused').status, 'not-started');
+    });
+}
+
 test('shared advisory preprocessing reuses the verified recipe and keeps the foreground firmware current', async t => {
     const f = sharedFixture(t);
     const completed = f.prepare('completed-foreground');
@@ -168,6 +200,105 @@ test('shared cache clear waits for the writer, removes legacy payloads and prese
     assert.equal(api.inspectBuildExecution(f.root, 'queued').status, 'cancelled');
     assert.equal(fs.existsSync(pending.configFilePath), false);
     assert.equal(api.resolveBuildExecution(f.root), null);
+});
+
+test('an exact revoked request remains terminal after Windows cache cleanup fails and restarts', {
+    skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 20000,
+}, async t => {
+    const f = sharedFixture(t);
+    const pending = [f.prepare('queued-compile'), f.prepare('queued-preprocess', undefined, 'preprocess')];
+    const restartedStatus = request => execFileSync(process.execPath, ['-e',
+        'const [file, root, request] = process.argv.slice(1); process.stdout.write(require(file).inspectBuildExecution(root, request).status);',
+        require.resolve('../child/scripts/build-execution-workspace'), f.root, request], { encoding: 'utf8', windowsHide: true });
+    const file = path.join(f.root, '.build', 'held-object.obj');
+    f.put('.build/held-object.obj', 'cache object');
+    const release = await holdWindowsFileWithoutDeleteSharing(file);
+    try {
+        assert.throws(() => api.clearSharedBuildCache(f.root), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
+        assert.equal(fs.readFileSync(file, 'utf8'), 'cache object');
+        for (const original of pending) {
+            assert.throws(() => api.validateSharedBuildLaunch(original.configFilePath, f.root, original.execution.operation));
+            assert.equal(restartedStatus(original.execution.buildRequestId), 'cancelled');
+        }
+    } finally { await release(); }
+    assert.equal(api.clearSharedBuildCache(f.root).cleared, true);
+    assert.equal(fs.existsSync(file), false);
+    const next = f.prepare('new-after-clear-retry');
+    assert.equal(api.validateSharedBuildLaunch(next.configFilePath, f.root, 'compile').execution.id, next.execution.id);
+    for (const original of pending) assert.equal(restartedStatus(original.execution.buildRequestId), 'cancelled');
+});
+
+test('shared cache clear removes an exited legacy recovery marker under the current cleaning lease', async t => {
+    const f = fixture(t);
+    const filename = '.build/aily-workspace-recovery.lock';
+    const marker = path.join(f.root, filename);
+    const firmware = path.join(f.root, '.build', 'firmware.bin');
+    const ownerToken = randomUUID();
+    f.put('.build/firmware.bin', 'old firmware');
+    for (const bytes of ['incomplete', JSON.stringify({ pid: process.pid, ownerToken })]) {
+        f.put(filename, bytes);
+        assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_WORKSPACE_BUSY' });
+        assert.equal(fs.readFileSync(marker, 'utf8'), bytes);
+        assert.equal(fs.readFileSync(firmware, 'utf8'), 'old firmware');
+    }
+
+    const exited = spawn(process.execPath, ['-e', ''], { windowsHide: true, stdio: 'ignore' });
+    assert.deepEqual(await once(exited, 'close'), [0, null]);
+    f.put(filename, JSON.stringify({ pid: exited.pid, ownerToken }));
+
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.deepEqual(fs.readdirSync(path.join(f.root, '.build')), []);
+    assert.ok(fs.existsSync(path.join(f.root, '.aily', 'build-workspace.guard')));
+    assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), 'original user program');
+});
+
+for (const selector of ['current.json', 'pending-compile.json', 'pending-preprocess.json']) {
+    test(`a broken shared ${selector} does not strand a new execution or clear`, t => {
+        const f = sharedFixture(t), original = f.prepare('completed-before-selector-damage');
+        complete(original);
+        const { store, folder } = api.recordFor(original);
+        const oldOutcome = fs.readFileSync(path.join(folder, 'outcome.json'));
+        const broken = path.join(store.parent, selector);
+        fs.writeFileSync(broken, '{"version":');
+        const next = f.prepare('next-after-selector-damage', undefined, selector.includes('preprocess') ? 'preprocess' : 'compile');
+        const lease = acquireBuildWorkspace(f.root, next.execution.operation);
+        try { api.startBuildExecution(next, lease); }
+        finally { lease.release(); }
+        api.finishBuildExecution(next, false);
+        fs.writeFileSync(broken, '{"version":');
+        assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+        assert.equal(fs.existsSync(broken), false);
+        assert.equal(fs.existsSync(path.join(f.root, '.build', 'firmware.bin')), false);
+        assert.deepEqual(fs.readFileSync(path.join(folder, 'outcome.json')), oldOutcome);
+        assert.equal(api.inspectBuildExecution(f.root, original.execution.buildRequestId).status, 'completed');
+        assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'failed');
+    });
+}
+
+test('shared cleanup retires a missing current target without erasing original receipts', t => {
+    const f = sharedFixture(t), original = f.prepare('receipt-before-missing-selector-target');
+    complete(original);
+    const { store, folder } = api.recordFor(original);
+    const outcome = fs.readFileSync(path.join(folder, 'outcome.json'));
+    fs.writeFileSync(store.pointer, JSON.stringify({ version: 1, id: randomUUID(), buildRequestId: 'missing-current-target' }));
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.equal(fs.existsSync(store.pointer), false);
+    assert.deepEqual(fs.readFileSync(path.join(folder, 'outcome.json')), outcome);
+});
+
+test('a non-file shared selector is refused before any cache or pending selector is removed', t => {
+    const f = sharedFixture(t), original = f.prepare('unaltered-selector');
+    complete(original);
+    const { store } = api.recordFor(original);
+    const queued = path.join(store.parent, 'pending-compile.json');
+    const pending = fs.readFileSync(queued);
+    fs.unlinkSync(store.pointer);
+    fs.mkdirSync(store.pointer);
+    assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_EXECUTION_INVALID' });
+    assert.equal(fs.lstatSync(store.pointer).isDirectory(), true);
+    assert.deepEqual(fs.readFileSync(queued), pending);
+    assert.equal(fs.readFileSync(path.join(f.root, '.build/firmware.bin'), 'utf8'), 'trusted firmware');
+    assert.equal(fs.existsSync(path.join(f.root, '.temp', 'preprocess.json')), true);
 });
 
 test('shared build rejects a redirected cache directory before taking over the writer', t => {

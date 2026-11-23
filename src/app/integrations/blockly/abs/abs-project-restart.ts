@@ -150,8 +150,16 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
 /** Opening a saved source with no pending transaction does not need its writer. */
 export async function settleAbsProjectOpen(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
   assertCurrent();
-  const journal = new AbsOperationJournal(port, project);
-  if (await port.read('prepared.json') !== null || await journal.hasUnsettledOperation()) {
+  await port.retireMalformedPointers?.();
+  assertCurrent();
+  const hasPending = async (scope: AbsSyncStoragePort) => await scope.read('prepared.json') !== null
+    || await new AbsOperationJournal(scope, project).hasUnsettledOperation();
+  const pending = await hasPending(port).catch(error => {
+    if (!['ABS_BASELINE_CORRUPT', 'ABS_OPERATION_CORRUPT'].includes(error?.code)) throw error;
+    // A damaged pointer does not show whether its writer is still active.
+    return port.withLock(storage => hasPending({ ...port, read: key => storage.read(key) }));
+  });
+  if (pending) {
     await settleAbsProjectTransaction(port, project, assertCurrent);
   }
   assertCurrent();

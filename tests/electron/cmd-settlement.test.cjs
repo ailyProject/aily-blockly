@@ -9,7 +9,7 @@ const test = require('node:test');
 
 const project = path.resolve('cmd-settlement-project');
 
-function fixture({ canRelease = () => true, stop = async () => false, stopJob, buildDeliveryAuthority } = {}) {
+function fixture({ canRelease = () => true, stop = async () => false, stopJob, buildDeliveryAuthority, shared } = {}) {
   const filename = path.join(__dirname, '../../electron/cmd.js');
   const realRequire = createRequire(filename);
   const handlers = new Map(), children = [], signals = [];
@@ -20,6 +20,12 @@ function fixture({ canRelease = () => true, stop = async () => false, stopJob, b
     AbortController, setTimeout, clearTimeout, console: { log() {}, info() {}, warn() {}, error() {} },
     require(name) {
       if (name === 'electron') return childOwner;
+      if (shared && name === './shared-blockly-build') return {
+        sharedBlocklyBuildEnabled: () => true, sharedBuildCommand: () => shared.config,
+        withSharedBuildAdmission: shared.admit,
+      };
+      if (shared && name === './child-script-path') return { childScriptPath: () => 'fixture:build-execution-workspace' };
+      if (shared && name === 'fixture:build-execution-workspace') return { settleUnstartedSharedBuild: shared.settle };
       if (name === './process-tree') return {
         captureRegisteredProcessIdentity: async () => '123456',
         async killRegisteredProcessTree(pid, name, options) { signals.push({ pid, name, options }); return stop(options); }
@@ -47,7 +53,7 @@ function fixture({ canRelease = () => true, stop = async () => false, stopJob, b
     }
   }, { filename });
   const api = original.exports;
-  api.registerCmdHandlers(undefined, { buildDeliveryAuthority });
+  api.registerCmdHandlers(undefined, { buildDeliveryAuthority, canClearSharedBuild: () => !!shared });
   const events = [];
   const owner = Object.assign(new EventEmitter(), {
     mainFrame: {}, isDestroyed: () => false, send: (...args) => events.push(args)
@@ -71,6 +77,26 @@ function close(child, code = 0) {
   child.exitCode = code;
   child.emit('close', code, null);
 }
+
+test('host admission refusal records only the exact undispatched shared build and preserves the cause', async () => {
+  const execution = { id: 'pending-execution', buildRequestId: 'pending-build', operation: 'compile' };
+  const error = Object.assign(new Error('Original Job is not verified.'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+  const settled = [];
+  const f = fixture({ shared: {
+    config: { execution }, admit: async () => { throw error; },
+    settle(...args) {
+      settled.push(args);
+      return { status: 'not-started', code: error.code, message: 'The previous cache owner is unverified.' };
+    },
+  } });
+  const result = await f.start('new-stream', { projectPath: project, projectSessionId: 'active-opening', buildWorkspace: project });
+  assert.equal(result.success, false);
+  assert.equal(result.buildOutcome, 'not-started');
+  assert.equal(result.code, error.code);
+  assert.equal(result.error, 'The previous cache owner is unverified.');
+  assert.deepEqual(settled, [[project, execution, error]]);
+  assert.equal(f.children.length, 0);
+});
 
 test('a late exact workspace proof releases only the original stream without a second signal', async () => {
   let prove = false, finish;

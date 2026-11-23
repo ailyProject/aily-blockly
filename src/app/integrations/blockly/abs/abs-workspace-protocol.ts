@@ -11,7 +11,9 @@ import { sameAbsProjectDirectory } from './abs-project-path';
  * accepted-source readiness or authority over a different physical project. */
 export async function absWorkspaceProtocol(project: string, input: Record<string, unknown>,
   assertCurrent: () => void, supplied?: AbsSyncStoragePort) {
-  const reply = absProtocolReply(project, input);
+  const { binding, ...discovery } = input;
+  const projectOnly = binding === 'project';
+  const reply = absProtocolReply(project, projectOnly ? discovery : input);
   if (!reply.ok) return reply;
   try {
     const port = supplied ?? await openAbsHostStorage(project, assertCurrent);
@@ -20,6 +22,8 @@ export async function absWorkspaceProtocol(project: string, input: Record<string
     const protocol = { ...reply.protocol, workspaceMode, supportedWorkspaceModes: [...ABS_WORKSPACE_MODES] };
     if (workspaceMode === 'overlay-v1') return { ...reply, project: port.attachment?.root ?? project, protocol };
     if (!port.attachment) throw new AbsSyncError('ABS_WORKSPACE_MODE_UNINITIALIZED', 'Project mode requires its physical storage attachment.');
+    if (projectOnly) return { ...reply, project: port.attachment.root, protocol: { ...protocol,
+      workspaceModeBinding: { version: 2 as const, attachment: port.attachment } } };
     const saved = await new AbsBaselineStore(port, { projectKey: port.attachment.root, pageId: '' }).readCommittedSnapshot();
     if (!saved || saved.abi === null || !await sameAbsProjectDirectory(saved.projection.map.scope.projectKey,
       port.attachment.root, undefined, /^[A-Za-z]:[/\\]|^\\\\/.test(port.attachment.root)))

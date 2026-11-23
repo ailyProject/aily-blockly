@@ -215,7 +215,8 @@ describe('ABS live protocol admission', () => {
   it('passes a valid candidate to the existing publisher exactly once without rebuilding the runtime', async () => {
     const service = bridge(), params = request();
     expect((await service.execute({ operation: 'abs_apply', params })).ok).toBeTrue();
-    expect(service.absGenerationTools.execute).toHaveBeenCalledOnceWith('abs_apply', params, params.abs, jasmine.any(Function));
+    expect(service.absGenerationTools.execute).toHaveBeenCalledOnceWith('abs_apply', params, params.abs, jasmine.any(Function),
+      undefined, undefined, { markApplyWriter: undefined });
     expect(service.projectService.ensureBlocklyLibraryRuntimeReady).not.toHaveBeenCalled();
     expect(rejectAbsRuntime('abs_validate', fingerprint, fingerprint)).toBeNull();
   });

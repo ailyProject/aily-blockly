@@ -72,6 +72,23 @@ describe('project build receipt store', () => {
     expect((await new ProjectBuildReceipts().status('/isolated', request('with-log'))).result).toBeUndefined();
   });
 
+  it('observes a durable admission refusal and keeps the same request from replaying', async () => {
+    const original = window['builder'];
+    const refused = { version: 1, buildRequestId: 'refused', status: 'not-started',
+      code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED', message: 'The previous cache owner is unverified.' };
+    window['builder'] = { inspectBuildExecution: () => refused };
+    try {
+      const store = new ProjectBuildReceipts(0, 0, readNativeBuildReceipt);
+      const run = jasmine.createSpy('run');
+      const status = await store.status('/project', request('refused'));
+      expect(status.buildReceipt.state).toBe('completed');
+      expect(status.result).toEqual(jasmine.objectContaining({ ok: false, buildOutcome: 'not-started',
+        code: refused.code, message: refused.message }));
+      expect((await store.start('/project', request('refused'), 'compile', run)).result).toEqual(status.result);
+      expect(run).not.toHaveBeenCalled();
+    } finally { window['builder'] = original; }
+  });
+
   it('retains running ownership beyond retention while only evicting completed entries', fakeAsync(() => {
     const store = new ProjectBuildReceipts(50, 1);
     let finish!: (result: Record<string, any>) => void;

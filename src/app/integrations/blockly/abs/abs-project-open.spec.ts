@@ -153,4 +153,47 @@ describe('complete ABS cache restoration',()=>{
  expect((await store.loadCommitted())!.abs).toBe(first.projection.abs);
  expect(JSON.parse(abi!).pages[0].content.blocks.blocks[0].deletable).toBeFalse();
  });
+ it('opens the saved legacy ABI when only its old public ABS and map were copied', async () => {
+   const abi = JSON.stringify({ blocks: { blocks: [{ id: 'original', type: 'root' }] } });
+   files.set('project.abi', abi);
+   files.set('project.abs', '# ABS Schema: 2\nroot()');
+   files.set('project.abs.map.json', JSON.stringify({ schemaVersion: 1, projectionVersion: 'abs-v2.preview.4' }));
+   const original = [...files];
+   expect(await restoreAbsProjectCaches(port, 'project', () => {}, { preferSavedAbi: true })).toBeNull();
+   expect([...files]).toEqual(original);
+ });
+ it('does not read a denied unrelated sidecar when the saved ABI supplies the editor', async () => {
+   files.set('project.abi', JSON.stringify({ blocks: { blocks: [] } }));
+   const read = port.read;
+   spyOn(port, 'read').and.callFake(async (key: string) => {
+     if (key === 'project.abs' || key === 'project.abs.map.json') throw new Error('fixture denied sidecar');
+     return read(key);
+   });
+   expect(await restoreAbsProjectCaches(port, 'project', () => {}, { preferSavedAbi: true })).toBeNull();
+   expect(port.read).not.toHaveBeenCalledWith('project.abs');
+   expect(port.read).not.toHaveBeenCalledWith('project.abs.map.json');
+ });
+ it('keeps the saved canvas when a valid older complete ABS is copied over its public mirror', async () => {
+   const first = await save('older');
+   const current = await save('current');
+   files.set('project.abs', first.projection.abs);
+   const original = [...files];
+   expect(await restoreAbsProjectCaches(port, 'project', () => {}, { preferSavedAbi: true })).toBe(current.abi);
+   expect([...files]).toEqual(original);
+ });
+ it('leaves an independent valid saved ABI available without legitimizing its disagreement with an accepted snapshot', async () => {
+   await save('accepted');
+   const abi = JSON.stringify({ blocks: { blocks: [{ id: 'independent', type: 'root', fields: { TEXT: 'disk' } }] } });
+   files.set('project.abi', abi);
+   const original = [...files];
+   expect(await restoreAbsProjectCaches(port, 'project', () => {}, { preferSavedAbi: true })).toBeNull();
+   expect([...files]).toEqual(original);
+ });
+ it('still restores a complete standalone ABS when there is no saved ABI', async () => {
+   const base = await save('portable', true);
+   files.clear(); files.set('project.abs', base.projection.abs);
+   const restored = await restoreAbsProjectCaches(port, 'project', () => {}, { preferSavedAbi: true });
+   expect(JSON.parse(restored!).pages[0].content.blocks.blocks[0].fields.TEXT).toBe('portable');
+   expect(files.get('project.abs')).toBe(base.projection.abs);
+ });
 });

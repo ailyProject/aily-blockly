@@ -54,6 +54,14 @@ export function assertGenerationRequest(value: any): asserts value is AbsGenerat
     throw new AbsSyncError('ABS_REQUEST_INVALID', 'A valid generation requestId is required.', undefined, [], { reason: 'invalid-request-id' });
   }
 }
+export function readMergedAuthorSources(value: unknown): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 64 || new Set(value).size !== value.length
+    || value.some(item => typeof item !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(item))) {
+    throw new AbsSyncError('ABS_REQUEST_INVALID', 'Merged author observation requires distinct source hashes.');
+  }
+  return value;
+}
 export function assertGenerationProjectionRequest(value: any): void {
   assertGenerationRequest(value);
   if (!hash(value['expectedAbiHash'])

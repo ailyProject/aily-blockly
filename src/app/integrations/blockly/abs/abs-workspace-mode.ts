@@ -24,6 +24,7 @@ export interface AbsAuthorSourceRecord {
   inputHash: string | null;
   hash: string | null;
   disposition: 'accepted' | 'refreshed' | 'preserved';
+  mergedFrom?: string;
 }
 
 export interface AbsAcceptedSourceProof {

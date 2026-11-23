@@ -240,19 +240,8 @@ export class AbsApplicationJournal {
     const store = new AbsBaselineStore(this.port, binding.scope), projection = await store.load(binding.generation);
     const abi = await store.readDerivedAbi(binding.generation);
     if (absJson(await generationEvidence(projection, abi)) !== absJson(staged.outcome.evidence)) throw fail('Original saved document readback differs from its result.');
-    const disk = await store.captureDisk(), pointer = await this.port.read('committed.json');
-    const acceptedSource = await store.acceptedSourceProof(binding.generation, undefined, true);
-    const pointerHash = pointer === null ? null : await hashAbsText(pointer);
-    const current = pointerHash !== null && pointerHash === proof.committedHash && disk.abi === abi
-      && await store.matchesAcceptedDisk({ projection, abi }, disk)
-      && (await store.workspaceMode() === 'project-v1'
-        ? acceptedSourceMatches(acceptedSource, binding, this.port.attachment) && acceptedSource.committedHash === pointerHash
-        : disk.abs === projection.abs)
-      && await this.port.read('committed.json') === pointer
-      && await this.port.read('prepared.json') === null;
-    assertCurrent();
     let outcome = staged.outcome;
-    const finalText = await this.port.read(resultKey(index.operationId));
+    const finalText = recordedFinalText ?? await this.port.read(resultKey(index.operationId));
     if (finalText !== null) {
       const final = JSON.parse(finalText);
       if (final.version !== 1 || final.project !== this.project || final.operationId !== index.operationId
@@ -261,7 +250,30 @@ export class AbsApplicationJournal {
         || absJson(final.outcome?.historyBase ?? null) !== absJson(outcome.historyBase ?? null)) throw fail('The original final result differs from the committed source.');
       outcome = final.outcome;
     }
-    if (acceptedSource) outcome = { ...outcome, acceptedSource,
+    let unreadableMirror = false;
+    const currentFiles = { read: async (key: string) => {
+      try { return await this.port.read(key); }
+      catch (error) {
+        if (proofText === null || finalText === null || (error as { code?: string })?.code !== 'ABS_STORAGE_ENCODING_INVALID'
+          || (key !== 'project.abs' && key !== 'project.abs.map.json')) throw error;
+        unreadableMirror = true;
+        return null;
+      }
+    } };
+    // A damaged current mirror cannot change the sealed original result.
+    // Read ABI independently so other storage failures still surface.
+    const disk = await store.captureDisk(currentFiles), pointer = await this.port.read('committed.json');
+    const acceptedSource = unreadableMirror ? undefined : await store.acceptedSourceProof(binding.generation, currentFiles, true);
+    const pointerHash = pointer === null ? null : await hashAbsText(pointer);
+    const current = !unreadableMirror && pointerHash !== null && pointerHash === proof.committedHash && disk.abi === abi
+      && await store.matchesAcceptedDisk({ projection, abi }, disk)
+      && (await store.workspaceMode() === 'project-v1'
+        ? acceptedSourceMatches(acceptedSource, binding, this.port.attachment) && acceptedSource.committedHash === pointerHash
+        : disk.abs === projection.abs)
+      && await this.port.read('committed.json') === pointer
+      && await this.port.read('prepared.json') === null;
+    assertCurrent();
+    if (!unreadableMirror && acceptedSource) outcome = { ...outcome, acceptedSource,
       publication: { ...outcome.publication,
         ...(finalText === null ? { absMirrored: disk.abs === projection.abs, acceptedSource }
           : outcome.publication.acceptedSource ? { acceptedSource } : {}) } };

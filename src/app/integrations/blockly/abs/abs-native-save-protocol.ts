@@ -3,6 +3,7 @@ import type { AbsGenerationEvidence } from './abs-generation-protocol';
 import type { ProjectPublicationOperation } from '@domain/project/public-api';
 import type { AbsBlockState, AbsBlockStateUpdateRequest } from './abs-block-state';
 import { absJson, hashAbsText } from './abs-identity-map';
+import { readSaveSnapshot } from './abs-save-snapshot';
 import { AbsSyncError } from './abs-state';
 import type { AbsAcceptedSourceProof } from './abs-workspace-mode';
 
@@ -102,7 +103,7 @@ export async function readNativeSaveAtAttachment(port: Pick<AbsSyncStoragePort, 
       || !/^[a-f0-9-]{36}$/.test(index.operationId) || !hash(index.snapshotHash)) throw new Error('Invalid native request index.');
     const text = await port.read(`recoveries/operation-${index.operationId}.json`);
     if (text === null || await hashAbsText(text) !== index.snapshotHash) throw new Error('Original native snapshot checksum differs.');
-    snapshot = JSON.parse(text);
+    snapshot = await readSaveSnapshot(port, text);
     if (snapshot.version !== 1 || snapshot.kind !== 'document-save' || snapshot.id !== index.operationId
       || snapshot.project !== project || !snapshot.document || typeof snapshot.document !== 'object'
       || !snapshot.disk || Object.keys(snapshot.disk).sort().join(',') !== 'abi,abs,map'
