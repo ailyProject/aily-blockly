@@ -61,6 +61,16 @@ function sharedFixture(t) {
         { ...f.config, buildRequestId: id, explicitPreprocess }, workspace, operation, { shared: true }) };
 }
 
+for (const legacy of ['.aily/build-executions', '.aily/build-executions/requests'])
+test(`a regular file at ${legacy} cannot block a new shared build`, t => {
+    const f = sharedFixture(t);
+    f.put(legacy, 'old data');
+    const first = f.prepare('new-request');
+    assert.equal(first.currentProjectPath, f.root);
+    assert.throws(() => f.prepare('new-request'));
+    assert.equal(fs.readFileSync(path.join(f.root, legacy), 'utf8'), 'old data');
+});
+
 test('shared build uses project caches and captures the live canvas without changing saved inputs', async t => {
     const f = sharedFixture(t), sha = data => createHash('sha256').update(data).digest('hex');
     const savedA = JSON.stringify({ pages: [{ code: 'A' }] });

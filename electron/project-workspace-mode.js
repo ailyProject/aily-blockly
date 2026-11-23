@@ -206,19 +206,6 @@ async function replacePreparedWorkspaceMigration(projectPath, input, assertCurre
   }
 }
 
-function assertNoPreparedWorkspaceMigration(access) {
-  const directory = path.join(access.root, '.workspace-history');
-  try { access.checkDirectory(directory); }
-  catch (error) { if (error.code === 'ENOENT') return; throw error; }
-  const bytes = access.readRegular(path.join(directory, 'workspace.json'));
-  if (bytes === null) return;
-  let state;
-  try { state = JSON.parse(bytes.toString('utf8')); }
-  catch { throw fail('History metadata is invalid; no program writer was admitted.'); }
-  if (state.executionMigration?.phase === 'prepared')
-    throw fault('ABS_WORKSPACE_MIGRATION_PENDING', 'The original workspace migration must settle before another program writer.');
-}
-
 /** Select one persisted author engine. The prepared immutable History archive
  * is the intent; this adapter never executes its author plan or edits History. */
 async function selectProjectWorkspaceMode(projectPath, input, assertCurrent, options = {}) {
@@ -272,4 +259,4 @@ async function selectProjectWorkspaceModeBridge(...args) {
   try { return { ok: true, value: await selectProjectWorkspaceMode(...args) }; }
   catch (error) { return { ok: false, error: { code: error.code, message: error.message } }; }
 }
-module.exports = { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration, selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge, assertNoPreparedWorkspaceMigration };
+module.exports = { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration, selectProjectWorkspaceMode, selectProjectWorkspaceModeBridge };

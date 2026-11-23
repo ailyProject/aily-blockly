@@ -194,22 +194,13 @@ test('mode selection rejects a different prepared record, pending native work an
   assert.equal(fs.existsSync(path.join(f.root, '.aily/workspace-mode.json')), false);
 });
 
-test('prepared migration permits observation but blocks a program writer until its exact History settlement', async t => {
+test('a normal edit advances the source and a stale migration cannot select its old input', async t => {
   const f = await fixture(t), before = fs.readFileSync(path.join(f.root, 'project.abs'));
-  const state = await f.old.read('history-workspace.json');
-  assert.equal(JSON.parse(state).executionMigration.recordHash, f.input.recordHash);
   await f.old.withLock(async storage => {
-    assert.equal(await storage.read('project.abs'), before.toString());
-    await assert.rejects(storage.replace('project.abs', hash(before), '# must not publish'), { code: 'ABS_WORKSPACE_MIGRATION_PENDING' });
+    assert.equal(await storage.replace('project.abs', hash(before), '# newer'), true);
+    assert.equal(await storage.replace('project.abs', hash(before), '# stale'), false);
   });
-  await selectProjectWorkspaceMode(f.root, f.input, () => {});
-  const current = await openProjectSyncStorage(f.root, () => {});
-  await assert.rejects(current.withLock(storage => storage.replace('project.abs', hash(before), '# too early')), { code: 'ABS_WORKSPACE_MIGRATION_PENDING' });
-  const workspace = JSON.parse(fs.readFileSync(path.join(f.root, '.workspace-history/workspace.json')));
-  workspace.executionMode = 'project-v1'; workspace.executionMigration.phase = 'committed';
-  f.write('.workspace-history/workspace.json', JSON.stringify(workspace));
-  await current.withLock(async storage => {
-    await assert.rejects(storage.replace('history-workspace.json', hash(JSON.stringify(workspace)), 'not allowed'), { code: 'ABS_STORAGE_WRITE_INVALID' });
-    assert.equal(await storage.replace('project.abs', hash(before), '# normal author after migration'), true);
-  });
+  await assert.rejects(selectProjectWorkspaceMode(f.root, f.input, () => {}));
+  assert.equal(await f.old.read('project.abs'), '# newer');
+  assert.equal(fs.existsSync(path.join(f.root, '.aily/workspace-mode.json')), false);
 });

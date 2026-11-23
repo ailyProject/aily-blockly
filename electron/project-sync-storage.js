@@ -5,7 +5,6 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { storageExecutor, observeStorageExecutor, retireEmptyProjectFileLock, retireProjectFileLock } = require('./project-file-lock-owner');
-const { assertNoPreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
   createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 
@@ -173,7 +172,6 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       const retire = key => {
         guard(); lock.assertOwned();
         if (!malformedPointer(key)) return;
-        assertNoPreparedWorkspaceMigration(access);
         files.unlinkSync(locate(key));
       };
       retire(prepared);
@@ -193,7 +191,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       || !Object.keys(expected).some(key => /^recoveries\/operation-[a-f0-9-]{36}\.json$/.test(key)))
       throw fault('PROJECT_FILE_LOCK_CHANGED', 'Missing exact source and journal evidence for the copied lock.');
     const verify = () => {
-      guard(); assertNoPreparedWorkspaceMigration(access);
+      guard();
       for (const [key, expectedHash] of Object.entries(expected)) {
         if (hash(readBytes(key)) !== expectedHash)
           throw fault('ABS_TRANSACTION_CONFLICT', 'The copied journal changed before lock recovery.');
@@ -245,16 +243,15 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       const replaceBytes = async (key, expectedHash, bytes, raw = false, verify = () => {}) => {
         check();
         if (bytes && bytes.length > MAX_PROJECT_FILE_BYTES) throw fault('PROJECT_FILE_TOO_LARGE', 'Sync file exceeds the 128 MiB publication limit.');
-        const checkMigration = () => {
-          try { assertNoPreparedWorkspaceMigration(access); }
-          catch (error) {
-            // A prepared migration excludes program writers. The current validated
-            // writer may still seal an immutable refusal for its own unused ID.
-            if (error.code !== 'ABS_WORKSPACE_MIGRATION_PENDING' || expectedHash !== null
-              || !matchesOriginalApplyRefusal(readText, key, bytes, access.attachment, executor)) throw error;
-          }
+        const checkAdmission = () => {
+          if (!bytes || !key.startsWith('recoveries/admission-')) return;
+          let receipt;
+          try { receipt = JSON.parse(bytes.toString('utf8')); } catch { return; }
+          if (receipt?.code === 'ABS_WORKSPACE_MIGRATION_PENDING' && receipt.request?.operation === 'abs_apply'
+            && (expectedHash !== null || !matchesOriginalApplyRefusal(readText, key, bytes, access.attachment, executor)))
+            throw fault('ABS_ADMISSION_INVALID', 'The refusal does not identify its original ABS writer.');
         };
-        checkMigration();
+        checkAdmission();
         verify();
         const before = readBytes(key, raw);
         if (hash(before) !== expectedHash) return false;
@@ -272,7 +269,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
             finally { await handle.close(); }
           }
           // No await from the final renderer guard/physical identity/CAS to rename.
-          check(); locate(key, false, raw); checkMigration(); verify();
+          check(); locate(key, false, raw); checkAdmission(); verify();
           if (hash(readBytes(key, raw)) !== expectedHash) return false;
           attempted = true;
           if (bytes === null) files.unlinkSync(target);

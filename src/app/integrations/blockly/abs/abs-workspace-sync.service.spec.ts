@@ -5613,21 +5613,16 @@ describe('v2 actual workspace generation coordinator', () => {
       const accepted = (await service.inspectHistoryProgram()).abs;
       expect(accepted).toContain('environment rebuilt Working'); expect(accepted).not.toBe(draft); expect(gate.busy).toBeFalse();
     });
-    it('S3 refuses a prepared migration before any runtime mutation or background capture and permits read-only protocol observation', async () => {
+    it('saves the current canvas even when the optional History index is damaged', async () => {
       await baseline(); select();
-      const original = roots().getFieldValue('TEXT'), before = [...disk];
-      disk.set('history-workspace.json', absJson({ executionMode: 'overlay-v1',
-        executionMigration: { version: 1, from: 'overlay-v1', to: 'project-v1', phase: 'prepared', recordHash: 'a'.repeat(64) } }));
-      const pending = [...disk], mutation = jasmine.createSpy('runtime').and.callFake(async () => roots().setFieldValue('must not mutate', 'TEXT'));
-      await expectAsync(project.publishRuntimeMutation(scope.projectKey, mutation,
-        { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' }))
-        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_PENDING' }));
-      await expectAsync(project.save(scope.projectKey, { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' }, true))
-        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_PENDING' }));
-      expect(mutation).not.toHaveBeenCalled(); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
-      expect(roots().getFieldValue('TEXT')).toBe(original); expect([...disk]).toEqual(pending); expect(gate.busy).toBeFalse();
-      expect((await absWorkspaceProtocol(scope.projectKey, { version: 1 }, () => {}, port)).ok).toBeTrue();
-      expect(before.every(([key, value]) => disk.get(key) === value)).toBeTrue();
+      disk.set('history-workspace.json', '{');
+      roots().setFieldValue('saved independently of History', 'TEXT');
+      const saved: any = await project.save(scope.projectKey,
+        { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' }, true);
+      expect(saved.publication.status).toBe('COMMITTED');
+      expect(disk.get('project.abi')).toContain('saved independently of History');
+      expect(disk.get('history-workspace.json')).toBe('{');
+      expect(gate.busy).toBeFalse();
     });
     it('S3 publishes full History undo redo in the original Working while retaining the dirty author and observing exact IDs', async () => {
       await baseline(); select();

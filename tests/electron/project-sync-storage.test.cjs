@@ -70,7 +70,7 @@ after(() => { for (const root of roots) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 
-test('prepared migration permits only the exact immutable original ABS refusal', async () => {
+test('old migration metadata does not gate program writes; a migration refusal still identifies its original writer', async () => {
   const root = project(), store = await openProjectSyncStorage(root, guard);
   const history = path.join(root, '.workspace-history');
   const original = randomUUID(), indexed = randomUUID(), other = randomUUID();
@@ -94,9 +94,9 @@ test('prepared migration permits only the exact immutable original ABS refusal',
   fs.writeFileSync(path.join(history, 'workspace.json'), migration);
   const body = receipt(original);
   await store.withLock(async locked => {
-    const denied = (key, content) => assert.rejects(locked.replace(key, null, content), { code: 'ABS_WORKSPACE_MIGRATION_PENDING' });
-    await denied('project.abs', 'unauthorized author write');
-    await denied('operation.json', '{}');
+    const denied = (key, content) => assert.rejects(locked.replace(key, null, content), { code: 'ABS_ADMISSION_INVALID' });
+    assert.equal(await locked.replace('project.abs', null, 'current author'), true);
+    assert.equal(await locked.replace('operation.json', null, '{}'), true);
     await denied(receiptKey(indexed), receipt(indexed));
     await denied(receiptKey(other), body);
     await denied(receiptKey(other), receipt(other, { executor: { ...store.executor, instanceId: randomUUID() } }));
