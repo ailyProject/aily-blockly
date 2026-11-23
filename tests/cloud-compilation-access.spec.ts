@@ -168,12 +168,12 @@ describe('cloud compilation account access', () => {
     for (const [region, buildFlavor] of [
       ['cn', 'cn'], ['eu', 'global'], ['localhost', 'cn'], ['localhost', 'global'], [undefined, 'cn'],
     ]) {
-      it(`checks platform and edition for saved cloud preference and settings: ${platform}/${region}/${buildFlavor}`, async () => {
+      it(`checks edition and region independently of platform: ${platform}/${region}/${buildFlavor}`, async () => {
         window['platform'] = { type: platform };
         config.data.region = region;
         config.data.build_flavor = buildFlavor;
         account(true, 'free');
-        const allowed = (platform === 'win32' || platform === 'linux') && (region === 'cn' || region === 'localhost') && buildFlavor === 'cn';
+        const allowed = (region === 'cn' || region === 'localhost') && buildFlavor === 'cn';
         const component = settings();
         // An older main-window response must not bypass the current environment check.
         component.hostCloudCompilationAllowed = true;

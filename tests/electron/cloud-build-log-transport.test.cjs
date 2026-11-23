@@ -27,7 +27,7 @@ for (const logComplete of [true, false, undefined]) {
     registerCloudBuildHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
       getOwner: () => ({ projectPath: path.join(os.tmpdir(), 'owned-log-transport') }),
       getGatewaySettings: () => ({}), getAuth: () => ({}), querySource: async () => ({}),
-      getRuntimeRoot: () => path.join(os.tmpdir(), 'owned-log-runtime'), backend: 'cloud', platform: 'win32', getRegion: () => 'cn' });
+      getRuntimeRoot: () => path.join(os.tmpdir(), 'owned-log-runtime'), backend: 'cloud', getRegion: () => 'cn' });
     const invoke = vm.runInNewContext('(' + method.getText(source) + ')', { ipcRenderer: {
       invoke: (channel, payload) => handlers.get(channel)({ sender, senderFrame: frame }, payload),
     } });

@@ -9,10 +9,9 @@ export interface CloudBuildSettings {
   publicKey?: string;
 }
 
-/** macOS 与国际版不开放云编译，启动期间等候平台和区域初始化。 */
-export function isCloudCompilationSupported(platform: unknown, region: unknown, buildFlavor: unknown): boolean {
-  return typeof platform === 'string' && !!platform && platform !== 'darwin'
-    && typeof region === 'string' && !!region && region !== 'eu' && buildFlavor !== 'global';
+/** 国际版不开放云编译，启动期间等候区域初始化。 */
+export function isCloudCompilationSupported(region: unknown, buildFlavor: unknown): boolean {
+  return typeof region === 'string' && !!region && region !== 'eu' && buildFlavor !== 'global';
 }
 
 export function getCompileBackend(config: any): CompileBackend {

@@ -122,7 +122,7 @@ export class ConfigService {
   }
 
   get canUseCloudCompilation(): boolean {
-    return isCloudCompilationSupported(window['platform']?.type, this.data?.region, this.data?.build_flavor)
+    return isCloudCompilationSupported(this.data?.region, this.data?.build_flavor)
       && this.authService.canUseCloudCompilation;
   }
   getCompileBackend(): CompileBackend {
@@ -136,7 +136,7 @@ export class ConfigService {
   /** 云开关独立落盘并同步其他窗口，保留设置页中尚未应用的其他修改。 */
   async saveCompileSettings(): Promise<void> {
     // 关闭云模式时无需连接或校验网关，服务异常也不能妨碍用户切回本地编译。
-    // 保存用户偏好；实际执行始终通过 getCompileBackend() 检查当前登录状态和运行环境。
+    // 保存用户偏好；实际执行始终通过 getCompileBackend() 检查当前登录状态和版本。
     const backend = getCompileBackend(this.data);
     const cloud = backend === 'cloud' ? this.getCloudBuildSettings() : { ...(this.data.cloud || {}) };
     this.data.compile = { ...(this.data.compile || {}), backend };

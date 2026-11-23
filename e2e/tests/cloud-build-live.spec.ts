@@ -11,7 +11,6 @@ const boardModule = '@aily-project/board-esp32s3';
 
 for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud compilation, signed artifact reuse and source invalidation`, async ({}, info) => {
   test.skip(!enabled || !seed || !accessToken, 'Opt in with AILY_E2E_CLOUD_LIVE=1, an installed package seed and a valid test access token.');
-  test.skip(process.platform === 'darwin', 'Cloud compilation is unavailable on macOS.');
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'aily-cloud-merge-')));
   const project = path.join(root, 'project');
   const write = async (file: string, content: string) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, content); };
@@ -122,12 +121,14 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
     expect(repeatedEvents.some((event: any) => event.stage === 'queued')).toBe(false);
     await expect(win.locator('body')).toContainText(/已复用云编译结果 \(耗时: \d+\.\d{2}s\)/);
     expect(await reuse()).toBe(true);
-    // Invalid serial input must be rejected before any physical device is opened.
-    const uploadError = await win.evaluate(async project => {
-      try { await (window as any).cloudBuild.upload({ projectPath: project, requestId: 'merge-invalid-port', serialPort: 'TEST-NO-DEVICE' }); return null; }
-      catch (error: any) { return error.code; }
-    }, project);
-    expect(uploadError).toBe('UPLOAD_INVALID');
+    // The legacy serial entry point must reject invalid input without opening a device.
+    if (result.manifest.flashPlan?.protocol !== 'cloud-recipe') {
+      const uploadError = await win.evaluate(async project => {
+        try { await (window as any).cloudBuild.upload({ projectPath: project, requestId: 'merge-invalid-port', serialPort: 'TEST-NO-DEVICE' }); return null; }
+        catch (error: any) { return error.code; }
+      }, project);
+      expect(uploadError).toBe('UPLOAD_INVALID');
+    }
     await write(probe, '#pragma once\n// changed after compilation\n');
     expect(await reuse()).toBe(false);
     expect(await readFile(path.join(project, 'node_modules', boardModule, 'board.json'), 'utf8')).toBe(boardBefore);
