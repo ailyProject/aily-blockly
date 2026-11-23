@@ -13,6 +13,7 @@ const versions = require('./subapp-version-store');
 const { acquireInstallLock: acquireUpdateLock } = require('./subapp-install-lock');
 const { subappLaunches } = require('./subapp-launch-reservations');
 const { extractNpmTarballInBackground } = require('./subapp-package-worker-client');
+const { runSubappVersionCleanup } = require('./subapp-version-cleanup');
 const { resolveAilyNpmPrefix } = require('./appdata-path');
 const subappBinRouter = require('./subapp-bin-router');
 const { downloadFileWithProgress, fault, duration } = require('./subapp-download');
@@ -26,7 +27,6 @@ const UPDATE_PACKAGE_FILE = 'package.tgz';
 const UPDATE_SCHEMA_VERSION = 1;
 const VERSION_CLEANUP_DELAY_MS = 5_000;
 const VERSION_CLEANUP_RETRY_MS = 60_000;
-const RETIRED_VERSION_DIRECTORY = /^\.retired-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const MAX_INDEX_BYTES = 2 * 1024 * 1024;
 const TOOL_ID_ALIASES = Object.freeze({
   'ffs-manager': 'ffs-manager-child',
@@ -2434,91 +2434,6 @@ async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunn
   }
 }
 
-function fileIdentity(filename) {
-  const stat = fs.lstatSync(filename, { throwIfNoEntry: false });
-  return stat ? `${stat.dev}:${stat.ino}:${stat.ctimeMs}:${stat.mtimeMs}` : null;
-}
-
-async function retireObsoleteSubappVersions(rootDir, entry, options) {
-  const parent = versions.storeRoot(rootDir, entry, { optional: true });
-  if (!parent) return false;
-  let retry = false;
-  for (const item of fs.readdirSync(parent, { withFileTypes: true })) {
-    if (!item.isDirectory() || !RETIRED_VERSION_DIRECTORY.test(item.name)) continue;
-    try { await fs.promises.rm(path.join(parent, item.name), { recursive: true, force: true }); }
-    catch { retry = true; }
-  }
-  const candidates = versions.collectObsoleteVersions(rootDir, entry)
-    .filter(item => item.version !== entry.version);
-  const retired = [];
-
-  if (candidates.length) {
-    if (options.isBusy()) return true;
-    // Inventory may take seconds. Recheck the selection and directory identities
-    // after acquiring the locks so a new publication or launch cannot race it.
-    const selector = path.join(parent, 'active.json');
-    const selectionBefore = fileIdentity(selector);
-    const checked = new Map();
-    const normalize = value => options.platform === 'win32' ? value.toLowerCase() : value;
-    const beforeInventory = candidates.map(item => ({ ...item, identity: fileIdentity(item.directory) }));
-    const commands = options.hasProcessesUsingPath ? [] : (await readProcessCommands(options.platform)).map(normalize);
-    const router = path.basename(subappBinRouter.stableRouterPath(rootDir));
-    if (commands.some(command => command.includes(router) && command.includes(entry.package))) return true;
-    for (const item of beforeInventory) {
-      if (!item.identity || fileIdentity(item.directory) !== item.identity) {
-        retry = true;
-        continue;
-      }
-      const paths = [item.directory, fs.realpathSync(item.directory)].map(dir => normalize(`${dir}${path.sep}`));
-      const busy = options.hasProcessesUsingPath
-        ? await options.hasProcessesUsingPath(item.directory, options.platform)
-        : commands.some(command => paths.some(prefix => command.includes(prefix)));
-      if (busy) retry = true;
-      else checked.set(item.version, item.identity);
-    }
-
-    if (checked.size) {
-      const lockRoot = path.join(rootDir, 'store', '.locks');
-      const releasePackage = acquireUpdateLock(path.join(lockRoot, versions.storeKeyForPackage(entry.package)));
-      if (!releasePackage) return true;
-      try {
-        const obsolete = versions.collectObsoleteVersions(rootDir, entry);
-        const releaseSelection = acquireUpdateLock(lockRoot);
-        if (!releaseSelection) return true;
-        try {
-          if (options.isBusy() || versions.isUninstalling(rootDir, entry)
-            || fileIdentity(selector) !== selectionBefore) return true;
-          const referenced = versions.referencedVersions(rootDir, entry);
-          const cachePath = path.join(rootDir, INDEX_CACHE_FILE);
-          const cachedEntry = fs.existsSync(cachePath) ? readJson(cachePath)?.[entry.id] : null;
-          for (const item of obsolete) {
-            if (item.version === entry.version || referenced.has(item.version)
-              || (cachedEntry?.package === entry.package && cachedEntry.version === item.version)) continue;
-            if (!checked.has(item.version) || fileIdentity(item.directory) !== checked.get(item.version)) {
-              retry = true;
-              continue;
-            }
-            const destination = path.join(parent, `.retired-${randomUUID()}`);
-            try {
-              // Detach while selection is fenced, then remove after releasing the locks.
-              fs.renameSync(item.directory, destination);
-              retired.push(destination);
-            } catch {
-              retry = true;
-            }
-          }
-        } finally { releaseSelection(); }
-      } finally { releasePackage(); }
-    }
-  }
-
-  for (const directory of retired) {
-    try { await fs.promises.rm(directory, { recursive: true, force: true }); }
-    catch { retry = true; }
-  }
-  return retry;
-}
-
 function createSubappManager(options = {}) {
   const rootDir = resolveSubappRoot(options);
   const updateRootDir = resolveSubappUpdateRoot(options);
@@ -2559,7 +2474,7 @@ function createSubappManager(options = {}) {
           let retry;
           try {
             const key = operationKey(rootDir, entry.id);
-            retry = await retireObsoleteSubappVersions(rootDir, entry, {
+            retry = await runSubappVersionCleanup(rootDir, entry, {
               ...options,
               isBusy: () => pendingUninstalls.has(key) || mutationQueues.has(key)
                 || preparationControllers.has(key)
@@ -3433,7 +3348,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getIndexUrl,
     getRunningSubappConfig,
     isCoderProjectOpen,
-    canMutateSharedTree,
+    versionCleanupProfiles,
     requireBlocklyChatCompatibility,
     allowBlocklyChatDevelopment,
   } = handlerOptions;
@@ -3461,7 +3376,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getIndexUrl,
     getRunningSubappConfig,
     isCoderProjectOpen,
-    canMutateSharedTree,
+    versionCleanupProfiles,
     requireBlocklyChatCompatibility,
     allowBlocklyChatDevelopment,
     getBusyDialogStrings: () => readSubappBusyDialogStringsFromI18n(),

@@ -1236,6 +1236,95 @@ test('background cleanup waits for process inventory and releases obsolete versi
   assert.deepEqual(f.calls, []);
 });
 
+test('stalled cleanup inventory times out without blocking either foreground session or update', { timeout: 10000 }, async t => {
+  const otherId = 'fixture-tool';
+  const otherPackage = '@aily-project/subapp-fixture-tool';
+  const otherVersion = '0.1.33';
+  const otherArchive = portableSubappTarball({ packageName: otherPackage, version: otherVersion, id: otherId });
+  const other = catalogEntry(otherVersion, otherArchive, {
+    id: otherId, package: otherPackage, namespace: 'FIXTURE_TOOL', titleKey: 'FIXTURE_TOOL.NAME',
+  });
+  const cleanupStarted = Promise.withResolvers();
+  const cleanupRetried = Promise.withResolvers();
+  const stalled = Promise.withResolvers();
+  const progress = [];
+  let checks = 0;
+  const f = fixture(t, { version: '0.1.34', managerOptions: {
+    backgroundVersionCleanup: true,
+    versionCleanupDelayMs: 0,
+    versionCleanupRetryMs: 20,
+    versionCleanupTimeoutMs: 2500,
+    lockTimeoutMs: 250,
+    downloadFile: async (url, destination) => {
+      fs.writeFileSync(destination, url === other.dist.tarball ? otherArchive : f.archive);
+    },
+    onProgress: event => progress.push(event),
+    hasProcessesUsingPath: async directory => {
+      if (path.basename(directory) !== '0.1.30') return true;
+      checks += 1;
+      if (checks === 1) {
+        cleanupStarted.resolve(directory);
+        return stalled.promise;
+      }
+      cleanupRetried.resolve();
+      throw new Error('inventory is still unavailable');
+    },
+  } });
+  const publish = async (entry, version) => {
+    const release = { ...entry, version };
+    const candidate = versions.createCandidate(f.rootDir, release);
+    writeRunnablePackage(candidate.source, version, { name: entry.package, id: entry.id });
+    return versions.publishCandidate(f.rootDir, release, candidate);
+  };
+  for (const version of ['0.1.30', '0.1.31', '0.1.32', '0.1.33']) {
+    const ready = await publish(f.entry, version);
+    if (version === '0.1.32' || version === '0.1.33') versions.activate(f.rootDir, f.entry, ready);
+  }
+  versions.activate(f.rootDir, other, await publish(other, '0.1.32'));
+  fs.writeFileSync(path.join(f.rootDir, 'subapp-index.json'), JSON.stringify({ [ID]: f.entry, [otherId]: other }));
+
+  const launches = createSubappLaunchReservations();
+  const verifyLaunch = async (id, version) => {
+    const owner = launchOwner();
+    const selection = await launches.prepare(owner, id, signal => f.manager.prepareLaunch({ id }, signal));
+    const { token, config } = selection;
+    try {
+      assert.equal(config.version, version);
+      const command = launchCommand(config);
+      assert.ok(fs.existsSync(command.args[0]));
+      launches.bindCommand(token, owner, id, command).spawned();
+      launches.checkRegistration(token, owner, {
+        toolId: id, streamId: id, hostInfo: { packagePath: config.packagePath },
+      })();
+    } finally { launches.finish(token, owner); }
+  };
+
+  try {
+    await f.manager.list({ strategy: 'cache-only' });
+    const oldest = await cleanupStarted.promise;
+    const lockRoot = path.join(f.rootDir, 'store', '.locks');
+    for (const directory of [lockRoot, path.join(lockRoot, versions.storeKeyForPackage(PACKAGE))]) {
+      const release = acquireInstallLock(directory);
+      assert.ok(release, `cleanup must leave ${directory} free`);
+      release();
+    }
+    await verifyLaunch(ID, '0.1.33');
+    await verifyLaunch(otherId, '0.1.32');
+    await f.manager.update({ id: ID });
+    await f.manager.update({ id: otherId });
+    await verifyLaunch(ID, f.entry.version);
+    await verifyLaunch(otherId, otherVersion);
+    assert.deepEqual(new Set(progress.filter(event => event.phase === 'complete').map(event => event.id)), new Set([ID, otherId]));
+    assert.ok(progress.every(event => event.action === 'update' && event.phase !== 'error'));
+    assert.equal(checks, 1, 'foreground operations should complete before cleanup retries');
+
+    await cleanupRetried.promise;
+    assert.ok(fs.existsSync(oldest), 'unverified inventory must leave the obsolete release intact');
+  } finally {
+    stalled.resolve(true);
+  }
+});
+
 test('background update preserves an old running process and activates A only after it closes', async (t) => {
   let oldProcessRunning = true;
   const f = fixture(t, {
