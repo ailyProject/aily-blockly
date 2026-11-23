@@ -28,7 +28,7 @@ import { _ProjectService } from './services/project.service';
 import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
-import { ProjectService, projectDataRuntime, ProjectDataError, type AilyDataRef, type DeferredProjectDataNormalization } from '@domain/project/public-api';
+import { BoardAuthPromptService, ProjectService, projectDataRuntime, ProjectDataError, type AilyDataRef, type DeferredProjectDataNormalization } from '@domain/project/public-api';
 import type { BlocklyWorkspaceEditLease } from './services/blockly-workspace-edit-lease';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
@@ -38,8 +38,6 @@ import { Subscription } from 'rxjs';
 import { projectResourceGc } from './services/project-resource-gc.service';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
 import { isBuildWorkspaceBusyError } from './services/generated-code-artifacts';
-import { AuthService } from '@core/auth/public-api';
-import { boardRequiresCloudAuth } from './board-auth-gate';
 import { canTransferProjectAbi } from './utils/project-abi-transfer';
 import { assertKnownMissingLibraryRecoverySources, installMissingLibrariesManaged, type MissingLibraryInstall } from './services/missing-project-libraries';
 import { readManagedLibraryEnvironment } from '../../services/domains/project/project-managed-library-environment';
@@ -137,7 +135,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     private codeViewerIpcService: CodeViewerIpcService,
     private blocklyLibraryPackageService: BlocklyLibraryPackageService,
     private generatorRuntime: BlocklyGeneratorRuntimeService,
-    private authService: AuthService,
+    private boardAuthPrompt: BoardAuthPromptService,
   ) { }
 
   ngOnInit(): void {
@@ -593,28 +591,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     try {
       const boardPackageJson = await this.projectService.getBoardPackageJson();
       this.projectService.assertProjectDependencySession(session);
-      if (!boardRequiresCloudAuth(boardPackageJson)) {
-        return;
-      }
-
-      const authState = this.authService.getAuthInitializationState();
-      if (authState === 'idle' || authState === 'checking') {
-        await this.authService.initializeAuth();
+      await this.boardAuthPrompt.promptIfRequired(boardPackageJson, () => {
         this.projectService.assertProjectDependencySession(session);
-      }
-
-      if (
-        this.projectService.currentProjectPath !== projectPath
-        || this.authService.isLoggedIn
-      ) {
-        return;
-      }
-
-      this.message.warning(
-        this.translate.instant('BLOCKLY_EDITOR.BOARD_CLOUD_AUTH_REQUIRED'),
-        { nzDuration: 6000 },
-      );
-      this.authService.requestLogin('board-cloud-service');
+        return this.projectService.currentProjectPath === projectPath;
+      });
     } catch (error) {
       console.warn('[ProjectLoad] Failed to check board authentication requirement:', error);
     }
