@@ -23,7 +23,7 @@ export async function matchAbsIdentities(beforeText: string, afterText: string,
   original: Node[], edited: Node[], sourceEdits?: AbsSourceEdits,
   requiresIdentity: (node: Node) => boolean = () => false,
   fingerprint: typeof fingerprintAbsNodeGroups = fingerprintAbsNodeGroups,
-  sourceEditOrigin?: AbsSourceEditOrigin): Promise<ReadonlyMap<Node, Node>> {
+  sourceEditOrigin?: AbsSourceEditOrigin, fixedCallTarget?: (original: Node) => string | undefined): Promise<ReadonlyMap<Node, Node>> {
   const groups = [indexAbsSyntax(original), indexAbsSyntax(edited)];
   const [oldNodes, newNodes] = groups.map(entries => entries.map(entry => entry.node));
   const signatures = new Map<Node, string>();
@@ -41,7 +41,22 @@ export async function matchAbsIdentities(beforeText: string, afterText: string,
   }
   const signature = (node: Node) => signatures.get(node)!;
   const matches = new Map<Node, Node>(), used = new Set<Node>();
+  // A wrapper can occupy a moved call's old slot, even its old source offset.
+  // Reserve an exact, unique surviving call before using placement to match a different callee.
+  const movedCalls = new Map<Node, { field: string; retained: Node }>();
+  if (fixedCallTarget) {
+    const originals = oldNodes.filter(node => fixedCallTarget(node));
+    const types = new Set(originals.map(node => node.type));
+    const candidates = group(newNodes.filter(node => types.has(node.type)), signature);
+    for (const [key, nodes] of group(oldNodes.filter(node => types.has(node.type)), signature)) {
+      const retained = candidates.get(key), field = fixedCallTarget(nodes[0]);
+      if (field && nodes.length === 1 && retained?.length === 1)
+        movedCalls.set(nodes[0], { field, retained: retained[0] });
+    }
+  }
   const match = (before: Node, after: Node) => {
+    const move = movedCalls.get(before);
+    if (move && !matches.has(move.retained) && before.fields[move.field]?.value !== after.fields[move.field]?.value) return;
     if (matches.get(after) === before) return;
     if (used.has(before) || matches.has(after) || before.type !== after.type) {
       throw new AbsSyncError('ABS_IDENTITY_AMBIGUOUS', 'Identity matched more than once.', after);

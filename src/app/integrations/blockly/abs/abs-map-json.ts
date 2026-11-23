@@ -5,7 +5,7 @@ const retained = new WeakMap<AbsIdentityMap, any>();
 const invalid = (): never => { throw new AbsSyncError('ABS_MAP_INVALID', 'Invalid compact identity map path.'); };
 /** Wire schema 2 stores each AST edge once. Domain consumers still see absolute paths. */
 export function encodeAbsMap(map: AbsIdentityMap, transport = false): any {
-  if (!transport && map.projectionVersion !== ABS_PROJECTION_VERSION) return map;
+  if (!transport && ![ABS_PROJECTION_VERSION, 'abs-v2.preview.8'].includes(map.projectionVersion)) return map;
   const saved = retained.get(map); if (saved) return saved;
   const paths = new Map<string, number>(), keys = new Map<string, number>();
   const nodes = map.nodes.map((node, index) => {

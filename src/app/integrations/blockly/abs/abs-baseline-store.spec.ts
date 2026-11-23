@@ -79,7 +79,7 @@ describe('ABS immutable baseline and commit recovery', () => {
   it('reads a legacy complete baseline and upgrades through the ordinary save transaction', async () => {
     const current = input.projection, blocks = indexAbsAbi(current.workspace);
     const legacyText = await encodeAbsState(splitAbsState(current.abs).program, current.document,
-      new Map(current.map.nodes.map(node => [node.astPath, blocks.get(node.blockId)!])), current.contracts, current.workspace, true);
+      new Map(current.map.nodes.map(node => [node.astPath, blocks.get(node.blockId)!])), current.contracts, current.workspace, 1);
     const legacy = await reconstructAbsProjection(current.workspace, { ...current.map,
       document: current.document, contracts: current.contracts }, legacyText);
     await store.stage({ ...input, projection: legacy });
