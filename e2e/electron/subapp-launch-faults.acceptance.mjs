@@ -66,14 +66,14 @@ try {
   const holder = await launch('hold', shared);
   assert.equal(Number(await checkpoint(holder, 'holding')), holder.child.pid);
   const waiter = await launch('recover', shared);
-  await checkpoint(waiter, 'waiting');
-  await delay(300);
+  await checkpoint(waiter, 'launched');
+  assert.equal(holder.child.exitCode, null);
   await assert.rejects(fs.access(path.join(waiter.directory, 'recovered')), { code: 'ENOENT' });
   assert.ok(holder.child.kill('SIGKILL'));
   await holder.exited;
   await checkpoint(waiter, 'recovered');
   assert.equal((await waiter.exited).code, 0);
-  console.log('PASS second Electron host recovers a shared install lock after the holder is killed');
+  console.log('PASS second Electron host launches a different package while locks are held and starts the same package after the holder is killed');
 } finally {
   clearTimeout(timeout);
   await Promise.all(processes.map(async ({ child, exited }) => {

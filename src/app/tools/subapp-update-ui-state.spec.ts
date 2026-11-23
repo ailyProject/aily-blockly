@@ -52,7 +52,6 @@ describe('subapp prepared update UI state', () => {
     const service = Object.create(ChildToolProcessService.prototype) as any;
     const config = { id: 'aily-chat', catalogId: 'aily-chat', version: '0.1.32' };
     const session = { refCount: 0, running: false, hostInfo: null };
-    service.installReadyUpdateBeforeLaunch = jasmine.createSpy('installReadyUpdateBeforeLaunch');
     service.requireConfig = jasmine.createSpy('requireConfig').and.returnValue(config);
     service.ensureSession = jasmine.createSpy('ensureSession').and.returnValue(session);
     service.cancelReleaseTimer = jasmine.createSpy('cancelReleaseTimer');
@@ -64,11 +63,11 @@ describe('subapp prepared update UI state', () => {
 
     await service.acquire('aily-chat', { deferPreparedUpdate: true });
 
-    expect(service.installReadyUpdateBeforeLaunch).not.toHaveBeenCalled();
     expect(service.startSession).toHaveBeenCalledWith(
       config,
       session,
       { deferPreparedUpdate: true },
+      true,
     );
   });
 
@@ -98,6 +97,36 @@ describe('subapp prepared update UI state', () => {
       deferPreparedUpdate: true,
     });
     expect(finishLaunch).toHaveBeenCalledWith('token');
+  });
+
+  it('selects the current installation again when files changed before dispatch', async () => {
+    const service = Object.create(ChildToolProcessService.prototype) as any;
+    const before = { id: 'serial-debugger', catalogId: 'serial-debugger', version: '0.1.32' };
+    const after = { ...before, version: '0.1.33' };
+    const runtime = { url: 'http://127.0.0.1:3000', runtimeConfig: after };
+    const session = { version: '' };
+    const prepareLaunch = jasmine.createSpy('prepareLaunch').and.returnValues(
+      Promise.resolve({ config: before, token: 'before' }),
+      Promise.resolve({ config: after, token: 'after' }),
+    );
+    const finishLaunch = jasmine.createSpy('finishLaunch').and.resolveTo(undefined);
+    const previousElectronApi = (window as any).electronAPI;
+    (window as any).electronAPI = { subapps: { prepareLaunch, finishLaunch } };
+    service.acquireSharedSession = jasmine.createSpy('acquireSharedSession').and.resolveTo(null);
+    service.startServer = jasmine.createSpy('startServer').and.callFake(async (_config, _session, token) => {
+      if (token === 'before') throw new Error('SUBAPP_LAUNCH_CHANGED: installation replaced');
+      return runtime;
+    });
+
+    try {
+      await expectAsync(service.startOrAcquireSession(before, session)).toBeResolvedTo(runtime);
+    } finally {
+      (window as any).electronAPI = previousElectronApi;
+    }
+
+    expect(prepareLaunch.calls.count()).toBe(2);
+    expect(finishLaunch.calls.allArgs()).toEqual([['before'], ['after']]);
+    expect(session.version).toBe(after.version);
   });
 
   it('replaces only the verified stale Blockly Chat stream, even when the version is the same', async () => {
@@ -134,7 +163,7 @@ describe('subapp prepared update UI state', () => {
     expect(restart).toHaveBeenCalledOnceWith({
       toolId: 'aily-chat', streamId: oldStream, leaseId: session.leaseId, restartShared: true,
     });
-    expect(service.startServer).toHaveBeenCalledOnceWith(config, session);
+    expect(service.startServer).toHaveBeenCalledOnceWith(config, session, 'token');
     expect(finishLaunch).toHaveBeenCalledWith('token');
   });
 

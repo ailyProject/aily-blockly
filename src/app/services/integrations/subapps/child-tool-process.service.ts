@@ -5,7 +5,6 @@ import { ProjectService } from '@domain/project/public-api';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 import { BehaviorSubject, distinctUntilChanged, map, type Observable } from 'rxjs';
 import { classifyRecordedChildToolRuntimeEntry } from './models/child-tool-runtime-entry';
-import { SubappManagerService } from './subapp-manager.service';
 
 export interface ChildToolHostInfo {
   url: string;
@@ -90,7 +89,6 @@ interface ChildToolSession {
 export class ChildToolProcessService implements OnDestroy {
   private sessions = new Map<string, ChildToolSession>();
   private readonly prewarmReleaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly launchUpdateTasks = new Map<string, Promise<void>>();
   private readonly releaseGraceMs = 15000;
   private readonly recoveryBaseDelayMs = 500;
   private readonly maxRecoveryAttempts = 3;
@@ -109,7 +107,6 @@ export class ChildToolProcessService implements OnDestroy {
   constructor(
     private configService: ConfigService,
     private projectService: ProjectService,
-    private subappManager: SubappManagerService,
   ) {
     // DI may construct this service before ElectronService.init installs window aliases.
     const sessionApi = (window as any).electronAPI?.childToolSession || window['childToolSession'];
@@ -131,13 +128,7 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   async acquire(toolId: string, options: ChildToolAcquireOptions = {}): Promise<ChildToolHostInfo> {
-    const openingConfig = this.requireConfig(toolId);
-    if (options.deferPreparedUpdate !== true && !this.requiresBlocklyChat(openingConfig)) {
-      await this.installReadyUpdateBeforeLaunch(toolId);
-    }
-    const config = options.deferPreparedUpdate === true
-      ? openingConfig
-      : this.requireConfig(toolId);
+    const config = this.requireConfig(toolId);
     if (config.runtime?.processMessagePort) {
       if (
         !window['childToolSession']?.sendMessage
@@ -333,50 +324,6 @@ export class ChildToolProcessService implements OnDestroy {
       hostInfo: null,
       updatedAt: 0,
     };
-  }
-
-  private async installReadyUpdateBeforeLaunch(toolId: string): Promise<void> {
-    const normalizedToolId = String(toolId || '').trim();
-    if (!normalizedToolId) return;
-
-    const existingTask = this.launchUpdateTasks.get(normalizedToolId);
-    if (existingTask) {
-      await existingTask;
-      return;
-    }
-
-    const task = this.performReadyUpdateBeforeLaunch(normalizedToolId);
-    this.launchUpdateTasks.set(normalizedToolId, task);
-    try {
-      await task;
-    } finally {
-      if (this.launchUpdateTasks.get(normalizedToolId) === task) {
-        this.launchUpdateTasks.delete(normalizedToolId);
-      }
-    }
-  }
-
-  private async performReadyUpdateBeforeLaunch(toolId: string): Promise<void> {
-    try {
-      await this.subappManager.initialize();
-      const item = this.subappManager.state.apps.find(candidate => candidate.toolId === toolId);
-      if (
-        item?.updatePolicy?.install !== 'next-launch'
-        || item.updateStatus.state !== 'ready'
-      ) {
-        return;
-      }
-
-      const runtime = this.getRuntimeSnapshot(toolId);
-      // The running process keeps its pinned package until its last lease
-      // ends. A prepared update must not evict another window's Runtime.
-      if (runtime.running) return;
-
-      await this.subappManager.installUpdate(item.id);
-    } catch (error) {
-      // 更新失败时保留并继续启动旧版本；目录状态会显示失败并允许手动重试。
-      console.warn(`[Subapp] Ready update was not installed before launching ${toolId}:`, error);
-    }
   }
 
   onMessage(
@@ -582,23 +529,30 @@ export class ChildToolProcessService implements OnDestroy {
     }
     if (!config.catalogId || !api?.prepareLaunch) return this.startServer(config, session);
 
-    const prepared = await api.prepareLaunch({
-      id: config.catalogId,
-      deferPreparedUpdate: options.deferPreparedUpdate === true,
-    });
-    try {
-      if (this.hostShuttingDown) throw new Error('Host is shutting down');
-      const latestConfig = prepared.config as ChildToolConfig;
-      if (requiresVerifiedChat && !latestConfig.blocklyChatFingerprint) {
-        throw new Error('Blockly Chat compatibility check did not select a verified package');
+    let canReselect = true;
+    while (true) {
+      const prepared = await api.prepareLaunch({
+        id: config.catalogId,
+        deferPreparedUpdate: options.deferPreparedUpdate === true,
+      });
+      try {
+        if (this.hostShuttingDown) throw new Error('Host is shutting down');
+        const latestConfig = prepared.config as ChildToolConfig;
+        if (requiresVerifiedChat && !latestConfig.blocklyChatFingerprint) {
+          throw new Error('Blockly Chat compatibility check did not select a verified package');
+        }
+        session.version = latestConfig.version || '';
+        // A concurrent window may have registered a Runtime during selection.
+        const readySession = await this.acquireSharedSession(latestConfig, session);
+        if (readySession) return readySession;
+        return await this.startServer(latestConfig, session, prepared.token);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!canReselect || this.hostShuttingDown || !/SUBAPP_LAUNCH_(?:CHANGED|EXPIRED)\b/.test(message)) throw error;
+        canReselect = false;
+      } finally {
+        await api.finishLaunch(prepared.token);
       }
-      session.version = latestConfig.version || '';
-      // Another renderer can finish startup while prepareLaunch is queued.
-      const readySession = await this.acquireSharedSession(latestConfig, session);
-      if (readySession) return readySession;
-      return await this.startServer(latestConfig, session, prepared.token);
-    } finally {
-      await api.finishLaunch(prepared.token);
     }
   }
 
@@ -897,13 +851,13 @@ export class ChildToolProcessService implements OnDestroy {
       uiPath
     });
 
-    if (fsApi?.existsSync && !fsApi.existsSync(scriptPath)) {
+    if (!subappLaunchToken && fsApi?.existsSync && !fsApi.existsSync(scriptPath)) {
       const message = `${config.id} backend was not found: ${scriptPath}`;
       this.logError(config, 'backend missing', message);
       throw new Error(message);
     }
 
-    if (fsApi?.existsSync && !fsApi.existsSync(uiPath)) {
+    if (!subappLaunchToken && fsApi?.existsSync && !fsApi.existsSync(uiPath)) {
       const message = `${config.id} UI was not found: ${uiPath}`;
       this.logError(config, 'UI missing', message);
       throw new Error(message);
@@ -936,6 +890,8 @@ export class ChildToolProcessService implements OnDestroy {
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
+      let rejectStartup!: (reason: Error) => void;
+      const startupDeadline = new Promise<never>((_resolve, reject) => { rejectStartup = reject; });
       const launch = Promise.resolve(cmd.run({
         command: 'node',
         args: [scriptPath, 'serve', '--host', '127.0.0.1', '--port', '0'],
@@ -958,13 +914,13 @@ export class ChildToolProcessService implements OnDestroy {
           this.logError(config, 'spawn failed', { message, result });
           throw new Error(message);
         }
-      });
-      const startupDeadline = new Promise<never>((_resolve, reject) => {
+        // Measure runtime readiness from host dispatch. Installation or a
+        // same-package publication has its own lifecycle and never spends this budget.
         timeout = setTimeout(() => {
           const detail = reportedReady ? 'server startup was not acknowledged' : 'server did not report ready';
           const reason = `${config.id} ${detail}${this.formatBufferedStderr(session)}`;
           this.logError(config, 'startup timeout', reason);
-          reject(new Error(reason));
+          rejectStartup(new Error(reason));
         }, config.startupTimeoutMs || 8000);
       });
       const [hostInfo] = await Promise.race([Promise.all([readyPromise, launch]), startupDeadline]);

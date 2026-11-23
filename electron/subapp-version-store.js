@@ -9,6 +9,7 @@ const SCHEMA_VERSION = 2;
 const READY_FILE = 'ready.json';
 const RETAINED_RELEASES = 3;
 const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const GENERATION_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -142,6 +143,11 @@ function versionRoot(rootDir, entry, options = {}) {
   ], options);
 }
 
+function selectionLockPath(rootDir, entry) {
+  validateEntry(entry, false);
+  return path.join(rootDir, 'store', '.selection-locks', storeKeyForPackage(entry.package));
+}
+
 function validateRelativeSource(value, version) {
   const normalized = `${validateVersion(version)}/source`;
   if (value !== normalized) throw new Error(`Invalid version-store source path: ${String(value)}`);
@@ -164,10 +170,10 @@ function validateLocator(value, entry) {
   return locator;
 }
 
-function inspectVersion(rootDir, entry, locator) {
+function inspectVersion(rootDir, entry, locator, generation = locator.version) {
   const storeKey = storeKeyForPackage(entry.package);
-  const versionDirectory = directory(rootDir, ['store', storeKey, locator.version]);
-  const source = directory(rootDir, ['store', storeKey, locator.version, 'source']);
+  const versionDirectory = directory(rootDir, ['store', storeKey, generation]);
+  const source = directory(rootDir, ['store', storeKey, generation, 'source']);
   const ready = readJson(path.join(versionDirectory, READY_FILE));
   if (!isObject(ready) || ready.schemaVersion !== SCHEMA_VERSION || ready.complete !== true
     || ready.packageName !== entry.package || ready.storeKey !== storeKey
@@ -302,7 +308,7 @@ async function publishCandidate(rootDir, entry, candidate, options = {}) {
   if (!candidate || typeof candidate.project !== 'string'
     || path.dirname(path.resolve(candidate.project)) !== path.resolve(parent)
     || path.basename(candidate.project) !== candidateName
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(candidateToken)
+    || !GENERATION_TOKEN.test(candidateToken)
     || path.resolve(candidate.source) !== path.resolve(candidate.project, 'source')) {
     throw new Error('Version-store candidate path is invalid');
   }
@@ -438,6 +444,33 @@ function readActiveManifest(rootDir, entry) {
   const file = activePath(rootDir, entry);
   if (!file) return null;
   return parseActiveManifest(readJson(file, true), entry);
+}
+
+// Caller holds selection and preparation admission for this package. A process
+// exit between the two replacement renames can otherwise leave no launch path.
+function restoreInterruptedReplacement(rootDir, entry, validatePrepared) {
+  const active = readActiveManifest(rootDir, entry);
+  if (!active || isUninstalling(rootDir, entry)) return false;
+  const parent = storeRoot(rootDir, entry);
+  const target = path.join(parent, active.selected.version);
+  if (fs.lstatSync(target, { throwIfNoEntry: false })) return false;
+  const prefix = `.replaced-${active.selected.version}-`;
+  const backups = fs.readdirSync(parent, { withFileTypes: true })
+    .filter(item => item.isDirectory() && item.name.startsWith(prefix)
+      && GENERATION_TOKEN.test(item.name.slice(prefix.length)))
+    .map(item => item.name);
+  const valid = [];
+  for (const name of backups) {
+    try {
+      const prepared = inspectVersion(rootDir, entry, active.selected, name);
+      if (!['portable', 'legacy-npm'].includes(prepared.installMode)) continue;
+      validatePrepared(prepared);
+      valid.push(prepared.project);
+    } catch { /* Only a complete backup matching the persisted selection can be restored. */ }
+  }
+  if (valid.length !== 1) return false;
+  fs.renameSync(valid[0], target);
+  return true;
 }
 
 function parseActiveManifest(manifest, entry) {
@@ -649,6 +682,8 @@ module.exports = {
   readSelection,
   referencedVersions,
   removeAllVersions,
+  restoreInterruptedReplacement,
+  selectionLockPath,
   storeKeyForPackage,
   storeRoot,
   versionRoot,

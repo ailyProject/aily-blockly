@@ -3120,7 +3120,8 @@ function createWindow() {
     } });
     const preview = createBuildDebugPreview({ registry: nativeSubappRegistry,
       present: presenter,
-      configuration: () => resolvePreviewConfiguration({ childRoot: process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child'),
+      configuration: request => resolvePreviewConfiguration({ ...request,
+        childRoot: process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child'),
         appData: resolveAilyAppDataPath(), runtimeManifestPath: process.env.AILY_SIMDEBUG_RUNTIME_MANIFEST,
         resourcesPath: app.isPackaged ? process.resourcesPath : undefined }) });
     registerBuildDebugPreview(ipcMain, { isCurrentRenderer: isCurrentMainRenderer, preview,

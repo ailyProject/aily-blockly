@@ -532,7 +532,9 @@ function getRunningSubappConfig(catalogId) {
 }
 
 function listChildToolHoldersForCatalogId(catalogId) {
-    const toolIds = resolveChildToolIdsForCatalogId(catalogId, true);
+    const id = sanitizeChildToolId(catalogId);
+    if (!id) return [];
+    const toolIds = resolveChildToolIdsForCatalogId(id, true);
     const holders = [];
     for (const toolId of toolIds) {
         const session = childToolSessions.get(toolId);
@@ -547,8 +549,9 @@ function listChildToolHoldersForCatalogId(catalogId) {
             source: 'child-tool-session',
         });
     }
-    for (const { streamId, pid, subappLaunchId } of getActiveCmdProcesses()) {
-        if (toolIds.includes(subappLaunchId) && childToolSessions.get(subappLaunchId)?.streamId !== streamId) {
+    for (const { streamId, pid, subappLaunchId, subappPackageDependencies } of getActiveCmdProcesses()) {
+        if (subappLaunchId && (toolIds.includes(subappLaunchId) || subappPackageDependencies?.includes(id))
+            && childToolSessions.get(subappLaunchId)?.streamId !== streamId) {
             holders.push({ pid, name: subappLaunchId, toolId: subappLaunchId, source: 'child-tool-startup' });
         }
     }
@@ -556,7 +559,9 @@ function listChildToolHoldersForCatalogId(catalogId) {
 }
 
 async function forceStopChildToolByCatalogId(catalogId) {
-    const toolIds = resolveChildToolIdsForCatalogId(catalogId, true);
+    const id = sanitizeChildToolId(catalogId);
+    if (!id) return { success: false, reason: 'not-found' };
+    const toolIds = resolveChildToolIdsForCatalogId(id, true);
     let stopped = false;
     let failed = false;
     for (const toolId of toolIds) {
@@ -576,6 +581,14 @@ async function forceStopChildToolByCatalogId(catalogId) {
     }
     if (stopped) {
         broadcastChildToolSessionStateChanged();
+    }
+    // A native command holds the exact packages before its ready message.
+    for (const { streamId, subappLaunchId, subappPackageDependencies } of getActiveCmdProcesses()) {
+        if (!subappPackageDependencies || !subappLaunchId
+            || !(toolIds.includes(subappLaunchId) || subappPackageDependencies.includes(id))
+            || childToolSessions.get(subappLaunchId)?.streamId === streamId) continue;
+        if (await killCmdProcess(streamId)) stopped = true;
+        else if (getActiveCmdProcesses().some(process => process.streamId === streamId)) failed = true;
     }
     return {
         success: stopped && !failed,

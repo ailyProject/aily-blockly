@@ -28,11 +28,14 @@ delete process.env.AILY_CODER_BUNDLE_TARBALL;
 
 const cmd = require('../../../electron/cmd');
 const windows = require('../../../electron/window');
+const { acquireInstallLock } = require('../../../electron/subapp-install-lock');
 const { registerSubappManagerHandlers } = require('../../../electron/subapp-manager');
+const { selectionLockPath } = require('../../../electron/subapp-version-store');
 const { npmTarball } = require('../../../tests/electron/fixtures/npm-tarball-fixture');
 const ID = 'aily-chat', OTHER = 'launch-fixture';
 const startupTimeoutMs = 200;
 const installRoot = path.join(process.env.AILY_NPM_PREFIX, 'app');
+const legacySelectionLock = path.join(installRoot, 'store', '.locks');
 const page = path.join(directory, 'index.html');
 fs.writeFileSync(page, '<!doctype html><title>Native subapp launch fixture</title>');
 const runtime = `
@@ -51,6 +54,7 @@ setInterval(() => {}, 1000);
 `;
 const packageName = id => `@aily-project/subapp-${id}`;
 const legacy = id => path.join(installRoot, 'node_modules', ...packageName(id).split('/'));
+const packageSelectionLock = id => selectionLockPath(installRoot, { id, package: packageName(id) });
 function files(id, version) {
   return {
     'package.json': JSON.stringify({
@@ -72,16 +76,21 @@ function seed() {
     }
   }
 }
-const archive = npmTarball(files(ID, '1.1.0'));
-const integrity = 'sha512-' + createHash('sha512').update(archive).digest('base64');
-let version = '1.0.0';
+const releases = Object.fromEntries([ID, OTHER].map(id => [id, '1.0.0']));
+const archives = new Map(Object.keys(releases).map(id => {
+  const archive = npmTarball(files(id, '1.1.0'));
+  return [`/${id}.tgz`, { archive, integrity: 'sha512-' + createHash('sha512').update(archive).digest('base64') }];
+}));
 const server = http.createServer((request, response) => {
-  if (request.url === '/chat.tgz') { response.end(archive); return; }
-  response.end(JSON.stringify(Object.fromEntries([ID, OTHER].map(id => [id, {
-    id, package: packageName(id), version: id === ID ? version : '1.0.0', titleKey: id, namespace: id,
-    app: { enabled: true },
-    ...(id === ID && version === '1.1.0' ? { dist: { tarball: `${baseUrl()}/chat.tgz`, integrity } } : {}),
-  }]))));
+  const asset = archives.get(request.url);
+  if (asset) { response.end(asset.archive); return; }
+  response.end(JSON.stringify(Object.fromEntries(Object.entries(releases).map(([id, version]) => {
+    const tarball = `/${id}.tgz`;
+    return [id, { id, package: packageName(id), version, titleKey: id, namespace: id,
+      app: { enabled: true },
+      ...(version === '1.1.0' ? { dist: { tarball: baseUrl() + tarball, integrity: archives.get(tarball).integrity } } : {}),
+    }];
+  }))));
 });
 const baseUrl = () => `http://127.0.0.1:${server.address().port}`;
 
@@ -174,12 +183,14 @@ async function runMatrix(first, other) {
     await assert.rejects(register(first, reservation, 'early-exit', 0), /SUBAPP_LAUNCH_EXPIRED/);
   });
 
-  await record('deleted entry causes a genuine startup failure and retry works', async () => {
+  await record('a removed entry invalidates the selection before child spawn and retry works', async () => {
     const reservation = await prepare(first);
     const entry = path.join(reservation.config.packagePath, reservation.config.entry);
     fs.unlinkSync(entry);
     try {
-      assert.equal((await run(first, reservation, 'missing-entry')).success, true);
+      const result = await run(first, reservation, 'missing-entry');
+      assert.equal(result.success, false);
+      assert.equal(result.code, 'SUBAPP_LAUNCH_CHANGED');
       await gone('missing-entry');
     } finally { fs.writeFileSync(entry, runtime); }
     await retry();
@@ -191,7 +202,9 @@ async function runMatrix(first, other) {
     const moved = cwd + '-fixture';
     fs.renameSync(cwd, moved);
     try {
-      await run(first, reservation, 'invalid-cwd');
+      const result = await run(first, reservation, 'invalid-cwd');
+      assert.equal(result.success, false);
+      assert.equal(result.code, 'SUBAPP_LAUNCH_CHANGED');
       await gone('invalid-cwd');
       assert.equal(fs.existsSync(marker('invalid-cwd')), false);
     } finally { fs.renameSync(moved, cwd); }
@@ -207,19 +220,18 @@ async function runMatrix(first, other) {
     await retry();
   });
 
-  await record('unused launch token expires without an IPC finish, then rejects stale and foreign commands', async () => {
+  await record('idle launch selection stays valid past the old timeout and rejects foreign commands', async () => {
     const reservation = await prepare(first);
     const foreign = await run(other, reservation, 'foreign');
     assert.match(foreign.error, /SUBAPP_LAUNCH_EXPIRED/);
-    const queued = prepare(other, OTHER);
-    await delay(100);
     assert.equal(cmd.getCmdProcess('foreign'), undefined);
-    const next = await bounded(queued, 28000, 'Dispatch timeout did not release the shared lock');
+    const next = await bounded(prepare(other, OTHER), 3000, 'An undispatched launch blocked another tool');
     await finish(other, next);
-    const late = await run(first, reservation, 'late');
-    assert.match(late.error, /SUBAPP_LAUNCH_EXPIRED/);
-    assert.equal(cmd.getCmdProcess('late'), undefined);
-    await retry();
+    await delay(20500);
+    const runtime = await started(first, reservation, 'idle-selection');
+    assert.equal((await register(first, reservation, 'idle-selection', runtime.pid)).success, true);
+    assert.equal((await invoke(first, 'childToolSession', 'stop', ID)).success, true);
+    await gone('idle-selection');
   });
 
   await record('unready runtime expires, its process tree exits and another runtime stays live', async () => {
@@ -249,21 +261,39 @@ async function runMatrix(first, other) {
     await retry();
   });
 
-  await record('navigation cancels an already queued launch without claiming a new lock later', async () => {
+  await record('a later window supersedes an unused same-tool selection and navigation cancels its replacement', async () => {
     const reservation = await prepare(first);
-    const queued = await open();
+    const owner = await open();
+    try {
+      const next = await bounded(prepare(owner), 3000, 'An unused launch prevented a later same-tool request');
+      assert.match((await run(first, reservation, 'superseded')).error, /SUBAPP_LAUNCH_EXPIRED/);
+      const loaded = once(owner.webContents, 'did-finish-load');
+      owner.reload();
+      await loaded;
+      assert.match((await run(owner, next, 'superseded-replacement-reloaded')).error, /SUBAPP_LAUNCH_EXPIRED/);
+      assert.equal(cmd.getCmdProcess('superseded'), undefined);
+      assert.equal(cmd.getCmdProcess('superseded-replacement-reloaded'), undefined);
+      await retry();
+    } finally { owner.destroy(); }
+  });
+
+  await record('navigation cancels a dispatch waiting for that package lock without starting a child later', async () => {
+    const reservation = await prepare(first);
+    const releaseSelection = acquireInstallLock(packageSelectionLock(ID));
+    assert.ok(releaseSelection, 'Selection must release the package lock before sending the token');
     try {
       let settled = false;
-      const pending = prepare(queued).finally(() => { settled = true; });
+      const pending = run(first, reservation, 'cancel-during-dispatch').finally(() => { settled = true; });
       pending.catch(() => {});
       await delay(150);
       assert.equal(settled, false);
-      const loaded = once(queued.webContents, 'did-finish-load');
-      queued.reload();
+      const loaded = once(first.webContents, 'did-finish-load');
+      first.reload();
       await loaded;
-      await finish(first, reservation);
-      await retry();
-    } finally { queued.destroy(); }
+    } finally { releaseSelection(); }
+    await retry();
+    await gone('cancel-during-dispatch');
+    assert.equal(fs.existsSync(marker('cancel-during-dispatch')), false);
   });
 
   await record('real renderer crash cancels the bound runtime and releases admission', async () => {
@@ -324,10 +354,42 @@ async function runMatrix(first, other) {
     await gone('exact-command');
   });
 
+  await record('an unused Chat selection and an older shared lock do not block another tool from launching, updating or uninstalling', async () => {
+    const reservation = await prepare(first);
+    const releaseLegacy = acquireInstallLock(legacySelectionLock);
+    assert.ok(releaseLegacy, 'An undispatched selection must not hold the legacy shared lock');
+    try {
+      const prior = await bounded(prepare(other, OTHER), 3000, 'The legacy shared lock blocked launch');
+      assert.equal(prior.config.version, '1.0.0');
+      const oldRuntime = await started(other, prior, 'other-before-update');
+      assert.equal((await register(other, prior, 'other-before-update', oldRuntime.pid)).success, true);
+
+      releases[OTHER] = '1.1.0';
+      await bounded(invoke(other, 'subapps', 'update', { id: OTHER }), 10000, 'The legacy shared lock blocked update');
+      assert.ok(pidAlive(oldRuntime.pid));
+      assert.equal((await invoke(other, 'childToolSession', 'stop', OTHER)).success, true);
+      await gone('other-before-update');
+
+      const next = await bounded(prepare(other, OTHER), 3000, 'The updated tool could not launch');
+      assert.equal(next.config.version, '1.1.0');
+      const newRuntime = await started(other, next, 'other-after-update');
+      assert.equal((await register(other, next, 'other-after-update', newRuntime.pid)).success, true);
+      await bounded(invoke(other, 'subapps', 'uninstall', { id: OTHER }), 10000, 'The legacy shared lock blocked uninstall');
+      await gone('other-after-update');
+      assert.equal(fs.existsSync(next.config.packagePath), false);
+      await assert.rejects(prepare(other, OTHER), /not installed/);
+
+      const stillValid = await started(first, reservation, 'chat-after-other-uninstall');
+      assert.equal((await register(first, reservation, 'chat-after-other-uninstall', stillValid.pid)).success, true);
+      assert.equal((await invoke(first, 'childToolSession', 'stop', ID)).success, true);
+      await gone('chat-after-other-uninstall');
+    } finally { releaseLegacy(); }
+  });
+
   await record('active version can be updated while the previous runtime is still starting', async () => {
     const reservation = await prepare(first);
     const prior = await started(first, reservation, 'update-during-start');
-    version = '1.1.0';
+    releases[ID] = '1.1.0';
     await invoke(other, 'subapps', 'update', { id: ID });
     assert.ok(pidAlive(prior.pid));
     assert.ok(fs.existsSync(path.join(reservation.config.packagePath, reservation.config.entry)));
@@ -370,18 +432,44 @@ async function main() {
   cmd.registerCmdHandlers(first);
   windows.registerWindowHandlers(first);
   registerSubappManagerHandlers(() => first, {
-    getIndexUrl: () => `${baseUrl()}/index-${version}.json`,
+    getIndexUrl: () => `${baseUrl()}/index-${Object.values(releases).join('-')}.json`,
     listChildToolHoldersForCatalogId: windows.listChildToolHoldersForCatalogId,
     getRunningSubappConfig: windows.getRunningSubappConfig,
     forceStopChildToolByCatalogId: windows.forceStopChildToolByCatalogId,
   });
   if (mode === 'hold') {
-    await prepare(first);
-    fs.writeFileSync(path.join(directory, 'holding'), String(process.pid));
-    await new Promise(() => {});
+    const releaseLegacy = acquireInstallLock(legacySelectionLock);
+    assert.ok(releaseLegacy);
+    try {
+      const releaseSelection = acquireInstallLock(packageSelectionLock(ID));
+      assert.ok(releaseSelection);
+      try {
+        fs.writeFileSync(path.join(directory, 'holding'), String(process.pid));
+        await new Promise(() => {});
+      } finally { releaseSelection(); }
+    } finally { releaseLegacy(); }
   } else if (mode === 'recover') {
-    fs.writeFileSync(path.join(directory, 'waiting'), '');
-    await finish(first, await prepare(first));
+    assert.equal(acquireInstallLock(legacySelectionLock), null);
+    const selection = await bounded(prepare(first, OTHER), 3000, 'An older host held the shared lock');
+    const runtime = await started(first, selection, 'while-legacy-host-holds-lock');
+    assert.equal((await register(first, selection, 'while-legacy-host-holds-lock', runtime.pid)).success, true);
+    assert.equal((await invoke(first, 'childToolSession', 'stop', OTHER)).success, true);
+    await gone('while-legacy-host-holds-lock');
+
+    let settled = false;
+    const waiting = prepare(first).finally(() => { settled = true; });
+    waiting.catch(() => {});
+    await delay(150);
+    assert.equal(settled, false, 'The same package must wait on the live holder');
+    fs.writeFileSync(path.join(directory, 'launched'), '');
+
+    const recovered = await bounded(waiting, 8000, 'The killed owner left its package selection locked');
+    const recoveredRuntime = await started(first, recovered, 'after-package-lock-holder-exit');
+    assert.equal((await register(first, recovered, 'after-package-lock-holder-exit', recoveredRuntime.pid)).success, true);
+    assert.equal((await invoke(first, 'childToolSession', 'stop', ID)).success, true);
+    await gone('after-package-lock-holder-exit');
+    const release = await until(() => acquireInstallLock(legacySelectionLock), 'The killed owner left its old shared lock active');
+    release();
     fs.writeFileSync(path.join(directory, 'recovered'), '');
   } else {
     await runMatrix(first, await open());

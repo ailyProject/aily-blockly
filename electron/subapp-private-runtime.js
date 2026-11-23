@@ -9,14 +9,16 @@ const commands = { execute: cmd.executeCmdCommand, kill: cmd.killCmdProcess, get
 /** Native-only bootstrap over the existing command supervisor. Nothing in the
  * returned publicInfo contains the private control capability. No shell, replay,
  * package discovery or domain/session state belongs in this transport module. */
-async function launchPrivateRuntime({ node, entry, args, credentialEnv, connect, signal, timeoutMs = 15000 }, processHost = commands) {
+async function launchPrivateRuntime({ node, entry, args, credentialEnv, connect, signal, timeoutMs = 15000,
+    subappLaunchId, packageDependencies, onDispatched }, processHost = commands) {
     if (!path.isAbsolute(entry) || typeof node !== 'string' || !Array.isArray(args)
         || !/^[A-Z][A-Z0-9_]+$/.test(credentialEnv) || typeof connect !== 'function'
         || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) throw fault('INVALID_INPUT', 'Invalid native Runtime configuration.');
     signal?.throwIfAborted();
     const token = randomBytes(32).toString('hex'), streamId = `subapp-private-${randomUUID()}`;
     const child = processHost.execute({ command: node, args: [entry, ...args], cwd: path.dirname(entry), shellProfile: false,
-        env: { [credentialEnv]: token }, streamId, messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } }).process;
+        env: { [credentialEnv]: token }, streamId, subappLaunchId, subappPackageDependencies: packageDependencies,
+        messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } }).process;
     let exited = false, exit, stopping, hostUrl, bytes = 0, buffer = '', settled = false;
     const ready = Promise.withResolvers(), closed = Promise.withResolvers();
     const fail = error => { if (!settled) { settled = true; ready.reject(error); } };
@@ -74,6 +76,9 @@ async function launchPrivateRuntime({ node, entry, args, credentialEnv, connect,
         try { return await stopping; } catch (error) { stopping = undefined; throw error; }
     }
     try {
+        // The supervised process now holds its package dependencies before the
+        // caller releases selection, regardless of whether readiness succeeds.
+        onDispatched?.();
         const publicInfo = await ready.promise;
         signal?.throwIfAborted();
         if (exited) throw fault('SUBAPP_EXITED', 'Private Runtime exited during startup.');

@@ -2,6 +2,11 @@ const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 
 const CLEANUP_TIMEOUT_MS = 45_000;
+const retiredUninstallPrefix = target => `.aily-uninstall-${path.basename(target)}-`;
+const isRetiredUninstallName = (target, name) => {
+  const prefix = retiredUninstallPrefix(target);
+  return name.startsWith(prefix) && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(name.slice(prefix.length));
+};
 
 function runSubappVersionCleanup(rootDir, entry, options) {
   if (options.isBusy()) return Promise.resolve(true);
@@ -10,6 +15,7 @@ function runSubappVersionCleanup(rootDir, entry, options) {
       execArgv: [],
       workerData: {
         rootDir,
+        updateRootDir: options.updateRootDir,
         entry,
         platform: options.platform || process.platform,
         profiles: options.versionCleanupProfiles || [],
@@ -56,4 +62,4 @@ function runSubappVersionCleanup(rootDir, entry, options) {
   });
 }
 
-module.exports = { runSubappVersionCleanup };
+module.exports = { isRetiredUninstallName, retiredUninstallPrefix, runSubappVersionCleanup };

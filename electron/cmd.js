@@ -581,6 +581,7 @@ class CommandManager {
       projectPath: options.projectPath,
       projectSessionId: options.projectSessionId,
       subappLaunchId: options.subappLaunchId,
+      subappPackageDependencies: options.subappPackageDependencies,
       releaseNpmMutation: options.releaseNpmMutation,
       stopRequested: false,
     };
@@ -835,6 +836,7 @@ class CommandManager {
       durationMs: Date.now() - entry.startedAt,
       messagePort: !!entry.messagePort,
       ...(entry.subappLaunchId ? { subappLaunchId: entry.subappLaunchId } : {}),
+      ...(entry.subappPackageDependencies ? { subappPackageDependencies: [...entry.subappPackageDependencies] } : {}),
     }));
   }
 
@@ -1061,11 +1063,18 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearShare
               console.warn('[subapp-manager] abandoned launch cleanup failed:', error.message);
             });
           });
+          if (subappLaunch.waitForDispatch) {
+            await subappLaunch.waitForDispatch(pending.abort.signal);
+            if (pending.cancelled || senderWindow.isDestroyed()) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
+            assertProjectTaskActive(senderWindow, options);
+            if (shared) assertSharedCurrent();
+          }
         }
         dispatchAttempted = true;
         const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
           releaseNpmMutation,
           subappLaunchId: subappLaunch?.id,
+          subappPackageDependencies: undefined,
           ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
         }, onSettledClose, admission && { admission, config: shared });
         releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.

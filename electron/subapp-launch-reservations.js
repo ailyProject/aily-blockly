@@ -15,11 +15,13 @@ function createSubappLaunchReservations({ dispatchTimeoutMs = 20000, runtimeGrac
     const token = randomUUID();
     const controller = new AbortController();
     const { signal } = controller;
-    let config, releaseSelection, stopStream, timer, deadline;
+    let config, lockForDispatch, releaseSelection, stopStream, timer;
+    let deadline = Infinity;
     const releaseLock = () => {
       const release = releaseSelection;
       releaseSelection = undefined;
-      release?.();
+      try { release?.(); }
+      catch (error) { console.warn('[subapp-manager] launch lock release failed:', id, error.message); }
     };
     const dispose = (reason, registered = false) => {
       reservations.delete(token);
@@ -55,6 +57,7 @@ function createSubappLaunchReservations({ dispatchTimeoutMs = 20000, runtimeGrac
       streamId: null,
       spawned: false,
       finish: dispose,
+      canBeSuperseded() { return Boolean(lockForDispatch) && this.streamId === null; },
       assertActive() {
         if (performance.now() >= deadline) expire();
         signal.throwIfAborted();
@@ -62,12 +65,28 @@ function createSubappLaunchReservations({ dispatchTimeoutMs = 20000, runtimeGrac
       bind(streamId, stop) {
         this.streamId = streamId;
         stopStream = stop;
-        return () => {
-          this.spawned = true;
-          // The command supervisor owns the exact stream and the running process
-          // now protects its files. Readiness and health IPC never hold this lock.
-          releaseLock();
-          arm((config.startupTimeoutMs || 8000) + runtimeGraceMs);
+        return {
+          ...(lockForDispatch ? { waitForDispatch: async commandSignal => {
+            const dispatchSignal = commandSignal ? AbortSignal.any([signal, commandSignal]) : signal;
+            dispatchSignal.throwIfAborted();
+            const release = await lockForDispatch(dispatchSignal);
+            if (typeof release !== 'function') throw new Error('Subapp dispatch lock did not return a release function.');
+            releaseSelection = release;
+            try {
+              this.assertActive();
+              dispatchSignal.throwIfAborted();
+            } catch (error) {
+              releaseLock();
+              throw error;
+            }
+          } } : {}),
+          spawned: () => {
+            this.spawned = true;
+            // The command supervisor owns the exact stream and the running process
+            // now protects its files. Readiness and health IPC never hold this lock.
+            releaseLock();
+            arm((config.startupTimeoutMs || 8000) + runtimeGraceMs);
+          },
         };
       },
     };
@@ -77,14 +96,24 @@ function createSubappLaunchReservations({ dispatchTimeoutMs = 20000, runtimeGrac
     owner.on('did-start-navigation', onNavigation);
     try {
       if (owner.isDestroyed()) ownerGone();
-      // Deduplicate startup of a tool across windows of this host. Other tools
-      // can still select their packages as soon as the command has been spawned.
-      while (starting.has(id)) await delay(50, undefined, { signal });
+      // A modern reservation waiting for the renderer owns no package lease.
+      // A newer request may replace it, while dispatching and running starts stay serialized.
+      while (starting.has(id)) {
+        signal.throwIfAborted();
+        const previous = reservations.get(starting.get(id));
+        if (previous?.canBeSuperseded()) {
+          previous.finish(fault('SUBAPP_LAUNCH_SUPERSEDED', 'A newer request opened this subapp.'));
+          break;
+        }
+        await delay(50, undefined, { signal });
+      }
       signal.throwIfAborted();
       starting.set(id, token);
-      ({ config, release: releaseSelection } = await select(signal));
+      ({ config, release: releaseSelection, lockForDispatch } = await select(signal));
       signal.throwIfAborted();
-      arm(dispatchTimeoutMs);
+      if (lockForDispatch) releaseLock();
+      else arm(dispatchTimeoutMs);
+      signal.throwIfAborted();
       reservations.set(token, reservation);
       return { config, token };
     } catch (error) {
@@ -107,7 +136,7 @@ function createSubappLaunchReservations({ dispatchTimeoutMs = 20000, runtimeGrac
       || options.cwd !== config.packagePath
       || options.args?.[0] !== path.join(config.packagePath, config.entry || 'index.js')
       || options.env?.AILY_CHILD_TOOL_ID !== config.id) throw expired();
-    return { id: config.id, spawned: reservation.bind(streamId, stop) };
+    return { id: config.id, ...reservation.bind(streamId, stop) };
   }
 
   function checkRegistration(token, owner, payload) {

@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createHash } = require('crypto');
+const { spawn } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const versions = require('../../electron/subapp-version-store');
 const {
@@ -19,6 +20,7 @@ const { npmTarball, portableSubappTarball } = require('./fixtures/npm-tarball-fi
 const http = require('node:http');
 const { acquireInstallLock } = require('../../electron/subapp-install-lock');
 const { createSubappLaunchReservations } = require('../../electron/subapp-launch-reservations');
+const { isRetiredUninstallName, runSubappVersionCleanup } = require('../../electron/subapp-version-cleanup');
 const { verifyBlocklyChatRuntime } = require('../../electron/blockly-chat-compatibility');
 
 const ID = 'aily-chat';
@@ -813,7 +815,7 @@ test('a prepared update survives selection contention and can activate on retry'
   const f = fixture(t, { managerOptions: { lockTimeoutMs: 100 } });
   writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
   await f.manager.downloadUpdate({ id: ID });
-  const release = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  const release = acquireInstallLock(versions.selectionLockPath(f.rootDir, f.entry));
   try {
     await assert.rejects(f.manager.installUpdate({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
     assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, '0.1.32');
@@ -825,12 +827,12 @@ test('a prepared update survives selection contention and can activate on retry'
 test('wall clock adjustment does not expire a legitimate selection wait', { timeout: 5000 }, async t => {
   const f = fixture(t, { managerOptions: { lockTimeoutMs: 600 } });
   writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
-  const holding = await f.manager.prepareLaunch({ id: ID });
+  const release = acquireInstallLock(versions.selectionLockPath(f.rootDir, f.entry));
   const now = Date.now;
   let offset = 0;
   const clock = t.mock.method(Date, 'now', () => now() + offset);
   const jumping = setTimeout(() => { offset = 10 * 60 * 1000; }, 25);
-  const releasing = setTimeout(holding.release, 180);
+  const releasing = setTimeout(release, 180);
   try {
     const started = await f.manager.prepareLaunch({ id: ID });
     started.release();
@@ -839,7 +841,7 @@ test('wall clock adjustment does not expire a legitimate selection wait', { time
     clearTimeout(jumping);
     clearTimeout(releasing);
     clock.mock.restore();
-    holding.release();
+    release();
   }
 });
 
@@ -863,7 +865,10 @@ test('a live renderer which drops the launch handshake cannot strand the real se
   const retryOwner = launchOwner();
   const select = signal => f.manager.prepareLaunch({ id: ID }, signal);
   const abandoned = await launches.prepare(owner, ID, select);
-  assert.equal(acquireInstallLock(path.join(f.rootDir, 'store', '.locks')), null);
+  const selectionLock = versions.selectionLockPath(f.rootDir, f.entry);
+  const free = acquireInstallLock(selectionLock);
+  assert.equal(typeof free, 'function');
+  free();
 
   const retry = await launches.prepare(retryOwner, ID, select);
   try {
@@ -871,7 +876,55 @@ test('a live renderer which drops the launch handshake cannot strand the real se
     assert.throws(() => launches.bindCommand(abandoned.token, owner, 'late', launchCommand(abandoned.config)),
       { code: 'SUBAPP_LAUNCH_EXPIRED' });
     assert.equal(owner.listenerCount('destroyed'), 0);
+    const binding = launches.bindCommand(retry.token, retryOwner, 'fresh', launchCommand(retry.config));
+    await binding.waitForDispatch();
+    assert.equal(acquireInstallLock(selectionLock), null);
+    binding.spawned();
+    const released = acquireInstallLock(selectionLock);
+    assert.equal(typeof released, 'function');
+    released();
   } finally { launches.finish(retry.token, retryOwner); }
+});
+
+test('a second host restores the verified active version after a process dies mid-replacement', { timeout: 10000 }, async t => {
+  const f = fixture(t);
+  await f.manager.install({ id: ID });
+  const first = readInstalledState(f.rootDir, f.entry);
+  const crashingHost = spawn(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { randomUUID } = require('node:crypto');
+    const { acquireInstallLock } = require(process.argv[1]);
+    const [dir, selection, preparation] = process.argv.slice(2);
+    const ownsPreparation = acquireInstallLock(preparation);
+    const ownsSelection = acquireInstallLock(selection);
+    if (!ownsPreparation || !ownsSelection) throw Error('test host could not acquire locks');
+    fs.renameSync(dir, path.join(path.dirname(dir), '.replaced-' + path.basename(dir) + '-' + randomUUID()));
+    process.stdout.write('moved\\n');
+    setInterval(() => {}, 1000);
+  `, require.resolve('../../electron/subapp-install-lock'), path.dirname(first.packagePath),
+  versions.selectionLockPath(f.rootDir, f.entry), path.join(f.rootDir, 'store', '.locks', versions.storeKeyForPackage(PACKAGE))],
+  { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const exited = new Promise(resolve => crashingHost.once('exit', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      crashingHost.once('error', reject);
+      crashingHost.once('exit', code => reject(new Error(`Replacement host exited prematurely (${code})`)));
+      crashingHost.stdout.once('data', () => resolve());
+    });
+    assert.equal(fs.existsSync(first.packagePath), false);
+  } finally {
+    crashingHost.kill('SIGKILL');
+    await exited;
+  }
+  const newHost = createSubappManager(f.managerOptions);
+  const selected = await newHost.prepareLaunch({ id: ID });
+  assert.equal(selected.config.version, first.installedVersion);
+  assert.equal(selected.config.packagePath, first.packagePath);
+  assert.equal(typeof selected.lockForDispatch, 'function');
+  const release = await selected.lockForDispatch();
+  release();
+  assert.equal(f.downloads.length, 1);
 });
 
 test('a spawned but unready runtime frees selection for another host and its update', { timeout: 5000 }, async t => {
@@ -1017,18 +1070,19 @@ test('uninstall protects a starting process which appeared before the uninstall 
   assert.ok(fs.existsSync(path.join(legacy, 'package.json')));
 });
 
-test('a Windows-style deletion failure remains retryable in a new manager and never strands the global lock', { timeout: 5000 }, async t => {
+test('a Windows-style first detach failure preserves the installation and leaves the selection lock free', { timeout: 5000 }, async t => {
   const f = fixture(t, { managerOptions: { platform: 'win32', listBusyHolders: async () => [], sleep: async () => {} } });
   const legacy = packagePathFor(f.rootDir, PACKAGE);
   writeRunnablePackage(legacy, '0.1.32');
-  const rm = fs.promises.rm;
-  const mock = t.mock.method(fs.promises, 'rm', async (target, options) => {
-    if (target === legacy) throw Object.assign(new Error('EPERM unlink busy'), { code: 'EPERM' });
-    return rm(target, options);
+  const rename = fs.promises.rename;
+  const mock = t.mock.method(fs.promises, 'rename', async (source, destination) => {
+    if (source === legacy) throw Object.assign(new Error('EPERM rename busy'), { code: 'EPERM' });
+    return rename(source, destination);
   });
   await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'EBUSY' });
-  assert.equal(versions.isUninstalling(f.rootDir, f.entry), true);
-  const free = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, '0.1.32');
+  const free = acquireInstallLock(versions.selectionLockPath(f.rootDir, f.entry));
   assert.equal(typeof free, 'function'); free();
   mock.mock.restore();
   await createSubappManager(f.managerOptions).uninstall({ id: ID });
@@ -2140,4 +2194,147 @@ test('feedback distinguishes selected installed Chat from an older running runti
   assert.equal(chat.runningVersion, '0.1.30');
   assert.equal(chat.runningSource, 'portable');
   assert.equal(f.calls.length, 0);
+});
+
+test('a stalled private staging cleanup leaves launch, update failure and uninstall independent', { timeout: 5000 }, async t => {
+  const url = await transferServer(t, (_request, response) => { response.writeHead(503); response.end(); });
+  const f = fixture(t, { managerOptions: { downloadFile: undefined, listBusyHolders: async () => [] } });
+  f.entry.dist.tarball = url;
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+
+  const cleanupStarted = Promise.withResolvers();
+  const releaseCleanup = Promise.withResolvers();
+  const cleanupEnded = Promise.withResolvers();
+  const rm = fs.promises.rm;
+  t.mock.method(fs.promises, 'rm', async (target, options) => {
+    if (!path.basename(target).startsWith('.staging-')) return rm(target, options);
+    cleanupStarted.resolve();
+    await releaseCleanup.promise;
+    try { return await rm(target, options); } finally { cleanupEnded.resolve(); }
+  });
+
+  const failed = assert.rejects(f.manager.downloadUpdate({ id: ID }), /HTTP 503/);
+  await cleanupStarted.promise;
+  try {
+    await failed;
+    const launch = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(launch.config.version, '0.1.32'); launch.release();
+    await f.manager.uninstall({ id: ID });
+    assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+  } finally {
+    releaseCleanup.resolve();
+    await cleanupEnded.promise;
+  }
+});
+
+test('uninstall bounds its join with a download that does not acknowledge cancellation', { timeout: 5000 }, async t => {
+  const downloadStarted = Promise.withResolvers();
+  const releaseDownload = Promise.withResolvers();
+  const f = fixture(t, { managerOptions: {
+    lockTimeoutMs: 60, listBusyHolders: async () => [],
+    downloadFile: async (_url, _destination, _progress, { signal }) => {
+      downloadStarted.resolve();
+      await releaseDownload.promise;
+      signal.throwIfAborted();
+    },
+  } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const cancelled = assert.rejects(f.manager.downloadUpdate({ id: ID }), { code: 'SUBAPP_CANCELLED' });
+  await downloadStarted.promise;
+  try {
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+    assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+    const launch = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(launch.config.version, '0.1.32'); launch.release();
+  } finally {
+    releaseDownload.resolve();
+    await cancelled;
+  }
+  await f.manager.uninstall({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('an interrupted uninstall can replace a malformed marker and finish explicitly', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  versions.beginUninstall(f.rootDir, f.entry);
+  const marker = path.join(f.rootDir, 'store', '.uninstalling', `${versions.storeKeyForPackage(PACKAGE)}.json`);
+  fs.writeFileSync(marker, '{interrupted');
+
+  assert.equal(readInstalledState(f.rootDir, f.entry).uninstalling, true);
+  await f.manager.uninstall({ id: ID });
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(legacy), false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), true);
+});
+
+test('a timed-out uninstall keeps its write guard until the late detach has completed', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: {
+    lockTimeoutMs: 60, uninstallCleanupTimeoutMs: 60, listBusyHolders: async () => [],
+  } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const finishRename = Promise.withResolvers();
+  const rename = fs.promises.rename;
+  t.mock.method(fs.promises, 'rename', async (source, destination) => {
+    if (source === legacy) await finishRename.promise;
+    return rename(source, destination);
+  });
+
+  try {
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_UNINSTALL_CLEANUP_TIMEOUT' });
+    assert.equal(readInstalledState(f.rootDir, f.entry).uninstalling, true);
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+  } finally {
+    finishRename.resolve();
+  }
+  const retry = createSubappManager({ ...f.managerOptions, lockTimeoutMs: 1000 });
+  await retry.uninstall({ id: ID });
+  assert.equal(fs.existsSync(legacy), false);
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+});
+
+test('partial detach can resume and a new cleanup worker removes the detached trees independently', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  await f.manager.install({ id: ID });
+  const store = path.join(f.rootDir, 'store', versions.storeKeyForPackage(PACKAGE));
+  const update = path.join(f.updateRootDir, ID);
+  fs.mkdirSync(update, { recursive: true });
+
+  const rename = fs.promises.rename;
+  const mock = t.mock.method(fs.promises, 'rename', async (source, destination) => {
+    if (source === legacy) throw Object.assign(new Error('EPERM rename busy'), { code: 'EPERM' });
+    return rename(source, destination);
+  });
+  await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'EBUSY' });
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), true);
+  assert.equal(fs.existsSync(store), false);
+  assert.equal(fs.existsSync(legacy), true);
+  mock.mock.restore();
+
+  await createSubappManager(f.managerOptions).uninstall({ id: ID });
+  const targets = [legacy, store, update];
+  const findDetached = target => fs.readdirSync(path.dirname(target)).filter(name => isRetiredUninstallName(target, name));
+  assert.ok(targets.every(target => !fs.existsSync(target) && findDetached(target).length === 1));
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  const retry = await runSubappVersionCleanup(f.rootDir, f.entry, { updateRootDir: f.updateRootDir, isBusy: () => false });
+  assert.equal(retry, false);
+  assert.ok(targets.every(target => findDetached(target).length === 0));
+});
+
+test('explicit reinstall completes an interrupted uninstall before selecting the replacement', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  versions.beginUninstall(f.rootDir, f.entry);
+
+  await f.manager.reinstall({ id: ID });
+  assert.equal(fs.existsSync(legacy), false);
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), false);
+  const launch = await f.manager.prepareLaunch({ id: ID });
+  assert.equal(launch.config.version, f.entry.version); launch.release();
 });

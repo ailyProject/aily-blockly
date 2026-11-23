@@ -7,13 +7,14 @@ const { randomUUID } = require('node:crypto');
 const { parentPort, workerData } = require('node:worker_threads');
 const semver = require('semver');
 const versions = require('./subapp-version-store');
-const { readInstalledState } = require('./subapp-manager');
+const { packagePathFor, readInstalledState } = require('./subapp-manager');
+const { isRetiredUninstallName } = require('./subapp-version-cleanup');
 
 const RETIRED_DIRECTORY = /^\.retired-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const LOCK_CONTENDER = /^([1-9]\d*)-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const INDEX_MAX_BYTES = 2 * 1024 * 1024;
 
-const { rootDir, entry, platform, profiles = [], hostPid, customProcessInventory } = workerData;
+const { rootDir, updateRootDir, entry, platform, profiles = [], hostPid, customProcessInventory } = workerData;
 const windows = platform === 'win32';
 
 function directoryEntries(directory) {
@@ -80,6 +81,7 @@ function storeIsBusy() {
   return otherHostIsRunning()
     || hasActiveContender(locks)
     || hasActiveContender(path.join(locks, versions.storeKeyForPackage(entry.package)))
+    || hasActiveContender(versions.selectionLockPath(rootDir, entry))
     || versions.isUninstalling(rootDir, entry);
 }
 
@@ -150,10 +152,33 @@ function cachedVersion() {
 }
 
 async function run() {
-  const parent = versions.storeRoot(rootDir, entry, { optional: true });
-  if (!parent) return false;
-
   let retry = false;
+  // An interrupted uninstall can still need the detached package manifest to
+  // identify the legacy executable shims it owns.
+  if (versions.isUninstalling(rootDir, entry)) return true;
+  const uninstallTrees = [
+    [rootDir, packagePathFor(rootDir, entry.package)],
+    [rootDir, path.join(rootDir, 'store', versions.storeKeyForPackage(entry.package))],
+    ...(updateRootDir ? [[updateRootDir, path.join(updateRootDir, entry.id)]] : []),
+  ];
+  for (const [root, target] of uninstallTrees) {
+    const directory = path.dirname(target);
+    const retired = directoryEntries(directory).filter(item => isRetiredUninstallName(target, item.name));
+    if (!retired.length) continue;
+    const relative = path.relative(fs.realpathSync(root), fs.realpathSync(directory));
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error('Unsafe retired uninstall directory');
+    }
+    if (versions.isUninstalling(rootDir, entry)) return true;
+    for (const item of retired) {
+      try { fs.rmSync(path.join(directory, item.name), { recursive: true, force: true }); }
+      catch { retry = true; }
+    }
+  }
+
+  const parent = versions.storeRoot(rootDir, entry, { optional: true });
+  if (!parent) return retry;
+
   const retired = directoryEntries(parent)
     .filter(item => item.isDirectory() && RETIRED_DIRECTORY.test(item.name))
     .map(item => path.join(parent, item.name));
