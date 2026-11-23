@@ -23,6 +23,7 @@ import { beginNativeFieldDependencies } from './blockly-native-field-dependencie
 import { registerCustomFunctionContract } from './blockly-custom-function-contract';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import { decodeNativeCandidateRequest, encodeNativeCandidateResult, type NativeCandidateWireRequest } from './blockly-native-transfer';
+import { installLegacyVariableHelpers } from '../utils/blockly-legacy-library-compat';
 
 /** Bundled with the actual host implementations into an independent JavaScript realm. */
 export function installNativeCandidateRealm(): void {
@@ -147,6 +148,7 @@ export function installNativeCandidateRealm(): void {
           script.textContent = step.source;
           document.head.appendChild(script); script.remove();
           if (mode === 'arduino') {
+            installLegacyVariableHelpers(step.label, realm, () => workspace);
             adaptBundledArduinoProcedureCalls(generator);
             adaptArduinoTextLiterals(generator);
             adaptXiaozhiParameterDeclarations(generator, realm);

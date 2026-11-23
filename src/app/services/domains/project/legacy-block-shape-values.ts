@@ -22,14 +22,30 @@ export function migrateLegacyBlockShapeValues<T>(source: T): { document: T; chan
     const blockId = typeof state['id'] === 'string' ? state['id'] : undefined;
     if (state['type'] === 'blinker_widget_print') {
       if (extraState !== undefined && (!extra || Object.hasOwn(extra, 'extraCount'))) continue;
-      const count = extra?.['itemCount'] ?? Object.keys(inputs).length;
-      if (!Number.isSafeInteger(count) || count < 2 || Object.keys(inputs).length !== count
-        || Array.from({ length: count }, (_, i) => `INPUT${i}`).some(name => !Object.hasOwn(inputs, name))) continue;
       if (extra && !Object.hasOwn(extra, 'itemCount')) continue;
+
+      const names = Object.keys(inputs);
+      const count = extra ? extra['itemCount'] : names.length;
+
+      if (!Number.isSafeInteger(count) || count < 2 || count > 1025 || !names.length) continue;
+
+      // Blockly omits unconnected input slots. INPUT0 belongs to the base block.
+      const slots = names.map(name => Number(/^INPUT(0|[1-9]\d*)$/u.exec(name)?.[1]));
+
+      if (slots.some(slot => !Number.isSafeInteger(slot) || slot >= count)) continue;
+
+      const newExtraCount = Math.max(...slots);
+
       if (extra) delete extra['itemCount'];
-      state['extraState'] = { ...extra, extraCount: count - 1 };
+
+      if (newExtraCount || (extra && Object.keys(extra).length)) {
+        state['extraState'] = { ...extra, ...(newExtraCount ? { extraCount: newExtraCount } : {}) };
+      } else {
+        delete state['extraState'];
+      }
+
       changes.push({ jsonPointer: `${jsonPointer}/extraState`, blockId,
-        blockType: 'blinker_widget_print', oldItemCount: count, newExtraCount: count - 1 });
+        blockType: 'blinker_widget_print', oldItemCount: count, newExtraCount });
     } else if (state['type'] === 'controls_ifelse' && Object.hasOwn(inputs, 'ELSE')
       && (extraState === undefined || extra && !Object.hasOwn(extra, 'hasElse'))) {
       state['extraState'] = { ...extra, hasElse: true };

@@ -241,7 +241,7 @@ export class SubappAgentBridgeService implements OnDestroy {
         this.throwIfCancelled(signal);
 
         const opened = await this.automation.openChildApp({
-          toolId: resolved.config.id, mode: 'window', reveal: tool !== 'simulator_scene_generation_open',
+          toolId: resolved.config.id, mode: 'window', reveal: tool !== 'simulator_open',
         });
 
         if (opened['ok'] !== true) throw new SubappRpcError(String(opened['message']), 'SUBAPP_PRESENTATION_NOT_READY');
@@ -333,7 +333,7 @@ export class SubappAgentBridgeService implements OnDestroy {
         this.ownerLeases.require(ownerSessionId, activitySessionId, context.toolCallId);
       }
 
-      if (tool === 'simulator_scene_generation_open' && presentationPolicy.uiMode === 'window'
+      if (tool === 'simulator_open' && presentationPolicy.uiMode === 'window'
         && browserPresentation && isWindowOnlyChildTool(resolved.config.id)) {
         try {
           presentation = await this.automation.openChildApp({ toolId: resolved.config.id, mode: 'window' });

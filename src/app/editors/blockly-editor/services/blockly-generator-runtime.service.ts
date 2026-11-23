@@ -8,7 +8,7 @@ import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import type { NativeCandidateBlock, NativeCandidateOptions } from './blockly-native-candidate-protocol';
 import * as Blockly from 'blockly';
-import { normalizeLegacyVariableToolboxSource } from '../utils/blockly-legacy-library-compat';
+import { installLegacyVariableHelpers, normalizeLegacyVariableToolboxSource } from '../utils/blockly-legacy-library-compat';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
 import { adaptXiaozhiParameterDeclarations } from './blockly-xiaozhi-parameter-declarations';
@@ -239,7 +239,6 @@ export class BlocklyGeneratorRuntimeService {
     });
     return { ...replay, ...(graphics ? { graphics } : {}) };
   }
-
   /** Diagnostic preparation only: no ABS capability promotion or host workspace mutation. */
   async evaluateNativeCandidate(blocks: NativeCandidateBlock[], options: NativeCandidateOptions) {
     const replay = this.captureNativeReplay(), detached = structuredClone(blocks);
@@ -407,6 +406,9 @@ export class BlocklyGeneratorRuntimeService {
     }
     wrapProjectDataGeneratorFunctions(session.generator, result.registeredBlockTypes);
     if (session.context.mode === 'arduino') {
+      const realm = session.realmWindow as unknown as Record<string, any>;
+
+      installLegacyVariableHelpers(filePath, realm, () => realm['Blockly'].getMainWorkspace());
       adaptBundledArduinoProcedureCalls(session.generator);
       adaptXiaozhiParameterDeclarations(session.generator, session.realmWindow);
       adaptXiaozhiDisplayContext(session.generator, session.realmWindow);

@@ -1,11 +1,11 @@
 import { Injectable } from '@angular/core';
 import { buildProjectHardwareIntentSnapshot } from '@aily-project/simulator-host-sdk';
-import type { ProjectHardwareIntentSnapshotV1 } from '@aily-project/simulator-protocol/scene';
-
+import { PROJECT_SCENE_GENERATION_LIMITS, type ProjectHardwareIntentSnapshotV1 } from '@aily-project/simulator-protocol/scene';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { ProjectService } from '@domain/project/public-api';
 import { createAlignedSimulatorProjectFirmwareEvidenceSource } from './simulator-project-firmware-evidence-source';
 import { resolveProjectHardwareIntentBoard } from './project-hardware-intent-board';
+import { readProjectHardwareBoardPinmap } from './project-hardware-intent-pinmap';
 import { ProjectCompilerConfigurationService } from '../build/project-compiler-configuration.service';
 
 interface SceneGenerationIdentity {
@@ -27,24 +27,32 @@ export class ProjectHardwareIntentProviderService {
     signal?: AbortSignal,
   ): Promise<ProjectHardwareIntentSnapshotV1> {
     let stage = 'project-binding';
+
     try {
       throwIfAborted(signal);
+
       const projectRoot = this.projectService.currentProjectPath;
+
       if (!projectRoot) {
         throw new Error('Project hardware intent requires an open project.');
       }
+
       stage = 'generated-code';
+
       const generatedSource =
         await this.blocklyService.waitForReusableGeneratedCode({
           signal,
           timeoutMs: 30_000,
         });
+
       if (generatedSource.trim().length === 0) {
         throw new Error(
           'Generated Arduino source is empty; add executable Blockly content before creating a Scene.',
         );
       }
+
       stage = 'firmware-evidence';
+
       const sourceText =
         await createAlignedSimulatorProjectFirmwareEvidenceSource({
           projectRoot,
@@ -55,44 +63,74 @@ export class ProjectHardwareIntentProviderService {
             join: (...segments) => window['path'].join(...segments),
           },
         });
+
       stage = 'project-package';
+
       const packageJson = await this.projectService.getPackageJson();
+
       throwIfAborted(signal);
+
       stage = 'board-config';
+
       const boardConfig =
         this.projectService.currentBoardConfig ??
         (await this.projectService.getBoardJson());
+
       throwIfAborted(signal);
+
       stage = 'installed-board-package';
+
       const installedBoardPackage = await this.projectService.getBoardPackageJson();
       const loadedBoardModule = this.projectService.getRuntimeBoardModule();
+
       if (loadedBoardModule && installedBoardPackage.name !== loadedBoardModule) {
         throw new Error('Loaded Board configuration does not match the project-installed package.');
       }
+
+      const boardPackagePath = await this.projectService.getBoardPackagePath();
+      const boardPinmap = await readProjectHardwareBoardPinmap(boardPackagePath, boardConfig);
+
       throwIfAborted(signal);
+
       stage = 'compiler-configuration';
+
       const { compileContext, targetMarkers } = await this.compilerConfiguration.read(projectRoot, signal);
+
       throwIfAborted(signal);
+
       if (this.projectService.currentProjectPath !== projectRoot) {
         throw new Error('Project context changed during hardware intent inspection.');
       }
+
       stage = 'source-bookend';
+
       const currentSource = await this.blocklyService.waitForReusableGeneratedCode({ signal, timeoutMs: 30_000 });
+
       throwIfAborted(signal);
+
       if (currentSource !== generatedSource || this.projectService.currentProjectPath !== projectRoot
           || JSON.stringify(packageJson) !== JSON.stringify(await this.projectService.getPackageJson())
           || JSON.stringify(installedBoardPackage) !== JSON.stringify(await this.projectService.getBoardPackageJson())
           || loadedBoardModule !== this.projectService.getRuntimeBoardModule()
-          || boardConfig !== this.projectService.currentBoardConfig) {
+          || boardConfig !== this.projectService.currentBoardConfig
+          || boardPackagePath !== await this.projectService.getBoardPackagePath()
+          || JSON.stringify(boardPinmap) !== JSON.stringify(await readProjectHardwareBoardPinmap(boardPackagePath, boardConfig))) {
         throw new Error('Project context changed during hardware intent inspection.');
       }
+
       stage = 'snapshot';
+
+      const projectDescription = text(record(packageJson)['description']).replace(/\s+/gu, ' ')
+        .slice(0, PROJECT_SCENE_GENERATION_LIMITS.maxTextLength).trim();
+
       return await buildProjectHardwareIntentSnapshot({
         request: {
           requestId: request.requestId,
           projectIdentity: request.projectIdentity,
         },
         board: resolveProjectHardwareIntentBoard(boardConfig, packageJson, installedBoardPackage, targetMarkers),
+        ...(boardPinmap ? { boardPinmap } : {}),
+        ...(projectDescription ? { projectDescription } : {}),
         sourceText,
         compileContext,
         libraries: resolveLibraries(packageJson),
@@ -100,6 +138,7 @@ export class ProjectHardwareIntentProviderService {
       });
     } catch (error) {
       logHardwareIntentFailure(stage, error);
+
       throw error;
     }
   }
@@ -109,6 +148,7 @@ function logHardwareIntentFailure(stage: string, error: unknown): void {
   const value = error !== null && typeof error === 'object'
     ? error as { name?: unknown; code?: unknown; message?: unknown }
     : null;
+
   console.error('[SimulatorHost][HardwareIntentReadFailed]', JSON.stringify({
     stage,
     errorName: typeof value?.name === 'string'
@@ -126,6 +166,7 @@ function logHardwareIntentFailure(stage: string, error: unknown): void {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
+
   throw signal.reason instanceof Error
     ? signal.reason
     : new Error('Project hardware intent request was cancelled.');
@@ -135,11 +176,14 @@ function resolveLibraries(
   value: unknown,
 ): Array<{ name: string; version: string | null }> {
   const packageJson = record(value);
+
   const dependencyGroups = [
     packageJson['dependencies'],
     packageJson['optionalDependencies'],
   ].map(record);
+
   const libraries = new Map<string, string | null>();
+
   for (const dependencies of dependencyGroups) {
     for (const [name, version] of Object.entries(dependencies)) {
       if (
@@ -148,12 +192,14 @@ function resolveLibraries(
       ) {
         continue;
       }
+
       libraries.set(
         name,
         typeof version === 'string' && version.trim() ? version.trim() : null,
       );
     }
   }
+
   return [...libraries.entries()].map(([name, version]) => ({ name, version }));
 }
 

@@ -1,13 +1,40 @@
 import * as Blockly from 'blockly';
 
+const coreVariablesGenerator = /(?:^|[/\\])(?:@aily-project[/\\])?lib-core-variables[/\\]generator\.js$/;
+
 /** Published variable generators assumed every category had static contents.
  * Native procedure/variable callbacks return a string instead. Apply the same
  * array guard as the maintained library, only to this known legacy lookup;
  * keep on-disk libraries and native dynamic-category callbacks unchanged. */
 export function normalizeLegacyVariableToolboxSource(filePath: string, source: string): string {
-  if (!/(?:^|[/\\])(?:@aily-project[/\\])?lib-core-variables[/\\]generator\.js$/.test(filePath)) return source;
+  if (!coreVariablesGenerator.test(filePath)) return source;
+
   return source.replace(/item\.getContents\s*&&\s*item\.getContents\(\)\.some\((\w+)\s*=>\s*\1\.type\s*===\s*(["'])variable_define\2\)/g,
     match => `item.getContents && Array.isArray(item.getContents()) && ${match.slice(match.indexOf('item.getContents()'))}`);
+}
+
+/** Older core-variables packages did not export the helpers used by device generators. */
+export function installLegacyVariableHelpers(filePath: string, realm: Record<string, any>, getWorkspace: () => Blockly.Workspace | null): void {
+  if (!coreVariablesGenerator.test(filePath)) return;
+
+  realm['registerVariableToBlockly'] ??= (name: string, type = '') => {
+    const variables = getWorkspace()?.getVariableMap();
+
+    if (name && variables && !variables.getVariable(name, type)) {
+      variables.createVariable(name, type);
+    }
+  };
+
+  realm['renameVariableInBlockly'] ??= (block: Blockly.Block, oldName: string, newName: string, type = '') => {
+    const variables = (block.workspace ?? getWorkspace())?.getVariableMap();
+
+    if (!variables || !newName || variables.getVariable(newName, type)) return;
+
+    const variable = variables.getVariable(oldName, type);
+
+    if (variable) variables.renameVariable(variable, newName);
+    else variables.createVariable(newName, type);
+  };
 }
 
 /**
