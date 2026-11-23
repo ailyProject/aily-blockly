@@ -252,6 +252,11 @@ test('shared cache clear removes an exited legacy recovery marker under the curr
     assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), 'original user program');
 });
 
+function archivedOutcome(project, id) {
+    const name = createHash('sha256').update(id).digest('hex') + '.build.json';
+    return JSON.parse(fs.readFileSync(path.join(project, '.log/compile/requests', name))).outcome;
+}
+
 for (const selector of ['current.json', 'pending-compile.json', 'pending-preprocess.json']) {
     test(`a broken shared ${selector} does not strand a new execution or clear`, t => {
         const f = sharedFixture(t), original = f.prepare('completed-before-selector-damage');
@@ -269,7 +274,7 @@ for (const selector of ['current.json', 'pending-compile.json', 'pending-preproc
         assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
         assert.equal(fs.existsSync(broken), false);
         assert.equal(fs.existsSync(path.join(f.root, '.build', 'firmware.bin')), false);
-        assert.deepEqual(fs.readFileSync(path.join(folder, 'outcome.json')), oldOutcome);
+        assert.deepEqual(archivedOutcome(f.root, original.execution.buildRequestId), JSON.parse(oldOutcome));
         assert.equal(api.inspectBuildExecution(f.root, original.execution.buildRequestId).status, 'completed');
         assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'failed');
     });
@@ -283,7 +288,7 @@ test('shared cleanup retires a missing current target without erasing original r
     fs.writeFileSync(store.pointer, JSON.stringify({ version: 1, id: randomUUID(), buildRequestId: 'missing-current-target' }));
     assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
     assert.equal(fs.existsSync(store.pointer), false);
-    assert.deepEqual(fs.readFileSync(path.join(folder, 'outcome.json')), outcome);
+    assert.deepEqual(archivedOutcome(f.root, original.execution.buildRequestId), JSON.parse(outcome));
 });
 
 test('a non-file shared selector is refused before any cache or pending selector is removed', t => {
@@ -846,4 +851,82 @@ test('a dirty Blockly build retains its own source alongside the unchanged saved
     assert.equal(historical.current, false);
     assert.equal(historical.result, undefined);
     assert.deepEqual(historical.buildSnapshot, observed.buildSnapshot);
+});
+
+test('cache layout retains a compact original receipt after clear without a private execution tree', t => {
+    const f = sharedFixture(t);
+    const req = f.prepare('receipt-layout');
+    const legacy = path.join(f.root, '.aily', 'build-executions');
+    const request = path.join(f.root, '.log/compile/requests',
+        createHash('sha256').update('receipt-layout').digest('hex') + '.build.json');
+    assert.equal(fs.existsSync(legacy), false);
+    assert.equal(path.dirname(path.dirname(req.configFilePath)), path.join(f.root, '.build', 'requests'));
+    complete(req);
+    assert.equal(fs.existsSync(req.configFilePath), false);
+    assert.equal(api.resolveBuildExecution(f.root).executionId, req.execution.id);
+    const fingerprint = upload.captureFirmware(f.root);
+    f.put('.build/requests/misplaced.bin', 'not compiler output');
+    assert.equal(upload.captureFirmware(f.root), fingerprint);
+    fs.unlinkSync(path.join(f.root, '.build/requests/misplaced.bin'));
+    const abandonedUpload = path.join(path.dirname(req.configFilePath), 'upload-request-' + randomUUID() + '.json');
+    fs.writeFileSync(abandonedUpload, '{}');
+    api.clearSharedBuildCache(f.root);
+    assert.equal(fs.existsSync(abandonedUpload), false);
+    const observed = api.inspectBuildExecution(f.root, 'receipt-layout');
+    assert.equal(observed.status, 'completed');
+    assert.equal(observed.current, false);
+    assert.equal(observed.buildHistory.executionId, req.execution.id);
+    assert.equal(api.resolveBuildExecution(f.root), null);
+    assert.ok(fs.statSync(request).size < 4096);
+    assert.equal(fs.readFileSync(request, 'utf8').includes('void setup'), false);
+    assert.throws(() => f.prepare('receipt-layout'), { code: 'BUILD_EXECUTION_EXISTS' });
+    const next = f.prepare('next-compile');
+    assert.equal(api.cancelBuildExecution(req).status, 'completed');
+    assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'prepared');
+    assert.equal(fs.existsSync(legacy), false);
+});
+
+test('terminal advisory preprocess leaves neither a private project nor a permanent request directory', t => {
+    const f = sharedFixture(t), req = f.prepare('automatic-probe', undefined, 'preprocess', false);
+    assert.equal(api.abandonPreparedPreprocess(req), true);
+    assert.equal(fs.existsSync(path.dirname(req.configFilePath)), false);
+    assert.equal(fs.existsSync(path.join(f.root, '.aily/build-executions')), false);
+    assert.equal(api.inspectBuildExecution(f.root, 'automatic-probe'), null);
+});
+
+test('after upgrade only the newest shared preparation can launch; the old ID remains observable', t => {
+    const f = sharedFixture(t), original = f.prepare('pre-upgrade');
+    const cache = path.join(f.root, '.build/requests'), legacy = path.join(f.root, '.aily/build-executions');
+    fs.mkdirSync(path.join(legacy, 'requests'), { recursive: true });
+    const folder = path.join(legacy, original.execution.id);
+    fs.renameSync(path.dirname(original.configFilePath), folder);
+    fs.renameSync(path.join(cache, 'pending-compile.json'), path.join(legacy, 'pending-compile.json'));
+    const key = createHash('sha256').update('pre-upgrade').digest('hex');
+    fs.renameSync(path.join(f.root, '.log/compile/requests', key + '.build.json'), path.join(legacy, 'requests', key + '.json'));
+    const file = path.join(folder, 'config.json'), cfg = JSON.parse(fs.readFileSync(file));
+    delete cfg.execution.storage;
+    fs.writeFileSync(file, JSON.stringify(cfg));
+    const recordFile = path.join(folder, 'execution.json'), record = JSON.parse(fs.readFileSync(recordFile));
+    delete record.storage;
+    record.configDigest = createHash('sha256').update(JSON.stringify(cfg)).digest('hex');
+    fs.writeFileSync(recordFile, JSON.stringify(record));
+    assert.equal(api.validateSharedBuildLaunch(file, f.root, 'compile').execution.id, original.execution.id);
+    const next = f.prepare('after-upgrade');
+    assert.throws(() => api.validateSharedBuildLaunch(file, f.root, 'compile'));
+    assert.equal(api.inspectBuildExecution(f.root, 'pre-upgrade').status, 'cancelled');
+    assert.equal(api.validateSharedBuildLaunch(next.configFilePath, f.root, 'compile').execution.id, next.execution.id);
+});
+
+test('a concurrent receipt update cannot reject an independent build or discard its original outcome', t => {
+    const f = sharedFixture(t), current = f.prepare('busy-receipt');
+    const guard = require('../child/scripts/native-file-lock').tryAcquireFileLock(path.join(f.root, '.log/compile/requests/.build-receipts.guard'));
+    assert.ok(guard);
+    try {
+        complete(current);
+        const other = f.prepare('new-while-index-busy');
+        assert.equal(api.inspectBuildExecution(f.root, current.buildRequestId).status, 'completed');
+        assert.equal(api.inspectBuildExecution(f.root, other.buildRequestId).status, 'prepared');
+    } finally { guard.close(); }
+    api.clearSharedBuildCache(f.root);
+    assert.equal(api.inspectBuildExecution(f.root, current.buildRequestId).status, 'completed');
 });
