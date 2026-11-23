@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const { decodeHistoryAbs } = require('./history-abs-object');
 const { readSaveSnapshot } = require('./project-save-snapshot');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
@@ -126,7 +127,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     return workspaceMetadata.has(key) ? path.join(directories[0], key)
       : objectHash ? path.join(parents[2], objectHash + '.blob') : path.join(directories[1], ...key.split('/'));
   };
-  const readBytes = (key, raw = false) => {
+  const readPhysicalBytes = (key, raw = false) => {
     const file = locate(key, false, raw);
     if (file === null) return null;
     const bytes = access.readRegular(file);
@@ -135,6 +136,10 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       if (locate(key) !== file) throw fault('PROJECT_FILE_UNSAFE_PATH', 'History object ancestry changed during its read.');
     }
     return bytes;
+  };
+  const readBytes = (key, raw = false) => {
+    const bytes = readPhysicalBytes(key, raw), object = historyHash(key);
+    return bytes && object ? decodeHistoryAbs(bytes, object, tail => readPhysicalBytes('history-objects/' + tail)) : bytes;
   };
   const readText = key => {
     const bytes = readBytes(key);

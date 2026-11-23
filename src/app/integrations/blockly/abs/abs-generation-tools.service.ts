@@ -100,9 +100,10 @@ export class AbsGenerationToolsService {
       assertGenerationRequest(params);
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
-        if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false,
+        const historySourceEncoding = 'abs-tail-v1';
+        if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false, historySourceEncoding,
           capture: await this.sync.captureWorkingCandidate(readMergedAuthorSources(params['mergedAuthorSources']), params['view'] === 'canvas') };
-        if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false,
+        if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false, historySourceEncoding,
           capture: await this.sync.captureLegacyCandidate(params['legacy']) };
         if (params['originalTargetPid'] !== undefined
           && (!Number.isSafeInteger(params['originalTargetPid']) || params['originalTargetPid'] < 1)) {
