@@ -3168,11 +3168,28 @@ describe('v2 actual workspace generation coordinator', () => {
   }
 
   it('an edit after validation cannot be saved away by apply', async () => {
-    const { tools, request, source } = await wireBase();
+    await baseline();
+    const tools = new AbsGenerationToolsService(service);
+    const capture = await service.captureWorkingCandidate();
+    const source = capture.abs.replace('TEXT="before"', 'TEXT="candidate A"');
+    const workingCandidate = await retainWorkingCandidate(capture, source);
+    const request = { version: 2, requestId: crypto.randomUUID(), workingCandidate, abs: source,
+      candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } };
     const validated: any = await tools.execute('abs_validate', request, source);
+    expect(validated.ok).withContext(JSON.stringify(validated)).toBeTrue();
+    const saved = disk.get('project.abi');
+    editor.prepareProjectCode.calls.reset();
     roots().setFieldValue('user edit after validation', 'TEXT');
-    const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: validated.receipt }, source);
-    expect(result.code).toBe('ABS_REVISION_STALE'); expect(roots().getFieldValue('TEXT')).toBe('user edit after validation');
+    // The live bridge adds its checked library fingerprint to the preparation receipt.
+    const validation = { ...validated.receipt, libraryRuntimeFingerprint: 'a'.repeat(64) };
+    const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, abs: source, validation }, source);
+    expect(result).toEqual(jasmine.objectContaining({
+      ok: false, code: 'ABS_DOCUMENT_MERGE_CONFLICT',
+      diagnostic: jasmine.objectContaining({ field: '/nodes/protected/value/fields/TEXT' }),
+      application: { status: 'NOT_STARTED' }, publication: { status: 'NOT_COMMITTED' },
+    }));
+    expect(roots().getFieldValue('TEXT')).toBe('user edit after validation');
+    expect(disk.get('project.abi')).toBe(saved);
     expect(editor.prepareProjectCode).not.toHaveBeenCalled();
   });
 
