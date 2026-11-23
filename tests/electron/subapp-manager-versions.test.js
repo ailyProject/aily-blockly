@@ -79,7 +79,7 @@ function writeRunnablePackage(packageRoot, version, options = {}) {
       'aily-blockly-mcp': 'runtime/mcp/cli.js',
     },
     aily: { uiIndex: 'ui/index.html' },
-    ailySubapp: { id: ID },
+    ailySubapp: { id: options.id || ID },
     ...(options.portable === false ? {} : {
       ailyPortable: { version: 1, platforms: ['darwin', 'win32', 'linux'], architectures: ['arm64', 'x64'] },
     }),
@@ -1164,6 +1164,76 @@ test('portable install downloads and extracts directly to A without npm or chang
   assert.ok(fs.existsSync(path.join(f.rootDir, 'store', '.locks', 'subapp-aily-chat')));
   assert.equal(fs.readdirSync(path.join(f.rootDir, 'store', '.locks')).some(name => name.includes('@')), false);
   assert.equal(fs.readFileSync(path.join(f.rootDir, 'package.json'), 'utf8'), rootManifest);
+});
+
+test('background cleanup waits for process inventory and releases obsolete versions silently', async t => {
+  const id = 'fixture-tool';
+  const entry = catalogEntry('0.1.33', Buffer.from('fixture-tool'), {
+    id,
+    package: '@aily-project/subapp-fixture-tool',
+    namespace: 'FIXTURE_TOOL',
+    titleKey: 'FIXTURE_TOOL.NAME',
+  });
+  const events = [];
+  const probes = [];
+  let otherHostRunning = true;
+  let hostChecks = 0;
+  let inventory = 'unavailable';
+  const f = fixture(t, { managerOptions: {
+    backgroundVersionCleanup: true,
+    versionCleanupDelayMs: 0,
+    versionCleanupRetryMs: 20,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [id]: entry }) }),
+    onChanged: event => events.push(event),
+    onProgress: event => events.push(event),
+    canMutateSharedTree: () => {
+      hostChecks += 1;
+      return !otherHostRunning;
+    },
+    hasProcessesUsingPath: async directory => {
+      probes.push(directory);
+      if (inventory === 'unavailable') throw new Error('process inventory unavailable');
+      return inventory === 'busy' && path.basename(directory) === '0.1.30';
+    },
+  } });
+  const releases = new Map();
+  for (const version of ['0.1.29', '0.1.30', '0.1.31', '0.1.32', entry.version]) {
+    const release = { ...entry, version };
+    const candidate = versions.createCandidate(f.rootDir, release);
+    writeRunnablePackage(candidate.source, version, { name: entry.package, id });
+    const ready = await versions.publishCandidate(f.rootDir, release, candidate);
+    releases.set(version, ready.project);
+    if (version === '0.1.32' || version === entry.version) versions.activate(f.rootDir, release, ready);
+  }
+  const parent = path.dirname(releases.get(entry.version));
+  const activePath = versions.activePath(f.rootDir, entry);
+  const active = fs.readFileSync(activePath);
+  const waitFor = async (predicate, message) => {
+    const deadline = performance.now() + 3000;
+    while (!predicate() && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(predicate(), message);
+  };
+
+  const catalog = await f.manager.list({ refresh: true });
+  assert.equal(catalog.apps[0].installedVersion, entry.version);
+  await waitFor(() => hostChecks > 0, 'background cleanup should check other hosts');
+  assert.deepEqual(probes, []);
+  otherHostRunning = false;
+  await waitFor(() => probes.length > 0, 'background cleanup should check process inventory');
+  for (const directory of releases.values()) assert.ok(fs.existsSync(directory));
+
+  inventory = 'busy';
+  await waitFor(() => !fs.existsSync(releases.get('0.1.29')), 'the unused version should be reclaimed');
+  assert.ok(fs.existsSync(releases.get('0.1.30')), 'the occupied version should remain');
+
+  inventory = 'idle';
+  await waitFor(() => !fs.existsSync(releases.get('0.1.30'))
+    && !fs.readdirSync(parent).some(name => name.startsWith('.retired-')), 'cleanup should finish after release');
+  assert.deepEqual(fs.readdirSync(parent).sort(), ['0.1.31', '0.1.32', '0.1.33', 'active.json']);
+  assert.deepEqual(fs.readFileSync(activePath), active);
+  assert.deepEqual(events, []);
+  assert.deepEqual(f.downloads, []);
+  assert.deepEqual(f.calls, []);
 });
 
 test('background update preserves an old running process and activates A only after it closes', async (t) => {

@@ -305,9 +305,8 @@ function isProcessRunning(pid) {
   }
 }
 
-function hasOtherRunningInstances() {
-  const currentUserDataPath = app.getPath('userData');
-  const baseUserDataPath = currentUserDataPath.replace(/[/\\]instances[/\\][^/\\]+$/, '');
+function hasOtherRunningInstances({ userDataPath = app.getPath('userData'), background = false } = {}) {
+  const baseUserDataPath = userDataPath.replace(/[/\\]instances[/\\][^/\\]+$/, '');
   const instancesDirectory = path.join(baseUserDataPath, 'instances');
   if (!fs.existsSync(instancesDirectory)) return false;
 
@@ -320,11 +319,11 @@ function hasOtherRunningInstances() {
         const lock = JSON.parse(fs.readFileSync(lockFilePath, 'utf8'));
         return lock.pid !== process.pid && isProcessRunning(Number(lock.pid));
       } catch {
-        return false;
+        return background;
       }
     });
   } catch (error) {
-    console.warn('扫描其他应用实例失败，延后子应用更新:', error.message || error);
+    if (!background) console.warn('扫描其他应用实例失败，延后子应用更新:', error.message || error);
     return true;
   }
 }
@@ -3148,7 +3147,11 @@ function createWindow() {
     allowBlocklyChatDevelopment: serve && !app.isPackaged,
     isCoderProjectOpen: () => getBuildProduct() === 'coder'
       && !!(projectContextState.workspace || heldProjectLockNormalized || coderOpenProjects.length),
-    canMutateSharedTree: () => !hasOtherRunningInstances(),
+    canMutateSharedTree: () => !hasOtherRunningInstances({ background: true })
+      && !hasOtherRunningInstances({
+        userDataPath: path.join(app.getPath('appData'), getBuildProduct() === 'coder' ? 'aily blockly' : 'aily Coder'),
+        background: true,
+      }),
     getRunningSubappConfig,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,

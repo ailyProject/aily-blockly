@@ -7,6 +7,7 @@ const semver = require('semver');
 
 const SCHEMA_VERSION = 2;
 const READY_FILE = 'ready.json';
+const RETAINED_RELEASES = 3;
 const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 function isObject(value) {
@@ -436,7 +437,10 @@ function activePath(rootDir, entry, create = false) {
 function readActiveManifest(rootDir, entry) {
   const file = activePath(rootDir, entry);
   if (!file) return null;
-  const manifest = readJson(file, true);
+  return parseActiveManifest(readJson(file, true), entry);
+}
+
+function parseActiveManifest(manifest, entry) {
   if (manifest === undefined) return null;
   const storeKey = storeKeyForPackage(entry.package);
   if (!isObject(manifest) || manifest.schemaVersion !== SCHEMA_VERSION
@@ -453,6 +457,47 @@ function readActiveManifest(rootDir, entry) {
     selected: validateLocator(manifest.selected, entry),
     previous: manifest.previous ? validateLocator(manifest.previous, entry) : null,
   };
+}
+
+function referencedVersions(rootDir, entry) {
+  const parent = storeRoot(rootDir, entry, { optional: true });
+  const protectedVersions = new Set();
+  if (!parent) return protectedVersions;
+  for (const [filename, missingFlag] of [
+    ['active.json'],
+    ['active.json.aily-dev-backup', 'devActiveOriginallyMissing'],
+    ['active.json.aily-next-backup', 'nextActiveOriginallyMissing'],
+  ]) {
+    const record = readJson(path.join(parent, filename), true);
+    if (missingFlag && record?.[missingFlag] === true && Object.keys(record).length === 1) continue;
+    const manifest = parseActiveManifest(record, entry);
+    if (manifest) {
+      protectedVersions.add(manifest.selected.version);
+      if (manifest.previous) protectedVersions.add(manifest.previous.version);
+    }
+  }
+  return protectedVersions;
+}
+
+function collectObsoleteVersions(rootDir, entry) {
+  const parent = storeRoot(rootDir, entry, { optional: true });
+  if (!parent) return [];
+  const protectedVersions = referencedVersions(rootDir, entry);
+  const releases = [];
+  for (const item of fs.readdirSync(parent, { withFileTypes: true })) {
+    if (!item.isDirectory() || semver.valid(item.name) !== item.name) continue;
+    try {
+      const prepared = readPrepared(rootDir, { ...entry, version: item.name });
+      if (prepared && ['portable', 'legacy-npm'].includes(prepared.installMode)) {
+        releases.push({ version: prepared.version, directory: prepared.project });
+      }
+    } catch {
+      // An unverifiable directory does not belong to the release inventory.
+    }
+  }
+  return releases.sort((a, b) => semver.rcompare(a.version, b.version))
+    .slice(RETAINED_RELEASES)
+    .filter(item => !protectedVersions.has(item.version));
 }
 
 function readSelection(rootDir, entry, validatePrepared = () => {}) {
@@ -592,6 +637,7 @@ module.exports = {
   activePath,
   activate,
   beginUninstall,
+  collectObsoleteVersions,
   createCandidate,
   finishUninstall,
   isManuallyUninstalled,
@@ -601,6 +647,7 @@ module.exports = {
   readActiveManifest,
   readPrepared,
   readSelection,
+  referencedVersions,
   removeAllVersions,
   storeKeyForPackage,
   storeRoot,

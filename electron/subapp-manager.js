@@ -24,6 +24,9 @@ const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
 const UPDATE_STATE_FILE = 'state.json';
 const UPDATE_PACKAGE_FILE = 'package.tgz';
 const UPDATE_SCHEMA_VERSION = 1;
+const VERSION_CLEANUP_DELAY_MS = 5_000;
+const VERSION_CLEANUP_RETRY_MS = 60_000;
+const RETIRED_VERSION_DIRECTORY = /^\.retired-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const MAX_INDEX_BYTES = 2 * 1024 * 1024;
 const TOOL_ID_ALIASES = Object.freeze({
   'ffs-manager': 'ffs-manager-child',
@@ -1861,18 +1864,16 @@ function getSubappBusyDialogStrings(options = {}) {
   return defaults;
 }
 
-// Inventory failures defer destructive cleanup. They must never be interpreted as idle.
-function hasProcessesUsingPackagePath(packagePath, platform = process.platform) {
-  const needle = path.resolve(packagePath);
+function readProcessCommands(platform = process.platform) {
   const windows = platform === 'win32';
   const command = windows ? 'powershell.exe' : 'ps';
   const args = windows
     ? ['-NoProfile', '-NonInteractive', '-Command',
       'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress']
     : ['-ww', '-axo', 'pid=,command='];
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     execFile(command, args, { windowsHide: true, timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
-      if (error) return resolve(true);
+      if (error) return reject(error);
       try {
         const rows = windows
           ? [JSON.parse(stdout || '[]')].flat().map(row => ({ pid: row.ProcessId, command: row.CommandLine || '' }))
@@ -1880,13 +1881,24 @@ function hasProcessesUsingPackagePath(packagePath, platform = process.platform) 
             const match = line.trim().match(/^(\d+)\s+(.*)$/);
             return { pid: Number(match?.[1]), command: match?.[2] || '' };
           });
-        resolve(rows.some(row => Number(row.pid) !== process.pid
-          && (windows ? row.command.toLowerCase().includes(needle.toLowerCase()) : row.command.includes(needle))));
-      } catch {
-        resolve(true);
+        resolve(rows.filter(row => Number(row.pid) !== process.pid).map(row => row.command));
+      } catch (parseError) {
+        reject(parseError);
       }
     });
   });
+}
+
+// Inventory failures defer destructive cleanup. They must never be interpreted as idle.
+async function hasProcessesUsingPackagePath(packagePath, platform = process.platform) {
+  try {
+    const commands = await readProcessCommands(platform);
+    const needle = path.resolve(packagePath);
+    return commands.some(command => platform === 'win32'
+      ? command.toLowerCase().includes(needle.toLowerCase()) : command.includes(needle));
+  } catch {
+    return true;
+  }
 }
 
 function listProcessesUsingPath(packagePath, options = {}) {
@@ -2422,6 +2434,91 @@ async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunn
   }
 }
 
+function fileIdentity(filename) {
+  const stat = fs.lstatSync(filename, { throwIfNoEntry: false });
+  return stat ? `${stat.dev}:${stat.ino}:${stat.ctimeMs}:${stat.mtimeMs}` : null;
+}
+
+async function retireObsoleteSubappVersions(rootDir, entry, options) {
+  const parent = versions.storeRoot(rootDir, entry, { optional: true });
+  if (!parent) return false;
+  let retry = false;
+  for (const item of fs.readdirSync(parent, { withFileTypes: true })) {
+    if (!item.isDirectory() || !RETIRED_VERSION_DIRECTORY.test(item.name)) continue;
+    try { await fs.promises.rm(path.join(parent, item.name), { recursive: true, force: true }); }
+    catch { retry = true; }
+  }
+  const candidates = versions.collectObsoleteVersions(rootDir, entry)
+    .filter(item => item.version !== entry.version);
+  const retired = [];
+
+  if (candidates.length) {
+    if (options.isBusy()) return true;
+    // Inventory may take seconds. Recheck the selection and directory identities
+    // after acquiring the locks so a new publication or launch cannot race it.
+    const selector = path.join(parent, 'active.json');
+    const selectionBefore = fileIdentity(selector);
+    const checked = new Map();
+    const normalize = value => options.platform === 'win32' ? value.toLowerCase() : value;
+    const beforeInventory = candidates.map(item => ({ ...item, identity: fileIdentity(item.directory) }));
+    const commands = options.hasProcessesUsingPath ? [] : (await readProcessCommands(options.platform)).map(normalize);
+    const router = path.basename(subappBinRouter.stableRouterPath(rootDir));
+    if (commands.some(command => command.includes(router) && command.includes(entry.package))) return true;
+    for (const item of beforeInventory) {
+      if (!item.identity || fileIdentity(item.directory) !== item.identity) {
+        retry = true;
+        continue;
+      }
+      const paths = [item.directory, fs.realpathSync(item.directory)].map(dir => normalize(`${dir}${path.sep}`));
+      const busy = options.hasProcessesUsingPath
+        ? await options.hasProcessesUsingPath(item.directory, options.platform)
+        : commands.some(command => paths.some(prefix => command.includes(prefix)));
+      if (busy) retry = true;
+      else checked.set(item.version, item.identity);
+    }
+
+    if (checked.size) {
+      const lockRoot = path.join(rootDir, 'store', '.locks');
+      const releasePackage = acquireUpdateLock(path.join(lockRoot, versions.storeKeyForPackage(entry.package)));
+      if (!releasePackage) return true;
+      try {
+        const obsolete = versions.collectObsoleteVersions(rootDir, entry);
+        const releaseSelection = acquireUpdateLock(lockRoot);
+        if (!releaseSelection) return true;
+        try {
+          if (options.isBusy() || versions.isUninstalling(rootDir, entry)
+            || fileIdentity(selector) !== selectionBefore) return true;
+          const referenced = versions.referencedVersions(rootDir, entry);
+          const cachePath = path.join(rootDir, INDEX_CACHE_FILE);
+          const cachedEntry = fs.existsSync(cachePath) ? readJson(cachePath)?.[entry.id] : null;
+          for (const item of obsolete) {
+            if (item.version === entry.version || referenced.has(item.version)
+              || (cachedEntry?.package === entry.package && cachedEntry.version === item.version)) continue;
+            if (!checked.has(item.version) || fileIdentity(item.directory) !== checked.get(item.version)) {
+              retry = true;
+              continue;
+            }
+            const destination = path.join(parent, `.retired-${randomUUID()}`);
+            try {
+              // Detach while selection is fenced, then remove after releasing the locks.
+              fs.renameSync(item.directory, destination);
+              retired.push(destination);
+            } catch {
+              retry = true;
+            }
+          }
+        } finally { releaseSelection(); }
+      } finally { releasePackage(); }
+    }
+  }
+
+  for (const directory of retired) {
+    try { await fs.promises.rm(directory, { recursive: true, force: true }); }
+    catch { retry = true; }
+  }
+  return retry;
+}
+
 function createSubappManager(options = {}) {
   const rootDir = resolveSubappRoot(options);
   const updateRootDir = resolveSubappUpdateRoot(options);
@@ -2442,6 +2539,46 @@ function createSubappManager(options = {}) {
   let indexUrlGeneration = 0;
   let catalogRequest = 0;
   let appliedCatalogRequest = 0;
+  let cleanupTimer = null;
+  let cleanupRunning = false;
+  const cleanupEntries = new Map();
+
+  function scheduleVersionCleanup(index, delay = options.versionCleanupDelayMs ?? VERSION_CLEANUP_DELAY_MS) {
+    if (!options.backgroundVersionCleanup) return;
+    for (const [id, entry] of Object.entries(index)) {
+      if (id !== 'dev') cleanupEntries.set(entry.package, entry);
+    }
+    if (!cleanupEntries.size || cleanupTimer || cleanupRunning) return;
+    cleanupTimer = setTimeout(async () => {
+      cleanupTimer = null;
+      cleanupRunning = true;
+      const batch = [...cleanupEntries.values()];
+      cleanupEntries.clear();
+      try {
+        for (const entry of batch) {
+          let retry;
+          try {
+            const key = operationKey(rootDir, entry.id);
+            retry = await retireObsoleteSubappVersions(rootDir, entry, {
+              ...options,
+              isBusy: () => pendingUninstalls.has(key) || mutationQueues.has(key)
+                || preparationControllers.has(key)
+                || [...backgroundDownloads.keys()].some(downloadKey => downloadKey.startsWith(`${entry.id}@`))
+                || options.canMutateSharedTree?.() === false
+                || Boolean(options.listChildToolHolders?.(entry.id)?.length),
+            });
+          } catch {
+            retry = true;
+          }
+          if (retry && !cleanupEntries.has(entry.package)) cleanupEntries.set(entry.package, entry);
+        }
+      } finally {
+        cleanupRunning = false;
+        scheduleVersionCleanup({}, options.versionCleanupRetryMs ?? VERSION_CLEANUP_RETRY_MS);
+      }
+    }, delay);
+    cleanupTimer.unref();
+  }
 
   function resolveIndexUrl() {
     const configuredIndexUrl = typeof options.getIndexUrl === 'function'
@@ -2452,7 +2589,11 @@ function createSubappManager(options = {}) {
 
   async function loadIndex(strategy = 'network-first') {
     const bundle = readBundledCoderFallback(options);
-    if (!bundle) return loadConfiguredIndex(strategy);
+    if (!bundle) {
+      const loaded = await loadConfiguredIndex(strategy);
+      scheduleVersionCleanup(loaded.index);
+      return loaded;
+    }
     let loaded;
     try {
       // 首次启动不必等待网络，正常刷新仍会获取远端目录及更新信息。
@@ -2467,10 +2608,9 @@ function createSubappManager(options = {}) {
         },
       };
     }
-    return {
-      ...loaded,
-      index: { [BUNDLED_CODER_ID]: bundle.entry, ...loaded.index },
-    };
+    const index = { [BUNDLED_CODER_ID]: bundle.entry, ...loaded.index };
+    scheduleVersionCleanup(index);
+    return { ...loaded, index };
   }
 
   async function loadConfiguredIndex(strategy = 'network-first') {
@@ -2691,6 +2831,7 @@ function createSubappManager(options = {}) {
       { ...options, progressTracker: tracker },
     ).then((record) => {
       updateOperations.delete(key);
+      scheduleVersionCleanup({ [entry.id]: currentIndex?.[entry.id] ?? entry });
       notifyChanged('download-update', entry.id);
       return record;
     }).catch((error) => {
@@ -3292,6 +3433,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getIndexUrl,
     getRunningSubappConfig,
     isCoderProjectOpen,
+    canMutateSharedTree,
     requireBlocklyChatCompatibility,
     allowBlocklyChatDevelopment,
   } = handlerOptions;
@@ -3311,6 +3453,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
   };
 
   defaultManager = createSubappManager({
+    backgroundVersionCleanup: true,
     onProgress: sendProgress,
     onChanged: sendChanged,
     platform: process.platform,
@@ -3318,6 +3461,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getIndexUrl,
     getRunningSubappConfig,
     isCoderProjectOpen,
+    canMutateSharedTree,
     requireBlocklyChatCompatibility,
     allowBlocklyChatDevelopment,
     getBusyDialogStrings: () => readSubappBusyDialogStringsFromI18n(),
