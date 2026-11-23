@@ -13,7 +13,10 @@ const sharedSlot = config => config.execution?.layout === 'shared' ? config.exec
 
 // Ordinary upload reuse is separate from simulation/delivery acceptance. Read only
 // compiler inputs and firmware, never create a workspace or treat a directory as a build.
-function captureBlocklyUploadInputs(config) {
+function generatorInputDigest(config) {
+    return hash(JSON.stringify([config.code, config.projectMacros || [], config.generatedArtifacts ?? null]));
+}
+function captureBlocklyUploadInputs(config, generatorDigest) {
     const root = fs.realpathSync(config.currentProjectPath);
     const manifest = sourceManifest(fs.readFileSync(path.join(root, 'package.json')));
     const pkg = JSON.parse(manifest);
@@ -30,9 +33,13 @@ function captureBlocklyUploadInputs(config) {
     for (const lib of collectLibraryPackages(pkg.dependencies, root)) {
         for (const name of ['package.json', 'src', 'src.7z']) add(path.join(lib.packagePath, name));
     }
+    if (config.execution?.storage === 'cache') return hash(JSON.stringify({ root, manifest, boardModule: config.boardModule,
+        generator: generatorDigest ?? generatorInputDigest(config), records }));
     return hash(JSON.stringify({ root, manifest, boardModule: config.boardModule, code: config.code,
         projectMacros: config.projectMacros || [], generatedArtifacts: config.generatedArtifacts ?? null, records }));
 }
+
+const isRequestDirectory = relative => (process.platform === 'win32' ? relative.toLowerCase() : relative).split(path.sep)[0] === 'requests';
 
 function captureFirmware(root) {
     const directory = path.join(root, '.build');
@@ -41,6 +48,8 @@ function captureFirmware(root) {
     const visit = (folder, depth = 0) => {
         if (depth > 16 || fs.lstatSync(folder).isSymbolicLink()) throw new Error('Invalid firmware directory.');
         for (const entry of fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+            // Request metadata is reclaimed independently of firmware.
+            if (depth === 0 && isRequestDirectory(entry.name)) continue;
             const filename = path.join(folder, entry.name);
             if (entry.isDirectory()) visit(filename, depth + 1);
             else if (/\.(?:bin|hex|elf|eep|img|uf2)$/i.test(entry.name)) {
@@ -177,8 +186,8 @@ function captureGeneratedUploadFiles(root, sharedPreprocess) {
             throw new Error('BUILD_ARTIFACT_INVALID: Generated upload output is missing or invalid; build again.');
         }
         const relative = path.relative(directory, fs.realpathSync(file));
-        if (relative.startsWith('..') || path.isAbsolute(relative)) {
-            throw new Error('BUILD_ARTIFACT_INVALID: Generated upload output escapes the build directory.');
+        if (relative.startsWith('..') || path.isAbsolute(relative) || isRequestDirectory(relative)) {
+            throw new Error('BUILD_ARTIFACT_INVALID: Generated upload output is outside the firmware area.');
         }
         return relative;
     });
@@ -197,7 +206,8 @@ function readBlocklyUploadArtifacts(buildPath) {
     if (saved.firmware !== captureFirmware(root) || !Array.isArray(saved.uploadFiles)
         || (saved.executionId && saved.preprocess !== readSharedPreprocess(root).fingerprint)
         || saved.uploadFiles.some(file => typeof file !== 'string' || path.isAbsolute(file)
-            || path.relative(directory, path.resolve(directory, file)).startsWith('..'))) {
+            || path.relative(directory, path.resolve(directory, file)).startsWith('..')
+            || isRequestDirectory(path.relative(directory, path.resolve(directory, file))))) {
         throw new Error('BUILD_ARTIFACT_STALE: Firmware changed after compilation; build again.');
     }
     return saved.uploadFiles.map(file => path.resolve(directory, file));
@@ -221,7 +231,7 @@ function publishBlocklyUploadState(config, inputs) {
     } finally { fs.rmSync(temporary, { force: true }); }
 }
 
-function canReuseBlocklyUpload(config) {
+function canReuseBlocklyUpload(config, generatorDigest) {
     try {
         const root = fs.realpathSync(config.currentProjectPath), filename = receiptPath(root);
         if (!fs.existsSync(filename) || fs.statSync(filename).size > 65536) return false;
@@ -229,8 +239,8 @@ function canReuseBlocklyUpload(config) {
         return saved.schemaVersion === 2 && typeof saved.firmware === 'string'
             && saved.executionId === sharedSlot(config)
             && (!saved.executionId || saved.preprocess === readSharedPreprocess(root).fingerprint)
-            && saved.inputs === captureBlocklyUploadInputs(config) && saved.firmware === captureFirmware(root);
+            && saved.inputs === captureBlocklyUploadInputs(config, generatorDigest) && saved.firmware === captureFirmware(root);
     } catch { return false; } // Missing/changed/unreadable inputs require compilation.
 }
 
-module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts, captureFirmware, resolveEspSrUploadCommand, materializeEspSrModel };
+module.exports = { generatorInputDigest, captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts, captureFirmware, resolveEspSrUploadCommand, materializeEspSrModel };

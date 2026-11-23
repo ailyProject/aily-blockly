@@ -43,6 +43,13 @@ test('legacy wildcard uses exact completed-build outputs while retaining old app
     assert(fs.existsSync(path.join(f.build, 'backup/sketch.bin')));
 });
 
+test('request metadata cannot supply a firmware image', t => {
+    const f = fixture(t);
+    f.put('.build/requests/metadata.bin');
+    f.prepared.upload.command = `flash "${f.build}/requests/metadata.bin"`;
+    assert.throws(() => f.publish(), /BUILD_ARTIFACT_INVALID/);
+});
+
 test('changing a generated application rejects the receipt instead of uploading another candidate', async t => {
     const f = fixture(t); f.publish(); f.put('.build/sketch.bin', 'replaced');
     await assert.rejects(f.upload(), /BUILD_ARTIFACT_STALE/);

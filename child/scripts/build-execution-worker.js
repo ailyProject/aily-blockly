@@ -18,6 +18,6 @@ process.once('message', ({ config, workspace, operation, action, shared, project
     process.send(result, () => {
         process.disconnect();
         // Reclaim older terminal preprocess inputs off the editor's critical path.
-        if (!abandoning && !inspecting && !checkingCoderUpload && !clearing) pruneTerminalPreprocessInputs(config?.currentProjectPath);
+        if (!abandoning && !inspecting && !checkingCoderUpload && !clearing) pruneTerminalPreprocessInputs(config?.currentProjectPath, shared === true);
     });
 });

@@ -28,7 +28,8 @@ function sharedBuildCommand(options) {
   if (!operation || !expectedName || !UUID.test(path.basename(path.dirname(request)))
     || !path.isAbsolute(options.buildWorkspace)) return;
   const project = fs.realpathSync(options.buildWorkspace);
-  if (!same(path.dirname(path.dirname(request)), path.join(project, '.aily', 'build-executions'))) return;
+  const parent = path.dirname(path.dirname(request));
+  if (!same(parent, path.join(project, '.build', 'requests')) && !same(parent, path.join(project, '.aily', 'build-executions'))) return;
   if (!options.projectPath || !same(fs.realpathSync(options.projectPath), project) || options.shellProfile !== false
     || !['node', process.execPath].includes(options.command)
     || !same(fs.realpathSync(script), fs.realpathSync(childScriptPath(operation + '.js')))) {

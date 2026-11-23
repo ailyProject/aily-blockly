@@ -393,7 +393,11 @@ if (mode === 'old-host') {
       assert.ok(!fs.existsSync(bindingPath));
       assert.ok(!fs.existsSync(cache));
       assert.deepEqual(readJson(path.join(project, 'project.abi')), abi);
-      assert.deepEqual(fs.readFileSync(outcomePath), outcome);
+      if (fault === 'wrong-type') {
+        const saved = readJson(path.join(project, '.log/compile/requests',
+          createHash('sha256').update('old-history').digest('hex') + '.build.json'));
+        assert.deepEqual(saved.outcome, JSON.parse(outcome));
+      } else assert.deepEqual(fs.readFileSync(outcomePath), outcome);
       if (fault === 'wrong-type') assert.equal(execution.inspectBuildExecution(project, 'old-history').status, 'failed');
       else {
         assert.equal(execution.inspectBuildExecution(project, 'old-history'), null);

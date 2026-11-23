@@ -15,6 +15,7 @@ export interface ResolvedBuildExecution {
   buildPath: string;
   preprocessPath: string;
   layout?: 'shared';
+  storage?: 'cache';
   executionId?: string;
 }
 

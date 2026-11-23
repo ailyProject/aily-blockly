@@ -90,7 +90,8 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
                 && key(fs.realpathSync(path.dirname(requestPath))) === key(path.join(root, '.temp'));
             const exactSharedRequest = path.basename(requestPath) === 'config.json'
                 && /^[a-f0-9-]{36}$/.test(path.basename(path.dirname(requestPath)))
-                && key(path.dirname(path.dirname(requestPath))) === key(path.join(root, '.aily', 'build-executions'));
+                && [path.join(root, '.build', 'requests'), path.join(root, '.aily', 'build-executions')]
+                    .some(parent => key(path.dirname(path.dirname(requestPath))) === key(parent));
             if (options.shellProfile !== false || options.args?.length !== 2 || options.args[1] !== requestPath
                 || !['node', process.execPath].includes(options.command)
                 || key(fs.realpathSync(options.args[0])) !== key(fs.realpathSync(path.join(childRoot, 'scripts/compile.js')))

@@ -852,7 +852,8 @@ export class _UploaderService {
               throw new Error('BUILD_ARTIFACT_STALE: Shared firmware does not belong to this project.');
             }
             sharedBuildWorkspace = uploadProjectPath;
-            configFilePath = window['path'].join(uploadProjectPath, '.aily', 'build-executions', execution.executionId,
+            const requestRoot = execution.storage === 'cache' ? ['.build', 'requests'] : ['.aily', 'build-executions'];
+            configFilePath = window['path'].join(uploadProjectPath, ...requestRoot, execution.executionId,
               `upload-request-${crypto.randomUUID()}.json`);
           } else {
             const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
