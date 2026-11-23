@@ -8,7 +8,7 @@ import { readAbsWorkspaceMode, type AbsWorkspaceMode, type AbsAuthorSourceRecord
 import { generationEvidence, type AbsGenerationEvidence } from './abs-generation-protocol';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
 import type { AbsProgramDriftObservation } from './abs-program-drift';
-import type { CopiedProjectLockRecovery, ProjectFileLockObservation, ProjectStorageAttachment, ProjectStorageExecutor,
+import type { CopiedProjectLockRecovery, LegacyProjectFileLockObservation, ProjectFileLockObservation, ProjectStorageAttachment, ProjectStorageExecutor,
   ProjectStorageExecutorObservation } from '@shared/project-sync-storage-bridge';
 export type AbsProjectAttachment = ProjectStorageAttachment;
 export type AbsStorageExecutor = ProjectStorageExecutor;
@@ -30,7 +30,7 @@ export interface AbsSyncStoragePort {
   readonly attachment?: AbsProjectAttachment;
   readonly executor?: AbsStorageExecutor;
   observeExecutor?(original: AbsStorageExecutor): Promise<AbsStorageExecutorObservation>;
-  retireEmptyProjectFileLock?(): Promise<boolean>;
+  retireEmptyProjectFileLock?(observation: LegacyProjectFileLockObservation): Promise<boolean>;
   retireProjectFileLock?(observation: ProjectFileLockObservation): Promise<boolean>;
   retireCopiedLock?(proof: CopiedProjectLockRecovery): Promise<void>;
   read(key: string): Promise<string | null>;
@@ -105,8 +105,8 @@ const hashNullable = (text: string | null) => text === null ? Promise.resolve(nu
 /** Immutable baseline storage and recoverable mirror publication, independent of Blockly/Angular. */
 export class AbsBaselineStore {
   private readonly scope: AbsIdentityMap['scope'];
-  // Used only inside one private background worker. Every hit still reads and
-  // compares exact immutable file bytes; live source CAS and scope checks remain mandatory.
+  // An operation can reuse a verified generation for map repair and publication.
+  // Every hit still checks exact immutable file bytes; live CAS and scope checks remain mandatory.
   private readonly verified = new Map<string, { text: string; record: GenerationRecord; pointer: GenerationPointer }>();
   private selectedMode?: AbsWorkspaceMode;
   constructor(private readonly port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], private readonly reuseVerifiedRecords = false) {

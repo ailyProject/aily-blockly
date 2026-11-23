@@ -99,7 +99,9 @@ describe('ABS live protocol admission', () => {
     service.projectService.getProjectMode = () => 'blockly';
     service.electronService.currentRendererGeneration = 1;
     const project = '/a', attachment = { version: 1, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
-    const params = { version: 2, action: 'retire_empty_project_lock', requestId: 'retire-lock-wire-proof' };
+    const identity = { version: 2, action: 'retire_empty_project_lock', requestId: 'retire-lock-wire-proof' };
+    const marker = { ino: '4', birthtimeNs: '5' };
+    const params = { ...identity, attachment, marker };
     const retire = jasmine.createSpy('retire').and.resolveTo({ ok: true, value: true });
     const open = jasmine.createSpy('open').and.resolveTo({ attachment, read() {}, withLock() { throw new Error('Unexpected writer'); },
       retireEmptyProjectFileLockResult: retire });
@@ -110,14 +112,16 @@ describe('ABS live protocol admission', () => {
       const call = (fields: Record<string, unknown> = {}) => service.execute({ operation: 'abs_recovery', path: project,
         rendererGeneration: 1, originalAdmissionAttachment: attachment, params, ...fields });
       expect((await call({ params: { ...params, observe: true } })).code).toBe('ABS_REQUEST_INVALID');
+      expect((await call({ params: identity })).code).toBe('ABS_REQUEST_INVALID');
       expect((await call({ path: 'relative' })).code).toBe('ABS_REQUEST_INVALID');
       expect((await call({ originalAdmissionAttachment: undefined })).code).toBe('PROJECT_ADMISSION_CONTEXT_STALE');
       expect((await call({ originalAdmissionAttachment: { ...attachment, identity: { ...attachment.identity, ino: '9' } } })).code)
         .toBe('PROJECT_ADMISSION_CONTEXT_STALE');
       expect(retire).not.toHaveBeenCalled();
       const result = await call();
-      expect(result).toEqual({ ok: true, operation: 'abs_recovery', project, receipt: params, retired: true });
+      expect(result).toEqual({ ok: true, operation: 'abs_recovery', project, receipt: identity, retired: true });
       expect(retire).toHaveBeenCalledTimes(1);
+      expect(retire).toHaveBeenCalledWith({ attachment, marker });
       open.and.callFake(async () => {
         service.projectService.projectViewRevision = 2;
         return { attachment, read() {}, withLock() {}, retireEmptyProjectFileLockResult: retire };

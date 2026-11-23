@@ -93,18 +93,21 @@ function bridgeFixture(sourceProject = '', generation = 7, testPorts = {}) {
   const recoveryTree = sourceTree('src/app/services/integrations/automation/project-load-recovery.ts');
   const loadGuidance = evaluate(recoveryTree.statements.find(item =>
     ts.isFunctionDeclaration(item) && item.name?.text === 'projectLoadFailureGuidance').getText(recoveryTree));
+  const transition = readPureModule('src/app/services/domains/project/project-navigation-transition.ts');
   const globals = {
     window,
     ...protocol,
     ...loadGuidance,
     ...readPureModule('src/app/services/integrations/automation/project-lifecycle-admission.ts'),
     ...readPureModule('src/app/services/integrations/automation/project-create-receipts.ts'),
-    ...readPureModule('src/app/services/integrations/automation/project-navigation-receipts.ts'),
+    ...readPureModule('src/app/services/integrations/automation/project-navigation-receipts.ts', {
+      require: name => name === '../../domains/project/project-navigation-transition' ? transition : require(name),
+    }),
   };
   const Domain = sourceClass(
     'src/app/services/domains/project/project.service.ts',
     'ProjectService',
-    { window, normalizeProjectOpenPath: (value) => value },
+    { window, crypto: globalThis.crypto, ...transition, normalizeProjectOpenPath: (value) => value },
     ['withProjectLifecycleAdmission', 'acquireProjectLifecycle', 'projectOpen', 'projectOpenInternal', 'beginExplicitNavigation'],
   );
   const domain = new Domain();

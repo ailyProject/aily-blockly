@@ -75,6 +75,24 @@ describe('Blockly compile and upload handoff', () => {
     buildRequestId: 'prepared-build', inputDigest: 'a'.repeat(64), abiHash: 'sha256:' + 'b'.repeat(64),
   } as const;
 
+  it('passes the exact live-verified shared firmware to BLE even when a newer receipt points to the same directory', async () => {
+    const f = uploadFixture();
+    const selected = { ...firmware, layout: 'shared', logicalProjectPath: '/project', currentProjectPath: '/project',
+      buildPath: '/project/.build', preprocessPath: '/project/.temp/preprocess.json' };
+    const latest = { ...selected, executionId: '22222222-2222-4222-8222-222222222222', buildRequestId: 'another-build' };
+    const resolveExecution = jasmine.createSpy('resolveBuildExecution').and.callFake((_project, config) => config ? selected : latest);
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, sharedBuildExecutionVersion: 1, resolveBuildExecution: resolveExecution });
+    f.uploader.serialService.currentPortInfo = { type: 'ble' };
+    f.uploader.uploaderBleService = { authorizeDevice: async () => {} };
+    f.uploader.workflowService.startUpload = () => true;
+    f.uploader.uploadByBle = jasmine.createSpy('uploadByBle').and.resolveTo({ state: 'done' });
+
+    expect(await f.run()).toEqual({ state: 'done' });
+    expect(resolveExecution).toHaveBeenCalledOnceWith('/project', jasmine.objectContaining({ code: f.prepared.code }));
+    expect(f.uploader.uploadByBle.calls.mostRecent().args[3]).toBe(selected);
+    expect(f.builder.build).not.toHaveBeenCalled();
+  });
+
   function exposePreparedExecution(buildInput = firmware) {
     const inspect = jasmine.createSpy('inspectBuildExecution').and.returnValue({
       ...firmware, status: 'completed', current: true, buildInput,

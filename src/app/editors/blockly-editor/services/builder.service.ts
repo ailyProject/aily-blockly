@@ -20,7 +20,7 @@ import { BlocklyService } from './blockly.service';
 import { _ProjectService as BlocklyProjectService } from './project.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { BuilderService, CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint, type BlocklyBuildInput, type BuildSnapshot } from '@domain/build/public-api';
+import { BuilderService, CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint, type BuildInput, type BlocklyBuildInput, type BuildSnapshot, type ResolvedBuildExecution } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { firstValueFrom } from 'rxjs';
 import { debounceTime, filter } from 'rxjs/operators';
@@ -58,6 +58,7 @@ const PREPROCESS_POST_CHAT_QUIET_MS = 1500;
 const PREPROCESS_SLOW_PHASE_MS = 32;
 const PREPROCESS_ERROR_OUTPUT_LIMIT = 64 * 1024;
 type BuildPreparation = Partial<Pick<BlocklyBuildInput, 'projectPath' | 'clearCache'>>;
+type BuildActionState = ActionState & { buildInput?: BuildInput };
 
 @Injectable({ providedIn: 'root' })
 export class _BuilderService {
@@ -696,9 +697,6 @@ export class _BuilderService {
         return;
       }
 
-      // 子进程取得构建 owner 后负责缓存失效；UI 不提前改写派生输入。
-      const tempPath = this.electronService.pathJoin(this.projectService.currentProjectPath, '.temp');
-
       console.log('检测到依赖变化，准备重新预处理');
 
       // A newer advisory request invalidates the old result, not its process
@@ -792,16 +790,17 @@ export class _BuilderService {
         if (buildConfig.execution?.operation === 'preprocess') unstartedExecution = buildConfig;
         assertFresh();
 
-        // 保留配置草稿，但子进程只消费该次调用的不可覆盖请求文件。
-        const executionTempPath = this.electronService.pathJoin(buildConfig.currentProjectPath, '.temp');
-        const savedConfigPath = this.electronService.pathJoin(executionTempPath, 'build-config.json');
-        if (!window['path'].isExists(executionTempPath)) {
-          const mkdirStartedAt = Date.now();
-          await this.crossPlatformCmdService.createDirectory(executionTempPath, true);
-          this.recordPreprocessDuration('create_temp_dir', mkdirStartedAt);
-        }
         const writeConfigStartedAt = Date.now();
-        await this.writeTextFile(savedConfigPath, JSON.stringify(buildConfig, null, 2));
+        if (buildConfig.execution?.layout !== 'shared') {
+          // Older runtimes retain the saved preprocess configuration.
+          const executionTempPath = this.electronService.pathJoin(buildConfig.currentProjectPath, '.temp');
+          if (!window['path'].isExists(executionTempPath)) {
+            const mkdirStartedAt = Date.now();
+            await this.crossPlatformCmdService.createDirectory(executionTempPath, true);
+            this.recordPreprocessDuration('create_temp_dir', mkdirStartedAt);
+          }
+          await this.writeTextFile(this.electronService.pathJoin(executionTempPath, 'build-config.json'), JSON.stringify(buildConfig, null, 2));
+        }
         const configFilePath = await this.writeCompileRequest(buildConfig);
         this.recordPreprocessDuration('write_config', writeConfigStartedAt);
         await this.waitForOneIdleBoundary();
@@ -1133,7 +1132,7 @@ export class _BuilderService {
     await this.waitForPreprocessDrain(projectPath, isCancelled, 'upload');
   }
 
-  async canReuseBuildForUpload(isCancelled: () => boolean): Promise<boolean> {
+  async canReuseBuildForUpload(isCancelled: () => boolean, captureExecution?: (execution: ResolvedBuildExecution) => void): Promise<boolean> {
     const projectPath = this.projectService.currentProjectPath;
     const settingsKey = this.compileSettingsKey();
     const cloud = this.isCloudBuild();
@@ -1153,12 +1152,16 @@ export class _BuilderService {
       const config = { currentProjectPath: projectPath, boardModule, code: prepared.code,
         projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
       let reusable: boolean;
+      let execution: ResolvedBuildExecution | null = null;
       if (cloud) {
         if (prepared.code !== this.lastCode || !window['cloudBuild']?.reusable) return false;
         if (!prepared.sourceWorkspace) return false;
         // 与实际编译使用相同的工作区快照；遗漏该字段会让主进程始终判定固件已过期。
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
         reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+      } else if (captureExecution) {
+        execution = window['builder'].resolveBuildExecution(projectPath, config);
+        reusable = !!execution;
       } else {
         reusable = (isolatedLocal || prepared.code === this.lastCode) && verifyLocal(config);
       }
@@ -1166,6 +1169,7 @@ export class _BuilderService {
       if (settingsKey !== this.compileSettingsKey() || cloud !== this.isCloudBuild()) {
         throw new Error('Upload build configuration changed.');
       }
+      if (execution) captureExecution?.(execution);
       return reusable === true;
     }, false, isCancelled);
   }
@@ -1176,7 +1180,11 @@ export class _BuilderService {
     }
   }
 
-  private writeCompileRequest(config: { currentProjectPath: string }): Promise<string> {
+  private writeCompileRequest(config: { currentProjectPath: string; execution?: { layout?: string }; configFilePath?: string }): Promise<string> {
+    if (config.execution?.layout === 'shared') {
+      if (!config.configFilePath) return Promise.reject(new Error('The original shared build request file is unavailable.'));
+      return Promise.resolve(config.configFilePath);
+    }
     return writeBuildRequest(config.currentProjectPath, config, {
       join: (...parts) => this.electronService.pathJoin(...parts),
       exists: filename => window['path'].isExists(filename),
@@ -1351,7 +1359,7 @@ export class _BuilderService {
     requestId?: string,
     checkpoint: BuildCheckpoint = {},
     preparation: BuildPreparation = {},
-  ): Promise<ActionState> {
+  ): Promise<BuildActionState> {
     return this.buildAttemptWithBackend(graphSemanticRevision, requestId, checkpoint, false, preparation);
   }
 
@@ -1361,7 +1369,7 @@ export class _BuilderService {
     checkpoint: BuildCheckpoint = {},
     retryLocally = false,
     preparation: BuildPreparation = {},
-  ): Promise<ActionState> {
+  ): Promise<BuildActionState> {
     // 提交时固定配置与项目；任务内切换编译后端不会改变用户设置，也不能混用两类产物。
     requestId ??= crypto.randomUUID();
     let cloudBuild = this.isCloudBuild();
@@ -2351,7 +2359,10 @@ export class _BuilderService {
           lastBuildStatus: status, lastBuildDuration: parseFloat(duration),
         },
       };
-      const manifest = patchBuildMetadata(target, patch);
+      // Shared builds retain their facts in the original execution receipt.
+      // Updating the author manifest here can arrive after a newer owner.
+      const shared = isolatedLocal && execution.execution.layout === 'shared';
+      const manifest = shared ? undefined : patchBuildMetadata(target, patch);
       if (this.projectService.currentProjectPath === projectPath) {
         if (!isolatedLocal) this.projectService.currentPackageData = manifest;
         else if (this.activeExecutionConfig === execution && observed.current && (status !== 'success' || observed.result)) {
@@ -2360,7 +2371,7 @@ export class _BuilderService {
           this.projectService.currentPackageData = { ...this.projectService.currentPackageData, ...patch };
         }
       }
-      console.log('✅ 编译元数据已保存:', manifest.buildInfo);
+      if (manifest) console.log('✅ 编译元数据已保存:', manifest.buildInfo);
     } catch (error) {
       console.error('❌ 保存编译元数据失败:', error);
       if (requirePersistence) throw error;

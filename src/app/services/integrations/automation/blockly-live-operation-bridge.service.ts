@@ -38,11 +38,12 @@ import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest }
 import { createProjectLifecycleAssertion, type ProjectLifecycleSnapshot } from './project-lifecycle-admission';
 import { ProjectCreateReceipts, readProjectCreateRequest, type ProjectCreateGuard } from './project-create-receipts';
 import { ProjectNavigationReceipts, readProjectNavigationRequest } from './project-navigation-receipts';
+import type { ProjectNavigationTransition } from '../../domains/project/project-navigation-transition';
 import { forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
 import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
 import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
-import { recoverAbsProjectOperation, settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
+import { recoverAbsProjectOperation, settleAbsProjectOpen } from '../../../integrations/blockly/abs/abs-project-restart';
 import { AbsApplicationJournal } from '../../../integrations/blockly/abs/abs-application-journal';
 import { AbsOperationJournal } from '../../../integrations/blockly/abs/abs-operation-journal';
 import { absJson } from '../../../integrations/blockly/abs/abs-identity-map';
@@ -142,6 +143,10 @@ export class BlocklyLiveOperationBridgeService {
 
     ipcRenderer.on('cli-bridge:blockly-live-operation', (_event: unknown, payload: BlocklyLiveOperationPayload) => {
       void this.handleIpcPayload(ipcRenderer, payload);
+    });
+    ipcRenderer.on('cli-bridge:project-navigation-stop', (_event: unknown, value: unknown) => {
+      const request = readProjectNavigationRequest(value, path => window['path'].isAbsolute(path));
+      if (request?.rendererGeneration === this.electronService.currentRendererGeneration) this.navigationReceipts?.stop(request);
     });
     this.initialized = true;
   }
@@ -830,9 +835,9 @@ export class BlocklyLiveOperationBridgeService {
     const { version, action, requestId, attachment, marker } = params;
     const result = { operation: 'abs_recovery', project: path };
     const complete = action === 'retire_project_file_lock';
-    const allowed = complete ? ['version', 'action', 'requestId', 'attachment', 'marker'] : ['version', 'action', 'requestId'];
+    const allowed = ['version', 'action', 'requestId', 'attachment', 'marker'];
     if (version !== 2 || !path || !window['path']?.isAbsolute(path)
-      || Object.keys(params).some(key => !allowed.includes(key)) || complete && (!attachment || !marker)) {
+      || Object.keys(params).some(key => !allowed.includes(key)) || !attachment || !marker) {
       return { ...result, ok: false, code: 'ABS_REQUEST_INVALID' };
     }
     const stale = () => Object.assign(new Error('The project no longer owns this lock recovery.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
@@ -848,7 +853,7 @@ export class BlocklyLiveOperationBridgeService {
       };
       const port = await openAbsHostStorage(scope.project, current);
       if (absJson(port.attachment) !== absJson(originalAdmissionAttachment)
-        || complete && absJson(port.attachment) !== absJson(attachment)) throw stale();
+        || absJson(port.attachment) !== absJson(attachment)) throw stale();
       const retire = complete ? port.retireProjectFileLock : port.retireEmptyProjectFileLock;
       if (!retire) return { ...result, ok: false, code: 'PROJECT_LOCK_RECOVERY_UNSUPPORTED' };
       const retired = await retire({ attachment, marker });
@@ -860,7 +865,8 @@ export class BlocklyLiveOperationBridgeService {
 
   private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol,
     markWriter?: () => void,
-    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>,
+    navigation?: { requestId: string; transition: ProjectNavigationTransition }): Promise<Record<string, any>> {
     if (payload.operation === 'project_navigation_status'
       || ['project_open', 'project_close'].includes(payload.operation || '') && Object.hasOwn(payload.params || {}, 'navigationRequest')) {
       return this.executeProjectNavigationSettlement(payload);
@@ -943,7 +949,7 @@ export class BlocklyLiveOperationBridgeService {
       return forkProject(this.projectService, payload.path, payload.params || {});
     }
     if (payload.operation === 'project_open') {
-      return onViewActivated ? this.executeProjectOpen(payload.path || '', lifecycleOwner, onViewActivated)
+      return onViewActivated ? this.executeProjectOpen(payload.path || '', lifecycleOwner, onViewActivated, navigation)
         : this.executeProjectOpen(payload.path || '', lifecycleOwner);
     }
     if (payload.operation === 'project_close') {
@@ -1121,7 +1127,7 @@ export class BlocklyLiveOperationBridgeService {
         if (this.projectService.isProjectOpening || this.projectService.isProjectTransitionInProgress(currentProject)
           || this.aiOperations.hasBlocking(currentProject)) throw Object.assign(new Error('An active project owner must finish before recovery.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
         const port = await openAbsHostStorage(currentProject, check);
-        await settleAbsProjectTransaction(port, currentProject, check);
+        await settleAbsProjectOpen(port, currentProject, check);
         const operation = await new AbsOperationJournal(port, currentProject).inspect();
         if (operation) {
           const repaired = await recoverAbsBaseline(port, currentProject, check);
@@ -1165,7 +1171,7 @@ export class BlocklyLiveOperationBridgeService {
               };
               check();
               const port = await openAbsHostStorage(source, check);
-              await settleAbsProjectTransaction(port, source, check);
+              await settleAbsProjectOpen(port, source, check);
               const operation = await new AbsOperationJournal(port, source).inspect();
               if (!operation) await recoverAbsProjectOperation(port, source, check);
               if (await port.read('committed.json') !== null || await port.read('project.abs.map.json') !== null) {
@@ -1858,7 +1864,7 @@ export class BlocklyLiveOperationBridgeService {
         throw Object.assign(new Error('The original navigation scope is no longer current.'), { code, commandDispatched: false });
       }
     };
-    return receipts.start(request, record => this.projectService.withProjectLifecycleAdmission(admit, async owner => {
+    return receipts.start(request, (record, transition) => this.projectService.withProjectLifecycleAdmission(admit, async owner => {
       if (reopenProof) {
         const allowed = await window['projectLock']?.canReopenNavigation(reopenProof, request.targetProject!);
         assertCurrent();
@@ -1873,7 +1879,7 @@ export class BlocklyLiveOperationBridgeService {
           if (!activation) return;
           try { await window['projectLock'].recordNavigation({ requestId: request.requestId, activation }); }
           catch (error) { console.warn('The original navigation proof could not be recorded:', error); }
-        });
+        }, { requestId: request.requestId, transition });
     }));
   }
 
@@ -2369,7 +2375,8 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeProjectOpen(projectPath: string, lifecycleOwner?: symbol,
-    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>,
+    navigation?: { requestId: string; transition: ProjectNavigationTransition }): Promise<Record<string, any>> {
     const requestedProject = String(projectPath || '').trim();
     if (!requestedProject) {
       return { ok: false, operation: 'project_open', message: '缺少项目路径' };
@@ -2421,6 +2428,7 @@ export class BlocklyLiveOperationBridgeService {
         reason: sameProject ? 'chat-tool-reload' : 'chat-tool-open',
         interactive: false,
         ...(onViewActivated ? { onViewActivated } : {}),
+        ...(navigation ? { navigation } : {}),
       });
       const loadStatus = this.projectService.getBlocklyProjectLoadStatus(requestedProject);
       const editorReady = this.electronService.exists(

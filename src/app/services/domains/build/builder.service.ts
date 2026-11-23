@@ -341,11 +341,25 @@ export class BuilderService {
     });
   }
 
+  usesSharedBuildCache(projectPath: string): boolean {
+    return !!projectPath && window['builder']?.sharedBuildExecutionVersion === 1
+      && !this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCloudBuild();
+  }
+
+  private async clearSharedBuildCache(projectPath: string, preserveSketch: boolean): Promise<void> {
+    const bridge = window['builder'];
+    if (typeof bridge?.clearSharedBuildCache !== 'function') {
+      throw new Error('Shared build cache cleanup is unavailable.');
+    }
+    await bridge.clearSharedBuildCache(projectPath, { preserveSketch });
+  }
+
   /**
    * 清除可安全重建的编译与本地库缓存，保留当前 Blockly 生成的 sketch。
    * 供需要在同一次调用中立即继续构建的流程使用。
    */
   async clearBuildCache(projectPath: string): Promise<void> {
+    if (this.usesSharedBuildCache(projectPath)) return this.clearSharedBuildCache(projectPath, true);
     const buildPath = this.electronService.pathJoin(projectPath, '.build');
     const isAilyCode = this.projectService.isAilyCodeProject(projectPath);
     const librariesPath = this.electronService.pathJoin(projectPath, '.temp', 'libraries');
@@ -389,6 +403,7 @@ export class BuilderService {
    * 完整清除缓存。该操作会删除生成的 sketch，仅用于随后会重新预处理的流程。
    */
   async clearCache(projectPath: string) {
+    if (this.usesSharedBuildCache(projectPath)) return this.clearSharedBuildCache(projectPath, false);
     try {
       const tempPath = projectPath + '/.temp';
       const buildPath = this.electronService.pathJoin(projectPath, '.build');

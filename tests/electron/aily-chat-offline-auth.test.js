@@ -17,10 +17,14 @@ function load(source, imports = {}) {
   return record.exports;
 }
 
+const credentialIpc = load('src/app/services/core/auth/bridges/host-credential-ipc.ts');
 const {AuthService} = load('src/app/services/core/auth/auth.service.ts', {
   './policies/detached-aily-chat-auth': {isDetachedAilyChatRenderer: () => false},
+  './bridges/host-credential-ipc': credentialIpc,
 });
-const {createAilyHostAuthRequestHandler} = load('src/app/services/core/auth/bridges/aily-chat-host-auth-runtime-bridge.ts');
+const {createAilyHostAuthRequestHandler} = load('src/app/services/core/auth/bridges/aily-chat-host-auth-runtime-bridge.ts', {
+  './host-credential-ipc': credentialIpc,
+});
 const {UiService} = load('src/app/services/core/app-shell/ui.service.ts', {
   '@core/auth/public-api': {isAuthRequiredTool: name => ['aily-chat','cloud-space','user-center'].includes(name)},
 });
@@ -71,6 +75,34 @@ test('offline credential leases do not repeatedly probe remote auth', async () =
   assert.equal((await handler({operation:'access-token'})).errorCode, 'AUTH_CREDENTIAL_UNAVAILABLE');
   service.authSessionInvalidating = true;
   assert.equal((await handler({operation:'access-token'})).errorCode, 'AUTH_SIGNED_OUT');
+});
+
+test('host authentication reports the native category or unavailable IPC before fetching', async t => {
+  const previousWindow = global.window;
+  t.after(() => { global.window = previousWindow; });
+  const service = auth('idle');
+  service.electronService = {isElectron: true};
+  service.authCredentialGeneration = 0;
+  for (const subject of [service.isLoggedInSubject, service.authInitializationStateSubject]) {
+    subject.next = value => { subject.value = value; };
+  }
+  service.getMe = () => assert.fail('credential failure should precede network validation');
+  const handler = createAilyHostAuthRequestHandler(service, () => 'https://offline.invalid');
+  let reads = 0;
+  const read = async () => {
+    reads++;
+    return { credentialError: { version: 1, code: 'AUTH_CREDENTIALS_LOCK_UNVERIFIED' } };
+  };
+  global.window = {electronAPI: {auth: {read}}};
+  const duringInitialization = await handler({operation:'access-token'});
+  assert.equal(duringInitialization.errorCode, 'AUTH_CREDENTIALS_LOCK_UNVERIFIED');
+  assert.equal(duringInitialization.phase, 'credential-lock');
+  assert.equal(reads, 1);
+  global.window.electronAPI.auth.read = async () => { throw new Error('private path and request credentials'); };
+  const missingInnerHandler = await handler({operation:'access-token'});
+  assert.equal(missingInnerHandler.errorCode, 'AUTH_CREDENTIALS_IPC_UNAVAILABLE');
+  assert.equal(missingInnerHandler.phase, 'credential-ipc');
+  assert.doesNotMatch(JSON.stringify(missingInnerHandler), /private path|request credentials/);
 });
 
 for (const scenario of [

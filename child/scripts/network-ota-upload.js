@@ -68,7 +68,9 @@ async function upload(config) {
     fail(`Firmware file not found: ${firmwarePath || '(empty)'}`);
   }
 
-  const firmware = fs.readFileSync(firmwarePath);
+  const firmware = config.buildExecution?.layout === 'shared'
+    ? require('./shared-build-firmware').readSharedBuildFirmware(config.buildExecution, firmwarePath)
+    : fs.readFileSync(firmwarePath);
   if (firmware.length === 0) {
     fail('Firmware file is empty');
   }

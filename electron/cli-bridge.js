@@ -49,7 +49,7 @@ function safeWriteDiscoveryFile(filePath, data) {
  * 启动 CLI bridge。
  *
  * @param {object} deps
- * @param {(action: string, payload: object) => Promise<object>|object} deps.handleCommand
+ * @param {(action: string, payload: object, signal: AbortSignal) => Promise<object>|object} deps.handleCommand
  *        处理 open/close/reload/refresh 等动作,返回 { ok, message, project? }。
  * @param {() => object} deps.getStatus 返回当前状态 { pid, project, serve }。
  * @param {object} [deps.logger]
@@ -82,6 +82,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
 
   const server = http.createServer((req, res) => {
     const sendJson = (statusCode, obj) => {
+      if (res.destroyed || res.writableEnded) return;
       const body = JSON.stringify(obj);
       res.writeHead(statusCode, {
         'Content-Type': 'application/json; charset=utf-8',
@@ -152,8 +153,10 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
         return;
       }
 
+      const connection = new AbortController();
+      res.once('close', () => { if (!res.writableFinished) connection.abort(); });
       Promise.resolve()
-        .then(() => handleCommand(action, payload))
+        .then(() => handleCommand(action, payload, connection.signal))
         .then((result) => {
           const out = result || { ok: false, message: 'No result' };
           sendJson(out.ok ? 200 : 400, out);

@@ -1,6 +1,7 @@
 import { BehaviorSubject, Subject } from 'rxjs';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
+import { ProjectNavigationTransition } from './project-navigation-transition';
 
 describe('Blockly dependency discard belongs to editor disposal', () => {
   function fixture() {
@@ -13,6 +14,8 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
       loadedBlocklyProjectPath: '/source',
       coderProjectsSubject: new BehaviorSubject([]), coderOperationsSubject: new BehaviorSubject(new Map()),
       projectLifecycle: new ProjectLifecycleGate(),
+      projectNavigationIntentRevision: 0,
+      viewRevision: 0,
       messageService: { error: jasmine.createSpy('error'), warning: jasmine.createSpy('warning') },
       getProjectMode: () => 'blockly',
       stopProjectCommands: async () => { events.push('stop'); },
@@ -115,6 +118,77 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
       expect(service.discardLibraryChanges).not.toHaveBeenCalled();
       expect(service.router.navigate).not.toHaveBeenCalled();
     } finally { window['projectLock'] = previous; }
+  });
+
+  function scopedOpen(service: any) {
+    const previous = window['projectLock'];
+    const navigate = jasmine.createSpy('view navigation').and.resolveTo({ ok: true });
+    window['projectLock'] = { navigate };
+    const requestId = 'cec15bcf-8adf-4c69-828f-68eb8ea5b588';
+    const transition = new ProjectNavigationTransition();
+    const expected = { requestId, rendererGeneration: 3, sourceProject: '/source', projectPath: '/target' };
+    Object.assign(service, {
+      electronService: { isElectron: true, exists: () => true, currentRendererGeneration: 3 },
+      ensureProjectModeAllowed: async () => true,
+      rememberDependencyBackend: (session: unknown) => session,
+      assertProjectDependencySession: () => {},
+    });
+    service.application.settleEnvironmentBeforeOpen = jasmine.createSpy('preflight').and.resolveTo();
+    return {
+      navigate, transition, expected,
+      open: () => service.projectOpen('/target', { interactive: false, navigation: { requestId, transition } }),
+      restore: () => { window['projectLock'] = previous; },
+    };
+  }
+
+  it('releases the exact target reservation when source recovery is busy after preflight', async () => {
+    const { service, events, mounted } = fixture();
+    const f = scopedOpen(service);
+    service.application.prepareBlocklyRecoveryDiscard = async () => {
+      expect(service.application.settleEnvironmentBeforeOpen).toHaveBeenCalled();
+      throw Object.assign(new Error('source writer busy'), { code: 'PROJECT_FILE_BUSY' });
+    };
+    try {
+      await expectAsync(f.open()).toBeRejectedWithError('source writer busy');
+      expect(f.navigate.calls.allArgs()).toEqual([
+        ['reserve', f.expected, { force: false }],
+        ['release', f.expected, { pendingOnly: true }],
+      ]);
+      expect(service.currentProjectPath).toBe('/source');
+      expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
+      expect(mounted()).toBeTrue();
+      expect(events).toEqual(['stop']);
+    } finally { f.restore(); }
+  });
+
+  it('settles Stop before handoff while the external window synchronization reply is still pending', async () => {
+    const { service, events, graph, mounted } = fixture();
+    const f = scopedOpen(service);
+    let acknowledge!: (value: boolean) => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { started = resolve; });
+    graph.and.callFake(() => {
+      started();
+      return new Promise<boolean>(resolve => { acknowledge = resolve; });
+    });
+    try {
+      const original = service.withProjectLifecycleAdmission(() => {}, (owner: symbol) =>
+        service.projectOpen('/target', { interactive: false, lifecycleOwner: owner,
+          navigation: { requestId: f.expected.requestId, transition: f.transition } }));
+      await waiting;
+      expect(f.transition.stop()).toBeTrue();
+      expect(await original).toBeFalse();
+      expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
+      acknowledge(true);
+      await Promise.resolve();
+      expect(f.navigate.calls.allArgs()).toEqual([
+        ['reserve', f.expected, { force: false }],
+        ['release', f.expected, { pendingOnly: true }],
+      ]);
+      expect(service.currentProjectPath).toBe('/source');
+      expect(events).toEqual([]);
+      expect(mounted()).toBeTrue();
+    } finally { f.restore(); }
   });
 
   it('keeps failed dependency recovery retryable without reviving the retired canvas', async () => {

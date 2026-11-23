@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const project = require('./aily-code-project');
 const { createHash } = require('node:crypto');
+const { isGeneratedBuildHeader, sharedGeneratedArtifacts, confirmSharedGeneratedArtifacts } = require('./build-source-capture');
 const sourceFault = message => Object.assign(new Error(`BUILD_SOURCE_STALE: ${message}`), { code: 'BUILD_SOURCE_STALE' });
 const stamp = stat => [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
 
@@ -36,6 +37,7 @@ function captureBlocklyCompileSource(config, filename, previous) {
             || stamp(fs.fstatSync(fd)) !== stamp(before) || stamp(fs.lstatSync(expectedPath)) !== stamp(before)) {
             throw sourceFault('Materialized Blockly sketch bytes differ from the captured request.');
         }
+        confirmSharedGeneratedArtifacts(config, path.dirname(expectedPath));
         return Object.freeze({ path: expectedPath, sha256: digest, stamp: stamp(before) });
     } finally { fs.closeSync(fd); }
 }
@@ -83,9 +85,14 @@ async function prepareCompileSource(config) {
     fs.mkdirSync(temporary, { recursive: true });
     fs.rmSync(destination, { recursive: true, force: true });
     fs.mkdirSync(destination);
+    const generated = sharedGeneratedArtifacts(config);
     if (fs.existsSync(source)) {
         // Async cp avoids the bundled Node's Windows Unicode cpSync crash.
-        await fs.promises.cp(source, destination, { recursive: true });
+        const keep = generated && (filename => path.dirname(filename) !== source || !isGeneratedBuildHeader(path.basename(filename)));
+        await fs.promises.cp(source, destination, { recursive: true, ...(keep ? { filter: keep } : {}) });
+    }
+    for (const { fileName, content } of generated ?? []) {
+        fs.writeFileSync(path.join(destination, fileName), content, { flag: 'wx' });
     }
     const filename = path.join(destination, 'sketch.ino');
     // Generated code owns the entry, even when src contains an old sketch.ino.

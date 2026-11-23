@@ -288,7 +288,7 @@ export class AbsOperationJournal {
     if (existing !== serialized && (existing !== null || !await storage.replace(key, null, serialized))) throw conflict();
   }
 
-  private async readHandoff(snapshot: AbsOperationSnapshot, snapshotHash: string, storage: AbsSyncStorageAccess) {
+  private async readHandoff(snapshot: AbsOperationSnapshot, snapshotHash: string, storage: Pick<AbsSyncStorageAccess, 'read'>) {
     const text = await storage.read(handoffKey(snapshot.id));
     if (text === null || !await this.hasNoResult(storage, snapshot.id)) return null;
     const record = JSON.parse(text) as RestoredOperationHandoff, pointer = this.pointer(record.operationPointer);
@@ -309,10 +309,10 @@ export class AbsOperationJournal {
 
   /** Exact original writer retirement, with no current canvas or apply result. */
   async observeApplicationWriterSettlement(requestId: string, guard: () => void, originalTargetPid?: number) {
-    if (!this.port.attachment || !this.port.executor || !this.port.observeExecutor
-      || await this.port.read(await applicationRequestKey(requestId)) === null) return null;
+    if (!this.port.attachment || !this.port.executor || !this.port.observeExecutor) return null;
     const observer = nativeSaveCapability(this.port);
-    return this.port.withLock(async storage => {
+    const needsWrite = 'needs-write' as const;
+    const inspect = async (storage: Pick<AbsSyncStorageAccess, 'read'>, writable?: AbsSyncStorageAccess) => {
       guard();
       const indexed = await this.indexedApplication(requestId, storage);
       if (!indexed || originalTargetPid !== undefined && indexed.original.executor.hostPid !== originalTargetPid) return null;
@@ -323,9 +323,12 @@ export class AbsOperationJournal {
       if (!exitedApplicationWriter(oldWriter)) return null;
       let handoff = await this.readHandoff(snapshot, snapshotHash, storage);
       if (!handoff) {
-        const pointer = await storage.read(currentKey);
-        if (pointer !== null && this.pointer(pointer).id === operationId) {
-          await this.retainHandoff(pointer, guard, storage);
+        const pointerText = await storage.read(currentKey);
+        const pointer = pointerText === null ? null : this.pointer(pointerText);
+        if (pointer?.id === operationId && pointer.state === 'restored' && pointerText !== null) {
+          if (!await this.hasNoResult(storage, operationId)) return null;
+          if (!writable) return needsWrite;
+          await this.retainHandoff(pointerText, guard, writable);
           handoff = await this.readHandoff(snapshot, snapshotHash, storage);
         }
       }
@@ -351,15 +354,34 @@ export class AbsOperationJournal {
       const record: ApplicationWriterSettlement = { version: 1, kind: 'application-writer-settlement', project: this.project,
         requestId, operationId, snapshotHash, attachment, executor, oldWriter, ...basis };
       const bytes = absJson(record);
-      if (text !== bytes && (text !== null || !await storage.replace(key, null, bytes))) throw conflict();
+      if (text !== bytes) {
+        if (text !== null) throw conflict();
+        if (!writable) return needsWrite;
+        guard();
+        if (!await writable.replace(key, null, bytes)) throw conflict();
+      } else if (!writable && await storage.read(key) !== bytes) {
+        return null;
+      }
+      const recordHash = await hashAbsText(bytes);
+      guard();
       return { version: 1 as const, kind: 'indexed-application-retired' as const, requestId, operationId,
         snapshotHash, attachment, executor, observer: { hostPid: observer.executor.hostPid },
-        oldWriter, settlement: { recordHash: await hashAbsText(bytes) } };
-    });
+        oldWriter, settlement: { recordHash } };
+    };
+    const observed = await inspect(this.port);
+    if (observed !== needsWrite) return observed;
+    let entered = false;
+    try {
+      const settled = await this.port.withLock(storage => { entered = true; return inspect(storage, storage); });
+      return settled === needsWrite ? null : settled;
+    } catch (error) {
+      if (!entered && (error as { code?: string })?.code === 'PROJECT_FILE_BUSY') { guard(); return null; }
+      throw error;
+    }
   }
 
   private async legacyWriterBasis(requestId: string, indexed: NonNullable<Awaited<ReturnType<AbsOperationJournal['indexedApplication']>>>,
-    oldWriter: AbsCurrentDocumentRecovery['oldWriter'], retained: boolean, storage: AbsSyncStorageAccess): Promise<LegacyWriterBasis | null> {
+    oldWriter: AbsCurrentDocumentRecovery['oldWriter'], retained: boolean, storage: Pick<AbsSyncStorageAccess, 'read'>): Promise<LegacyWriterBasis | null> {
     const { snapshot, validation, original: { executor } } = indexed;
     const admissions = new OriginalRequestAdmissions(this.port, this.project);
     const readWriter = () => admissions.inspectIndexedApplicationWriter(requestId, validation.candidate.hash, executor, storage);
@@ -604,6 +626,11 @@ export class AbsOperationJournal {
       || record.outcome?.publication?.status !== 'COMMITTED' || record.outcome.publication.generation !== binding.generation) return false;
     return new AbsBaselineStore(this.port, binding.scope).matchesRestoredApplicationStage(storage, evidence,
       operation.candidate!.source, operation.disk, operation.committed!);
+  }
+
+  async hasUnsettledOperation(): Promise<boolean> {
+    const text = await this.port.read(currentKey);
+    return text !== null && this.pointer(text).state !== 'completed';
   }
 
   /** Discovery only. A different path cannot authorize restoring this view;

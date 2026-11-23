@@ -1,4 +1,5 @@
 import type { ProjectStorageAttachment } from '../../shared/project-sync-storage-bridge';
+import { ProjectNavigationTransition } from '../../domains/project/project-navigation-transition';
 
 const MAX_DEADLINE_MS = 310_000;
 const RETENTION_MS = 600_000;
@@ -24,6 +25,7 @@ type Entry = {
   activation?: Activation;
   revision?: number;
   result?: NavigationResult;
+  transition: ProjectNavigationTransition;
 };
 
 export function readProjectNavigationRequest(value: unknown, isAbsolute: (path: string) => boolean): ProjectNavigationRequest | undefined {
@@ -61,7 +63,13 @@ export class ProjectNavigationReceipts {
       && entry?.activation?.state === 'closed' && this.isActivationCurrent(entry));
   }
 
-  async start(request: ProjectNavigationRequest, execute: (activate: (view: View) => void) => Promise<NavigationResult>) {
+  stop(request: ProjectNavigationRequest): void {
+    const entry = this.exact(request);
+    if (entry && !entry.result) entry.transition.stop();
+  }
+
+  async start(request: ProjectNavigationRequest,
+    execute: (activate: (view: View) => void, transition: ProjectNavigationTransition) => Promise<NavigationResult>) {
     const existing = this.entries.get(request.requestId);
     if (existing) {
       const original = this.exact(request);
@@ -78,7 +86,7 @@ export class ProjectNavigationReceipts {
     }
     if (this.entries.size >= MAX_RECEIPTS) return { ok: false, operation: request.operation,
       code: 'PROJECT_NAVIGATION_CAPACITY_REACHED', commandDispatched: false };
-    const entry: Entry = { request };
+    const entry: Entry = { request, transition: new ProjectNavigationTransition() };
     this.entries.set(request.requestId, entry);
     try {
       entry.result = await execute(view => {
@@ -91,7 +99,7 @@ export class ProjectNavigationReceipts {
           entry.activation = { state: 'closed', project: null };
         } else return;
         entry.revision = view.revision;
-      });
+      }, entry.transition);
     } catch (error) {
       const original = error as { code?: string; commandDispatched?: boolean } | undefined;
       entry.result = { ok: false, operation: request.operation, code: original?.code ?? 'PROJECT_NAVIGATION_FAILED',

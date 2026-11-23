@@ -78,25 +78,27 @@ function settlementFixture(
             },
           },
   };
-  const run = load(
-    actualDeclaration(files.settlement, "settleLinkedProjectEnvironment"),
-    {
-      window,
-      openAbsHostStorage: async () => {
-        calls.push(["open"]);
-        return {};
-      },
-      settleAbsProjectTransaction: async () => {
-        calls.push(["program-settlement"]);
-      },
-      observeRuntimePublication: async () => ({
-        observation: {
-          state: "completed",
-          result: { publication: { status: "COMMITTED" } },
-        },
-      }),
+  const ports = {
+    window,
+    observeOpenEnvironment: read => read(),
+    openAbsHostStorage: async () => {
+      calls.push(["open"]);
+      return {};
     },
-  );
+    settleAbsProjectOpen: async () => {
+      calls.push(["program-settlement"]);
+    },
+    observeRuntimePublication: async () => ({
+      observation: {
+        state: "completed",
+        result: { publication: { status: "COMMITTED" } },
+      },
+    }),
+  };
+  const run = load(actualDeclaration(files.settlement, "settleLinkedProjectEnvironment"), {
+    ...ports,
+    settleEnvironment: load(actualDeclaration(files.settlement, "settleEnvironment"), ports),
+  });
   return { calls, run: () => run("exact-project", () => {}) };
 }
 

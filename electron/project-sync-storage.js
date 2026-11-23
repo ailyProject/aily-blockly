@@ -164,7 +164,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       guard(); return result;
     },
     read: async key => { guard(); return readText(key); },
-    retireEmptyProjectFileLock: async () => retireEmptyProjectFileLock(access, ownerGuard),
+    retireEmptyProjectFileLock: async observation => retireEmptyProjectFileLock(access, ownerGuard, observation),
     retireProjectFileLock: async observation => retireProjectFileLock(access, ownerGuard, observation),
     retireCopiedLock,
     withLock: async (operation, observeScope = false) => {
@@ -310,7 +310,7 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
     read: key => storage.read(key),
     withLock: operation => withBridgeLock(operation, false),
     readResult: key => resultOf(() => storage.read(key)),
-    retireEmptyProjectFileLockResult: () => resultOf(() => storage.retireEmptyProjectFileLock()),
+    retireEmptyProjectFileLockResult: observation => resultOf(() => storage.retireEmptyProjectFileLock(observation)),
     retireProjectFileLockResult: observation => resultOf(() => storage.retireProjectFileLock(observation)),
     retireCopiedLockResult: proof => resultOf(() => storage.retireCopiedLock(proof)),
     withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),

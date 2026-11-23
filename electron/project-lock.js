@@ -2,7 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const { app } = require("electron");
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { childScriptPath } = require('./child-script-path');
 const { tryAcquireFileLock } = require(childScriptPath('native-file-lock.js'));
 const { getProcessState } = require(childScriptPath('process-state.js'));
@@ -116,6 +116,7 @@ function writeLockPayload() {
       execPath: process.execPath,
       appVersion: app.getVersion(),
       startedAt: Date.now(),
+      viewToken: randomUUID(),
     },
     null,
     2
@@ -224,9 +225,29 @@ function tryAcquireLockUnlocked(projectPath, options = {}) {
   }
 }
 
-function releaseLock(projectPath) {
+function releaseLock(projectPath, expected) {
   if (!projectPath || !fs.existsSync(normalizeProjectPathLoose(projectPath))) return { ok: true };
-  return withViewRecordGuard(projectPath, () => releaseLockUnlocked(projectPath));
+  return withViewRecordGuard(projectPath, () => {
+    if (expected && !matchesViewLock(projectPath, expected)) return viewRecordChanged();
+    return releaseLockUnlocked(projectPath);
+  });
+}
+
+function viewRecordChanged() {
+  return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The project-view record no longer belongs to the original owner.' };
+}
+
+function matchesViewLock(projectPath, expected) {
+  const current = readViewLockSnapshot(projectPath);
+  return current?.owner?.pid === process.pid && current.hash === expected.hash
+    && JSON.stringify(current.identity) === JSON.stringify(expected.identity);
+}
+
+function handoffViewLock(sourceProject, source, targetProject, target) {
+  return withViewRecordGuard(sourceProject, () => withViewRecordGuard(targetProject, () => {
+    if (!matchesViewLock(sourceProject, source) || !matchesViewLock(targetProject, target)) return viewRecordChanged();
+    return releaseLockUnlocked(sourceProject);
+  }));
 }
 
 function releaseLockUnlocked(projectPath) {
@@ -337,6 +358,7 @@ module.exports = {
   normalizeProjectPathLoose,
   tryAcquireLock,
   releaseLock,
+  handoffViewLock,
   focusProcessByPid,
   isPidAlive,
   readViewLockSnapshot,

@@ -25,6 +25,11 @@ function fixture(t) {
   return { root, directory, marker, archived: () => fs.readdirSync(directory).filter(name => name.startsWith(archivePrefix)) };
 }
 
+function observe(storage, marker) {
+  const stat = fs.lstatSync(marker, { bigint: true });
+  return { attachment: storage.attachment, marker: { ino: String(stat.ino), birthtimeNs: String(stat.birthtimeNs) } };
+}
+
 async function legacy(t, root, mode) {
   const child = fork(path.join(__dirname, 'fixtures/legacy-empty-lock-worker.cjs'), [root, mode],
     { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
@@ -73,18 +78,19 @@ test('warm retirement only archives the exact abandoned marker and leaves public
   const { root, directory, marker, archived } = fixture(t);
   const stop = await legacy(t, root, 'unguarded');
   const storage = await openProjectSyncStorage(root, () => {});
+  const observation = observe(storage, marker);
   const before = fs.lstatSync(marker, { bigint: true });
-  await assert.rejects(storage.retireEmptyProjectFileLock(), { code: 'PROJECT_FILE_BUSY' });
+  await assert.rejects(storage.retireEmptyProjectFileLock(observation), { code: 'PROJECT_FILE_BUSY' });
   await stop();
-  assert.equal(await storage.retireEmptyProjectFileLock(), true);
-  assert.equal(await storage.retireEmptyProjectFileLock(), false);
+  assert.equal(await storage.retireEmptyProjectFileLock(observation), true);
+  assert.equal(await storage.retireEmptyProjectFileLock(observation), false);
   assert.equal(fs.existsSync(marker), false);
   assert.equal(await storage.read('project.abs'), null);
   assert.equal(archived().length, 1);
   assert.equal(fs.lstatSync(path.join(directory, archived()[0]), { bigint: true }).ino, before.ino);
 
   fs.writeFileSync(marker, 'nonempty unverified journal');
-  assert.equal(await storage.retireEmptyProjectFileLock(), false);
+  assert.equal(await storage.retireEmptyProjectFileLock(observation), false);
   assert.equal(fs.readFileSync(marker, 'utf8'), 'nonempty unverified journal');
 });
 
@@ -104,7 +110,7 @@ test('the native handle must match the marker observed before acquisition', wind
     return stat;
   } };
   const storage = await openProjectSyncStorage(root, () => {}, { files });
-  await assert.rejects(storage.retireEmptyProjectFileLock(), { code: 'PROJECT_FILE_LOCK_CHANGED' });
+  await assert.rejects(storage.retireEmptyProjectFileLock(observe(storage, marker)), { code: 'PROJECT_FILE_LOCK_CHANGED' });
   assert.equal(fs.lstatSync(displaced, { bigint: true }).ino, original.ino);
   assert.notEqual(fs.lstatSync(marker, { bigint: true }).ino, original.ino);
   assert.deepEqual(archived(), []);
@@ -117,8 +123,25 @@ test('a linked marker is never treated as a legacy single-file lock', windows, a
   fs.writeFileSync(marker, '');
   fs.linkSync(marker, alias);
   const storage = await openProjectSyncStorage(root, () => {}, { timeoutMs: 0 });
-  await assert.rejects(storage.retireEmptyProjectFileLock(), { code: 'PROJECT_FILE_LOCK_CHANGED' });
+  await assert.rejects(storage.retireEmptyProjectFileLock(observe(storage, marker)), { code: 'PROJECT_FILE_LOCK_CHANGED' });
   await assert.rejects(storage.withLock(() => assert.fail('Linked marker was touched')), { code: 'PROJECT_FILE_LOCK_CHANGED' });
   assert.equal(fs.lstatSync(alias).nlink, 2);
   assert.deepEqual(archived(), []);
+});
+
+test('a stopped caller cannot archive a later abandoned marker with the old proof', windows, async t => {
+  const { root, marker, archived } = fixture(t);
+  const storage = await openProjectSyncStorage(root, () => {});
+  const stopFirst = await legacy(t, root, 'unguarded');
+  const old = observe(storage, marker);
+  await stopFirst();
+  assert.equal(await storage.retireEmptyProjectFileLock(old), true);
+  const stopNext = await legacy(t, root, 'unguarded');
+  const next = observe(storage, marker);
+  assert.notDeepEqual(next.marker, old.marker);
+  await stopNext();
+  await assert.rejects(storage.retireEmptyProjectFileLock(old), { code: 'PROJECT_FILE_LOCK_CHANGED' });
+  assert.deepEqual(observe(storage, marker), next);
+  assert.equal(archived().length, 1);
+  assert.equal(await storage.retireEmptyProjectFileLock(next), true);
 });

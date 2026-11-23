@@ -18,7 +18,8 @@ const { rootAttachment, storageExecutor } = require('./project-file-lock-owner')
 const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
-    prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
+    prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution,
+    sharedBuildExecutionVersion, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
 
@@ -474,8 +475,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.invoke("project-lock-try", {
         projectPath,
         force: options && options.force,
+        provisional: options?.provisional === true,
       }),
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
+    navigate: (action, reservation, options) => ipcRenderer.invoke('project-view-navigation', {
+      ...reservation, action, force: options?.force, pendingOnly: options?.pendingOnly,
+    }),
     checkStartupRestore: (projectPath, ticket) => ipcRenderer.invoke('project-navigation-startup-check', projectPath, ticket),
     cancelStartupRestore: () => ipcRenderer.send('project-navigation-startup-cancel'),
     recordActive: (projectPath, startupTicket) => ipcRenderer.invoke('project-navigation-active', projectPath, startupTicket),
@@ -603,6 +608,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     canReuseCoderUpload,
     inspectBlocklyCompileProof,
     isolatedBuildExecutionVersion: ISOLATED_BUILD_EXECUTION_VERSION,
+    ...(sharedBuildExecutionVersion === 1 ? {
+      sharedBuildExecutionVersion,
+      clearSharedBuildCache: (projectPath, options) => ipcRenderer.invoke('clear-shared-blockly-build', projectPath, options),
+      readSharedBuildFirmware: (execution, filename) => new Uint8Array(
+        require(require('./child-script-path').childScriptPath('shared-build-firmware.js')).readSharedBuildFirmware(execution, filename)),
+    } : {}),
     prepareBuildExecution,
     abandonPreparedPreprocess,
     resolveBuildExecution,

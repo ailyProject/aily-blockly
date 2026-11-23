@@ -7,7 +7,7 @@ const { captureBlocklyUploadInputs, publishBlocklyUploadState, readBlocklyUpload
 const { processUploadParams, selectUploadParamForPort, isolateEsp32FlashReferences } = require('../child/scripts/upload');
 
 function fixture(t) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-generated 产物-'));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-generated 产物-')));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const build = path.join(root, '.build');
     const put = (name, text = name) => {
@@ -23,9 +23,10 @@ function fixture(t) {
     const prepared = { success: true, envVars: { BUILD_PATH: build }, upload: { command:
         `esptool write_flash 0x0 "${build}/sketch.bootloader.bin" 0x8000 "${build}/sketch.partitions.bin" 0x10000 "${build}/sketch.bin"` } };
     const config = { currentProjectPath: root, boardModule: '@aily-project/board-test', code: 'void setup() {}' };
-    const publish = () => {
+    const publish = (execution) => {
         put('.temp/preprocess.json', JSON.stringify(prepared));
-        publishBlocklyUploadState(config, captureBlocklyUploadInputs(config));
+        const request = { ...config, execution };
+        publishBlocklyUploadState(request, captureBlocklyUploadInputs(request));
     };
     const upload = () => processUploadParams("esptool 0x0 ${bootloader} 0x8000 ${partitions} 0x10000 ${'*.bin'}",
         build, root, root, '921600', {}, 'TEST_PORT', 'darwin', undefined, true);
@@ -181,4 +182,30 @@ test('the current compile dependencies materialize the installed SDK model even 
     assert.equal(fs.readFileSync(path.join(f.build, 'srmodels.bin'), 'utf8'), 'sdk model');
     f.publish();
     assert.ok(readBlocklyUploadArtifacts(f.build).includes(path.join(f.build, 'srmodels.bin')));
+});
+
+test('shared ESP_SR builds use the current SDK and ignore a model or library directory from an earlier build', t => {
+    const f = espSrFixture(t);
+    f.prepared.dependencies = [{ type: 'library', name: 'ESP_SR' }];
+    f.prepared.envVars.COMPILER_SDK_PATH = path.join(f.root, 'sdk');
+    const preprocess = f.put('.temp/preprocess.json', JSON.stringify(f.prepared));
+    const model = f.put('.build/srmodels.bin', 'old SDK model');
+    f.put('.build/library/ESP_SR/esp_sr.cpp.o');
+    f.put('sdk/esp_sr/srmodels.bin', 'current SDK model');
+    materializeEspSrModel(preprocess, f.build, { shared: true });
+    assert.equal(fs.readFileSync(model, 'utf8'), 'current SDK model');
+    f.publish({ layout: 'shared', id: 'shared-execution' });
+    assert.ok(readBlocklyUploadArtifacts(f.build).includes(model));
+
+    f.prepared.dependencies = [];
+    f.put('.temp/preprocess.json', JSON.stringify(f.prepared));
+    materializeEspSrModel(preprocess, f.build, { shared: true });
+    f.publish({ layout: 'shared', id: 'next-shared-execution' });
+    assert.equal(fs.existsSync(model), false);
+    assert.equal(readBlocklyUploadArtifacts(f.build).includes(model), false);
+    assert.ok(!selectUploadParamForPort(f.root, 'serial', {}).uploadParam.includes('0xC10000'));
+
+    f.prepared.upload.command = f.prepared.upload.command.replace('0xC10000', '0xC20000');
+    f.put('.temp/preprocess.json', JSON.stringify(f.prepared));
+    assert.throws(() => readBlocklyUploadArtifacts(f.build), /BUILD_ARTIFACT_STALE/);
 });

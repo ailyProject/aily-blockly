@@ -6,8 +6,10 @@ const { createHash, randomUUID } = require('node:crypto');
 const { sourceManifest } = require('./build-source-capture');
 const { captureLibrarySource } = require('./library-source-evidence');
 const { collectLibraryPackages } = require('./library-packages');
+const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const receiptPath = root => path.join(root, '.build', 'aily-upload-state.json');
+const sharedSlot = config => config.execution?.layout === 'shared' ? config.execution.id : undefined;
 
 // Ordinary upload reuse is separate from simulation/delivery acceptance. Read only
 // compiler inputs and firmware, never create a workspace or treat a directory as a build.
@@ -22,7 +24,7 @@ function captureBlocklyUploadInputs(config) {
         const captured = captureLibrarySource(filename);
         records.push([filename, captured.location, captured.fingerprint]);
     };
-    for (const name of ['src', 'components', 'partitions.csv']) add(path.join(root, name));
+    for (const name of blocklyProjectBuildInputs(root)) add(path.join(root, name));
     const board = path.join(root, 'node_modules', config.boardModule);
     for (const name of ['package.json', 'board.json']) add(path.join(board, name));
     for (const lib of collectLibraryPackages(pkg.dependencies, root)) {
@@ -76,8 +78,10 @@ function espSrUploadPair(prepared, directory) {
 }
 
 function needsEspSrModel(prepared, directory) {
-    return (Array.isArray(prepared.dependencies) && prepared.dependencies.some(item => item?.type === 'library' && item.name === 'ESP_SR'))
-        || fs.existsSync(path.join(directory, 'library', 'ESP_SR'))
+    if (Array.isArray(prepared.dependencies)) {
+        return prepared.dependencies.some(item => item?.type === 'library' && item.name === 'ESP_SR');
+    }
+    return fs.existsSync(path.join(directory, 'library', 'ESP_SR'))
         || fs.existsSync(path.join(directory, 'libraries', 'ESP_SR'));
 }
 
@@ -94,11 +98,19 @@ function hasEspSrModel(model) {
 
 // Arduino's hook looks in libraries/ESP_SR; aily-builder also compiles into
 // library/ESP_SR and can reuse archives without emitting that directory.
-function materializeEspSrModel(preprocessPath, directory) {
-    if (!fs.existsSync(preprocessPath)) return;
-    const prepared = JSON.parse(fs.readFileSync(preprocessPath, 'utf8'));
+function materializeEspSrModel(preprocessPath, directory, { shared = false } = {}) {
+    if (!shared && !fs.existsSync(preprocessPath)) return;
+    const prepared = shared ? readSharedPreprocess(path.dirname(directory)).prepared
+        : JSON.parse(fs.readFileSync(preprocessPath, 'utf8'));
     const pair = espSrUploadPair(prepared, directory);
-    if (!pair || !needsEspSrModel(prepared, directory) || hasEspSrModel(pair.model)) return;
+    if (!pair) return;
+    if (!needsEspSrModel(prepared, directory)) {
+        if (shared) fs.rmSync(pair.model, { force: true });
+        return;
+    }
+    // Shared builds can retain the previous SDK's model. Always use the
+    // current SDK there, even when the compiler did not copy a new model.
+    if (hasEspSrModel(pair.model) && !shared) return;
 
     const sdkPath = prepared.envVars.COMPILER_SDK_PATH;
     if (typeof sdkPath !== 'string' || !path.isAbsolute(sdkPath)) {
@@ -133,11 +145,24 @@ function resolveEspSrUploadCommand(prepared, directory) {
     return command.replace(pair.pattern, '');
 }
 
-function captureGeneratedUploadFiles(root) {
+function readSharedPreprocess(root) {
+    const filename = path.join(root, '.temp', 'preprocess.json');
+    const stat = fs.lstatSync(filename);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024
+        || fs.realpathSync(filename) !== filename) throw new Error('Invalid shared build recipe.');
+    const bytes = fs.readFileSync(filename);
+    const prepared = JSON.parse(bytes.toString('utf8'));
+    const directory = path.join(root, '.build');
+    if (prepared.success !== true || typeof prepared.envVars?.BUILD_PATH !== 'string'
+        || fs.realpathSync(prepared.envVars.BUILD_PATH) !== directory) throw new Error('Invalid shared build recipe.');
+    return { prepared, fingerprint: hash(bytes) };
+}
+
+function captureGeneratedUploadFiles(root, sharedPreprocess) {
     const directory = path.join(root, '.build');
     const filename = path.join(root, '.temp', 'preprocess.json');
-    if (!fs.existsSync(filename)) return [];
-    const prepared = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    if (!sharedPreprocess && !fs.existsSync(filename)) return [];
+    const prepared = sharedPreprocess?.prepared ?? JSON.parse(fs.readFileSync(filename, 'utf8'));
     const preparedDirectory = path.resolve(prepared.envVars?.BUILD_PATH || '');
     if (prepared.success !== true || typeof prepared.upload?.command !== 'string'
         || !fs.existsSync(preparedDirectory) || fs.realpathSync(preparedDirectory) !== directory) return [];
@@ -170,6 +195,7 @@ function readBlocklyUploadArtifacts(buildPath) {
     const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
     if (saved.schemaVersion !== 2) return []; // Older/custom builds retain safe discovery.
     if (saved.firmware !== captureFirmware(root) || !Array.isArray(saved.uploadFiles)
+        || (saved.executionId && saved.preprocess !== readSharedPreprocess(root).fingerprint)
         || saved.uploadFiles.some(file => typeof file !== 'string' || path.isAbsolute(file)
             || path.relative(directory, path.resolve(directory, file)).startsWith('..'))) {
         throw new Error('BUILD_ARTIFACT_STALE: Firmware changed after compilation; build again.');
@@ -186,8 +212,11 @@ function publishBlocklyUploadState(config, inputs) {
     if (!firmware) return; // Legacy/custom toolchains still compile, but cannot use the fast path.
     const target = receiptPath(root), temporary = `${target}.${randomUUID()}.tmp`;
     try {
-        const uploadFiles = captureGeneratedUploadFiles(root);
-        fs.writeFileSync(temporary, JSON.stringify({ schemaVersion: 2, inputs, firmware, uploadFiles }), { flag: 'wx' });
+        const executionId = sharedSlot(config);
+        const sharedPreprocess = executionId ? readSharedPreprocess(root) : undefined;
+        const uploadFiles = captureGeneratedUploadFiles(root, sharedPreprocess);
+        fs.writeFileSync(temporary, JSON.stringify({ schemaVersion: 2, inputs, firmware, uploadFiles,
+            ...(executionId ? { executionId, preprocess: sharedPreprocess.fingerprint } : {}) }), { flag: 'wx' });
         fs.renameSync(temporary, target);
     } finally { fs.rmSync(temporary, { force: true }); }
 }
@@ -198,6 +227,8 @@ function canReuseBlocklyUpload(config) {
         if (!fs.existsSync(filename) || fs.statSync(filename).size > 65536) return false;
         const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
         return saved.schemaVersion === 2 && typeof saved.firmware === 'string'
+            && saved.executionId === sharedSlot(config)
+            && (!saved.executionId || saved.preprocess === readSharedPreprocess(root).fingerprint)
             && saved.inputs === captureBlocklyUploadInputs(config) && saved.firmware === captureFirmware(root);
     } catch { return false; } // Missing/changed/unreadable inputs require compilation.
 }

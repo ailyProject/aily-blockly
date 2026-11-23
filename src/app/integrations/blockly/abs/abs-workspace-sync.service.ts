@@ -1971,7 +1971,7 @@ export class AbsWorkspaceSyncService {
 
   async inspectGeneration() {
     const context = this.context();
-    const inspection = await inspectAbsGenerationForRecovery(await this.store(context), context.scope)
+    const inspection = await inspectAbsGenerationForRecovery(await this.store(context, false), context.scope)
       .catch(error => { context.assertCurrent(); throw error; });
     context.assertCurrent();
     const completed = this.completedJournalReopen;
@@ -2020,7 +2020,7 @@ export class AbsWorkspaceSyncService {
           ...(completed ? { completedResolution: { token: completed.resolution.token, choice: completed.choice,
             inputAbiHash: completed.inputAbiHash, source: { kind: completed.choice === 'keep_view' ? 'workspace' : 'saved-abi', abiHash: completed.inputAbiHash },
             output: completed.evidence, recoveryArchive: completed.recoveryArchive, candidateApplied: false } } : {}) };
-      }, false);
+      }, false, false, false);
     }
     return { pending: inspection.pending, diagnostics: inspection.diagnostics as typeof inspection.diagnostics & AbsDraftReadiness };
   }
@@ -2487,7 +2487,7 @@ export class AbsWorkspaceSyncService {
     if (!completed || completed.generation !== generation || completed.token !== token) return undefined;
     try {
       const context = this.context(); completed.context.assertCurrent(); context.assertCurrent();
-      const store = await this.store(context), inspection = await inspectAbsGeneration(store, context.scope);
+      const store = await this.store(context, false), inspection = await inspectAbsGeneration(store, context.scope);
       const libraries = await window['libraryDependencies']?.status(context.path);
       if (!libraries || libraries.dirty || libraries.busy || inspection.pending || inspection.diagnostics.issues.length
         || inspection.committed?.pointerHash !== completed.pointerHash
@@ -2579,8 +2579,9 @@ export class AbsWorkspaceSyncService {
 
   private async store(context: ReturnType<AbsWorkspaceSyncService['context']>, repairLocation = true, supplied?: import('./abs-baseline-store').AbsSyncStoragePort) {
     const port = supplied ?? await openAbsHostStorage(context.path, context.assertCurrent);
-    if (repairLocation) await this.withoutViewChecks(() => recoverAbsLocationMetadata(port, context.scope, context.assertCurrent));
-    context.assertCurrent(); return new AbsBaselineStore(port, context.scope);
+    const store = new AbsBaselineStore(port, context.scope, repairLocation);
+    if (repairLocation) await this.withoutViewChecks(() => recoverAbsLocationMetadata(port, context.scope, context.assertCurrent, store));
+    context.assertCurrent(); return store;
   }
 
   async restoreProgramMap(observation: unknown) {

@@ -1,6 +1,6 @@
 // 管理系统命令进程，并提供 Shell、路径和终端环境检测能力。
 const { exec } = require('child_process');
-const { spawn, getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
+const { spawn, spawnManagedBuild, getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -11,6 +11,7 @@ const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-
 const { acquireNpmMutation } = require('./npm-mutation-queue');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
 const { subappLaunches } = require('./subapp-launch-reservations');
+const { sharedBlocklyBuildEnabled, sharedBuildCommand, withSharedBuildAdmission } = require('./shared-blockly-build');
 let commandShutdown = false;
 const {
   normalizeProcessMessage,
@@ -428,7 +429,7 @@ class CommandManager {
   }
 
   // 执行命令并返回流式数据
-  executeCommand(options, onSettledClose) {
+  executeCommand(options, onSettledClose, shared) {
     if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
     let {
       command,
@@ -539,7 +540,10 @@ class CommandManager {
       : ['pipe', 'pipe', 'pipe'];
     const buildWorkspace = createBuildWorkspaceSupervisor(options.buildWorkspace);
     const commandEnv = buildCommandEnv({ ...env, ...buildWorkspace?.environment });
-    const child = isWin32NpmFamily
+    const supervisor = buildWorkspace?.environment?.AILY_BUILD_WORKSPACE_SUPERVISOR;
+    const child = shared ? spawnManagedBuild(command, args, {
+      cwd: shared.admission.project, env: commandEnv, shell: false, windowsHide: true, stdio: childStdio,
+    }, shared.admission.bind(supervisor, streamId, shared.config.execution)) : isWin32NpmFamily
       ? spawn(fullCommand, {
           cwd: cwd || process.cwd(),
           env: commandEnv,
@@ -569,6 +573,7 @@ class CommandManager {
       shellDiagnostics,
       messagePort,
       buildWorkspace,
+      sharedBuildSupervisor: shared ? supervisor : undefined,
       buildWorkspacePath: options.buildWorkspace,
       startedAt,
       ownerWebContents: options.ownerWebContents,
@@ -958,7 +963,27 @@ class CommandManager {
 
 const commandManager = new CommandManager();
 
-function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
+function registerCmdHandlers(mainWindow, { buildDeliveryAuthority, canClearSharedBuild } = {}) {
+  const settleOld = entry => {
+    const command = commandManager.processes.get(entry.streamId);
+    if (command?.sharedBuildSupervisor === entry.supervisor) command.stopRequested = true;
+  };
+  ipcMain.handle('clear-shared-blockly-build', async (event, projectPath, options) => {
+    if (!sharedBlocklyBuildEnabled() || !canClearSharedBuild?.(event, projectPath)) {
+      throw new Error('Clearing project build cache requires the active Blockly project.');
+    }
+    const assertCurrent = () => {
+      if (!canClearSharedBuild(event, projectPath)) throw new Error('The active Blockly project changed before cache cleanup.');
+    };
+    return withSharedBuildAdmission(projectPath, { assertCurrent, beforeStop: settleOld, operation: 'clean' }, async () => {
+      assertCurrent();
+      const result = await require('./build-workspace-publication').clearAcceptedSharedBuildCache(projectPath, {
+        preserveSketch: options?.preserveSketch === true,
+      });
+      buildDeliveryAuthority?.invalidate(projectPath);
+      return result;
+    });
+  });
   // 执行命令
   ipcMain.handle('cmd-run', async (event, options) => {
     const streamId = options.streamId || `cmd_${Date.now()}_${Math.random()}`;
@@ -978,6 +1003,14 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
+      const shared = sharedBuildCommand(options);
+      const assertSharedCurrent = () => {
+        if (!canClearSharedBuild?.(event, options.projectPath)) throw new Error('The active Blockly project changed before launch.');
+        const current = sharedBuildCommand(options);
+        if (!current || current.execution.id !== shared.execution.id
+          || current.execution.buildRequestId !== shared.execution.buildRequestId)
+          throw new Error('The original build command changed before launch.');
+      };
       if (commandManager.pendingCommands.has(streamId) || commandManager.processes.has(streamId)
         || !commandManager.registerOwnerStream(senderWindow, streamId)) {
         throw new Error('Command stream is already registered.');
@@ -986,11 +1019,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       senderWindow.on?.('destroyed', onOwnerGone);
       senderWindow.on?.('render-process-gone', onOwnerGone);
       senderWindow.on?.('did-start-navigation', onNavigation);
-      if (options.buildWorkspace) buildDeliveryAuthority?.invalidate(options.buildWorkspace);
-      if (options.buildDeliveryRequest !== undefined) {
-        if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame) throw new Error('Build delivery authority unavailable; restart the host.');
-        delivery = await buildDeliveryAuthority.begin(senderWindow, options);
-      }
+      if (shared && !canClearSharedBuild?.(event, options.projectPath)) throw new Error('Shared build requires the active Blockly project.');
       const permit = acquireNpmMutation(options, {
         signal: pending.abort.signal,
         onWait: () => sendRendererLog(senderWindow, '依赖正在安装，当前操作已排队等待…', 'doing', `${streamId}:install-wait`),
@@ -999,18 +1028,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       if (pending.cancelled) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       assertProjectTaskActive(senderWindow, options);
-      if (options.subappLaunchToken !== undefined) {
-        subappLaunch = subappLaunches.bindCommand(options.subappLaunchToken, senderWindow, streamId, options, () => {
-          void Promise.resolve().then(() => commandManager.killProcess(streamId, senderWindow)).catch(error => {
-            console.warn('[subapp-manager] abandoned launch cleanup failed:', error.message);
-          });
-        });
-      }
-      const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
-        releaseNpmMutation,
-        subappLaunchId: subappLaunch?.id,
-        ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
-      }, ({ code, signal, pid, startedAt, expected, ownershipReleased }) => {
+      const onSettledClose = ({ code, signal, pid, startedAt, expected, ownershipReleased }) => {
         delivery?.onExit(code, signal, expected || !ownershipReleased);
 
         console.log(`[CMD][${streamId}] close, code: ${code}, signal: ${signal}`);
@@ -1020,79 +1038,108 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         sendCmdData(senderWindow, `cmd-data-${streamId}`, {
           type: 'close', code, signal, streamId, expected, ownershipReleased
         });
-      });
-      releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
-      subappLaunch?.spawned();
-      const process = result.process;
-      if (subappLaunch) {
-        const finishLaunch = () => subappLaunches.finish(options.subappLaunchToken, senderWindow);
-        // Exit may precede stdio closure when a descendant inherited the handles.
-        // Close also covers spawn failures which emit no exit event.
-        process.once('exit', finishLaunch);
-        process.once('close', finishLaunch);
-      }
-      if (delivery) {
-        process.on('message', message => {
-          try { delivery.onMessage(normalizeProcessMessage(message, 4096).message); }
-          catch { delivery.abandon(); }
-        });
-      }
-      // console.log(options);
-      // 监听标准输出
-      process.stdout.on('data', (data) => {
-        const output = data.toString();
-
-        if (result.shouldLogOutput) {
-          logCommandOutput(streamId, 'stdout', output, senderWindow);
+      };
+      const launch = async admission => {
+        if (options.buildWorkspace && (!shared || shared.execution.operation === 'compile')) {
+          buildDeliveryAuthority?.invalidate(options.buildWorkspace);
         }
+        if (options.buildDeliveryRequest !== undefined) {
+          if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame) throw new Error('Build delivery authority unavailable; restart the host.');
+          delivery = await buildDeliveryAuthority.begin(senderWindow, options);
+        }
+        if (pending.cancelled || senderWindow.isDestroyed()) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
+        assertProjectTaskActive(senderWindow, options);
+        if (shared) assertSharedCurrent();
+        if (options.subappLaunchToken !== undefined) {
+          subappLaunch = subappLaunches.bindCommand(options.subappLaunchToken, senderWindow, streamId, options, () => {
+            void Promise.resolve().then(() => commandManager.killProcess(streamId, senderWindow)).catch(error => {
+              console.warn('[subapp-manager] abandoned launch cleanup failed:', error.message);
+            });
+          });
+        }
+        const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
+          releaseNpmMutation,
+          subappLaunchId: subappLaunch?.id,
+          ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
+        }, onSettledClose, admission && { admission, config: shared });
+        releaseNpmMutation = undefined; // The registered child now owns the permit until safe completion.
+        const process = result.process;
+        if (subappLaunch) {
+          subappLaunch.spawned();
+          const finishLaunch = () => subappLaunches.finish(options.subappLaunchToken, senderWindow);
+          // Exit can precede stdio closure. Close also covers spawn failures without exit.
+          process.once('exit', finishLaunch);
+          process.once('close', finishLaunch);
+        }
+        if (delivery) {
+          process.on('message', message => {
+            try { delivery.onMessage(normalizeProcessMessage(message, 4096).message); }
+            catch { delivery.abandon(); }
+          });
+        }
+        // console.log(options);
+        // 监听标准输出
+        process.stdout.on('data', (data) => {
+          const output = data.toString();
 
-        if (options.forwardStdout !== false) {
+          if (result.shouldLogOutput) {
+            logCommandOutput(streamId, 'stdout', output, senderWindow);
+          }
+
+          if (options.forwardStdout !== false) {
+            sendCmdData(senderWindow, `cmd-data-${streamId}`, {
+              type: 'stdout',
+              data: output,
+              streamId
+            });
+          }
+        });
+
+        // 监听错误输出
+        process.stderr.on('data', (data) => {
+          const output = data.toString();
+
+          if (result.shouldLogOutput) {
+            logCommandOutput(streamId, 'stderr', output, senderWindow);
+          }
+
           sendCmdData(senderWindow, `cmd-data-${streamId}`, {
-            type: 'stdout',
+            type: 'stderr',
             data: output,
             streamId
           });
-        }
-      });
-
-      // 监听错误输出
-      process.stderr.on('data', (data) => {
-        const output = data.toString();
-
-        if (result.shouldLogOutput) {
-          logCommandOutput(streamId, 'stderr', output, senderWindow);
-        }
-
-        sendCmdData(senderWindow, `cmd-data-${streamId}`, {
-          type: 'stderr',
-          data: output,
-          streamId
-        });
-      });
-
-      // 监听进程错误
-      process.on('error', (error) => {
-        const entry = commandManager.processes.get(streamId);
-        const formattedError = formatSpawnError(error, entry);
-
-        console.error(`[CMD][${streamId}] error: ${formattedError}`);
-
-        console.error('[PROC_TRACE][CMD_ERROR]', {
-          streamId,
-          pid: process.pid,
-          error: formattedError,
-          code: error?.code,
-          shell: entry?.shell ? String(entry.shell) : undefined,
-          shellKind: entry?.shellKind,
-          durationMs: entry ? Date.now() - entry.startedAt : undefined
         });
 
-        sendCmdData(senderWindow, `cmd-data-${streamId}`, {
-          type: 'error',
-          error: formattedError,
-          streamId
+        // 监听进程错误
+        process.on('error', (error) => {
+          const entry = commandManager.processes.get(streamId);
+          const formattedError = formatSpawnError(error, entry);
+
+          console.error(`[CMD][${streamId}] error: ${formattedError}`);
+
+          console.error('[PROC_TRACE][CMD_ERROR]', {
+            streamId,
+            pid: process.pid,
+            error: formattedError,
+            code: error?.code,
+            shell: entry?.shell ? String(entry.shell) : undefined,
+            shellKind: entry?.shellKind,
+            durationMs: entry ? Date.now() - entry.startedAt : undefined
+          });
+
+          sendCmdData(senderWindow, `cmd-data-${streamId}`, {
+            type: 'error',
+            error: formattedError,
+            streamId
+          });
         });
-      });
+        return result;
+      };
+      const result = shared
+        ? await withSharedBuildAdmission(options.buildWorkspace, {
+          signal: pending.abort.signal, assertCurrent: assertSharedCurrent, beforeStop: settleOld, operation: shared.execution.operation,
+        }, launch)
+        : await launch();
 
       return {
         success: true,
