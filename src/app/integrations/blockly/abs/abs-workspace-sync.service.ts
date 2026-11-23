@@ -902,7 +902,7 @@ export class AbsWorkspaceSyncService {
       }
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending generation before exporting.');
       const mayUpgradeLegacy = !projectTree && !inspection && !options.synchronize && options.publish !== false;
-      const savedCommit = !inspection && (options.save || mayUpgradeLegacy) ? await store.inspectCommitted() : null;
+      const savedCommit = !inspection && (options.save || mayUpgradeLegacy) ? await store.readCommittedSnapshot() : null;
       const legacy = mayUpgradeLegacy ? await inspectLegacyAbsMirrors(expected, savedCommit?.projection) : undefined;
       const committed = inspection ? inspection.committed?.projection : options.save || legacy ? savedCommit?.projection : await store.loadCommitted();
       // Explicit current-view saves/state operations own their canvas, not an
@@ -1002,12 +1002,15 @@ export class AbsWorkspaceSyncService {
       // Still verify current disk/contracts and republish derived outputs: a
       // clean canvas does not prove generated files or dependencies are intact.
       const unchangedSave = options.save && prepared?.abiText === expected.abi;
-      if (!legacy && !projectTree && (options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
+      const reuseAuthor = projectTree && unchangedSave && !preserveAuthor && !!committed
+        && expected.abs === committed.abs && savedCommit?.abi === expected.abi;
+      if (!legacy && (!projectTree || reuseAuthor) && (options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
         && absJson(context.scope) === absJson(committed.map.scope)
         && committed.map.savedAbiHash === (expected.abi === null ? null : await hashAbsText(absJson(JSON.parse(expected.abi))))) {
         const evidence = await generationEvidence(committed, expected.abi);
+        const acceptedSource = reuseAuthor ? await store.acceptedSourceProof(committed.map.generation) : undefined;
         await this.assertDisk(store, expected, assertCurrent);
         // A byte-identical save has no ABI write. This durable acknowledgement
         // is its save point, after the exact view/source checks and before any
@@ -1026,7 +1029,7 @@ export class AbsWorkspaceSyncService {
         }
         if (previewCurrent()) this.withViewChecks(() => this.editor.publishAbsContext(committed, assertCurrent().revision, context.assertCurrent));
         return { publication: { status: 'COMMITTED', generation: committed.map.generation,
-          abiSaved: false, absMirrored: true, mapPublished: true }, requiresReload: false,
+          abiSaved: false, absMirrored: true, mapPublished: true, ...(acceptedSource ? { acceptedSource } : {}) }, requiresReload: false,
           warnings: derived.warnings, derivedOutputs: derived.output, evidence, abs: committed.abs, reused: true };
       }
       const savedAbi = prepared?.abiText ?? expected.abi;

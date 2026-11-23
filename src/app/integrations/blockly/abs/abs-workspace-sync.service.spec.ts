@@ -5140,6 +5140,18 @@ describe('v2 actual workspace generation coordinator', () => {
 
   describe('project-v1 author tree', () => {
     const select = () => disk.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
+    it('acknowledges an unchanged author-tree save without creating another immutable generation', async () => {
+      await baseline(); select();
+      const first = await service.exportGeneration({ save: true });
+      const before = [...disk.keys()].filter(key => key.startsWith('baselines/'));
+      const next = await service.exportGeneration({ save: true });
+      expect(next.reused).toBeTrue();
+      expect(next.publication.generation).toBe(first.publication.generation);
+      expect(next.publication.abiSaved).toBeFalse();
+      expect(next.publication.acceptedSource?.authorSource.pending).toBeFalse();
+      expect([...disk.keys()].filter(key => key.startsWith('baselines/'))).toEqual(before);
+    });
+
     it('publishes a merged canvas edit to the submitted primary ABS without consuming a later draft', async () => {
       const base = await baseline(); select();
       editor.workspace.getBlockById('child').setFieldValue('720', 'NUM');
