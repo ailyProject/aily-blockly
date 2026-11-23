@@ -49,7 +49,7 @@ function complete(config) {
     api.finishBuildExecution(config, true);
 }
 
-function sharedFixture(t) {
+function sharedFixture(t, cache = true) {
     const oldSupervisor = process.env.AILY_BUILD_WORKSPACE_SUPERVISOR;
     process.env.AILY_BUILD_WORKSPACE_SUPERVISOR = randomUUID();
     t.after(() => {
@@ -58,11 +58,11 @@ function sharedFixture(t) {
     });
     const f = fixture(t);
     return { ...f, prepare: (id, workspace, operation = 'compile', explicitPreprocess = operation === 'preprocess') => api.prepareBuildExecution(
-        { ...f.config, buildRequestId: id, explicitPreprocess }, workspace, operation, { shared: true }) };
+        { ...f.config, buildRequestId: id, explicitPreprocess }, workspace, operation, { shared: true, cache }) };
 }
 
 test('shared build uses project caches and captures the live canvas without changing saved inputs', async t => {
-    const f = sharedFixture(t), sha = data => createHash('sha256').update(data).digest('hex');
+    const f = sharedFixture(t, false), sha = data => createHash('sha256').update(data).digest('hex');
     const savedA = JSON.stringify({ pages: [{ code: 'A' }] });
     const liveB = JSON.stringify({ pages: [{ code: 'B' }] });
     f.put('project.abi', savedA);
@@ -88,7 +88,9 @@ test('shared build uses project caches and captures the live canvas without chan
     assert.equal(fs.existsSync(path.join(f.root, 'src', 'variables_new-deadbeef.h')), false);
     assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), savedA);
     assert.deepEqual(fs.readFileSync(path.join(f.root, 'package.json')), manifest);
-    captureBlocklyCompileSource(captured, sketch);
+    api.retainSharedBuildSource(captured, captureBlocklyCompileSource(captured, sketch));
+    const historicalSketch = path.join(path.dirname(captured.configFilePath), 'sketch.ino');
+    assert.equal(fs.readFileSync(historicalSketch, 'utf8'), captured.code);
     fs.writeFileSync(header, 'changed declaration');
     assert.throws(() => captureBlocklyCompileSource(captured, sketch), { code: 'BUILD_SOURCE_STALE' });
 
@@ -102,6 +104,7 @@ test('shared build uses project caches and captures the live canvas without chan
     f.put(audio, 'new audio');
     assert.equal(api.canReuseBuildExecution(f.config), false);
     assert.throws(() => api.confirmSharedBuildInputs(captured), { code: 'BUILD_SOURCE_STALE' });
+    assert.equal(fs.readFileSync(historicalSketch, 'utf8'), captured.code);
 });
 
 test('a later shared preparation retires only its pending original without changing current firmware', t => {
@@ -182,10 +185,15 @@ test('shared cache clear waits for the writer, removes legacy payloads and prese
     const f = sharedFixture(t);
     const legacy = api.prepareBuildExecution({ ...f.config, buildRequestId: 'legacy' });
     complete(legacy);
+    const oldSketch = path.join(legacy.currentProjectPath, '.temp', 'sketch');
+    fs.mkdirSync(oldSketch, { recursive: true });
+    fs.writeFileSync(path.join(oldSketch, 'sketch.ino'), legacy.code);
+    fs.writeFileSync(path.join(oldSketch, 'obsolete.h'), 'generated intermediate');
     const current = f.prepare('latest');
     complete(current);
     const pending = f.prepare('queued');
     f.put('.temp/sketch/keep.cpp', 'preprocess data');
+    f.put('.workspace-history/checkpoint.json', 'saved history');
     const owner = acquireBuildWorkspace(f.root, 'verify');
     try {
         assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_WORKSPACE_BUSY' });
@@ -195,11 +203,21 @@ test('shared cache clear waits for the writer, removes legacy payloads and prese
     assert.equal(fs.existsSync(path.join(f.root, '.build', 'firmware.bin')), false);
     assert.equal(fs.readFileSync(path.join(f.root, '.temp', 'sketch', 'keep.cpp'), 'utf8'), 'preprocess data');
     assert.equal(fs.existsSync(path.join(legacy.currentProjectPath, 'node_modules')), false);
+    if (process.platform === 'darwin') {
+        assert.deepEqual(fs.readdirSync(path.dirname(oldSketch)), ['sketch']);
+        assert.deepEqual(fs.readdirSync(oldSketch), ['sketch.ino']);
+        assert.equal(fs.readFileSync(path.join(oldSketch, 'sketch.ino'), 'utf8'), legacy.code);
+    } else {
+        assert.equal(fs.existsSync(path.dirname(oldSketch)), false);
+    }
     assert.equal(api.inspectBuildExecution(f.root, 'legacy').status, 'completed');
     assert.equal(api.inspectBuildExecution(f.root, 'latest').status, 'completed');
     assert.equal(api.inspectBuildExecution(f.root, 'queued').status, 'cancelled');
     assert.equal(fs.existsSync(pending.configFilePath), false);
     assert.equal(api.resolveBuildExecution(f.root), null);
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.equal(fs.existsSync(path.join(f.root, '.temp')), false);
+    assert.equal(fs.readFileSync(path.join(f.root, '.workspace-history', 'checkpoint.json'), 'utf8'), 'saved history');
 });
 
 test('an exact revoked request remains terminal after Windows cache cleanup fails and restarts', {

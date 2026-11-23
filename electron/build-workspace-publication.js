@@ -50,6 +50,9 @@ module.exports = {
     action: 'abandon-preprocess', config: { currentProjectPath, execution, sourceCapture },
   }).then(value => value.abandoned),
   resolveBuildExecution: (project, liveConfig) => require(childScriptPath('build-execution-workspace.js')).resolveBuildExecution(project, liveConfig),
+  resolveBuildExecutionInWorker: projectPath => runExecutionWorker({
+    action: 'resolve-build-execution', projectPath,
+  }).then(value => value.execution),
   resolveBuildProjectPath: project => require(childScriptPath('build-execution-workspace.js')).resolveBuildProjectPath(project),
   inspectBuildExecution: (project, requestId) => require(childScriptPath('build-execution-workspace.js')).inspectBuildExecution(project, requestId),
   cancelBuildExecution: config => require(childScriptPath('build-execution-workspace.js')).cancelBuildExecution(config),

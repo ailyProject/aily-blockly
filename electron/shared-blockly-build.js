@@ -8,13 +8,15 @@ const { childScriptPath } = require('./child-script-path');
 const { normalizeBuildProduct } = require('./build-product');
 
 const UUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/;
-const same = (first, second) => first.toLowerCase() === second.toLowerCase();
+const pathKey = value => process.platform === 'win32' ? value.toLowerCase() : value;
+const same = (first, second) => pathKey(first) === pathKey(second);
 const fault = (code, message) => Object.assign(new Error(message), { code });
 const source = filename => require(childScriptPath(filename));
 
 function sharedBlocklyBuildEnabled() {
-  return process.platform === 'win32' && process.arch === 'x64'
-    && normalizeBuildProduct(process.env.AILY_BUILD_PRODUCT) === 'blockly';
+  if (normalizeBuildProduct(process.env.AILY_BUILD_PRODUCT) !== 'blockly') return false;
+  if (process.platform === 'darwin') return require('./owned-process').isDarwinManagedBuildAvailable();
+  return process.platform === 'win32' && process.arch === 'x64';
 }
 
 function sharedBuildCommand(options) {
@@ -56,7 +58,7 @@ function storePath(project) {
   const directory = path.join(fs.realpathSync(data), '.lock', 'shared-blockly-build');
   fs.mkdirSync(directory, { recursive: true });
   if (!same(fs.realpathSync(directory), directory)) throw fault('BUILD_WORKSPACE_INVALID', 'The build supervisor storage is linked.');
-  const name = createHash('sha256').update(project.toLowerCase()).digest('hex');
+  const name = createHash('sha256').update(pathKey(project)).digest('hex');
   return { directory, name, record: path.join(directory, name + '.json'), guard: path.join(directory, name + '.guard') };
 }
 
@@ -131,7 +133,7 @@ async function withSharedBuildAdmission(projectPath, { signal, assertCurrent, be
     const bootId = source('system-boot-id.js').getSystemBootId();
     const previous = readBinding(store, project);
     if (!bootId && (previous || operation !== 'clean')) {
-      throw fault('BUILD_BOOT_ID_UNAVAILABLE', 'The current Windows boot identity could not be verified. No managed build was dispatched.');
+      throw fault('BUILD_BOOT_ID_UNAVAILABLE', 'The current system boot identity could not be verified. No managed build was dispatched.');
     }
     if (previous) {
       const observeOnly = operation === 'preprocess' || operation === 'upload' || previous.execution.operation === 'upload';

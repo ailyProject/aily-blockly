@@ -10,6 +10,9 @@ const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const receiptPath = root => path.join(root, '.build', 'aily-upload-state.json');
 const sharedSlot = config => config.execution?.layout === 'shared' ? config.execution.id : undefined;
+// Builder includes transitive header evidence in this recipe. Typical ESP32-S3
+// dependency trees can exceed the old 16 MiB file limit.
+const MAX_SHARED_RECIPE_BYTES = 128 * 1024 * 1024;
 
 // Ordinary upload reuse is separate from simulation/delivery acceptance. Read only
 // compiler inputs and firmware, never create a workspace or treat a directory as a build.
@@ -157,9 +160,26 @@ function resolveEspSrUploadCommand(prepared, directory) {
 function readSharedPreprocess(root) {
     const filename = path.join(root, '.temp', 'preprocess.json');
     const stat = fs.lstatSync(filename);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_SHARED_RECIPE_BYTES
         || fs.realpathSync(filename) !== filename) throw new Error('Invalid shared build recipe.');
-    const bytes = fs.readFileSync(filename);
+    const matches = current => current.isFile() && current.nlink === 1 && current.ino === stat.ino
+        && (current.dev === stat.dev || (process.platform === 'win32' && stat.dev === 0))
+        && current.size === stat.size && current.mtimeMs === stat.mtimeMs && current.ctimeMs === stat.ctimeMs;
+    const fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    let bytes;
+    try {
+        if (!matches(fs.fstatSync(fd))) throw new Error('Invalid shared build recipe.');
+        const buffer = Buffer.allocUnsafe(stat.size + 1);
+        let read = 0;
+        while (read < buffer.length) {
+            const count = fs.readSync(fd, buffer, read, buffer.length - read, null);
+            if (!count) break;
+            read += count;
+        }
+        if (read !== stat.size || !matches(fs.fstatSync(fd)) || !matches(fs.lstatSync(filename))
+            || fs.realpathSync(filename) !== filename) throw new Error('Invalid shared build recipe.');
+        bytes = buffer.subarray(0, read);
+    } finally { fs.closeSync(fd); }
     const prepared = JSON.parse(bytes.toString('utf8'));
     const directory = path.join(root, '.build');
     if (prepared.success !== true || typeof prepared.envVars?.BUILD_PATH !== 'string'

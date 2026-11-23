@@ -338,10 +338,10 @@ function killRegisteredProcessTree(pid, label, options = {}) {
 
   if (options.registered && options.registered.pid !== pid) return Promise.resolve(false);
   const ownedProcess = options.registered || options.ownedProcess;
-  if (isWin32 && ownedProcess) {
+  if (ownedProcess) {
     const { getOwnedProcessInfo, stopOwnedProcess } = require('./owned-process');
     if (getOwnedProcessInfo(ownedProcess)) {
-      // Failure must retain this exact Job. Never fall through to a PID scan
+      // Failure must retain this exact ownership. Never fall through to a PID scan
       // that might now refer to a different task or main-software instance.
       return stopOwnedProcess(ownedProcess).catch(() => false);
     }

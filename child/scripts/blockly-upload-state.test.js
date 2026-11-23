@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { captureBlocklyUploadInputs: capture, publishBlocklyUploadState: publish,
-    invalidateBlocklyUploadState: invalidate, canReuseBlocklyUpload: reusable } = require('./blockly-upload-state');
+    invalidateBlocklyUploadState: invalidate, canReuseBlocklyUpload: reusable,
+    readBlocklyUploadArtifacts } = require('./blockly-upload-state');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-upload-reuse-'));
@@ -64,6 +65,22 @@ test('result metadata and background caches do not invalidate successful firmwar
     f.write('package.json', JSON.stringify({ ...pkg, codeHash: 'new', buildInfo: { lastBuildStatus: 'success' } }));
     f.write('.temp/preprocess.json', '{"success":true}'); f.write('.build/aily-artifact-manifest.json', '{}');
     assert.equal(reusable(f.config), true);
+});
+
+test('shared firmware retains its exact recipe when transitive header evidence exceeds 16 MiB', t => {
+    const f = fixture(t), root = fs.realpathSync(f.root), directory = path.join(root, '.build');
+    const firmware = path.join(directory, 'sketch.ino.hex'), filename = path.join(root, '.temp', 'preprocess.json');
+    f.config.execution = { layout: 'shared', id: 'current-execution' };
+    f.write('.temp/preprocess.json', JSON.stringify({ success: true, envVars: { BUILD_PATH: directory },
+        upload: { command: `tool "${firmware}"` }, dependencies: [{ headerInputs: ['h'.repeat(17 * 1024 * 1024)] }] }));
+    f.build();
+    assert.deepEqual(readBlocklyUploadArtifacts(directory), [firmware]);
+    assert.equal(reusable(f.config), true);
+    fs.appendFileSync(filename, '\n');
+    assert.equal(reusable(f.config), false);
+    assert.throws(() => readBlocklyUploadArtifacts(directory), /BUILD_ARTIFACT_STALE/);
+    fs.truncateSync(filename, 129 * 1024 * 1024);
+    assert.throws(f.build, /Invalid shared build recipe/);
 });
 
 test('failed or cancelled compilation cannot reuse the old success receipt', t => {

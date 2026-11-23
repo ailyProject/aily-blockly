@@ -11,7 +11,7 @@ const { generatorInputDigest } = require('./blockly-upload-state');
 const { captureBuildSource, isGeneratedBuildHeader } = require('./build-source-capture');
 const { buildSnapshotReceipt } = require('./build-snapshot-receipt');
 const { getSystemBootId } = require('./system-boot-id');
-const { processIdentity } = require('./build-process-identity');
+const { observeBuildProcessIdentity } = require('./build-process-identity');
 const { acquireBuildWorkspace, inspectBuildWorkspaceIdle } = require('./build-workspace-lease');
 const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -310,18 +310,18 @@ function applyGeneratorInputs(root, config) {
 
 /** A shared request reserves immutable inputs, never the shared write directory.
  * The verified native child lease admits it before any project-cache mutation. */
-function prepareBuildExecution(config, workspace, operation = 'compile', { shared = false } = {}) {
+function prepareBuildExecution(config, workspace, operation = 'compile', { shared = false, cache = shared } = {}) {
     if (!config || typeof config.code !== 'string' || typeof config.boardModule !== 'string'
         || !/^@[^/\\]+\/[^/\\]+$/.test(config.boardModule) || config.boardModule.includes('..')
         || !['compile', 'preprocess'].includes(operation)) fail('Invalid execution request.');
-    const store = storage(config.currentProjectPath, true, shared);
+    const store = storage(config.currentProjectPath, true, cache);
     if (JSON.parse(fs.readFileSync(path.join(store.root, 'package.json'), 'utf8')).type === 'coder') fail('Coder execution uses its own build contract.');
     const explicitPreprocess = operation === 'preprocess' && config.explicitPreprocess === true;
     const id = randomUUID(), buildRequestId = config.buildRequestId || id;
     if (typeof buildRequestId !== 'string' || !REQUEST_ID.test(buildRequestId) || (explicitPreprocess && !config.buildRequestId))
         fail('Invalid build request identity.');
     const index = operation === 'compile' || explicitPreprocess
-        ? requestPath(store.root, buildRequestId, shared, true) : null;
+        ? requestPath(store.root, buildRequestId, cache, true) : null;
     const assertIndexAvailable = () => {
         const previous = findRequest(store.root, buildRequestId)?.index;
         if (previous && (operation !== 'compile' || previous.operation === 'preprocess'
@@ -332,7 +332,7 @@ function prepareBuildExecution(config, workspace, operation = 'compile', { share
     };
     if (index) assertIndexAvailable();
     const root = shared ? store.root : directory(directory(store.parent, id), 'project');
-    const generator = shared ? generatorInputDigest(config) : undefined;
+    const generator = cache ? generatorInputDigest(config) : undefined;
     const inputDigest = snapshot(config, root, !shared, { generator });
     const savedAbi = readOptional(fs.readFileSync, path.join(root, 'project.abi'));
     let savedDocumentHash;
@@ -344,7 +344,7 @@ function prepareBuildExecution(config, workspace, operation = 'compile', { share
     if (!shared) applyGeneratorInputs(root, config);
     const execution = { version: 1, id, logicalProjectPath: store.root, inputDigest,
         buildRequestId, operation, ...(explicitPreprocess ? { explicitPreprocess } : {}),
-        ...(shared ? { layout: SHARED, storage: 'cache' } : {}),
+        ...(shared ? { layout: SHARED } : {}), ...(cache ? { storage: 'cache' } : {}),
         ...(savedAbi ? { abiHash: `sha256:${hash(savedAbi)}` } : {}),
         ...(config.executionRetryOf ? { retryOf: config.executionRetryOf } : {}) };
     const prepared = { ...config, currentProjectPath: root, partitionFilePath: path.join(root, 'partitions.csv'), execution };
@@ -393,9 +393,11 @@ function prepareBuildExecution(config, workspace, operation = 'compile', { share
     if (shared) {
         try {
             if (previousPending) settleSharedBuild(store, previousPending, { requirePrepared: true });
-            const legacy = readOptional(storage, store.root);
-            const older = legacy && readSharedSelector(sharedDispatchPath(legacy, operation))?.value;
-            if (older) settleSharedBuild(legacy, { ...older, operation }, { requirePrepared: true });
+            if (store.cache) {
+                const legacy = readOptional(storage, store.root);
+                const older = legacy && readSharedSelector(sharedDispatchPath(legacy, operation))?.value;
+                if (older) settleSharedBuild(legacy, { ...older, operation }, { requirePrepared: true });
+            }
         } catch { /* Dispatch independently checks the durable pending selector. */ }
     }
     return shared ? { ...prepared, configFilePath } : prepared;
@@ -420,6 +422,18 @@ function recordFor(config) {
         || JSON.stringify(record.buildSnapshot) !== JSON.stringify(execution.buildSnapshot)
         || !samePath(record.logicalProjectPath, store.root) || JSON.stringify(record.sourceCapture) !== JSON.stringify(config.sourceCapture)) fail('Execution binding changed.');
     return { store, folder, root, record };
+}
+
+/** Keep the generated source for the exact request after the shared sketch is superseded. */
+function retainSharedBuildSource(config, materialized) {
+    if (config.execution?.layout !== SHARED || config.execution.storage === 'cache') return;
+    const { folder, root, record } = recordFor(config);
+    const source = Buffer.from(config.code, 'utf8');
+    if (materialized?.path !== path.join(root, '.temp', 'sketch', 'sketch.ino')
+        || materialized.sha256 !== record.sourceCapture?.sourceSha256 || hash(source) !== materialized.sha256) {
+        fail('Historical source does not match the captured shared input.');
+    }
+    fs.writeFileSync(path.join(folder, 'sketch.ino'), source, { flag: 'wx', mode: 0o600 });
 }
 
 function validateSharedBuildLaunch(configPath, expectedProject, operation) {
@@ -623,7 +637,7 @@ function startBuildExecution(config, lease) {
     if (!samePath(lease.projectRoot, value.root) || !UUID.test(lease.buildId)) fail('Execution lease belongs to another workspace.');
     assertSharedBuildSupervisor(config);
     lease.assertOwned();
-    const owner = { pid: process.pid, creation: processIdentity(process.pid), bootId: getSystemBootId(), token: lease.buildId };
+    const owner = { pid: process.pid, creation: observeBuildProcessIdentity(process.pid), bootId: getSystemBootId(), token: lease.buildId };
     executionTransition(value, () => {
         const start = () => {
             lease.assertOwned();
@@ -880,7 +894,7 @@ function inspectBuildExecution(projectPath, buildRequestId) {
             try { process.kill(owner?.pid, 0); alive = true; } catch (error) { alive = error.code !== 'ESRCH'; }
             if (!owner || !alive || (boot && owner.bootId && boot !== owner.bootId)) { status = 'interrupted'; ownerState = 'owner-exited'; }
             else {
-                const actual = owner.creation ? processIdentity(owner.pid) : null;
+                const actual = owner.creation ? observeBuildProcessIdentity(owner.pid) : null;
                 let lease;
                 try { lease = json(path.join(root, '.build', 'aily-workspace.lock')); } catch { /* Unknown lease cannot certify an active execution. */ }
                 if (actual && actual === owner.creation && boot && owner.bootId === boot
@@ -917,6 +931,26 @@ function clearBuildDirectory(root, assertIdle, preserveRequests = false) {
     }
 }
 
+function retireLegacyTemporary(root, assertIdle) {
+    const temporary = readOptional(directory, root, '.temp', false);
+    if (!temporary) return;
+    const sketch = readOptional(directory, temporary, 'sketch', false);
+    const source = sketch && readOptional(fs.lstatSync, path.join(sketch, 'sketch.ino'));
+    if (!source?.isFile() || source.nlink !== 1) {
+        assertIdle();
+        fs.rmSync(temporary, { recursive: true, force: true });
+        return;
+    }
+    // History resolves this exact v1 path after the original worktree is retired.
+    for (const [parent, retained] of [[temporary, 'sketch'], [sketch, 'sketch.ino']]) {
+        for (const name of fs.readdirSync(parent)) {
+            if (name === retained) continue;
+            assertIdle();
+            fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+        }
+    }
+}
+
 function retireLegacyBuildInputs(store, id) {
     const folder = directory(store.parent, id, false);
     const initial = readOptional(json, path.join(folder, 'execution.json'));
@@ -946,7 +980,12 @@ function retireLegacyBuildInputs(store, id) {
         const idle = inspectBuildWorkspaceIdle(root);
         try {
             if (readOptional(directory, root, '.build', false)) clearBuildDirectory(root, idle.assertIdle);
-            for (const name of ['.temp', 'node_modules', ...blocklyProjectBuildInputs(root), 'project.abi', 'package.json']) {
+            if (process.platform === 'darwin') retireLegacyTemporary(root, idle.assertIdle);
+            else {
+                idle.assertIdle();
+                fs.rmSync(path.join(root, '.temp'), { recursive: true, force: true });
+            }
+            for (const name of ['node_modules', ...blocklyProjectBuildInputs(root), 'project.abi', 'package.json']) {
                 idle.assertIdle();
                 fs.rmSync(path.join(root, name), { recursive: true, force: true });
             }
@@ -1010,4 +1049,5 @@ function clearSharedBuildCache(projectPath, { preserveSketch = false } = {}) {
 module.exports = { prepareBuildExecution, startBuildExecution, finishBuildExecution, cancelBuildExecution, resolveBuildExecution,
     resolveBuildProjectPath, canReuseBuildExecution, inspectBuildExecution, recordFor, retireStandalonePreprocessInputs,
     pruneTerminalPreprocessInputs, abandonPreparedPreprocess, inspectBlocklyCompileProof, validateSharedBuildLaunch,
-    confirmSharedBuildInputs, settleStoppedSharedBuild, settleUnstartedSharedBuild, mergeGeneratorInputs, clearSharedBuildCache, assertSharedBuildSupervisor };
+    confirmSharedBuildInputs, settleStoppedSharedBuild, settleUnstartedSharedBuild, mergeGeneratorInputs, clearSharedBuildCache,
+    assertSharedBuildSupervisor, retainSharedBuildSource };

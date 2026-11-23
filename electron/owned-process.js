@@ -124,6 +124,9 @@ function publishBuildReceipt(proof) {
   }
 }
 function spawnManagedBuild(file, args, options, { bootId, receiptPath, publish }) {
+  if (process.platform === 'darwin') {
+    return require('./darwin-managed-build').start(file, args, options, { bootId, receiptPath, publish }, registerDarwinBuild);
+  }
   const rt = managedBuildRuntime();
   const name = 'Global\\AilyBuild-' + randomUUID();
   const proof = { version: 1, kind: 'windows-build-job', job: name, hostPid: process.pid,
@@ -154,6 +157,7 @@ function spawnManagedBuild(file, args, options, { bootId, receiptPath, publish }
   return register(child, record);
 }
 async function stopManagedBuild(proof, currentBootId, { observeOnly = false } = {}) {
+  if (process.platform === 'darwin') return stopDarwinBuild(proof, currentBootId, observeOnly);
   if (!validBuildProof(proof) || typeof currentBootId !== 'string' || !buildBoot.test(currentBootId)) return false;
   if (proof.bootId !== currentBootId) return true;
   const { binding } = managedBuildRuntime();
@@ -197,6 +201,48 @@ async function stopManagedBuild(proof, currentBootId, { observeOnly = false } = 
     binding.release(handle);
   }
 }
+function isDarwinManagedBuildAvailable() {
+  return process.platform === 'darwin' && !!require('./darwin-managed-build').runtime();
+}
+function releaseDarwinBuild(record) {
+  if (!record.exited || !readBuildReceipt(record.durable)) return false;
+  record.released = true;
+  records.delete(record);
+  return true;
+}
+function registerDarwinBuild(child, proof) {
+  let resolveExit;
+  const record = {
+    child, durable: proof, darwin: true, released: false, stopPromise: null,
+    exitAcknowledged: new Promise(resolve => { resolveExit = resolve; }),
+  };
+  records.add(record);
+  byProcess.set(child, record);
+  child.once('exit', () => {
+    record.exited = true;
+    resolveExit();
+    try { releaseDarwinBuild(record); }
+    catch (error) { console.warn('[PROC_TRACE][BUILD_GROUP_RECEIPT_FAILED]', { pid: child.pid, error: error.message }); }
+  });
+}
+async function stopDarwinBuild(proof, currentBootId, observeOnly) {
+  const { validProof, validBoot } = require('./darwin-managed-build');
+  if (!validProof(proof) || !validBoot(currentBootId)) return false;
+  if (proof.bootId !== currentBootId || readBuildReceipt(proof)) return true;
+  const local = [...records].find(record => record.darwin && record.durable.job === proof.job
+    && record.durable.bootId === proof.bootId && record.durable.receiptPath === proof.receiptPath);
+  if (observeOnly) return false;
+  if (local) return stopOwnedProcess(local.child);
+  // Host disconnect already requests cancellation through the monitor's IPC.
+  // A foreign live host keeps ownership of its build. Reopen can observe the
+  // exact durable receipt, but absence never grants a signal or a takeover.
+  const deadline = Date.now() + buildStopTimeout;
+  while (Date.now() < deadline) {
+    await wait(50);
+    if (readBuildReceipt(proof)) return true;
+  }
+  return false;
+}
 function fork(modulePath, args, options) {
   if (!Array.isArray(args)) { options = args || {};args = []; }
   options = { ...(options || {}) };
@@ -223,6 +269,13 @@ async function stopOwnedProcess(child) {
   if (record.released) return true;
   if (record.stopPromise) return record.stopPromise;
   record.stopPromise = (async () => {
+    if (record.darwin) {
+      if (!record.exited && !readBuildReceipt(record.durable)) {
+        writeBuildTag(record.durable.receiptPath + '.stop', record.durable.job);
+      }
+      if (!record.exited && !await waitForChildExit(record)) return false;
+      return releaseDarwinBuild(record);
+    }
     const started = Date.now();
     const drained = record.durable && record.exited && readBuildReceipt(record.durable);
     if (record.durable && !drained) writeBuildTag(record.durable.receiptPath + '.stop', record.name);
@@ -259,9 +312,11 @@ function waitForChildExit(record) {
 async function stopAllOwnedProcesses() { return (await Promise.all([...records].map(record => stopOwnedProcess(record.child)))).every(Boolean); }
 function getOwnedProcessInfo(child) {
   const record = byProcess.get(child);if (!record) return null;
+  if (record.darwin) return { pid: child.pid, released: record.released, active: record.released ? 0 : null, pids: [] };
   let accounting;
   try { accounting = record.jobReleased || record.released ? { active: 0, pids: [] } : record.binding.query(record.handle); }
   catch (error) { accounting = { active: null, pids: [], error: error.message }; }
   return { pid: child.pid, released: record.released, ...accounting };
 }
-module.exports = { spawn, spawnManagedBuild, stopManagedBuild, fork, spawnPty, stopOwnedProcess, stopAllOwnedProcesses, getOwnedProcessInfo, runtime };
+module.exports = { spawn, spawnManagedBuild, stopManagedBuild, isDarwinManagedBuildAvailable, fork, spawnPty,
+  stopOwnedProcess, stopAllOwnedProcesses, getOwnedProcessInfo, runtime };
