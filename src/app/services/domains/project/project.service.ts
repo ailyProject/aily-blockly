@@ -1719,7 +1719,10 @@ export class ProjectService {
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
       const boardRange = this.normalizeAilyCodeBoardDepRange(newProjectData.board.version);
       recordCoderBoardTemplateDependencies(packageJson, boardPackageName, packageJson.dependencies || {});
-      applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange, { entry: options.coderEntry });
+      applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange, {
+        entry: options.coderEntry,
+        arduinoSketch: packageJson.arduinoSketch === true,
+      });
     }
 
     window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
@@ -1765,16 +1768,16 @@ export class ProjectService {
         boardPackageName,
       );
       const selectedBoard = { name: boardPackageName, version: newProjectData.board.version };
-      const reusableTemplate = isAilyBoardPackageName(boardPackageName)
-        ? isCoderTemplate
-          ? findReusableCoderBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
-          : templateDirectory === 'template'
-            ? findReusableBlocklyBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
-            : undefined
+      const canReuseBoardPackage = isAilyBoardPackageName(boardPackageName);
+      const reusableCoderTemplate = canReuseBoardPackage && isCoderTemplate
+        ? findReusableCoderBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
+        : undefined;
+      const reusableBlocklyTemplate = canReuseBoardPackage && templateDirectory === 'template'
+        ? findReusableBlocklyBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
         : undefined;
 
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
-      if (!reusableTemplate) {
+      if (!reusableCoderTemplate && !reusableBlocklyTemplate) {
         stage = 'board-install';
         const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
         // 创建前还没有 package.json，用向导选定的 devmode 决定板包仓库。
@@ -1799,27 +1802,28 @@ export class ProjectService {
 
       stage = 'board-template';
       check();
-      const creationTemplate = reusableTemplate ?? (isCoderTemplate
-        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
-        : undefined);
-      const templatePath = creationTemplate?.templatePath
+      const coderTemplate = isCoderTemplate
+        ? reusableCoderTemplate ?? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
+        : undefined;
+      const blocklyTemplatePath = reusableBlocklyTemplate?.templatePath
         ?? window['path'].join(boardPackagePath, templateDirectory);
-      if (!window['fs'].existsSync(templatePath)) {
-        throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
+      const requiredTemplatePath = coderTemplate?.packagePath ?? blocklyTemplatePath;
+      if (!window['fs'].existsSync(requiredTemplatePath)) {
+        throw new Error(coderTemplate
+          ? `Coder 板卡模板缺少 package.json: ${requiredTemplatePath}`
+          : `板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${requiredTemplatePath}`);
       }
       stage = 'project-files';
       check();
       let coderEntry: string | undefined;
-      if (isCoderTemplate) {
+      if (coderTemplate) {
         window['fs'].mkdirSync(projectPath);
         copiedProjectPath = projectPath;
         authority?.markCreated(projectPath);
-        coderEntry = copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
-          useDefaultSource: creationTemplate?.useDefaultSource === true,
-        });
+        coderEntry = copyCoderArduinoTemplate(coderTemplate, projectPath, window['path'], window['fs']);
       } else {
         // 复制 Blockly 模板文件到项目目录
-        this.importProjectDirectory(templatePath, projectPath);
+        this.importProjectDirectory(blocklyTemplatePath, projectPath);
         // Only this completed copy proves a new partial project belongs to
         // this request. An existing target or a copy that throws does not.
         copiedProjectPath = projectPath;
@@ -5613,7 +5617,6 @@ export class ProjectService {
     let reloadPromise: Promise<void> | null = null;
     let nativePublication: Record<string, unknown> | undefined;
     try {
-      const separator = this.platformService.getPlatformSeparator();
       if (!this.currentProjectPath) {
         throw new Error('当前项目路径未设置');
       }
@@ -5685,12 +5688,11 @@ export class ProjectService {
       );
       // Coder switching follows the same compatibility rule as project creation:
       // prefer template_arduino (including its legacy spelling), but fall back to
-      // the shared template when the board package has no Coder-specific template.
+      // the shared template when the Coder-specific manifest is missing.
       // Existing sketch sources are intentionally preserved during a board switch.
-      const templatePath = isAilyCode
-        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path']).templatePath
-        : window['path'].join(boardPackagePath, 'template');
-      const templatePackageJsonPath = `${templatePath}${separator}package.json`;
+      const templatePackageJsonPath = isAilyCode
+        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path']).packagePath
+        : window['path'].join(boardPackagePath, 'template', 'package.json');
 
       if (window['fs'].existsSync(templatePackageJsonPath)) {
         // 读取模板package.json

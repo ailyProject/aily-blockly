@@ -16,7 +16,7 @@ const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDE
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { rootAttachment, storageExecutor } = require('./project-file-lock-owner');
 const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
-const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
+const { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
     prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution,
     sharedBuildExecutionVersion, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
@@ -799,6 +799,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
     copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
     copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
+    copyCoderTemplateDirectory: (src, dest) => copyCoderTemplateDirectory(src, dest),
     copyRecoveryProjectDirectory: (src, dest) => copyRecoveryProjectDirectory(src, dest),
     importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
     blocklyCoderConversionVersion: 2,

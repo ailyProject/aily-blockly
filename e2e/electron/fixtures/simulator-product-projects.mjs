@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { applyCoderProjectPackageConfig, copyCoderArduinoTemplate } from '../../../src/app/services/domains/project/coder/coder-project-template.ts';
+import {
+  applyCoderProjectPackageConfig, copyCoderArduinoTemplate, resolveCoderProjectCreationTemplate,
+} from '../../../src/app/services/domains/project/coder/coder-project-template.ts';
+
+const { copyCoderTemplateDirectory } = createRequire(import.meta.url)('../../../electron/project-file-copy.js');
 
 // Editor lifecycle fixtures, not compiler/SDK fixtures. Copy actual board
 // definitions, templates and libraries; omit compiler installation metadata so
@@ -14,14 +18,23 @@ export async function installSimulatorProjects({ hostRoot, appRoot, index, outpu
   const projects = ['xiao_esp32s3', 'arduino_uno'].map((board, number) => {
     const source = path.join(boards, board);
     const root = path.join(output, 'projects', `lifecycle-${number}`);
-    const template = path.join(source, developmentMode === 'coder' ? 'template_arduino' : 'template');
-    const manifest = JSON.parse(fs.readFileSync(path.join(template, 'package.json')));
-    if (developmentMode === 'coder') {
-      const entry = copyCoderArduinoTemplate(template, root, { join: path.join, isExists: fs.existsSync }, {
-        mkdirSync: fs.mkdirSync, readFileSync: fs.readFileSync, writeFileSync: fs.writeFileSync, copySync: fs.copyFileSync,
+    const template = path.join(source, 'template');
+    const pathApi = { join: path.join, isExists: fs.existsSync };
+    const coderTemplate = developmentMode === 'coder' ? resolveCoderProjectCreationTemplate(source, pathApi) : undefined;
+    const manifest = JSON.parse(fs.readFileSync(coderTemplate?.packagePath ?? path.join(template, 'package.json')));
+    if (coderTemplate) {
+      fs.mkdirSync(root, { recursive: true });
+      const entry = copyCoderArduinoTemplate(coderTemplate, root, pathApi, {
+        copyCoderTemplateDirectory,
+        lstatSync: name => {
+          const stat = fs.lstatSync(name);
+          return { _isDirectory: stat.isDirectory(), _isFile: stat.isFile() };
+        },
+        mkdirSync: fs.mkdirSync, readFileSync: name => fs.readFileSync(name, 'utf8'),
+        writeFileSync: fs.writeFileSync, copySync: fs.copyFileSync,
       });
       const boardPackage = `@aily-project/board-${board}`;
-      applyCoderProjectPackageConfig(manifest, boardPackage, manifest.dependencies[boardPackage], { entry });
+      applyCoderProjectPackageConfig(manifest, boardPackage, manifest.dependencies[boardPackage], { entry, arduinoSketch: manifest.arduinoSketch });
     } else fs.cpSync(template, root, { recursive: true });
     manifest.name = `simulator-lifecycle-${number}`;
     manifest.devmode = 'arduino';

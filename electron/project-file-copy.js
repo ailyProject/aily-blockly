@@ -21,7 +21,7 @@ function isProjectWriterTransient(relativePath) {
 }
 
 /** Filtered directory copy, not a point-in-time snapshot or a multi-file transaction. */
-function copyProjectDirectory(source, destination, excludeRuntimeDirectories = true, recoveryCopy = false) {
+function copyProjectContents(source, destination, { excludeRuntimeDirectories, recoveryCopy, coderTemplate }) {
   if (!path.isAbsolute(source) || !path.isAbsolute(destination)) throw new Error('Project copy requires absolute paths.');
   const root = fs.realpathSync(source);
   const target = fs.realpathSync(destination); // Caller must reserve the destination first.
@@ -38,7 +38,9 @@ function copyProjectDirectory(source, destination, excludeRuntimeDirectories = t
       const relativePath = path.relative(root, file);
       const name = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
       const normalized = name.split(path.sep).join('/');
+      if (coderTemplate && ['package.json', 'project.aci'].includes(normalized)) return false;
       if (relativePath && fs.lstatSync(file).isSymbolicLink()) {
+        if (coderTemplate) throw new Error('Coder project templates must not contain symbolic links.');
         if (['package.json', 'project.abi', 'project.abs', 'project.abs.map.json', '.aily'].includes(normalized)) {
           throw new Error('Project metadata must not be copied through a symbolic link.');
         }
@@ -52,6 +54,15 @@ function copyProjectDirectory(source, destination, excludeRuntimeDirectories = t
           && fs.statSync(file, { throwIfNoEntry: false })?.isDirectory());
     } });
   for (const relative of libraryLinks) copyProjectLibraryLink(root, target, relative);
+}
+
+function copyProjectDirectory(source, destination, excludeRuntimeDirectories = true, recoveryCopy = false) {
+  return copyProjectContents(source, destination, { excludeRuntimeDirectories, recoveryCopy });
+}
+
+function copyCoderTemplateDirectory(source, destination) {
+  if (!fs.lstatSync(source).isDirectory()) throw new Error('Coder project templates must be regular directories.');
+  return copyProjectContents(source, destination, { excludeRuntimeDirectories: true, coderTemplate: true });
 }
 
 /** A recovery target starts without another physical workspace's ABS authority. */
@@ -108,4 +119,4 @@ function importProjectDirectory(source, destination, unwrapArchive = false) {
   return destination;
 }
 
-module.exports = { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory, isProjectWriterTransient };
+module.exports = { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory, isProjectWriterTransient };
