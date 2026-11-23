@@ -259,7 +259,14 @@ async function reconcileDraft(
         if (preparedShape.extraState === undefined) delete block.extraState;
         else block.extraState = preparedShape.extraState;
       }
-      prepareBlock?.(block, previous, candidate, contracts);
+      try {
+        prepareBlock?.(block, previous, candidate, contracts);
+      } catch (error) {
+        if (!(error instanceof AbsSyncError) || error.code !== 'ABS_CUSTOM_FUNCTION_INVALID') throw error;
+        const name = node.fields['FUNC_NAME']?.value;
+        throw new AbsSyncError(error.code, `${node.type}(${JSON.stringify(name)}): ${error.message}`,
+          node.fieldRanges['FUNC_NAME'] ?? node, [id], { blockType: node.type, field: 'FUNC_NAME' });
+      }
       // Host preparation cannot erase an explicitly requested restriction.
       // Missing annotations retain the trusted baseline's opaque attributes.
       Object.assign(block, node.protection);

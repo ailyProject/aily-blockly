@@ -70,7 +70,7 @@ function candidateAnalysis(baseline: ReturnType<typeof baselineAnalysis>, source
         }));
       } else {
         matches = await matchAbsIdentities(baseline.source, source, original, edited, sourceEdits,
-          identity.requiresIdentity, baseline.fingerprint, sourceEditOrigin);
+          identity.requiresIdentity, baseline.fingerprint, sourceEditOrigin, identity.fixedCallTarget);
         matched = { key, originals: new Map(entries.flatMap(({ node, path }) => {
           const original = matches.get(node);
           return original ? [[path, original]] : [];
