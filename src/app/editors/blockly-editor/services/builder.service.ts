@@ -1143,15 +1143,19 @@ export class _BuilderService {
     await this.waitForPreprocessDrain(projectPath, isCancelled, 'upload');
   }
 
-  async canReuseBuildForUpload(isCancelled: () => boolean, captureExecution?: (execution: ResolvedBuildExecution) => void): Promise<boolean> {
+  async canReuseBuildForUpload(
+    isCancelled: () => boolean,
+    captureExecution?: (execution: ResolvedBuildExecution) => void,
+    backend?: 'local' | 'cloud',
+  ): Promise<boolean> {
     const projectPath = this.projectService.currentProjectPath;
     const settingsKey = this.compileSettingsKey();
-    const cloud = this.isCloudBuild();
+    const cloud = backend ? backend === 'cloud' : this.isCloudBuild();
     const isolatedLocal = !cloud && this.isolatedBuilds();
     const verifyLocal = window['builder']?.canReuseBlocklyUpload;
     // An isolated local receipt also covers successful builds from a prior
     // editor instance. Always compare its inputs with the active canvas.
-    if (!isolatedLocal && (!this.passed || projectPath !== this.currentProjectPath)) return false;
+    if (!cloud && !isolatedLocal && (!this.passed || projectPath !== this.currentProjectPath)) return false;
     if (!cloud && !verifyLocal) return false;
     const boardModule = await this.projectService.getBoardModule();
     if (isCancelled() || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
@@ -1166,7 +1170,7 @@ export class _BuilderService {
       let reusable: boolean;
       let execution: ResolvedBuildExecution | null = null;
       if (cloud) {
-        if (prepared.code !== this.lastCode || !window['cloudBuild']?.reusable) return false;
+        if (!window['cloudBuild']?.reusable) return false;
         if (!prepared.sourceWorkspace) return false;
         // 与实际编译使用相同的工作区快照；遗漏该字段会让主进程始终判定固件已过期。
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
@@ -1178,7 +1182,7 @@ export class _BuilderService {
         reusable = (isolatedLocal || prepared.code === this.lastCode) && verifyLocal(config);
       }
       assertCurrent();
-      if (settingsKey !== this.compileSettingsKey() || cloud !== this.isCloudBuild()) {
+      if (settingsKey !== this.compileSettingsKey() || (!backend && cloud !== this.isCloudBuild())) {
         throw new Error('Upload build configuration changed.');
       }
       if (execution) captureExecution?.(execution);

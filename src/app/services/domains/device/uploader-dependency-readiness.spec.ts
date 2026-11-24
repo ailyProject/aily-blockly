@@ -25,7 +25,7 @@ describe('Coder upload dependency preflight', () => {
     uploader.npmService.assertCoderDependenciesReady.and.returnValue(new Promise<void>(resolve => { checked = resolve; }));
     const pending = uploader.upload();
     flushMicrotasks();
-    expect(uploader.npmService.assertCoderDependenciesReady).toHaveBeenCalledOnceWith('/project');
+    expect(uploader.npmService.assertCoderDependenciesReady).toHaveBeenCalledOnceWith('/project', 'firmware-upload');
     expect(uploader.projectService.beginCoderOperation).not.toHaveBeenCalled();
     expect(uploader.uploadCurrentProject).not.toHaveBeenCalled();
     checked();

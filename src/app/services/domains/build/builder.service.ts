@@ -291,12 +291,13 @@ export class BuilderService {
   }
 
   /** 本地与云端复用都先把当前编辑器内容保存到磁盘。 */
-  async canReuseBuildForUpload(projectPath: string, isCancelled: () => boolean = () => false): Promise<boolean> {
+  async canReuseBuildForUpload(projectPath: string, isCancelled: () => boolean = () => false, backend?: 'cloud' | 'local'): Promise<boolean> {
     if (!this.projectService.isAilyCodeProject(projectPath)) return false;
-    const cloud = this.projectService.isCloudBuild(projectPath);
+    const selectedCloud = this.projectService.isCloudBuild(projectPath);
+    const cloud = backend ? backend === 'cloud' : selectedCloud;
     if (!cloud && !window['builder']?.canReuseCoderUpload) return false;
     await this.persistActiveCoderProjectBeforeBuild(projectPath);
-    if (isCancelled() || this.projectService.isCloudBuild(projectPath) !== cloud) return false;
+    if (isCancelled() || this.projectService.isCloudBuild(projectPath) !== selectedCloud) return false;
     return cloud ? this.compileService.canReuseCloudBuildForUpload(projectPath, isCancelled)
       : this.compileService.canReuseLocalCoderBuildForUpload(projectPath, isCancelled);
   }

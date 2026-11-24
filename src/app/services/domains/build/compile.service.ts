@@ -330,7 +330,7 @@ export class CompileService {
     try {
       if (!cloud) await this.npmService.ensureLocalCompilerDependencies(root);
       if (this.configService.isCoderProduct()) {
-        await this.npmService.assertCoderDependenciesReady(root, cloud);
+        await this.npmService.assertCoderDependenciesReady(root, cloud ? 'cloud-build' : 'build');
       }
     } catch (error) {
       if (cloud && canOfferLocalBuildFallback(error)) throw error;
@@ -685,7 +685,7 @@ export class CompileService {
     const projectCurrent = this.projectService.captureCurrentProjectGuard();
     const settingsKey = this.configService.getCompileSettingsKey();
     const isCurrent = () => !isCancelled() && projectCurrent() && this.projectService.currentProjectPath === root
-      && this.configService.getCompileSettingsKey() === settingsKey && !this.projectService.isCloudBuild(root);
+      && this.configService.getCompileSettingsKey() === settingsKey;
     try {
       if (!verify || !isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
       const boardModule = await this.resolveBoardModule(root);
@@ -697,16 +697,13 @@ export class CompileService {
 
   /** 调用方先保存编辑器，主进程再核对整个项目和库内容；一致时直接复用已校验的云产物。 */
   async canReuseCloudBuildForUpload(root: string, isCancelled: () => boolean = () => false): Promise<boolean> {
-    if (!this.projectService.isCloudBuild(root) || !window['cloudBuild']?.reusable) return false;
+    if (!window['cloudBuild']?.reusable) return false;
     const settingsKey = this.configService.getCompileSettingsKey();
-    const isCurrent = () => !isCancelled() && this.projectService.currentProjectPath === root
-      && this.configService.getCompileSettingsKey() === settingsKey && this.projectService.isCloudBuild(root);
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const isCurrent = () => !isCancelled() && projectCurrent() && this.projectService.currentProjectPath === root
+      && this.configService.getCompileSettingsKey() === settingsKey;
     try {
       if (!isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
-      await this.npmService.assertCoderDependenciesReady(root);
-      if (!isCurrent()) return false;
-      await this.npmService.ensureCloudLibrarySources(root);
-      if (!isCurrent()) return false;
       const manifestPath = this.electronService.pathJoin(root, 'package.json');
       const assertManifest = captureBuildRequestGuard(() => {
         const { codeHash: _hash, buildInfo: _info, ...manifest } = JSON.parse(window['fs'].readFileSync(manifestPath, 'utf8'));

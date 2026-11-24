@@ -199,7 +199,7 @@ export class UploaderService {
     };
     assertUploadCurrent();
     if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.upload(projectPath, port);
-    if (this.configService.isCoderProduct()) await this.npmService.assertCoderDependenciesReady(projectPath);
+    if (this.configService.isCoderProduct()) await this.npmService.assertCoderDependenciesReady(projectPath, 'firmware-upload');
     assertUploadCurrent();
     const finish = this.projectService.beginCoderOperation('upload');
     try {

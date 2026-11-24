@@ -289,6 +289,37 @@ describe('Coder build metadata', () => {
     if (stage === 'local-error') expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toBeUndefined();
   });
 
+  it('checks the local Coder firmware under cloud preference without contacting the cloud target', async () => {
+    const compiler: any = createCompiler(() => 0);
+    project.isCloudBuild = () => true;
+    Object.assign(compiler.configService, { getCompileBackend: () => 'cloud', getCompileSettingsKey: () => 'cloud' });
+    const verify = window['builder'].canReuseCoderUpload = jasmine.createSpy('localReceipt').and.resolveTo(true);
+    expect(await compiler.canReuseLocalCoderBuildForUpload(root, () => false)).toBeTrue();
+    expect(verify).toHaveBeenCalledOnceWith({ currentProjectPath: root, boardModule: '@aily-project/board-test', appDataPath: '/app-data' });
+    expect(compiler.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+    verify.and.resolveTo(false);
+    expect(await compiler.canReuseLocalCoderBuildForUpload(root, () => false)).toBeFalse();
+  });
+
+  it('checks a cached Coder cloud firmware against current disk inputs under local preference', async () => {
+    const compiler: any = createCompiler(() => 0);
+    project.isCloudBuild = () => false;
+    const originalCloud = window['cloudBuild'];
+    const reusable = jasmine.createSpy('cloudReceipt').and.resolveTo(true);
+    window['cloudBuild'] = { reusable };
+    try {
+      expect(await compiler.canReuseCloudBuildForUpload(root)).toBeTrue();
+      expect(reusable).toHaveBeenCalledOnceWith({ config: jasmine.objectContaining({
+        currentProjectPath: root, code: files.get(root + '/sketch/src/main.cpp'), sourceCapture: { digest: 'captured' },
+      }) });
+      expect(compiler.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+      reusable.and.callFake(async () => { project.currentProjectPath = '/elsewhere'; return true; });
+      expect(await compiler.canReuseCloudBuildForUpload(root)).toBeFalse();
+    } finally {
+      window['cloudBuild'] = originalCloud;
+    }
+  });
+
   function createSwitchingCompiler(exitCode = 0) {
     files.set(`${root}/node_modules/@aily-project/board-test/package.json`, '{"name":"@aily-project/board-test","version":"1.0.0"}');
     files.set(`${root}/node_modules/@aily-project/board-test/board.json`, '{"name":"test"}');
@@ -353,7 +384,7 @@ describe('Coder build metadata', () => {
     expect(result.result.code).toBe('CLOUD_TARGET_UNAVAILABLE');
     expect(result.result.buildLog.requestId).toBe('cloud-target-lost');
     expect(cloudPreflight).toHaveBeenCalledBefore(assertReady);
-    expect(assertReady).toHaveBeenCalledOnceWith(root, true);
+    expect(assertReady).toHaveBeenCalledOnceWith(root, 'cloud-build');
     expect(recordCloudFailure).toHaveBeenCalledOnceWith(error, jasmine.any(Function));
     await expectAsync(recordCloudFailure.calls.mostRecent().args[1]()).toBeResolved();
     expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toEqual(jasmine.any(Function));
