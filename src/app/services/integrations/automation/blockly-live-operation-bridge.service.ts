@@ -2243,7 +2243,9 @@ export class BlocklyLiveOperationBridgeService {
     const options: FirmwareUploadOptions | undefined = firmware ? { preparedFirmware: firmware }
       : reuseCloud ? { reuseCloudFirmware: true } : undefined;
     const current = options ? this.projectService.captureCurrentProjectGuard() : undefined;
-    if (firmware && (this.projectService.isCloudBuild() || window['builder']?.isolatedBuildExecutionVersion !== 1)) {
+    const preparedInCloudProject = !!firmware && this.projectService.isCloudBuild();
+    if (firmware && (window['builder']?.isolatedBuildExecutionVersion !== 1
+      || (preparedInCloudProject && !await window['builder']?.requiresIsolatedBuildRecovery?.(project)))) {
       throw Object.assign(new Error('Prepared firmware upload requires an isolated local Blockly build.'),
         { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
     }
@@ -2251,10 +2253,21 @@ export class BlocklyLiveOperationBridgeService {
       throw Object.assign(new Error('Cloud firmware reuse requires the active Blockly cloud build backend.'),
         { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
     }
-    if (firmware) requirePreparedBuildExecution(project, firmware);
+    if (firmware && !requirePreparedBuildExecution(project, firmware).isolatedRecovery && preparedInCloudProject) {
+      throw Object.assign(new Error('Prepared firmware belongs to a different build backend.'),
+        { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
+    }
     await this.projectService.ensureBlocklyLibraryRuntimeReady(project);
     const requestedPort = typeof params['port'] === 'string' ? params['port'].trim() : undefined;
+    let recoveryBackend: ReturnType<ProjectService['beginBuildBackendOperation']> | undefined;
     try {
+      if (preparedInCloudProject) {
+        if (!current?.() || !this.projectService.isCloudBuild()) {
+          throw Object.assign(new Error('The active Blockly project changed before upload.'), { code: 'BUILD_ARTIFACT_STALE' });
+        }
+        recoveryBackend = this.projectService.beginBuildBackendOperation(project);
+        recoveryBackend.useLocal();
+      }
       const { ports, selection } = await this.getSerialPortSelection(requestedPort);
       if (options) {
         const revision = await this.blocklyEditor.getProjectRevisionSnapshot();
@@ -2313,6 +2326,8 @@ export class BlocklyLiveOperationBridgeService {
         message: error?.text || error?.message || String(error),
         uploadResult: error?.result,
       };
+    } finally {
+      recoveryBackend?.release();
     }
   }
 

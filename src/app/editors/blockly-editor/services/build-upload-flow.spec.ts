@@ -70,6 +70,24 @@ describe('Blockly compile and upload handoff', () => {
     expect(window['builder'].canReuseBlocklyUpload).toHaveBeenCalledOnceWith(jasmine.objectContaining({ code: f.prepared.code }));
   });
 
+  it('reuses matching isolated recovery firmware while the old shared cache is protected', async () => {
+    const f = uploadFixture();
+    const backend = { local: false, useLocal() { this.local = true; }, release() {} };
+    Object.assign(f.project, { beginBuildBackendOperation: () => backend,
+      isCloudBuild: () => !backend.local, assertProjectDependencySession() {} });
+    f.builder.configService.getCompileBackend = () => 'cloud';
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, sharedBuildExecutionVersion: 1,
+      requiresIsolatedBuildRecovery: async () => true,
+      resolveBuildExecution: jasmine.createSpy('resolveBuildExecution').and.returnValue({
+        isolatedRecovery: true, buildPath: '/private/.build',
+      }) });
+
+    await f.run();
+    expect(f.events).toEqual(['upload']);
+    expect(window['builder'].resolveBuildExecution).toHaveBeenCalledWith('/project', jasmine.objectContaining({ code: f.prepared.code }));
+    expect(f.builder.build).not.toHaveBeenCalled();
+  });
+
   const firmware = {
     version: 1, executionId: '11111111-1111-4111-8111-111111111111',
     buildRequestId: 'prepared-build', inputDigest: 'a'.repeat(64), abiHash: 'sha256:' + 'b'.repeat(64),
@@ -93,10 +111,10 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.builder.build).not.toHaveBeenCalled();
   });
 
-  function exposePreparedExecution(buildInput = firmware) {
+  function exposePreparedExecution(buildInput = firmware, isolatedRecovery = false) {
     const inspect = jasmine.createSpy('inspectBuildExecution').and.returnValue({
       ...firmware, status: 'completed', current: true, buildInput,
-      result: { buildRequestId: firmware.buildRequestId, inputDigest: firmware.inputDigest, buildPath: '/private/.build' },
+      result: { buildRequestId: firmware.buildRequestId, inputDigest: firmware.inputDigest, buildPath: '/private/.build', isolatedRecovery },
     });
     Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, inspectBuildExecution: inspect });
     return inspect;
@@ -164,6 +182,23 @@ describe('Blockly compile and upload handoff', () => {
     f.upload.and.resolveTo({ state: 'warn' });
     expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
       .toEqual(jasmine.objectContaining({ ok: false, code: 'PREPARED_FIRMWARE_UPLOAD_UNCONFIRMED' }));
+  });
+
+  it('allows a prepared recovery firmware upload without changing the cloud preference', async () => {
+    const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+    const backend = { local: false, useLocal() { this.local = true; }, release() { this.local = false; } };
+    Object.assign(f.bridge.projectService, { isCloudBuild: () => !backend.local, beginBuildBackendOperation: () => backend });
+    window['builder'].requiresIsolatedBuildRecovery = async () => true;
+    await expectAsync(f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'PREPARED_FIRMWARE_UNAVAILABLE' }));
+    exposePreparedExecution(firmware, true);
+    f.upload.and.callFake(async () => {
+      expect(f.bridge.projectService.isCloudBuild()).toBeFalse();
+      return { state: 'done' };
+    });
+    expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toEqual(jasmine.objectContaining({ ok: true, preparedFirmware: firmware }));
+    expect(f.bridge.projectService.isCloudBuild()).toBeTrue();
   });
 
   it('reports prepared firmware support and the active project build backend', async () => {

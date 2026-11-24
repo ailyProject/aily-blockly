@@ -40,6 +40,8 @@ module.exports = {
   prepareBuildExecution: (config, workspace, operation) => runExecutionWorker({
     config, workspace, operation, shared: sharedBuildExecutionVersion === 1,
   }).then(value => value.config),
+  requiresIsolatedBuildRecovery: projectPath => sharedBuildExecutionVersion === 1
+    && runExecutionWorker({ action: 'check-isolated-recovery', projectPath, shared: true }).then(value => value.required),
   clearAcceptedSharedBuildCache: (projectPath, { preserveSketch } = {}) => runExecutionWorker({
     action: 'clear-shared-build-cache', projectPath, preserveSketch,
   }).then(value => {

@@ -436,6 +436,13 @@ export class _UploaderService {
           ? (execution: ResolvedBuildExecution) => { verifiedExecution = execution; } : undefined;
 
         assertContext();
+        if (cloud && !prepared && !this.projectService.isAilyCodeProject(projectPath)
+          && window['builder']?.resolveBuildExecution?.(projectPath)?.isolatedRecovery
+          && await window['builder']?.requiresIsolatedBuildRecovery?.(projectPath)) {
+          assertContext();
+          backendOperation.useLocal();
+          cloud = false;
+        }
         if (firmware || reuseCloud) {
           this._builderService.isUploading = true;
           if (!await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {
@@ -611,7 +618,8 @@ export class _UploaderService {
                 && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {
                 throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
               }
-              if (verifiedExecution?.layout === 'shared' && buildResult.buildInput?.executionId !== verifiedExecution.executionId) {
+              if ((verifiedExecution?.layout === 'shared' || verifiedExecution?.isolatedRecovery)
+                && buildResult.buildInput?.executionId !== verifiedExecution.executionId) {
                 throw new Error('BUILD_ARTIFACT_STALE: Another build replaced the requested firmware.');
               }
 

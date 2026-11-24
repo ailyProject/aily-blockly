@@ -429,5 +429,24 @@ function inspectBuildWorkspaceIdle(projectPath) {
     return { assertIdle, release: () => guard.close() };
 }
 
+function requiresIsolatedBuildRecovery(projectPath) {
+    if (!fs.lstatSync(path.join(projectPath, '.build', 'aily-workspace.lock'), { throwIfNoEntry: false })) return false;
+    const workspace = openWorkspace(projectPath);
+    let guard;
+    try {
+        guard = acquireNative(workspace);
+        const { record } = readOwner(workspace);
+        const bootId = getSystemBootId();
+        return !!bootId && isSystemBootId(record.bootId) && record.bootId.toLowerCase() === bootId
+            && record.nativeLeaseVersion === 1 && record.delegationVersion === 1
+            && record.delegated === true && record.released !== true
+            && (record.operation === 'compile' || record.operation === 'preprocess')
+            && !processAlive(record.pid);
+    } catch (error) {
+        if (!['ENOENT', 'BUILD_WORKSPACE_BUSY'].includes(error.code)) throw error;
+        return false;
+    } finally { guard?.close(); }
+}
+
 module.exports = { acquireBuildWorkspace, createBuildWorkspaceSupervisor, inspectBuildWorkspaceIdle, releaseManagedBuildWorkspace,
-    SUPERVISOR_ENV, OWNER_ENV, BUILDER_ENV };
+    requiresIsolatedBuildRecovery, SUPERVISOR_ENV, OWNER_ENV, BUILDER_ENV };

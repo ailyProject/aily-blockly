@@ -264,6 +264,21 @@ test('12 competing processes share kernel exclusion and cannot steal an active l
 const BOOT_A = `${process.platform}:11111111-1111-4111-8111-111111111111`;
 const BOOT_B = `${process.platform}:22222222-2222-4222-8222-222222222222`;
 
+test('isolated recovery recognizes only abandoned same-boot compile and preprocess owners', t => {
+  const f = fixture(t, 'compile', true);
+  const record = { ...JSON.parse(f.bytes), bootId: BOOT_A };
+  const current = patchedModule({}, BOOT_A), restarted = patchedModule({}, BOOT_B);
+  for (const operation of ['compile', 'preprocess', 'verify']) {
+    const bytes = JSON.stringify({ ...record, operation });
+    fs.writeFileSync(f.marker, bytes);
+    assert.equal(current.requiresIsolatedBuildRecovery(f.root), operation !== 'verify');
+    assert.equal(restarted.requiresIsolatedBuildRecovery(f.root), false);
+    assert.equal(fs.readFileSync(f.marker, 'utf8'), bytes);
+  }
+  fs.writeFileSync(f.marker, JSON.stringify({ ...record, pid: process.pid }));
+  assert.equal(current.requiresIsolatedBuildRecovery(f.root), false);
+});
+
 test('a legacy orphan is observed once and recovered only after a different kernel boot', t => {
   const f = fixture(t, 'compile', true), record = JSON.parse(f.bytes);
   delete record.bootId; delete record.delegationVersion; delete record.delegated;

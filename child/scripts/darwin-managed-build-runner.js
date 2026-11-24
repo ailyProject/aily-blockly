@@ -52,48 +52,116 @@ function groupExists(pid) {
 
 // A POSIX group is not a sandbox for custom recipes. Reject any still-visible
 // child that has moved to another group rather than claiming to have stopped it.
-function groupContainsDescendants() {
-    const result = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid='], {
+function inspectGroup() {
+    const result = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], {
         encoding: 'utf8', timeout: 1000, maxBuffer: 4 * 1024 * 1024,
     });
-    const descendants = new Map();
-    let ownGroup;
+    const processes = new Map();
+    const childrenByParent = new Map();
     for (const line of result.trim().split('\n')) {
-        const [pid, parent, group] = line.trim().split(/\s+/).map(Number);
-        if (![pid, parent, group].every(Number.isSafeInteger)) return false;
-        if (pid === process.pid) ownGroup = group;
-        const children = descendants.get(parent) ?? [];
-        children.push({ pid, group });
-        descendants.set(parent, children);
+        const entry = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+        if (!entry) throw new Error('Unrecognized macOS process snapshot.');
+        const [, pidValue, parentValue, groupValue, start] = entry;
+        const member = { pid: Number(pidValue), parent: Number(parentValue), group: Number(groupValue), start };
+        processes.set(member.pid, member);
+        const children = childrenByParent.get(member.parent) ?? [];
+        children.push(member);
+        childrenByParent.set(member.parent, children);
     }
-    if (ownGroup !== process.pid) return false;
-    const queue = [...(descendants.get(process.pid) ?? [])];
-    for (const child of queue) {
-        if (child.group !== ownGroup) return false;
-        queue.push(...(descendants.get(child.pid) ?? []));
+    if (processes.get(process.pid)?.group !== process.pid) throw new Error('Build process group is unavailable.');
+    const descendants = new Map();
+    const externalGroups = new Set();
+    const queue = [...(childrenByParent.get(process.pid) ?? [])];
+    for (const member of queue) {
+        if (descendants.has(member.pid)) throw new Error('Inconsistent macOS process snapshot.');
+        descendants.set(member.pid, member);
+        if (member.group !== process.pid) externalGroups.add(member.group);
+        queue.push(...(childrenByParent.get(member.pid) ?? []));
     }
-    return true;
+    return { descendants, externalGroups };
+}
+
+function recipeGroupOwner({ descendants }, group) {
+    const leader = descendants.get(group);
+    if (!leader || leader.group !== group) return null;
+    const parent = descendants.get(leader.parent);
+    return parent?.group === process.pid ? parent : null;
+}
+
+function isInstalledNinja(pid) {
+    const prefix = process.env.AILY_NPM_PREFIX;
+    if (!prefix || !path.isAbsolute(prefix)) return false;
+    const ninja = fs.realpathSync(path.join(prefix, 'lib', 'node_modules', '@aily-project', 'aily-builder', 'ninja', 'ninja'));
+    // macOS ps can report a supplied argv[0] as the command. Use the live
+    // process' executable text mapping to identify the installed executable.
+    const output = execFileSync('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-d', 'txt', '-F0pfn'], {
+        encoding: 'utf8', timeout: 500, maxBuffer: 256 * 1024,
+    });
+    const [processFields, firstMapping] = output.split('\n', 2);
+    return processFields === `p${pid}\0` && firstMapping === `ftxt\0n${ninja}\0`;
 }
 
 function groupKeeper() {
-    if (!process.connected || !groupContainsDescendants()) process.exit(1);
+    if (!process.connected || inspectGroup().externalGroups.size) process.exit(1);
     let child, terminating = false;
+    function terminate(code, owned) {
+        // The verified group leader force-stops its own group, never a saved group ID.
+        send(process, { type: 'group-ending', code, owned }, () => process.kill(0, 'SIGKILL'));
+    }
     function finish(code) {
         if (terminating) return;
         terminating = true;
         let owned = false;
-        try { owned = groupContainsDescendants(); }
+        try { owned = inspectGroup().externalGroups.size === 0; }
         catch { /* Unknown membership cannot authorize a durable receipt. */ }
-        // Only this still-live, verified group leader sends a destructive
-        // signal, and it sends it to its own group, never a saved group id.
-        send(process, { type: 'group-ending', code, owned }, () => process.kill(0, 'SIGKILL'));
+        terminate(code, owned);
     }
-    process.on('disconnect', () => {
-        if (terminating) process.kill(0, 'SIGKILL');
-        else finish(1);
-    });
+    function stop() {
+        if (terminating) return;
+        terminating = true;
+        try {
+            const original = inspectGroup();
+            const tracked = original.externalGroups;
+            if (!tracked.size) return terminate(1, true);
+            const ninja = recipeGroupOwner(original, tracked.values().next().value);
+            if (!ninja || [...tracked].some(group => recipeGroupOwner(original, group) !== ninja)
+                || !isInstalledNinja(ninja.pid)) return terminate(1, false);
+
+            function trackGroups(snapshot) {
+                const live = snapshot.descendants.get(ninja.pid);
+                if (live && (live.start !== ninja.start || live.parent !== ninja.parent || live.group !== process.pid)) return false;
+                for (const group of snapshot.externalGroups) {
+                    if (tracked.has(group)) continue;
+                    if (recipeGroupOwner(snapshot, group)?.pid !== ninja.pid) return false;
+                    tracked.add(group);
+                }
+                return true;
+            }
+
+            const current = inspectGroup();
+            if (!current.descendants.has(ninja.pid) || !trackGroups(current)) return terminate(1, false);
+
+            // Ninja creates one group per ordinary recipe. Let Ninja interrupt
+            // and reap its recipes while the original ancestry remains live.
+            // Stored group IDs are only observed with signal 0.
+            process.kill(ninja.pid, 'SIGINT');
+            const deadline = Date.now() + 1000;
+            function observeNinja() {
+                try {
+                    const snapshot = inspectGroup();
+                    if (!trackGroups(snapshot)) return terminate(1, false);
+                    if (!snapshot.descendants.has(ninja.pid) && !snapshot.externalGroups.size
+                        && [...tracked].every(group => !groupExists(group))) return terminate(1, true);
+                } catch { return terminate(1, false); }
+                if (Date.now() >= deadline) return terminate(1, false);
+                setTimeout(observeNinja, 25);
+            }
+            observeNinja();
+        } catch { terminate(1, false); }
+    }
+    process.on('disconnect', stop);
     process.on('message', message => {
-        if (message?.type === 'stop') return finish(1);
+        if (message?.type === 'stop') return stop();
         if (terminating) return;
         if (message?.type === 'input' && child) return send(child, message.payload);
         if (message?.type !== 'launch' || child) return;

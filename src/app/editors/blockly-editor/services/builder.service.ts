@@ -1574,6 +1574,9 @@ export class _BuilderService {
             || requestedProjectPath !== this.projectService.currentProjectPath) throw new Error('Build configuration changed or was cancelled.');
           cloudBuild = this.isCloudBuild();
         }
+        const recoveringBuild = (cloudBuild || preparation.clearCache)
+          && await window['builder']?.requiresIsolatedBuildRecovery?.(requestedProjectPath);
+        if (recoveringBuild && cloudBuild) await switchToLocal();
         if (cloudBuild && graphSemanticRevision !== undefined) throw new Error('Cloud compilation does not support simulator graph builds yet.');
         if (!cloudBuild && window['cloudBuild']?.invalidate) await window['cloudBuild'].invalidate({ projectPath: requestedProjectPath });
 
@@ -1601,7 +1604,7 @@ export class _BuilderService {
           await this.npmService.ensureLocalCompilerDependencies(requestedProjectPath);
           if (cancellation.signal.aborted || !projectCurrent()) throw new Error('Build configuration changed or was cancelled.');
         }
-        if (preparation.clearCache) {
+        if (preparation.clearCache && !recoveringBuild) {
           if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
           if (this.activeBuildRequestId !== requestId || requestedSettingsKey !== this.compileSettingsKey()) {
             throw Object.assign(new Error('BUILD_SOURCE_STALE: Build context changed before cache preparation.'), { buildOutcome: 'not-started' });
@@ -1745,6 +1748,11 @@ export class _BuilderService {
             }
             const executionConfig = await this.prepareExecution({ ...buildConfig, buildRequestId: requestId,
               executionRetryOf: previousLocalExecutionId }, sourceWorkspace);
+            if (executionConfig.execution?.isolatedRecovery) {
+              const message = '上一次编译的退出状态待确认，正在独立工作区重新编译。';
+              this.appendCompileLog(message, 'INFO');
+              requestLog.append(`${message}\n`);
+            }
             this.activeExecutionConfig = executionConfig;
             if (cancellation.signal.aborted && executionConfig.execution) window['builder'].cancelBuildExecution(executionConfig);
             await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
@@ -2650,7 +2658,9 @@ export class _BuilderService {
         assertCurrent();
         assertFresh();
         if (!code || !boardModule) throw rejectAdmission('无法捕获预处理所需的源码或板包。');
-        if (preparation.clearCache) await this.clearOwnedBuildCache(project, () => !signal.aborted && contextCurrent());
+        if (preparation.clearCache && !await window['builder']?.requiresIsolatedBuildRecovery?.(project)) {
+          await this.clearOwnedBuildCache(project, () => !signal.aborted && contextCurrent());
+        }
         assertCurrent();
         assertFresh();
         owner.config = await this.prepareExecution({
