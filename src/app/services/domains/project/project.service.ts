@@ -92,6 +92,7 @@ import {
   getCloudBuildSettings, selectCloudBoardProfile,
   type CloudBoardProfile,
 } from '../../../utils/cloud-build-settings.utils';
+import { isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
 
 interface ProjectPackageData {
   name: string;
@@ -4601,7 +4602,7 @@ export class ProjectService {
     guard();
     const boardPackage = await this.getBoardPackageJson(boardModule);
     guard();
-    if (!boardModule || !boardPackage?.version) throw new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'));
+    if (!boardModule || !boardPackage?.version) throw new Error(this.translate.instant('PROJECT.CLOUD_TARGET_LOOKUP_FAILED'));
     const boardVersion = boardPackage.version;
     const boardJsonPath = `${projectPath}/node_modules/${boardModule}/board.json`;
     const board = JSON.parse(this.electronService.readFile(boardJsonPath));
@@ -4622,7 +4623,7 @@ export class ProjectService {
     }
     const promise = (async () => {
       const gateway = window['cloudBuild'];
-      if (!gateway?.targets) throw new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'));
+      if (!gateway?.targets) throw new Error(this.translate.instant('PROJECT.CLOUD_BRIDGE_RESTART_REQUIRED'));
       const settings = getCloudBuildSettings(this.configService?.data);
       const lookup = async (): Promise<CloudBoardProfile | undefined> => {
         const targets = await gateway.targets({ ...settings, boardModule, boardVersion, boardDigest });
@@ -5156,9 +5157,12 @@ export class ProjectService {
           });
         }
       } catch (error) {
-        if ((error as any)?.code === 'PROJECT_DEPENDENCY_CANCELLED' || options.requireCloudTarget) throw error;
-        return [{ name: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', disabled: true,
-          tooltip: this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'), icon: 'fa-light fa-triangle-exclamation' },
+        const code = (error as { code?: string })?.code;
+        if (code === 'PROJECT_DEPENDENCY_CANCELLED' || options.requireCloudTarget) throw error;
+        const label = isUnsupportedCloudBuild(error) ? 'PROJECT.CLOUD_TARGET_UNAVAILABLE'
+          : code === 'CLOUD_BOARD_OFFLINE' ? 'PROJECT.CLOUD_BOARD_OFFLINE' : 'PROJECT.CLOUD_TARGET_LOOKUP_FAILED';
+        return [{ name: label, disabled: true,
+          tooltip: this.translate.instant(label), icon: 'fa-light fa-triangle-exclamation' },
           ...menu.map(item => ({ ...item, disabled: true }))];
       }
     }
@@ -5197,7 +5201,7 @@ export class ProjectService {
       }
       if (cloudProfile && !cloudProfile.metadata.boardOptions[menuItem.key]) {
         menuItem.disabled = true;
-        menuItem.tooltip = this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+        menuItem.tooltip = this.translate.instant('PROJECT.CLOUD_OPTION_UNAVAILABLE');
         continue;
       }
 

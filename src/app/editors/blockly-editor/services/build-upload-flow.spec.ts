@@ -864,19 +864,30 @@ describe('Blockly compile and upload handoff', () => {
     });
     const notices: any[] = [];
     f.service.noticeService.update = (notice: any) => notices.push(notice);
+    f.service.translate.instant = (key: string, params?: { message?: string }) =>
+      key === 'BLOCKLY_EDITOR.BUILD.MESSAGE_WITH_DURATION' ? params?.message : key;
     f.service.handleCompileError = _BuilderService.prototype['handleCompileError'];
-    f.service.npmService = { ensureLocalCompilerDependencies: async () => {}, prepareCompileBackend: async () => {
-      if (!local && stage === 'preflight') throw new Error('unsupported board');
+    const fault = stage === 'preflight'
+      ? Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' })
+      : Object.assign(new Error('This CI resource generator requires a supported exact SDK and citool version.'), { code: 'CI_RESOURCE_UNSUPPORTED' });
+    f.service.npmService = { ensureLocalCompilerDependencies: async () => {}, ensureCloudLibrarySources: async () => {}, prepareCompileBackend: async () => {
+      if (!local && stage === 'preflight') throw fault;
     }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
       expect(local).toBeTrue(); expect(owners).toBe(1);
     }) };
-    f.service.runCloudCompilation = jasmine.createSpy('cloud').and.rejectWith(new Error('gateway offline'));
+    f.service.runCloudCompilation = jasmine.createSpy('cloud').and.rejectWith(fault);
     const { result } = await f.start();
-    expect((await result).state).toBe('error');
+    const completed = await result;
+    expect(completed).toEqual(jasmine.objectContaining({ state: 'error', code: fault.code, text: 'PROJECT.CLOUD_TARGET_UNAVAILABLE' }));
+    expect(completed.fullStdErr).toContain(fault.message);
+    expect(f.service.runCloudCompilation).toHaveBeenCalledTimes(stage === 'cloud-execution' ? 1 : 0);
     expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
     expect(f.service.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
     expect(owners).toBe(0);
-    const retry = notices.find(n => n.state === 'error').onRetryLocally;
+    const notice = notices.find(n => n.state === 'error');
+    expect(notice.text).toContain('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+    expect(notice.detail).toContain(fault.message);
+    const retry = notice.onRetryLocally;
     expect(retry).toEqual(jasmine.any(Function));
     const pending = retry(); await retry();
     for (let n = 0; n < 100 && !f.service.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
@@ -1030,8 +1041,11 @@ describe('Blockly compile and upload handoff', () => {
       if (['board-support', 'target-profile', 'target-unavailable', 'cloud-run'].includes(stage)) expect(guard).not.toThrow();
       else if (stage === 'changed') expect(guard).toThrowError(/canvas changed/);
       else expect(guard).toBeUndefined();
-      if (stage === 'sdk-unsupported') expect(completed.code).toBe('CI_RESOURCE_UNSUPPORTED');
-      if (stage === 'target-unavailable') expect(completed.code).toBe('CLOUD_TARGET_UNAVAILABLE');
+      if (stage === 'sdk-unsupported' || stage === 'target-unavailable') {
+        expect(completed.code).toBe(stage === 'sdk-unsupported' ? 'CI_RESOURCE_UNSUPPORTED' : 'CLOUD_TARGET_UNAVAILABLE');
+        expect(completed.text).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+        expect(completed.fullStdErr).toContain(stage === 'sdk-unsupported' ? 'Unsupported SDK' : 'No matching cloud target');
+      } else expect(completed.text).toBe(offline.message);
       expect(operation.release).toHaveBeenCalledTimes(1);
       expect(f.service.configService.getCompileBackend()).toBe('cloud');
     });
@@ -1111,7 +1125,9 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.metrics.record.calls.allArgs()).toEqual(['cancel', 'unsupported', 'outage'].includes(ending)
       ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
     if (ending === 'unsupported') {
-      expect(completed.text).toContain('Board no longer supports cloud builds');
+      expect(completed.code).toBe('CLOUD_BOARD_UNSUPPORTED');
+      expect(completed.text).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+      expect(completed.fullStdErr).toContain('Board no longer supports cloud builds');
       expect(launches).toBe(1);
       expect(operation.local).toBeFalse();
       expect(f.service.localSwitchAction).toBeUndefined();

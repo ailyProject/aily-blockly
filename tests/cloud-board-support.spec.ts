@@ -12,6 +12,7 @@ describe('board cloud support and local fallback', () => {
     files = new Map([
       ['/project/package.json', JSON.stringify({ dependencies: { [boardModule]: '3.2.1' } })],
       [`/project/node_modules/${boardModule}/package.json`, JSON.stringify({ name: boardModule, version: '3.2.1', boardDependencies: { '@aily-project/sdk-test': '1.0.0' } })],
+      [`/project/node_modules/${boardModule}/board.json`, JSON.stringify({ name: 'Test board' })],
     ]);
     window['path'] = { join: (...parts: string[]) => parts.join('/'), getAppDataPath: () => '/app', isExists: () => false };
     window['fs'] = { existsSync: (file: string) => files.has(file), readFileSync: (file: string) => files.get(file) };
@@ -98,6 +99,48 @@ describe('board cloud support and local fallback', () => {
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
   });
 
+  for (const scenario of [
+    { code: 'CLOUD_TARGET_UNAVAILABLE', label: 'PROJECT.CLOUD_TARGET_UNAVAILABLE' },
+    { code: 'GATEWAY_TIMEOUT', label: 'PROJECT.CLOUD_TARGET_LOOKUP_FAILED' },
+    { code: 'AUTH_TOKEN_INVALID', label: 'PROJECT.CLOUD_TARGET_LOOKUP_FAILED' },
+    { code: 'CLOUD_BOARD_OFFLINE', label: 'PROJECT.CLOUD_BOARD_OFFLINE' },
+  ]) it(`shows the appropriate board-menu status for ${scenario.code}`, async () => {
+    project.currentBoardMenuConfig = [{ name: 'CPU frequency', key: 'CPUFreq', children: [{ name: 'Default', data: 'default' }] }];
+    project.setPackageJson = jasmine.createSpy('setPackageJson');
+    project.syncBoardPinConfig = jasmine.createSpy('syncBoardPinConfig');
+    const targets = window['cloudBuild'].targets = jasmine.createSpy('targets');
+    if (scenario.code === 'CLOUD_TARGET_UNAVAILABLE') targets.and.resolveTo({ profiles: [] });
+    else targets.and.rejectWith(Object.assign(new Error('Original cloud diagnostic'), { code: scenario.code }));
+
+    const menu = await project.getBoardConfigMenu({ persistDefaults: true });
+    expect(menu).toEqual([
+      jasmine.objectContaining({ name: scenario.label, tooltip: scenario.label, disabled: true }),
+      jasmine.objectContaining({ key: 'CPUFreq', disabled: true }),
+    ]);
+    expect(project.setPackageJson).not.toHaveBeenCalled();
+    expect(project.syncBoardPinConfig).not.toHaveBeenCalled();
+    await expectAsync(project.getBoardConfigMenu({ requireCloudTarget: true }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: scenario.code }));
+  });
+
+  it('disables only the missing option when the cloud board profile is available', async () => {
+    project.currentBoardMenuConfig = [{ name: 'CPU frequency', key: 'CPUFreq', children: [{ name: 'Default', data: 'default' }] }];
+    window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(async identity => ({ profiles: [{
+      ...identity, runner: 'aily-builder', fqbn: 'aily:arduino:test', profileDigest: 'a'.repeat(64),
+      capabilities: { compile: true }, metadata: { defaults: {}, boardOptions: {
+        UploadSpeed: { label: 'Upload speed', default: '115200', values: { '115200': { label: '115200' } } },
+      } },
+    }] }));
+
+    const menu = await project.getBoardConfigMenu();
+
+    expect(menu).toEqual([
+      jasmine.objectContaining({ key: 'CPUFreq', disabled: true, tooltip: 'PROJECT.CLOUD_OPTION_UNAVAILABLE' }),
+      jasmine.objectContaining({ key: 'UploadSpeed', children: [jasmine.objectContaining({ data: '115200' })] }),
+    ]);
+    expect(menu[1].disabled).toBeFalsy();
+  });
+
   for (const oldHost of ['preload', 'main-process']) it(`requests a full restart for an outdated ${oldHost} without treating it as an unsupported board`, async () => {
     if (oldHost === 'preload') delete window['cloudBuild'].boardSupport;
     else window['cloudBuild'].boardSupport.and.rejectWith({ code: 'CLOUD_BUILD_ERROR', message: 'Unknown cloud build operation.' });
@@ -173,14 +216,19 @@ describe('board cloud support and local fallback', () => {
 
   it('blocks disk compilation for an unsupported cloud board until local is selected', async () => {
     const runCompile = jasmine.createSpy('runCompile').and.resolveTo({ success: true, result: { state: 'done' } });
+    const handleFailNotice = jasmine.createSpy('handleFailNotice');
     const compile = Object.assign(Object.create(CompileService.prototype), {
       metrics: { record: () => {} },
-      configService: config, projectService: project, npmService: npm,
-      application: { startBuild: () => true, finishBuild() {}, updateNotice: () => {} }, handleFailNotice() {}, runCompile, t: (key: string) => key,
+      configService: config, projectService: project, npmService: npm, translate: project.translate,
+      application: { startBuild: () => true, finishBuild() {}, updateNotice: () => {} }, handleFailNotice, runCompile, t: (key: string) => key,
     });
     const blocked = await compile.runCompileFromDisk();
     expect(blocked.success).toBeFalse();
-    expect(blocked.result.text).toContain('PROJECT.CLOUD_BOARD_UNSUPPORTED');
+    const detail = `PROJECT.CLOUD_BOARD_UNSUPPORTED (${boardModule}@3.2.1) CLOUD_BUILD.SWITCH_TO_LOCAL`;
+    expect(blocked.result).toEqual(jasmine.objectContaining({
+      code: 'CLOUD_BOARD_UNSUPPORTED', text: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', fullStdErr: detail,
+    }));
+    expect(handleFailNotice).toHaveBeenCalledOnceWith('/project', 'FAILED_TITLE', 'PROJECT.CLOUD_TARGET_UNAVAILABLE', detail, jasmine.any(Function));
     expect(runCompile).not.toHaveBeenCalled();
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
     config.data.compile.backend = 'local';
@@ -236,7 +284,7 @@ describe('board cloud support and local fallback', () => {
     window['cloudBuild'].invalidate = invalidate;
     const blockly = Object.assign(Object.create(_BuilderService.prototype), {
       metrics: { record: () => {} },
-      configService: config, projectService: project, npmService: npm,
+      configService: config, projectService: project, npmService: npm, translate: project.translate,
       workflowService: { startBuild: () => true, finishBuild: () => {} },
       clearProgressTimer: () => {}, handleCompileError: () => {},
       t: (key: string) => key,

@@ -37,13 +37,33 @@ const KNOWN_CLOUD_WORKER_FAILURES = new Set([
   'CLOUD_BOARD_OFFLINE', 'NODE_CAPACITY_EXCEEDED', 'node_restarted', 'offer_lost', 'task_missing', 'worker_stopped',
 ]);
 const GATEWAY_SERVER_FAILURES = new Set(['GATEWAY_HTTP_ERROR', 'GATEWAY_ERROR', 'internal_error', 'gateway_closing']);
+const UNSUPPORTED_CLOUD_BUILD_CODES = new Set([
+  'CLOUD_BOARD_NOT_ENABLED', 'CLOUD_BOARD_UNSUPPORTED', 'CLOUD_TARGET_UNAVAILABLE',
+  'CLOUD_COMPILE_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED',
+]);
+
+type CloudBuildFault = { code?: string; httpStatus?: number; cleanupConfirmed?: boolean; remoteCleanupConfirmed?: boolean };
+
+export function isUnsupportedCloudBuild(error: unknown): boolean {
+  return UNSUPPORTED_CLOUD_BUILD_CODES.has((error as CloudBuildFault | undefined)?.code ?? '');
+}
+
+function cloudBuildCleanupAllowsRetry(fault: CloudBuildFault | undefined): boolean {
+  return fault?.cleanupConfirmed !== false && fault?.remoteCleanupConfirmed !== false;
+}
 
 export function canOfferLocalBuildFallback(error: unknown): boolean {
-  const fault = error as { code?: string; httpStatus?: number; cleanupConfirmed?: boolean; remoteCleanupConfirmed?: boolean } | undefined;
-  if (!fault?.code || fault.cleanupConfirmed === false || fault.remoteCleanupConfirmed === false) return false;
+  const fault = error as CloudBuildFault | undefined;
+  if (!fault?.code || !cloudBuildCleanupAllowsRetry(fault)) return false;
   return fault.code === 'CLOUD_TARGET_UNAVAILABLE'
     || KNOWN_CLOUD_WORKER_FAILURES.has(fault.code)
     || (GATEWAY_SERVER_FAILURES.has(fault.code) && typeof fault.httpStatus === 'number' && [500, 502, 503, 504].includes(fault.httpStatus));
+}
+
+/** Desktop retries also cover unsupported configurations before the local compiler starts. */
+export function canRetryCloudBuildLocally(error: unknown): boolean {
+  return canOfferLocalBuildFallback(error) || (isUnsupportedCloudBuild(error)
+    && cloudBuildCleanupAllowsRetry(error as CloudBuildFault));
 }
 
 interface CloudBuildRunResult {

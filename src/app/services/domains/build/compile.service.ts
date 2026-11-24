@@ -22,7 +22,7 @@ import { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogRefere
 import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, buildSourceStale, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
-import { canOfferLocalBuildFallback, runCloudBuildWithProgress, cloudBuildProgressPresentation, type BuildLocalFallbackControl, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { canRetryCloudBuildLocally, isUnsupportedCloudBuild, runCloudBuildWithProgress, cloudBuildProgressPresentation, type BuildLocalFallbackControl, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 import {
@@ -281,18 +281,22 @@ export class CompileService {
       // Keep the root captured at submission, even if the UI switches projects.
       return await this.runCompile(root, options, context, { projectPath, projectSessionId });
     } catch (error: any) {
-      const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
+      const unsupported = !this.cancelled && context.cloud && isUnsupportedCloudBuild(error);
+      const detail = error?.fullStdErr || error?.message || String(error);
+      const text = this.cancelled ? this.t('CANCELLED_TITLE') : unsupported
+        ? this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE') : error?.message || String(error);
       if (this.cancelled && !options.preprocessOnly) {
         await Promise.all([this.stopPending, this.localSwitchPending]);
         await this.coderBuildInfo.saveBuildInfo(root, '', 'cancelled', (Date.now() - attemptStartedAt) / 1000);
       }
       this.application.finishBuild(false, text);
       if (this.cancelled) this.updateCancelledNotice(text);
-      else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
+      else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail, context.cloud ? context.retryLocally : undefined);
       if (!this.cancelled && context.cloud && context.assertCloudFailureSource) {
         options.localFallback?.recordCloudFailure?.(error, context.assertCloudFailureSource);
       }
       return { success: false, result: this.cancelled ? buildCancelledResult(text) : { state: 'error', text,
+        ...(unsupported ? { fullStdErr: detail } : {}),
         ...(typeof error?.code === 'string' ? { code: error.code } : {}),
         ...(error?.buildOutcome ? { buildOutcome: error.buildOutcome } : {}) } };
     } finally {
@@ -333,7 +337,7 @@ export class CompileService {
         await this.npmService.assertCoderDependenciesReady(root, cloud ? 'cloud-build' : 'build');
       }
     } catch (error) {
-      if (cloud && canOfferLocalBuildFallback(error)) throw error;
+      if (cloud && canRetryCloudBuildLocally(error)) throw error;
       const text = error instanceof Error ? error.message : String(error);
       this.message.warning(text);
       return { success: false, result: { state: 'warn', text, buildOutcome: 'not-started' } };
@@ -395,9 +399,8 @@ export class CompileService {
         const action = options.preprocessOnly ? 'analysis' : 'compile';
         if (context.cloud && cloudProfile?.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
         if (context.cloud && cloudProfile?.capabilities?.[action] !== true) {
-          throw new Error(options.preprocessOnly
-            ? '当前云编译节点不支持预处理/代码分析，请选择支持 analysis 的节点。'
-            : '当前云编译节点不支持 compile。');
+          if (options.preprocessOnly) throw new Error('当前云编译节点不支持预处理/代码分析，请选择支持 analysis 的节点。');
+          throw Object.assign(new Error('This cloud target does not support compilation.'), { code: 'CLOUD_COMPILE_UNSUPPORTED' });
         }
       }
       let ailyBuilderPath = context.cloud ? undefined : window['path'].getAilyBuilderPath();
@@ -613,7 +616,8 @@ export class CompileService {
             assertCloudContext(); assertManifest();
             if (cloudProfile?.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
             if (cloudProfile?.capabilities?.[options.preprocessOnly ? 'analysis' : 'compile'] !== true) {
-              throw new Error('This cloud target does not support the requested build action.');
+              if (options.preprocessOnly) throw new Error('This cloud target does not support the requested build action.');
+              throw Object.assign(new Error('This cloud target does not support compilation.'), { code: 'CLOUD_COMPILE_UNSUPPORTED' });
             }
           } else {
             if (!context.backendOperation!.local) context.backendOperation!.useLocal();
@@ -622,7 +626,9 @@ export class CompileService {
         }
       }
     } catch (e: any) {
-      const msg = e?.message || String(e);
+      const rawMessage = e?.message || String(e);
+      const msg = context.cloud && isUnsupportedCloudBuild(e)
+        ? this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE') : rawMessage;
       buildStatus = 'failed';
       finishReason = this.cancelled ? 'Cancelled' : msg;
       if (this.cancelled) {
@@ -632,7 +638,7 @@ export class CompileService {
         return { success: false, result: buildCancelledResult(text) };
       }
       this.message.error(msg);
-      const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : msg;
+      const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : rawMessage;
       this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
       if (context.cloud && context.assertCloudFailureSource) options.localFallback?.recordCloudFailure?.(e, context.assertCloudFailureSource);
       return { success: false, result: { state: 'error', text: msg, fullStdErr: detail,

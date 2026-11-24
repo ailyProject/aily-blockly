@@ -22,7 +22,7 @@ import {
 
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
-import { canOfferLocalBuildFallback } from '../../../utils/cloud-build-progress.utils';
+import { canRetryCloudBuildLocally, isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
 import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 import { findCompilerIntegrityProblem } from '../../../utils/compiler-integrity.utils';
@@ -816,7 +816,7 @@ export class NpmService {
       const latestBlock = blocked();
       if (latestBlock) throw reject(latestBlock);
       // The active compile owns the cloud failure and its local retry action.
-      if (purpose === 'cloud-build' && this.isCloudBuild(projectPath) && canOfferLocalBuildFallback(error)) throw error;
+      if (purpose === 'cloud-build' && this.isCloudBuild(projectPath) && canRetryCloudBuildLocally(error)) throw error;
       this.prjService.setProjectDependencyResult(session, false);
       const message = this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
       this.application.updateNotice({
@@ -916,11 +916,14 @@ export class NpmService {
       } catch (error) {
         this.assertDependencySession(session);
         const retryLocally = options?.onRetryLocally;
-        const offerLocal = retryLocally && this.isCloudBuild(projectPath) && canOfferLocalBuildFallback(error);
+        const cloud = this.isCloudBuild(projectPath);
+        const unsupported = cloud && isUnsupportedCloudBuild(error);
+        const offerLocal = retryLocally && cloud && canRetryCloudBuildLocally(error);
         const detail = this.getNpmErrorMessage(error);
         this.application.updateNotice({
-          title: this.translate.instant(offerLocal ? 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE' : 'NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
-          text: offerLocal ? detail : this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+          title: this.translate.instant(offerLocal || unsupported ? 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE' : 'NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+          text: unsupported ? this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE')
+            : offerLocal ? detail : this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
           detail,
           state: 'error', onRetry: onRetryInstall,
           ...(offerLocal ? {

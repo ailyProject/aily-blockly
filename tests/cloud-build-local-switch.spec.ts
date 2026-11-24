@@ -1,6 +1,6 @@
 import { Subject } from 'rxjs';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../src/app/utils/local-build-switch.utils';
-import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, canRetryCloudBuildLocally, CLOUD_BUILD_LOCAL_REQUESTED, isUnsupportedCloudBuild, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
 import { ProjectService } from '../src/app/services/domains/project/project.service';
 
 function deferred<T>() {
@@ -33,6 +33,26 @@ describe('cloud build failures eligible for local fallback', () => {
       { code: 'COMPILE_ERROR' },
       new Error('HTTP 503'),
     ]) expect(canOfferLocalBuildFallback(fault)).withContext(JSON.stringify(fault)).toBeFalse();
+  });
+
+  it('offers a manual local action for unsupported targets without widening AI fallback', () => {
+    for (const code of ['CLOUD_BOARD_NOT_ENABLED', 'CLOUD_BOARD_UNSUPPORTED', 'CLOUD_TARGET_UNAVAILABLE', 'CLOUD_COMPILE_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED']) {
+      expect(isUnsupportedCloudBuild({ code })).withContext(code).toBeTrue();
+      expect(canRetryCloudBuildLocally({ code })).withContext(code).toBeTrue();
+      expect(canOfferLocalBuildFallback({ code })).withContext(code).toBe(code === 'CLOUD_TARGET_UNAVAILABLE');
+      expect(canRetryCloudBuildLocally({ code, cleanupConfirmed: false })).withContext(code).toBeFalse();
+      expect(canRetryCloudBuildLocally({ code, remoteCleanupConfirmed: false })).withContext(code).toBeFalse();
+    }
+  });
+
+  it('keeps temporary failures out of the unsupported summary', () => {
+    const offline = { code: 'CLOUD_BOARD_OFFLINE' };
+    expect(isUnsupportedCloudBuild(offline)).toBeFalse();
+    expect(canRetryCloudBuildLocally(offline)).toBeTrue();
+    for (const code of ['GATEWAY_TIMEOUT', 'AUTH_TOKEN_INVALID', 'CI_RESOURCE_PREPARATION_FAILED', 'PROTOCOL_UNSUPPORTED', 'BUILD_SOURCE_STALE', 'TARGET_UNSUPPORTED']) {
+      expect(isUnsupportedCloudBuild({ code })).withContext(code).toBeFalse();
+      expect(canRetryCloudBuildLocally({ code })).withContext(code).toBeFalse();
+    }
   });
 });
 

@@ -39,7 +39,7 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
-import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED, isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 import {
@@ -1342,6 +1342,7 @@ export class _BuilderService {
 
 
   private buildErrorText(error: any): string {
+    if (isUnsupportedCloudBuild(error)) return this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE');
     const detail = String(error?.message || error?.text || error);
     if (error?.code !== 'BUILD_SOURCE_STALE' && !detail.startsWith('BUILD_SOURCE_STALE:')) return detail;
     const key = `SOURCE_STALE.${error?.sourceReason || 'unknown'}`;
@@ -2305,7 +2306,9 @@ export class _BuilderService {
     await checkCurrent();
     const profile = await this.projectService.getCloudBoardProfile({ refresh: true });
     await checkCurrent();
-    if (profile.capabilities?.compile !== true) throw new Error('This cloud target does not support compilation.');
+    if (profile.capabilities?.compile !== true) {
+      throw Object.assign(new Error('This cloud target does not support compilation.'), { code: 'CLOUD_COMPILE_UNSUPPORTED' });
+    }
     const settings = this.configService.getCloudBuildSettings();
     let switchToLocal: (() => boolean) | undefined;
     const requestLocal = () => {
