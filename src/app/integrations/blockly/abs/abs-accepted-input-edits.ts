@@ -38,10 +38,12 @@ export function acceptedInputEditProof(baseline: AbsProjection, input: string,
         .filter(name => node.inputs[name] !== null || !knownInputs.has(name)).sort();
       if (!next || old.parent !== next.parent || old.slot !== next.slot
         || !samePreservedAbsCall(old.node, next.node, id ? baseline.contracts.fields[id] : undefined)
-        || absJson({ protection: old.node.protection ?? null, comment: old.node.comment ?? null, shadowFields: old.node.shadowFields ?? null,
+        || absJson({ protection: old.node.protection ?? {}, comment: old.node.comment ?? null, shadowFields: old.node.shadowFields ?? null,
           inputs: occupiedInputs(old.node), next: !!old.node.next,
           omitted: Object.entries(old.node.fields).filter(([, token]) => token.omitted).map(([name]) => name).sort() })
-          !== absJson({ protection: next.node.protection ?? null, comment: next.node.comment ?? null, shadowFields: next.node.shadowFields ?? null,
+          // Reconciliation inherits omitted restrictions from the retained block.
+          !== absJson({ protection: { ...old.node.protection, ...next.node.protection },
+            comment: next.node.comment ?? null, shadowFields: next.node.shadowFields ?? null,
             inputs: occupiedInputs(next.node), next: !!next.node.next,
             omitted: Object.entries(next.node.fields).filter(([, token]) => token.omitted).map(([name]) => name).sort() })) return undefined;
     }

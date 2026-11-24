@@ -239,7 +239,7 @@ describe('v2 actual workspace generation coordinator', () => {
   });
 
   const retainWorkingCandidate = async (capture: any, source: string,
-    authored?: { source: string; edits: Array<{ start: number; end: number; text: string }> }) => {
+    authored?: { source: string; edits: Array<{ start: number; end: number; text: string }>; replacements?: string[] }) => {
     const put = async (text: string) => {
       const hash = (await hashAbsText(text)).slice(7); disk.set(`history-objects/${hash}`, text);
       return { hash, bytes: new TextEncoder().encode(text).byteLength };
@@ -251,8 +251,13 @@ describe('v2 actual workspace generation coordinator', () => {
       project: { logicalId: (await hashAbsText(capture.attachment.root)).slice(7), attachment: capture.attachment },
       scope: capture.scope, base, source: base.abs, derivation: { kind: 'capture' }, intent: { anchorId: 'user-entry-1' } };
     let origin = { version: 1 as const, id, revisionHash: (await put(absJson(original))).hash };
-    if (authored && authored.source !== capture.abs) origin = { ...origin, revisionHash: (await put(absJson({ ...original, parent: origin,
-      source: await put(authored.source), derivation: { kind: 'replace', mapping: 'unresolved' } }))).hash };
+    if (authored && (authored.source !== capture.abs || authored.replacements?.length)) {
+      for (const replacement of [...(authored.replacements ?? []), authored.source]) {
+        const revision = absJson({ ...original, parent: origin, source: await put(replacement),
+          derivation: { kind: 'replace', mapping: 'unresolved' } });
+        origin = { ...origin, revisionHash: (await put(revision)).hash };
+      }
+    }
     const initial = authored?.source ?? capture.abs;
     const start = initial.indexOf('TEXT="before"');
     expect(start).toBeGreaterThanOrEqual(0);
@@ -5426,7 +5431,7 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(editor.workspace.getBlockById(established.id)?.saveExtraState()).toEqual({ hasElse: true });
       expect(gate.busy).toBeFalse();
     });
-    it('tracks deletions across accepted aliases and value shorthand without losing repeated block identities', async () => {
+    it('tracks deletions across accepted aliases, inherited protection and restored author source', async () => {
       const replay = enableNative(), type = 'abs_alias_owner';
       const definition = { type, message0: '%1', args0: [{ type: 'input_value', name: 'VALUE', check: 'Number' }] };
       const number = { type: 'math_number', message0: '%1', args0: [{ type: 'field_number', name: 'NUM', value: 0 }], output: 'Number' };
@@ -5449,12 +5454,17 @@ describe('v2 actual workspace generation coordinator', () => {
       const initial = await service.captureWorkingCandidate(), state = initial.abs.indexOf('\n# @project-state:');
       const alias = 'abs_alias_owner(number(7))', literal = 'abs_alias_owner(7)';
       const text = `\n${alias}\n${literal}\n`;
-      const author = initial.abs.slice(0, state) + text;
+      const protection = / @protect:\{[^}]+\}/.exec(initial.abs)!;
+      const afterProtection = initial.abs.slice(protection.index + protection[0].length, state) + text;
+      const author = initial.abs.slice(0, protection.index) + afterProtection;
       await apply(author, await retainWorkingCandidate(initial, author, {
-        source: initial.abs, edits: [{ start: state, end: initial.abs.length, text }],
+        source: initial.abs, edits: [{ start: protection.index, end: initial.abs.length, text: afterProtection }],
       }));
       const capture = await service.captureWorkingCandidate();
       const committed = (await store.inspectCommittedAncestor(capture.published!.generation))!.projection;
+      expect(committed.abs).toContain(protection[0]);
+      expect(author).not.toContain('@protect:');
+      expect(acceptedInputEditProof(committed, author.replace(literal, `${literal} @protect:{"deletable":false}`))).toBeUndefined();
       const byPath = committed.map.nodes.filter(node => node.blockType === type);
       expect(byPath.length).toBe(2);
       const retained = byPath[1].blockId;
@@ -5478,9 +5488,14 @@ describe('v2 actual workspace generation coordinator', () => {
       const fixed = await readWorkingCandidate(ref, port, scope, deletion.source, store);
       expect(fixed.sourceEditOrigin?.source).toBe(author);
       expect(fixed.sourceEdits).toBeDefined();
-      await apply(deletion.source, ref);
+      const restoredRef = await retainWorkingCandidate(capture, deletion.source, { ...deletion.trace, replacements: [deletion.source] });
+      const restored = await readWorkingCandidate(restoredRef, port, scope, deletion.source, store);
+      expect(restored.sourceEditOrigin).toEqual(fixed.sourceEditOrigin);
+      expect(restored.sourceEdits).toEqual(fixed.sourceEdits);
+      await apply(deletion.source, restoredRef);
       expect(editor.workspace.getBlockById(byPath[0].blockId)).toBeNull();
       expect(editor.workspace.getBlockById(retained)?.getInputTargetBlock('VALUE')?.id).toBe(child);
+      expect(roots().isDeletable()).toBeFalse();
       expect(disk.get('project.abs')).toBe(deletion.source); expect(gate.busy).toBeFalse();
     });
     it('S3 source continuation rejects uncommitted or noncandidate input and corrupted accepted author hashes', async () => {

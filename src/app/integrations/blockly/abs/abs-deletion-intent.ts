@@ -20,5 +20,5 @@ export function assertAbsDeletionIntent(baseline: AbsProjection, candidate: stri
     'The candidate omits existing program calls without a verified source edit. The current program was retained.',
     undefined, omitted.slice(0, 16), { reason: 'unproven-program-omission', received: omitted.length,
       ...(omitted.length > 16 ? { truncated: true } : {}),
-      hint: 'Preserve the complete candidate and continue by editing the original tracked project.abs. Unmentioned program sections are not an append or an authorized deletion. Normal tracked deletions are accepted after exact replay. Do not reload, fork, change generation or ask the user to switch projects to resolve this candidate error.' });
+      hint: 'Reapplying this candidate cannot recover deletion proof. Use edit on the exact tracked pre-edit project.abs and preserve other draft changes and host state. If that source is unavailable, keep the draft and report the blocker.' });
 }

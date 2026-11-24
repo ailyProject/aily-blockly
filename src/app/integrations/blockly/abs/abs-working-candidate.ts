@@ -155,11 +155,22 @@ export async function readWorkingCandidate(ref: WorkingCandidateRef, port: AbsSy
       if (!index) { if (body !== baseAbs) fail('Candidate capture source differs from its frozen base.'); }
       else if (item.derivation?.kind === 'fork') { if (body !== previous) fail('Fork source differs from its original revision.'); }
       else if (item.derivation?.kind === 'replace' && item.derivation.mapping === 'unresolved') {
-        const bridge = exact ? readonlyStateReplacement(previous, body, allowedStates)
-          ?? (previous === baseAbs && body === stateOrigin?.acceptedInput ? proveAcceptedInput(baseline, body) : undefined) : undefined;
-        if (Array.isArray(bridge)) { composeCandidateSplices(previous, [bridge], body); batches.push(bridge); }
-        else if (bridge && !sourceEditOrigin && !batches.length && stateOrigin?.samePublishedIdentities) sourceEditOrigin = bridge;
-        else if (body !== previous) exact = false;
+        if (body === previous) continue;
+        const stateEdit = exact ? readonlyStateReplacement(previous, body, allowedStates) : undefined;
+        if (stateEdit) { composeCandidateSplices(previous, [stateEdit], body); batches.push(stateEdit); }
+        else {
+          // A replacement can discard an untracked draft by restoring an exact
+          // trusted source. No edit from the discarded prefix can carry intent.
+          const restored = body === baseAbs ? []
+            : body === stateOrigin?.acceptedInput && stateOrigin.samePublishedIdentities ? proveAcceptedInput(baseline, body) : undefined;
+          exact = restored !== undefined;
+          batches.length = 0;
+          sourceEditOrigin = Array.isArray(restored) ? undefined : restored;
+          if (Array.isArray(restored) && restored.length) {
+            composeCandidateSplices(baseAbs, [restored], body);
+            batches.push(restored);
+          }
+        }
       }
       else {
         if (item.derivation?.kind !== 'splices') return fail('Invalid candidate ancestry derivation.');
