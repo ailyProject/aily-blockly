@@ -65,3 +65,41 @@ test('the native boundary preserves real compiler results and protocol rejection
   const rejected = { ok: false, code: 'BUILD_RECEIPT_CONFLICT', buildOutcome: 'not-started' };
   assert.deepEqual(await invoke(rejected, 'project_build', params), rejected);
 });
+
+test('explicit preprocessing stays pending until the original foreground task settles', async () => {
+  const load = (filename, globals = {}) => {
+    const file = fs.readFileSync(path.join(__dirname, '../..', filename), 'utf8');
+    const compiled = ts.transpileModule(file, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+    const exports = {};
+    vm.runInNewContext(compiled, { exports, setTimeout, clearTimeout, require: () => ({ isBuildCancelled: () => false }), ...globals });
+    return exports;
+  };
+  const { ProjectBuildReceipts, readNativeBuildReceipt } = load('src/app/services/integrations/automation/project-build-receipts.ts', {
+    window: { builder: { inspectBuildExecution: (_project, buildRequestId) => ({ version: 1, buildRequestId,
+      operation: 'preprocess', status: 'completed', buildHistory: { operation: 'preprocess' } }) } },
+  });
+  const { runProjectBuild } = load('src/app/integrations/blockly/project-build-operation.ts');
+  const project = 'D:/isolated', requestId = 'explicit-request';
+  const request = { version: 1, requestId };
+  let finish;
+  const builder = { build: (_target, options) => {
+    assert.equal(options.requestId, requestId);
+    assert.equal(options.preprocessOnly, true);
+    assert.equal(options.expectedProjectPath, project);
+    return new Promise(resolve => { finish = resolve; });
+  } };
+  const receipts = new ProjectBuildReceipts();
+  const start = await receipts.start(project, request, 'preprocess', async () => {
+    const result = await runProjectBuild(builder, { preprocessOnly: true, requestId }, project);
+    return { ok: !result.is_error, ...result.metadata.buildResult };
+  });
+  assert.equal(start.buildReceipt.state, 'running');
+  assert.equal((await receipts.status(project, request)).buildReceipt.state, 'running');
+  finish({ buildHistory: { operation: 'preprocess' } });
+  const settled = await receipts.status(project, { ...request, waitMs: 100 });
+  assert.equal(settled.buildReceipt.state, 'completed');
+  assert.equal(settled.result.buildHistory.operation, 'preprocess');
+  const recovered = readNativeBuildReceipt(project, requestId);
+  assert.equal(recovered.result.buildExecutionKind, 'preprocessing');
+  assert.equal(recovered.result.buildInput, undefined);
+});

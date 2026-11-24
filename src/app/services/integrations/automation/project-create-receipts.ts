@@ -1,3 +1,5 @@
+import type { ProjectStorageAttachment } from '../../shared/project-sync-storage-bridge';
+
 const MAX_DEADLINE_MS = 310_000;
 const RETENTION_MS = 600_000;
 const MAX_RECEIPTS = 512;
@@ -16,19 +18,23 @@ export interface ProjectCreateGuard {
   assertCurrent(): void;
   markCreated(project: string): void;
   beginHandoff(): void;
+  recordActivation?(): Promise<boolean>;
   markActivated(): void;
 }
 
 type CreateResult = Record<string, any> & { ok: boolean };
+type RecordCreateActivation = (project: string, attachment: ProjectStorageAttachment) => Promise<boolean>;
 type State = 'pending' | 'completed' | 'failed' | 'cancelled' | 'unknown';
 
 interface Entry {
   request: ProjectCreateRequest;
   abort: AbortController;
   createdProject?: string;
+  createdAttachment?: ProjectStorageAttachment;
   operationKey?: string;
   handingOff: boolean;
   activationCommitted: boolean;
+  activationRetained?: boolean;
   result?: CreateResult;
   state: State;
 }
@@ -50,8 +56,23 @@ const cancelled = () => Object.assign(new Error('The original project creation e
 export class ProjectCreateReceipts {
   private readonly entries = new Map<string, Entry>();
 
+  constructor(private readonly captureAttachment?: (project: string) => ProjectStorageAttachment | undefined) {}
+
   observe(request: ProjectCreateRequest) {
     return this.view(request, this.exact(request));
+  }
+
+  isActivationCurrent(request: ProjectCreateRequest, active: string, sameProject: (a: string, b: string) => boolean): boolean {
+    const entry = this.exact(request);
+    if (!entry?.activationCommitted || !entry.createdProject || !sameProject(active, entry.createdProject)) return false;
+    if (!this.captureAttachment) return true; // Legacy preload has no physical identity observation.
+    const original = entry.createdAttachment;
+    if (!original) return false;
+    try {
+      const current = this.captureAttachment(entry.createdProject);
+      return !!current && current.version === original.version && sameProject(current.root, original.root)
+        && (['dev', 'ino', 'birthtimeNs'] as const).every(key => current.identity[key] === original.identity[key]);
+    } catch { return false; }
   }
 
   cancel(request: ProjectCreateRequest) {
@@ -65,7 +86,8 @@ export class ProjectCreateReceipts {
     return this.view(request, entry);
   }
 
-  async run(request: ProjectCreateRequest, operation: (guard: ProjectCreateGuard) => Promise<CreateResult>, operationKey?: string) {
+  async run(request: ProjectCreateRequest, operation: (guard: ProjectCreateGuard) => Promise<CreateResult>, operationKey?: string,
+    recordActivation?: RecordCreateActivation) {
     const existing = this.exact(request);
     if (this.entries.has(request.requestId)) {
       return existing?.operationKey === undefined || existing.operationKey === operationKey
@@ -84,8 +106,20 @@ export class ProjectCreateReceipts {
           throw cancelled();
         }
       },
-      markCreated: project => { entry.createdProject = project; },
+      markCreated: project => {
+        if (entry.createdProject !== undefined) return;
+        entry.createdProject = project;
+        try { entry.createdAttachment = this.captureAttachment?.(project); }
+        catch { /* Keep the fact of creation even if its physical attachment is unavailable. */ }
+      },
       beginHandoff: () => { guard.assertCurrent(); entry.handingOff = true; },
+      ...(recordActivation ? { recordActivation: async () => {
+        guard.assertCurrent();
+        entry.activationRetained = false;
+        if (entry.createdProject && entry.createdAttachment)
+          entry.activationRetained = await recordActivation(entry.createdProject, entry.createdAttachment);
+        return entry.activationRetained;
+      } } : {}),
       markActivated: () => { guard.assertCurrent(); entry.activationCommitted = true; },
     };
     let onAbort!: () => void;
@@ -133,8 +167,10 @@ export class ProjectCreateReceipts {
     const result = state === 'cancelled' ? { ok: false, code: 'PROJECT_CREATE_CANCELLED', message: cancelled().message }
       : entry?.result;
     return { ...(result ?? { ok: false }), createReceipt: { version: 1 as const,
-      requestId: request.requestId, rendererGeneration: request.rendererGeneration, state,
+      requestId: request.requestId, rendererGeneration: request.rendererGeneration, deadlineAt: request.deadlineAt, state,
       activationCommitted: entry?.activationCommitted ?? false,
+      ...(entry?.activationRetained !== undefined ? { activationRetained: entry.activationRetained } : {}),
+      ...(entry?.createdAttachment ? { createdAttachment: entry.createdAttachment } : {}),
       ...(entry?.createdProject ? { createdProject: entry.createdProject } : {}) } };
   }
 }

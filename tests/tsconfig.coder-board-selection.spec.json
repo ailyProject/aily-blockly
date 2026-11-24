@@ -6,6 +6,7 @@
     "../src/app/main-window/components/header/header-compile.spec.ts",
     "../src/app/services/domains/device/uploader-dependency-readiness.spec.ts",
     "../src/app/services/domains/build/coder-build-info.service.spec.ts",
+    "../src/app/services/domains/project/coder/coder-project-template.spec.ts",
     "../src/**/*.d.ts"
   ]
 }

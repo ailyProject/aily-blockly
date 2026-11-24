@@ -34,7 +34,10 @@ function localDependencyPath(appDataPath, requirement) {
       || requirement.name !== '@aily-project/tool-' + requirement.id || !exactVersion(requirement.version)) {
     throw fault('UPLOAD_UNSUPPORTED', 'Cloud upload requires an exact uploader tool package.');
   }
-  const packageFile = path.join(appDataPath, 'node_modules', ...requirement.name.split('/'), 'package.json');
+  const packageName = requirement.name.split('/');
+  const isolated = path.join(appDataPath, '.aily-cloud-tools', 'lib', 'node_modules', ...packageName, 'package.json');
+  const packageFile = process.platform !== 'win32' && fs.existsSync(isolated) ? isolated
+    : path.join(appDataPath, 'node_modules', ...packageName, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(regular(packageFile), 'utf8'));
   if (pkg.name !== requirement.name || pkg.version !== requirement.version) throw fault('UPLOADER_MISSING', `Install ${requirement.name}@${requirement.version} for local upload.`);
   const base = path.join(appDataPath, 'tools');

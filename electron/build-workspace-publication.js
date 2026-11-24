@@ -1,4 +1,6 @@
 const { childScriptPath } = require('./child-script-path');
+const { sharedBlocklyBuildEnabled } = require('./shared-blockly-build');
+const sharedBuildExecutionVersion = process.versions.electron && sharedBlocklyBuildEnabled() ? 1 : undefined;
 
 function publisher() {
   return require(childScriptPath('build-workspace-publication.js'));
@@ -33,12 +35,24 @@ function runExecutionWorker(request) {
 
 module.exports = {
   ISOLATED_BUILD_EXECUTION_VERSION: 1,
+  sharedBuildExecutionVersion,
   inspectBlocklyCompileProof: config => runExecutionWorker({ action: 'inspect-compile-proof', config }).then(value => value.proof),
-  prepareBuildExecution: (config, workspace, operation) => runExecutionWorker({ config, workspace, operation }).then(value => value.config),
+  prepareBuildExecution: (config, workspace, operation) => runExecutionWorker({
+    config, workspace, operation, shared: sharedBuildExecutionVersion === 1,
+  }).then(value => value.config),
+  clearAcceptedSharedBuildCache: (projectPath, { preserveSketch } = {}) => runExecutionWorker({
+    action: 'clear-shared-build-cache', projectPath, preserveSketch,
+  }).then(value => {
+    if (value.result?.cleared !== true) throw new Error('The current build worker did not confirm cache cleanup.');
+    return value.result;
+  }),
   abandonPreparedPreprocess: ({ currentProjectPath, execution, sourceCapture }) => runExecutionWorker({
     action: 'abandon-preprocess', config: { currentProjectPath, execution, sourceCapture },
   }).then(value => value.abandoned),
-  resolveBuildExecution: project => require(childScriptPath('build-execution-workspace.js')).resolveBuildExecution(project),
+  resolveBuildExecution: (project, liveConfig) => require(childScriptPath('build-execution-workspace.js')).resolveBuildExecution(project, liveConfig),
+  resolveBuildExecutionInWorker: projectPath => runExecutionWorker({
+    action: 'resolve-build-execution', projectPath,
+  }).then(value => value.execution),
   resolveBuildProjectPath: project => require(childScriptPath('build-execution-workspace.js')).resolveBuildProjectPath(project),
   inspectBuildExecution: (project, requestId) => require(childScriptPath('build-execution-workspace.js')).inspectBuildExecution(project, requestId),
   cancelBuildExecution: config => require(childScriptPath('build-execution-workspace.js')).cancelBuildExecution(config),

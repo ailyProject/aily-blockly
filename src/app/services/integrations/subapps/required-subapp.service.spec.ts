@@ -133,6 +133,22 @@ describe('RequiredSubappService', () => {
     expect(manager.reinstall).not.toHaveBeenCalled();
   });
 
+  it('uses explicit reinstall to finish an interrupted uninstall before restoring the required subapp', async () => {
+    const manager: any = {
+      state: { apps: [{ ...catalogEntry(false), uninstalling: true }] },
+      initialize: jasmine.createSpy('initialize').and.resolveTo(),
+      install: jasmine.createSpy('install').and.resolveTo(),
+      reinstall: jasmine.createSpy('reinstall').and.callFake(async () => {
+        manager.state.apps = [catalogEntry(true)];
+      }),
+    };
+    const service = new RequiredSubappService(manager);
+
+    await expectAsync(service.reinstall('aily-coder-editor')).toBeResolvedTo({ installedNow: true });
+    expect(manager.reinstall).toHaveBeenCalledOnceWith('aily-coder-editor', { forceClose: true });
+    expect(manager.install).not.toHaveBeenCalled();
+  });
+
   it('deduplicates concurrent retry and reinstall requests', async () => {
     let completeInstall!: () => void;
     const installResult = new Promise<void>((resolve) => {

@@ -10,7 +10,8 @@ describe('failed-load same-project operation receipts', () => {
     const files = new Map<string, string>();
     window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async (project, guard) => {
       const read = async key => { guard(); return files.get(`${project}/${key}`) ?? null; };
-      return { read, withLock: operation => new Promise((resolve, reject) => operation({ read,
+      return { attachment: { version: 1, root: project, identity: { dev: 'device', ino: project, birthtimeNs: '1' } },
+        read, withLock: operation => new Promise((resolve, reject) => operation({ read,
         replace: async (key, expected, text) => {
           const before = await read(key);
           if ((before === null ? null : `sha256:${await sha256Hex(before)}`) !== expected) return false;
@@ -33,13 +34,15 @@ describe('failed-load same-project operation receipts', () => {
     expect(first.receipt).toEqual({ version: 2, requestId: request, action: 'recover_project', candidateApplied: false });
     expect(await service.recoverFailedBlocklyProject(request, true)).toEqual(first);
     expect(await service.recoverFailedBlocklyProject(request)).toEqual(first);
-    expect(reload).toHaveBeenCalledOnceWith('/project'); expect(inspect).toHaveBeenCalledTimes(1);
+    expect(reload).toHaveBeenCalledOnceWith('/project', jasmine.any(Function)); expect(inspect).toHaveBeenCalledTimes(1);
   });
   it('does not replay an unknown request after restart or use an old receipt on another project', async () => {
     expect((await service.recoverFailedBlocklyProject('unknown-original-request', true)).code).toBe('PROJECT_RECOVERY_REQUEST_UNKNOWN');
     expect(reload).not.toHaveBeenCalled();
     await service.recoverFailedBlocklyProject(request); service.currentProjectPath = '/new-project';
-    expect((await service.recoverFailedBlocklyProject(request, true)).code).toBe('PROJECT_RECOVERY_CONTEXT_STALE');
+    const original = await service.recoverFailedBlocklyProject(request, true, undefined, undefined, '/project');
+    expect(original.code).toBe('PROJECT_RECOVERY_CONTEXT_STALE');
+    expect(original.originalRecovery.ok).toBeTrue();
     expect(reload).toHaveBeenCalledTimes(1);
   });
   it('retains a failed reload result for observation instead of creating another project', async () => {

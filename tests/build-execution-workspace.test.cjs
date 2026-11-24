@@ -4,12 +4,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { fork, spawn } = require('node:child_process');
+const { fork, spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
 const api = require('../child/scripts/build-execution-workspace');
 const upload = require('../child/scripts/blockly-upload-state');
 const { acquireBuildWorkspace } = require('../child/scripts/build-workspace-lease');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
+const { prepareCompileSource, captureBlocklyCompileSource } = require('../child/scripts/compile-source');
+const { holdWindowsFileWithoutDeleteSharing } = require('./fixtures/windows-file-sharing.cjs');
 
 function fixture(t) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-execution-')));
@@ -46,6 +48,346 @@ function complete(config) {
     lease?.release();
     api.finishBuildExecution(config, true);
 }
+
+function sharedFixture(t, cache = true) {
+    const oldSupervisor = process.env.AILY_BUILD_WORKSPACE_SUPERVISOR;
+    process.env.AILY_BUILD_WORKSPACE_SUPERVISOR = randomUUID();
+    t.after(() => {
+        if (oldSupervisor === undefined) delete process.env.AILY_BUILD_WORKSPACE_SUPERVISOR;
+        else process.env.AILY_BUILD_WORKSPACE_SUPERVISOR = oldSupervisor;
+    });
+    const f = fixture(t);
+    return { ...f, prepare: (id, workspace, operation = 'compile', explicitPreprocess = operation === 'preprocess') => api.prepareBuildExecution(
+        { ...f.config, buildRequestId: id, explicitPreprocess }, workspace, operation, { shared: true, cache }) };
+}
+
+for (const legacy of ['.aily/build-executions', '.aily/build-executions/requests'])
+test(`a regular file at ${legacy} cannot block a new shared build`, t => {
+    const f = sharedFixture(t);
+    f.put(legacy, 'old data');
+    const first = f.prepare('new-request');
+    assert.equal(first.currentProjectPath, f.root);
+    assert.throws(() => f.prepare('new-request'));
+    assert.equal(fs.readFileSync(path.join(f.root, legacy), 'utf8'), 'old data');
+});
+
+test('shared build uses project caches and captures the live canvas without changing saved inputs', async t => {
+    const f = sharedFixture(t, false), sha = data => createHash('sha256').update(data).digest('hex');
+    const savedA = JSON.stringify({ pages: [{ code: 'A' }] });
+    const liveB = JSON.stringify({ pages: [{ code: 'B' }] });
+    f.put('project.abi', savedA);
+    f.config.savedBuildComparison = { savedMatch: 'different', savedAbiHash: 'sha256:' + sha(savedA) };
+    const audio = 'audio/converted.mp3';
+    f.put(audio, 'current audio');
+    const manifest = fs.readFileSync(path.join(f.root, 'package.json'));
+    const captured = f.prepare('foreground-b', { revision: 4, runtimeRevision: 1, pageId: 'main', documentText: liveB });
+    assert.equal(captured.currentProjectPath, f.root);
+    assert.equal(captured.execution.layout, 'shared');
+    assert.equal(captured.execution.buildSnapshot.savedMatch, 'different');
+    assert.equal(captured.execution.buildSnapshot.documentSha256, sha(liveB));
+    assert.equal(api.validateSharedBuildLaunch(captured.configFilePath, f.root, 'compile').execution.id, captured.execution.id);
+    assert.equal(fs.existsSync(path.join(path.dirname(captured.configFilePath), 'project')), false);
+    assert.equal(api.inspectBuildExecution(f.root, 'foreground-b').current, false);
+
+    const sketch = await prepareCompileSource(captured);
+    const header = path.join(path.dirname(sketch), 'variables_new-deadbeef.h');
+    assert.equal(sketch, path.join(f.root, '.temp', 'sketch', 'sketch.ino'));
+    assert.equal(fs.readFileSync(sketch, 'utf8'), captured.code);
+    assert.equal(fs.readFileSync(header, 'utf8'), 'captured generated');
+    assert.equal(fs.existsSync(path.join(path.dirname(sketch), 'variables_old-deadbeef.h')), false);
+    assert.equal(fs.existsSync(path.join(f.root, 'src', 'variables_new-deadbeef.h')), false);
+    assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), savedA);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, 'package.json')), manifest);
+    api.retainSharedBuildSource(captured, captureBlocklyCompileSource(captured, sketch));
+    const historicalSketch = path.join(path.dirname(captured.configFilePath), 'sketch.ino');
+    assert.equal(fs.readFileSync(historicalSketch, 'utf8'), captured.code);
+    fs.writeFileSync(header, 'changed declaration');
+    assert.throws(() => captureBlocklyCompileSource(captured, sketch), { code: 'BUILD_SOURCE_STALE' });
+
+    complete(captured);
+    assert.equal(api.resolveBuildExecution(f.root).buildPath, path.join(f.root, '.build'));
+    assert.equal(api.resolveBuildExecution(f.root).executionId, captured.execution.id);
+    assert.equal(api.inspectBuildExecution(f.root, 'foreground-b').buildHistory.sourceSha256, sha(captured.code));
+    f.put('project.abi', liveB);
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+    assert.equal(api.canReuseBuildExecution({ ...f.config, code: 'void setup() { different(); }' }), false);
+    f.put(audio, 'new audio');
+    assert.equal(api.canReuseBuildExecution(f.config), false);
+    assert.throws(() => api.confirmSharedBuildInputs(captured), { code: 'BUILD_SOURCE_STALE' });
+    assert.equal(fs.readFileSync(historicalSketch, 'utf8'), captured.code);
+});
+
+test('a later shared preparation retires only its pending original without changing current firmware', t => {
+    const f = sharedFixture(t);
+    const completed = f.prepare('compiled');
+    complete(completed);
+    const first = f.prepare('early-foreground');
+    const background = f.prepare('background', undefined, 'preprocess');
+    assert.equal(api.validateSharedBuildLaunch(first.configFilePath, f.root, 'compile').execution.id, first.execution.id);
+    const next = f.prepare('late-foreground');
+    assert.equal(api.inspectBuildExecution(f.root, 'early-foreground').status, 'cancelled');
+    assert.throws(() => api.validateSharedBuildLaunch(first.configFilePath, f.root, 'compile'));
+    assert.equal(api.validateSharedBuildLaunch(background.configFilePath, f.root, 'preprocess').execution.id, background.execution.id);
+    assert.equal(api.resolveBuildExecution(f.root).executionId, completed.execution.id);
+    assert.equal(api.inspectBuildExecution(f.root, 'late-foreground').current, false);
+    complete(next);
+    assert.equal(fs.existsSync(completed.configFilePath), false);
+    assert.equal(api.inspectBuildExecution(f.root, 'compiled').status, 'completed');
+    assert.deepEqual(api.settleStoppedSharedBuild(f.root,
+        { id: completed.execution.id, buildRequestId: 'compiled' }).status, 'completed');
+    assert.equal(api.resolveBuildExecution(f.root).executionId, next.execution.id);
+});
+
+for (const operation of ['compile', 'preprocess']) {
+    test(`shared ${operation} refusal settles only the original unstarted request`, async t => {
+        const f = sharedFixture(t);
+        const completed = f.prepare('previous-success');
+        complete(completed);
+        const owner = acquireBuildWorkspace(f.root, 'verify');
+        const pending = f.prepare('lock-refused', undefined, operation);
+        const originalMarker = fs.readFileSync(path.join(f.root, '.build', 'aily-workspace.lock'));
+        try {
+            const child = spawn(process.execPath, [require.resolve('../child/scripts/' + operation), pending.configFilePath],
+                { windowsHide: true, stdio: 'ignore' });
+            assert.deepEqual(await once(child, 'close'), [1, null]);
+            const refused = api.inspectBuildExecution(f.root, pending.execution.buildRequestId);
+            assert.equal(refused.executionId, pending.execution.id);
+            assert.equal(refused.status, 'not-started');
+            assert.equal(refused.code, 'BUILD_WORKSPACE_BUSY');
+            assert.equal(refused.nextAction, 'terminal');
+            assert.deepEqual(fs.readFileSync(path.join(f.root, '.build', 'aily-workspace.lock')), originalMarker);
+            assert.equal(fs.existsSync(pending.configFilePath), false);
+            assert.equal(api.inspectBuildExecution(f.root, completed.execution.buildRequestId).status, 'completed');
+            assert.equal(api.resolveBuildExecution(f.root).executionId, completed.execution.id);
+            assert.throws(() => f.prepare('lock-refused', undefined, operation), { code: 'BUILD_EXECUTION_EXISTS' });
+            assert.equal(api.settleStoppedSharedBuild(f.root, pending.execution).status, 'not-started');
+        } finally { owner.release(); }
+        const next = f.prepare('next-request');
+        complete(next);
+        assert.equal(api.resolveBuildExecution(f.root).executionId, next.execution.id);
+        assert.equal(api.inspectBuildExecution(f.root, 'lock-refused').status, 'not-started');
+    });
+}
+
+test('shared advisory preprocessing reuses the verified recipe and keeps the foreground firmware current', async t => {
+    const f = sharedFixture(t);
+    const completed = f.prepare('completed-foreground');
+    complete(completed);
+    const recipe = path.join(f.root, '.temp', 'preprocess.json');
+    const before = fs.readFileSync(recipe, 'utf8');
+    const pending = f.prepare('advisory', undefined, 'preprocess', false);
+    const child = spawn(process.execPath, [require.resolve('../child/scripts/preprocess'), pending.configFilePath],
+        { stdio: ['ignore', 'ignore', 'pipe'] });
+    let errors = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => { errors += chunk; });
+    assert.deepEqual(await once(child, 'close'), [0, null], errors);
+    assert.equal(fs.readFileSync(recipe, 'utf8'), before);
+    assert.equal(api.resolveBuildExecution(f.root).executionId, completed.execution.id);
+    assert.equal(fs.existsSync(pending.configFilePath), false);
+    f.put('.temp/preprocess.json', JSON.stringify({ ...JSON.parse(before), differentCommand: true }));
+    assert.equal(api.resolveBuildExecution(f.root), null);
+    assert.throws(() => upload.readBlocklyUploadArtifacts(path.join(f.root, '.build')), /BUILD_ARTIFACT_STALE/);
+    assert.equal(api.inspectBuildExecution(f.root, 'completed-foreground').status, 'completed');
+});
+
+test('shared cache clear waits for the writer, removes legacy payloads and preserves original receipts', t => {
+    const f = sharedFixture(t);
+    const legacy = api.prepareBuildExecution({ ...f.config, buildRequestId: 'legacy' });
+    complete(legacy);
+    const oldSketch = path.join(legacy.currentProjectPath, '.temp', 'sketch');
+    fs.mkdirSync(oldSketch, { recursive: true });
+    fs.writeFileSync(path.join(oldSketch, 'sketch.ino'), legacy.code);
+    fs.writeFileSync(path.join(oldSketch, 'obsolete.h'), 'generated intermediate');
+    const current = f.prepare('latest');
+    complete(current);
+    const pending = f.prepare('queued');
+    f.put('.temp/sketch/keep.cpp', 'preprocess data');
+    f.put('.workspace-history/checkpoint.json', 'saved history');
+    const owner = acquireBuildWorkspace(f.root, 'verify');
+    try {
+        assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_WORKSPACE_BUSY' });
+        assert.equal(fs.readFileSync(path.join(f.root, '.build', 'firmware.bin'), 'utf8'), 'trusted firmware');
+    } finally { owner.release(); }
+    assert.deepEqual(api.clearSharedBuildCache(f.root, { preserveSketch: true }), { cleared: true, retainedExecutionIds: [] });
+    assert.equal(fs.existsSync(path.join(f.root, '.build', 'firmware.bin')), false);
+    assert.equal(fs.readFileSync(path.join(f.root, '.temp', 'sketch', 'keep.cpp'), 'utf8'), 'preprocess data');
+    assert.equal(fs.existsSync(path.join(legacy.currentProjectPath, 'node_modules')), false);
+    if (process.platform === 'darwin') {
+        assert.deepEqual(fs.readdirSync(path.dirname(oldSketch)), ['sketch']);
+        assert.deepEqual(fs.readdirSync(oldSketch), ['sketch.ino']);
+        assert.equal(fs.readFileSync(path.join(oldSketch, 'sketch.ino'), 'utf8'), legacy.code);
+    } else {
+        assert.equal(fs.existsSync(path.dirname(oldSketch)), false);
+    }
+    assert.equal(api.inspectBuildExecution(f.root, 'legacy').status, 'completed');
+    assert.equal(api.inspectBuildExecution(f.root, 'latest').status, 'completed');
+    assert.equal(api.inspectBuildExecution(f.root, 'queued').status, 'cancelled');
+    assert.equal(fs.existsSync(pending.configFilePath), false);
+    assert.equal(api.resolveBuildExecution(f.root), null);
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.equal(fs.existsSync(path.join(f.root, '.temp')), false);
+    assert.equal(fs.readFileSync(path.join(f.root, '.workspace-history', 'checkpoint.json'), 'utf8'), 'saved history');
+});
+
+test('an exact revoked request remains terminal after Windows cache cleanup fails and restarts', {
+    skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 20000,
+}, async t => {
+    const f = sharedFixture(t);
+    const pending = [f.prepare('queued-compile'), f.prepare('queued-preprocess', undefined, 'preprocess')];
+    const restartedStatus = request => execFileSync(process.execPath, ['-e',
+        'const [file, root, request] = process.argv.slice(1); process.stdout.write(require(file).inspectBuildExecution(root, request).status);',
+        require.resolve('../child/scripts/build-execution-workspace'), f.root, request], { encoding: 'utf8', windowsHide: true });
+    const file = path.join(f.root, '.build', 'held-object.obj');
+    f.put('.build/held-object.obj', 'cache object');
+    const release = await holdWindowsFileWithoutDeleteSharing(file);
+    try {
+        assert.throws(() => api.clearSharedBuildCache(f.root), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
+        assert.equal(fs.readFileSync(file, 'utf8'), 'cache object');
+        for (const original of pending) {
+            assert.throws(() => api.validateSharedBuildLaunch(original.configFilePath, f.root, original.execution.operation));
+            assert.equal(restartedStatus(original.execution.buildRequestId), 'cancelled');
+        }
+    } finally { await release(); }
+    assert.equal(api.clearSharedBuildCache(f.root).cleared, true);
+    assert.equal(fs.existsSync(file), false);
+    const next = f.prepare('new-after-clear-retry');
+    assert.equal(api.validateSharedBuildLaunch(next.configFilePath, f.root, 'compile').execution.id, next.execution.id);
+    for (const original of pending) assert.equal(restartedStatus(original.execution.buildRequestId), 'cancelled');
+});
+
+test('shared cache clear removes an exited legacy recovery marker under the current cleaning lease', async t => {
+    const f = fixture(t);
+    const filename = '.build/aily-workspace-recovery.lock';
+    const marker = path.join(f.root, filename);
+    const firmware = path.join(f.root, '.build', 'firmware.bin');
+    const ownerToken = randomUUID();
+    f.put('.build/firmware.bin', 'old firmware');
+    for (const bytes of ['incomplete', JSON.stringify({ pid: process.pid, ownerToken })]) {
+        f.put(filename, bytes);
+        assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_WORKSPACE_BUSY' });
+        assert.equal(fs.readFileSync(marker, 'utf8'), bytes);
+        assert.equal(fs.readFileSync(firmware, 'utf8'), 'old firmware');
+    }
+
+    const exited = spawn(process.execPath, ['-e', ''], { windowsHide: true, stdio: 'ignore' });
+    assert.deepEqual(await once(exited, 'close'), [0, null]);
+    f.put(filename, JSON.stringify({ pid: exited.pid, ownerToken }));
+
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.deepEqual(fs.readdirSync(path.join(f.root, '.build')), []);
+    assert.ok(fs.existsSync(path.join(f.root, '.aily', 'build-workspace.guard')));
+    assert.equal(fs.readFileSync(path.join(f.root, 'project.abi'), 'utf8'), 'original user program');
+});
+
+function archivedOutcome(project, id) {
+    const name = createHash('sha256').update(id).digest('hex') + '.build.json';
+    return JSON.parse(fs.readFileSync(path.join(project, '.log/compile/requests', name))).outcome;
+}
+
+for (const selector of ['current.json', 'pending-compile.json', 'pending-preprocess.json']) {
+    test(`a broken shared ${selector} does not strand a new execution or clear`, t => {
+        const f = sharedFixture(t), original = f.prepare('completed-before-selector-damage');
+        complete(original);
+        const { store, folder } = api.recordFor(original);
+        const oldOutcome = fs.readFileSync(path.join(folder, 'outcome.json'));
+        const broken = path.join(store.parent, selector);
+        fs.writeFileSync(broken, '{"version":');
+        const next = f.prepare('next-after-selector-damage', undefined, selector.includes('preprocess') ? 'preprocess' : 'compile');
+        const lease = acquireBuildWorkspace(f.root, next.execution.operation);
+        try { api.startBuildExecution(next, lease); }
+        finally { lease.release(); }
+        api.finishBuildExecution(next, false);
+        fs.writeFileSync(broken, '{"version":');
+        assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+        assert.equal(fs.existsSync(broken), false);
+        assert.equal(fs.existsSync(path.join(f.root, '.build', 'firmware.bin')), false);
+        assert.deepEqual(archivedOutcome(f.root, original.execution.buildRequestId), JSON.parse(oldOutcome));
+        assert.equal(api.inspectBuildExecution(f.root, original.execution.buildRequestId).status, 'completed');
+        assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'failed');
+    });
+}
+
+test('shared cleanup retires a missing current target without erasing original receipts', t => {
+    const f = sharedFixture(t), original = f.prepare('receipt-before-missing-selector-target');
+    complete(original);
+    const { store, folder } = api.recordFor(original);
+    const outcome = fs.readFileSync(path.join(folder, 'outcome.json'));
+    fs.writeFileSync(store.pointer, JSON.stringify({ version: 1, id: randomUUID(), buildRequestId: 'missing-current-target' }));
+    assert.deepEqual(api.clearSharedBuildCache(f.root), { cleared: true, retainedExecutionIds: [] });
+    assert.equal(fs.existsSync(store.pointer), false);
+    assert.deepEqual(archivedOutcome(f.root, original.execution.buildRequestId), JSON.parse(outcome));
+});
+
+test('a non-file shared selector is refused before any cache or pending selector is removed', t => {
+    const f = sharedFixture(t), original = f.prepare('unaltered-selector');
+    complete(original);
+    const { store } = api.recordFor(original);
+    const queued = path.join(store.parent, 'pending-compile.json');
+    const pending = fs.readFileSync(queued);
+    fs.unlinkSync(store.pointer);
+    fs.mkdirSync(store.pointer);
+    assert.throws(() => api.clearSharedBuildCache(f.root), { code: 'BUILD_EXECUTION_INVALID' });
+    assert.equal(fs.lstatSync(store.pointer).isDirectory(), true);
+    assert.deepEqual(fs.readFileSync(queued), pending);
+    assert.equal(fs.readFileSync(path.join(f.root, '.build/firmware.bin'), 'utf8'), 'trusted firmware');
+    assert.equal(fs.existsSync(path.join(f.root, '.temp', 'preprocess.json')), true);
+});
+
+test('shared build rejects a redirected cache directory before taking over the writer', t => {
+    const f = sharedFixture(t);
+    const request = f.prepare('redirected');
+    f.put('user-files/keep.txt', 'user data');
+    fs.symlinkSync(path.join(f.root, 'user-files'), path.join(f.root, '.temp'),
+        process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => api.validateSharedBuildLaunch(request.configFilePath, f.root, 'compile'), { code: 'BUILD_EXECUTION_INVALID' });
+    assert.throws(() => api.confirmSharedBuildInputs(request), { code: 'BUILD_EXECUTION_INVALID' });
+    assert.deepEqual(fs.readdirSync(path.join(f.root, 'user-files')), ['keep.txt']);
+    assert.equal(api.inspectBuildExecution(f.root, 'redirected').status, 'prepared');
+});
+
+test('captures project audio for the build and invalidates upload on replacement or deletion', t => {
+    const f = fixture(t);
+    const audio = 'audio/73946cc8eb117bdb2d230f34583fcece.mp3';
+    f.put(audio, 'first converted audio');
+    f.put('assets/audio/source.wav', 'editor source');
+    const audioDigest = upload.captureBlocklyUploadInputs(f.config);
+    const first = api.prepareBuildExecution(f.config);
+    const captured = path.join(first.currentProjectPath, audio);
+    assert.equal(fs.readFileSync(captured, 'utf8'), 'first converted audio');
+    assert.equal(fs.existsSync(path.join(first.currentProjectPath, 'assets')), false);
+    complete(first);
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+
+    f.put('assets/audio/source.wav', 'updated editor source');
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+    f.put(audio, 'second converted audio');
+    assert.notEqual(upload.captureBlocklyUploadInputs(f.config), audioDigest);
+    assert.equal(api.canReuseBuildExecution(f.config), false);
+    assert.equal(fs.readFileSync(captured, 'utf8'), 'first converted audio');
+
+    const next = api.prepareBuildExecution({ ...f.config, buildRequestId: 'new-audio' });
+    assert.equal(fs.readFileSync(path.join(next.currentProjectPath, audio), 'utf8'), 'second converted audio');
+    complete(next);
+    assert.equal(api.canReuseBuildExecution(f.config), true);
+    fs.unlinkSync(path.join(f.root, audio));
+    assert.equal(api.canReuseBuildExecution(f.config), false);
+});
+
+test('project audio capture refuses to follow a junction outside its input directory', t => {
+    const project = fixture(t);
+    const other = fixture(t);
+    other.put('linked.mp3', 'outside media');
+    fs.symlinkSync(other.root, path.join(project.root, 'audio'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => api.prepareBuildExecution(project.config), /linked project audio/i);
+    assert.throws(() => upload.captureBlocklyUploadInputs(project.config), /linked project audio/i);
+
+    fs.rmSync(path.join(project.root, 'audio'));
+    project.put('audio/converted.mp3', 'managed media');
+    fs.symlinkSync(other.root, path.join(project.root, 'audio', 'outside'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => api.prepareBuildExecution(project.config), /linked project audio escapes/i);
+    assert.throws(() => upload.captureBlocklyUploadInputs(project.config), /source link escapes/i);
+});
 
 test('publishes the next Windows build after a brief current receipt sharing violation',
     { skip: process.platform !== 'win32' }, t => {
@@ -332,6 +674,39 @@ test('the actual preprocess command retires failed standalone inputs without hid
     assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
 });
 
+test('explicit preprocess is observed by its original request without replacing current firmware', t => {
+    const f = fixture(t);
+    const compile = api.prepareBuildExecution(f.config);
+    complete(compile);
+    const original = api.resolveBuildExecution(f.root);
+    const options = { ...f.config, buildRequestId: 'explicit-preprocess', explicitPreprocess: true };
+    const prepared = api.prepareBuildExecution(options, undefined, 'preprocess');
+    assert.equal(api.inspectBuildExecution(f.root, options.buildRequestId).status, 'prepared');
+    assert.throws(() => api.prepareBuildExecution(options, undefined, 'preprocess'), { code: 'BUILD_EXECUTION_EXISTS' });
+    const lease = acquireBuildWorkspace(prepared.currentProjectPath, 'preprocess');
+    try {
+        api.startBuildExecution(prepared, lease);
+        const folder = path.join(prepared.currentProjectPath, '.temp', 'sketch');
+        fs.mkdirSync(folder, { recursive: true });
+        fs.writeFileSync(path.join(folder, 'sketch.ino'), options.code);
+        api.finishBuildExecution(prepared, true);
+    } finally { lease.release(); }
+    api.retireStandalonePreprocessInputs(prepared);
+    const receipt = api.inspectBuildExecution(f.root, options.buildRequestId);
+    assert.equal(receipt.status, 'completed');
+    assert.equal(receipt.buildHistory.operation, 'preprocess');
+    assert.equal(receipt.buildHistory.sourceSha256, createHash('sha256').update(options.code).digest('hex'));
+    assert.equal(receipt.nextAction, 'terminal');
+    assert.equal(receipt.current, false);
+    for (const field of ['result', 'buildInput', 'buildSnapshot']) assert.equal(receipt[field], undefined);
+    assert.equal(fs.existsSync(path.join(prepared.currentProjectPath, 'node_modules')), false);
+    assert.equal(fs.readFileSync(path.join(prepared.currentProjectPath, '.temp', 'sketch', 'sketch.ino'), 'utf8'), options.code);
+    assert.deepEqual(api.resolveBuildExecution(f.root), original);
+    const stopped = api.prepareBuildExecution({ ...options, buildRequestId: 'explicit-preprocess-stopped' }, undefined, 'preprocess');
+    assert.equal(api.abandonPreparedPreprocess(stopped), true);
+    assert.equal(api.inspectBuildExecution(f.root, stopped.execution.buildRequestId).status, 'cancelled');
+});
+
 test('a new build worker prunes verifiable terminal preprocess inputs from a moved archive', async t => {
     const source = fixture(t), target = fixture(t);
     const prepare = buildRequestId => api.prepareBuildExecution({ ...source.config, buildRequestId }, undefined, 'preprocess');
@@ -504,4 +879,91 @@ test('a dirty Blockly build retains its own source alongside the unchanged saved
     assert.equal(historical.current, false);
     assert.equal(historical.result, undefined);
     assert.deepEqual(historical.buildSnapshot, observed.buildSnapshot);
+});
+
+test('the shared build worker retains a compact original receipt after cache clear', async t => {
+    const f = sharedFixture(t);
+    const worker = fork(require.resolve('../child/scripts/build-execution-worker'), [], {
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    });
+    const message = once(worker, 'message'), closed = once(worker, 'close');
+    worker.send({ config: { ...f.config, buildRequestId: 'receipt-layout' }, operation: 'compile', shared: true });
+    const [prepared] = await message;
+    assert.deepEqual(await closed, [0, null]);
+    assert.equal(prepared.ok, true, prepared.error);
+    const req = prepared.config;
+    assert.equal(req.execution.storage, 'cache');
+    const legacy = path.join(f.root, '.aily', 'build-executions');
+    const request = path.join(f.root, '.log/compile/requests',
+        createHash('sha256').update('receipt-layout').digest('hex') + '.build.json');
+    assert.equal(fs.existsSync(legacy), false);
+    assert.equal(path.dirname(path.dirname(req.configFilePath)), path.join(f.root, '.build', 'requests'));
+    complete(req);
+    assert.equal(fs.existsSync(req.configFilePath), false);
+    assert.equal(api.resolveBuildExecution(f.root).executionId, req.execution.id);
+    const fingerprint = upload.captureFirmware(f.root);
+    f.put('.build/requests/misplaced.bin', 'not compiler output');
+    assert.equal(upload.captureFirmware(f.root), fingerprint);
+    fs.unlinkSync(path.join(f.root, '.build/requests/misplaced.bin'));
+    const abandonedUpload = path.join(path.dirname(req.configFilePath), 'upload-request-' + randomUUID() + '.json');
+    fs.writeFileSync(abandonedUpload, '{}');
+    api.clearSharedBuildCache(f.root);
+    assert.equal(fs.existsSync(abandonedUpload), false);
+    const observed = api.inspectBuildExecution(f.root, 'receipt-layout');
+    assert.equal(observed.status, 'completed');
+    assert.equal(observed.current, false);
+    assert.equal(observed.buildHistory.executionId, req.execution.id);
+    assert.equal(api.resolveBuildExecution(f.root), null);
+    assert.ok(fs.statSync(request).size < 4096);
+    assert.equal(fs.readFileSync(request, 'utf8').includes('void setup'), false);
+    assert.throws(() => f.prepare('receipt-layout'), { code: 'BUILD_EXECUTION_EXISTS' });
+    const next = f.prepare('next-compile');
+    assert.equal(api.cancelBuildExecution(req).status, 'completed');
+    assert.equal(api.inspectBuildExecution(f.root, next.execution.buildRequestId).status, 'prepared');
+    assert.equal(fs.existsSync(legacy), false);
+});
+
+test('terminal advisory preprocess leaves neither a private project nor a permanent request directory', t => {
+    const f = sharedFixture(t), req = f.prepare('automatic-probe', undefined, 'preprocess', false);
+    assert.equal(api.abandonPreparedPreprocess(req), true);
+    assert.equal(fs.existsSync(path.dirname(req.configFilePath)), false);
+    assert.equal(fs.existsSync(path.join(f.root, '.aily/build-executions')), false);
+    assert.equal(api.inspectBuildExecution(f.root, 'automatic-probe'), null);
+});
+
+test('after upgrade only the newest shared preparation can launch; the old ID remains observable', t => {
+    const f = sharedFixture(t), original = f.prepare('pre-upgrade');
+    const cache = path.join(f.root, '.build/requests'), legacy = path.join(f.root, '.aily/build-executions');
+    fs.mkdirSync(path.join(legacy, 'requests'), { recursive: true });
+    const folder = path.join(legacy, original.execution.id);
+    fs.renameSync(path.dirname(original.configFilePath), folder);
+    fs.renameSync(path.join(cache, 'pending-compile.json'), path.join(legacy, 'pending-compile.json'));
+    const key = createHash('sha256').update('pre-upgrade').digest('hex');
+    fs.renameSync(path.join(f.root, '.log/compile/requests', key + '.build.json'), path.join(legacy, 'requests', key + '.json'));
+    const file = path.join(folder, 'config.json'), cfg = JSON.parse(fs.readFileSync(file));
+    delete cfg.execution.storage;
+    fs.writeFileSync(file, JSON.stringify(cfg));
+    const recordFile = path.join(folder, 'execution.json'), record = JSON.parse(fs.readFileSync(recordFile));
+    delete record.storage;
+    record.configDigest = createHash('sha256').update(JSON.stringify(cfg)).digest('hex');
+    fs.writeFileSync(recordFile, JSON.stringify(record));
+    assert.equal(api.validateSharedBuildLaunch(file, f.root, 'compile').execution.id, original.execution.id);
+    const next = f.prepare('after-upgrade');
+    assert.throws(() => api.validateSharedBuildLaunch(file, f.root, 'compile'));
+    assert.equal(api.inspectBuildExecution(f.root, 'pre-upgrade').status, 'cancelled');
+    assert.equal(api.validateSharedBuildLaunch(next.configFilePath, f.root, 'compile').execution.id, next.execution.id);
+});
+
+test('a concurrent receipt update cannot reject an independent build or discard its original outcome', t => {
+    const f = sharedFixture(t), current = f.prepare('busy-receipt');
+    const guard = require('../child/scripts/native-file-lock').tryAcquireFileLock(path.join(f.root, '.log/compile/requests/.build-receipts.guard'));
+    assert.ok(guard);
+    try {
+        complete(current);
+        const other = f.prepare('new-while-index-busy');
+        assert.equal(api.inspectBuildExecution(f.root, current.buildRequestId).status, 'completed');
+        assert.equal(api.inspectBuildExecution(f.root, other.buildRequestId).status, 'prepared');
+    } finally { guard.close(); }
+    api.clearSharedBuildCache(f.root);
+    assert.equal(api.inspectBuildExecution(f.root, current.buildRequestId).status, 'completed');
 });

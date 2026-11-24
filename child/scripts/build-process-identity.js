@@ -20,4 +20,21 @@ function processIdentity(pid) {
     } catch { /* Missing/denied identity remains unconfirmed. */ }
     return null;
 }
-module.exports = { processIdentity };
+// macOS ps exposes start time to the second. Use it only for observing a
+// build whose native workspace token also matches. It must not participate in
+// lock recovery, admission, or process termination.
+function observeBuildProcessIdentity(pid) {
+    if (process.platform !== 'darwin') return processIdentity(pid);
+    if (!Number.isSafeInteger(pid) || pid < 1) return null;
+    try {
+        const value = execFileSync('/bin/ps', ['-o', 'pid=,lstart=', '-p', String(pid)], {
+            encoding: 'utf8', timeout: 1000, maxBuffer: 1024,
+            env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' }, stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+        const match = /^(\d+)\s+([a-z]{3}\s+[a-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})$/i.exec(value);
+        if (match && Number(match[1]) === pid) return `darwin:${match[2].replace(/\s+/g, ' ')}`;
+    } catch { /* A missing identity cannot confirm the running writer. */ }
+    return null;
+}
+
+module.exports = { processIdentity, observeBuildProcessIdentity };

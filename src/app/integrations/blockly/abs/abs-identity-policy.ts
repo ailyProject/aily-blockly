@@ -63,6 +63,10 @@ export function absIdentityPolicy(baseline: AbsProjection, ids: ReadonlyMap<AbsS
   }
   return {
     requiresIdentity: (node: AbsSyntaxNode) => required.has(node),
+    fixedCallTarget: (node: AbsSyntaxNode) => {
+      const contract = baseline.contracts.procedures?.[ids.get(node)!];
+      return contract?.family === 'custom-functions-v1' && contract.role === 'call' ? 'FUNC_NAME' : undefined;
+    },
     assertReferencesPreserved(candidate: ReadonlyMap<string, AbsAbiBlock>) {
       // Dormant shadows have no ABS node but can still retain their identity.
       const missing = [...referenced].filter(id => !candidate.has(id));

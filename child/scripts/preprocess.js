@@ -6,13 +6,16 @@ const { spawn, exec, execFileSync } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const targetCompileContext = require('./target-compile-context');
-const { prepareCompileSource } = require('./compile-source');
+const { prepareCompileSource, captureBlocklyCompileSource } = require('./compile-source');
 const { captureLibrarySource, createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
 const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDelivery } = require('./compile-delivery');
+const { invalidateBlocklyUploadState } = require('./blockly-upload-state');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
-const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs } = require('./build-execution-workspace');
+const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs,
+    validateSharedBuildLaunch, confirmSharedBuildInputs, mergeGeneratorInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild,
+    resolveBuildExecution, retainSharedBuildSource } = require('./build-execution-workspace');
 const { resolvePlatformResourceRoots, resolveBoardResourceDirectory, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
 const { readBuilderCapabilities } = require('./builder-capabilities');
 
@@ -67,23 +70,47 @@ async function main() {
     let config;
     try {
         config = readBuildRequest(configPath);
+        if (config.execution?.layout === 'shared' && config.execution.operation === 'preprocess') {
+            config = validateSharedBuildLaunch(configPath, config.currentProjectPath, 'preprocess');
+        }
+        assertSharedBuildSupervisor(config);
     } catch (error) {
         logger.error('Failed to read config file:', error);
         process.exit(1);
     }
 
     if (config.execution) recordFor(config);
-    const workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
     const standalone = config.execution?.operation === 'preprocess';
+    let workspace;
+    try {
+        workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
+    } catch (error) {
+        if (standalone && config.execution.layout === 'shared') {
+            settleUnstartedSharedBuild(config.currentProjectPath, config.execution, error);
+        }
+        throw error;
+    }
     let completed = false;
     try {
         if (standalone) startBuildExecution(config, workspace);
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
+        if (standalone && config.execution.layout === 'shared' && !config.explicitPreprocess
+            && resolveBuildExecution(config.currentProjectPath, config)?.layout === 'shared') {
+            completed = true;
+            return;
+        }
         invalidateBuildDelivery(config.currentProjectPath);
+        if (standalone && config.execution.layout === 'shared') invalidateBlocklyUploadState(config.currentProjectPath);
         // Library preparation can spawn an archive extractor before the Builder.
         workspace.markDelegated();
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
+        if (standalone && config.execution.layout === 'shared' && config.explicitPreprocess) {
+            const filename = path.join(config.currentProjectPath, '.temp', 'sketch', 'sketch.ino');
+            retainSharedBuildSource(config, captureBlocklyCompileSource(config, filename));
+        }
         completed = true;
     } finally {
         workspace.release();
@@ -135,6 +162,7 @@ async function preprocessProject(config, workspace) {
         throw new Error(`未找到项目包文件: ${projectPackageJsonPath}`);
     }
     const projectPackageJson = JSON.parse(fs.readFileSync(projectPackageJsonPath, 'utf8'));
+    if (config.execution?.layout === 'shared') mergeGeneratorInputs(projectPackageJson, config);
     const dependencies = projectPackageJson.dependencies || {};
 
     const macros = projectPackageJson.macros || projectPackageJson.MACROS || (projectPackageJson.projectConfig && projectPackageJson.projectConfig.macros) || [];
@@ -248,6 +276,7 @@ async function preprocessProject(config, workspace) {
         }
     } else {
         const componentLibraries = collectComponentLibraries(currentProjectPath);
+        const shared = config.execution?.layout === 'shared';
         copiedLibraries = await processLibrariesParallel(
             libsPath,
             librariesPath,
@@ -255,9 +284,10 @@ async function preprocessProject(config, workspace) {
             za7Path,
             developmentMode,
             libraryCache,
-            libraryEvidence
+            libraryEvidence,
+            shared
         );
-        copiedLibraries.push(...await processComponentLibraries(componentLibraries, librariesPath, libraryEvidence));
+        copiedLibraries.push(...await processComponentLibraries(componentLibraries, librariesPath, libraryEvidence, shared));
         librarySearchPaths = [librariesPath];
     }
 
@@ -583,7 +613,7 @@ function prependSdkLibrarySearchPath(fullSdkPath, librarySearchPaths) {
  * library. Components are intentionally refreshed every build: their source
  * is local, small, and must never be hidden behind the npm library cache.
  */
-async function processComponentLibraries(componentLibraries, librariesPath, evidence) {
+async function processComponentLibraries(componentLibraries, librariesPath, evidence, shared = false) {
     const copied = [];
     for (const component of componentLibraries) {
         const targetPath = resolveLibraryTargetPath(librariesPath, component.name);
@@ -596,7 +626,7 @@ async function processComponentLibraries(componentLibraries, librariesPath, evid
             createLibrarySourceFingerprint(component.sourcePath);
             rm(targetPath);
             const before = evidence?.capture(component.sourcePath);
-            linkItem(component.sourcePath, targetPath, !!evidence);
+            linkItem(component.sourcePath, targetPath, shared || !!evidence);
             if (evidence) evidence.add(`component:${component.name}`, before, targetPath, [], true);
             copied.push(component.name);
         } catch (error) {
@@ -606,8 +636,8 @@ async function processComponentLibraries(componentLibraries, librariesPath, evid
     return copied;
 }
 
-async function processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence) {
-    const tasks = libsPath.map(lib => processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence));
+async function processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence, shared = false) {
+    const tasks = libsPath.map(lib => processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence, shared));
     const results = await Promise.all(tasks);
     const failures = results.flatMap((result, index) => result.success ? [] : [
         `${typeof libsPath[index] === 'string' ? libsPath[index] : libsPath[index].packageName}: ${result.error}`
@@ -747,7 +777,7 @@ function coderLibraryCompileSearchRoots(sourcePath) {
     return result;
 }
 
-async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence) {
+async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence, shared = false) {
     try {
         const packageName = typeof lib === 'string' ? lib : lib.packageName;
         const packageRoot = typeof lib === 'string'
@@ -767,7 +797,8 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
             if (fs.existsSync(sourceZipPath)) {
                 try {
                     if (evidence) inputs.push(evidence.capture(sourceZipPath));
-                    extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath);
+                    if (shared) sourcePath = prepareSharedLibraryArchive(za7Path, sourceZipPath, librariesPath, cacheKey);
+                    else extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath);
                 } catch (error) {
                     return { targetNames: [], success: false, error: `解压失败: ${error.message}` };
                 }
@@ -789,7 +820,8 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
             if (!entry.target) throw new Error('Invalid library projection target.');
         }
         const cached = libraryCache[cacheKey];
-        if (!evidence && !devmode && cached && isLibraryCacheValid(cached, sourceFingerprint, projections)) {
+        if (!evidence && !devmode && cached && (!shared || cached.shared === true)
+            && isLibraryCacheValid(cached, sourceFingerprint, projections)) {
             return { targetNames: cached.targetNames, success: true };
         }
 
@@ -804,15 +836,16 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
         }
         let result;
         if (hasDirectFiles) {
-            result = await processLibraryWithHeaders(packageName, sourcePath, librariesPath, !!evidence);
+            result = await processLibraryWithHeaders(packageName, sourcePath, librariesPath, shared || !!evidence);
         } else {
-            result = await processLibraryDirectories(packageName, sourcePath, librariesPath, !!evidence);
+            result = await processLibraryDirectories(packageName, sourcePath, librariesPath, shared || !!evidence);
         }
 
         if (result.success) {
             if (evidence) for (const entry of projections) evidence.add(packageName, entry.before, entry.target, inputs);
             libraryCache[cacheKey] = {
                 schemaVersion: LIBRARY_CACHE_SCHEMA_VERSION,
+                ...(shared ? { shared: true } : {}),
                 sourceFingerprint,
                 hasHeaderFiles: hasDirectFiles,
                 targetNames: result.targetNames
@@ -823,6 +856,45 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
     } catch (error) {
         return { targetNames: [], success: false, error: error.message };
     }
+}
+
+function prepareSharedLibraryArchive(za7Path, sourceZipPath, librariesPath, cacheKey) {
+    const archiveRoot = path.join(path.dirname(librariesPath), 'library-archives');
+    const fingerprint = createLibrarySourceFingerprint(sourceZipPath);
+    const cacheKeyHash = crypto.createHash('sha256').update(cacheKey).digest('hex');
+    const archive = path.join(archiveRoot, cacheKeyHash.slice(0, 20));
+    for (const directory of [archiveRoot, archive]) {
+        fs.mkdirSync(directory, { recursive: true });
+        if (fs.realpathSync(directory) !== directory) throw new Error('Library archive cache must be project-owned.');
+    }
+    const target = path.join(archive, 'src');
+    const proofPath = path.join(archive, 'proof.json');
+    const proofStat = fs.lstatSync(proofPath, { throwIfNoEntry: false });
+    if (proofStat && (!proofStat.isFile() || proofStat.nlink !== 1 || proofStat.size > 512)) {
+        throw new Error('Invalid library archive cache receipt.');
+    }
+    let proof;
+    try { if (proofStat) proof = JSON.parse(fs.readFileSync(proofPath, 'utf8')); }
+    catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+    const targetStat = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (targetStat) {
+        if (!targetStat.isDirectory() || fs.realpathSync(target) !== target) {
+            throw new Error('Library source archive cache must be project-owned.');
+        }
+        if (proof?.cacheKeyHash === cacheKeyHash && proof.archiveFingerprint === fingerprint
+            && proof.sourceFingerprint === createLibrarySourceFingerprint(target)) return target;
+        fs.rmSync(target, { recursive: true, force: true });
+    }
+    if (proofStat) fs.unlinkSync(proofPath);
+    extractLibrarySourceArchive(za7Path, sourceZipPath, target);
+    if (createLibrarySourceFingerprint(sourceZipPath) !== fingerprint) {
+        if (fs.realpathSync(target) === target) fs.rmSync(target, { recursive: true, force: true });
+        throw new Error('Library archive changed during shared build preparation.');
+    }
+    if (fs.realpathSync(target) !== target) throw new Error('Library source archive cache must be project-owned.');
+    fs.writeFileSync(proofPath, JSON.stringify({ cacheKeyHash, archiveFingerprint: fingerprint,
+        sourceFingerprint: createLibrarySourceFingerprint(target) }), { flag: 'wx' });
+    return target;
 }
 
 function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {

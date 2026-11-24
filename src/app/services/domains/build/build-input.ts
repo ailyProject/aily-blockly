@@ -7,6 +7,27 @@ export interface BuildInput {
   abiHash: string;
 }
 
+export interface ResolvedBuildExecution {
+  buildRequestId: string;
+  inputDigest: string;
+  logicalProjectPath: string;
+  currentProjectPath: string;
+  buildPath: string;
+  preprocessPath: string;
+  layout?: 'shared';
+  storage?: 'cache';
+  executionId?: string;
+}
+
+export interface SharedBuildExecution extends ResolvedBuildExecution {
+  layout: 'shared';
+  executionId: string;
+}
+
+export function isSharedBuildExecution(execution?: ResolvedBuildExecution): execution is SharedBuildExecution {
+  return execution?.layout === 'shared';
+}
+
 export function readPreparedBuildInput(value: unknown): BuildInput {
   const input = value as BuildInput | null;
   if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -21,7 +42,7 @@ export function readPreparedBuildInput(value: unknown): BuildInput {
     inputDigest: input.inputDigest, abiHash: input.abiHash };
 }
 
-export function requirePreparedBuildExecution(project: string, input: BuildInput) {
+export function requirePreparedBuildExecution(project: string, input: BuildInput): ResolvedBuildExecution {
   const observed = window['builder']?.inspectBuildExecution?.(project, input.buildRequestId);
   const execution = observed?.result;
   if (observed?.status !== 'completed' || observed.current !== true

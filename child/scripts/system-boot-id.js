@@ -3,10 +3,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { performance } = require('node:perf_hooks');
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const EMPTY_UUID = '00000000-0000-0000-0000-000000000000';
 let cached;
+let retryAfter = Infinity;
+const retryableProbeErrors = new Set(['ETIMEDOUT', 'EAGAIN', 'EBUSY']);
 
 // An opaque kernel boot identity, never Date.now() - uptime: clock corrections,
 // sleep and restarting Aily must not look like the end of every compiler process.
@@ -27,8 +30,9 @@ public static class AilyBootIdentity {
 `;
 
 function getSystemBootId() {
-    if (cached !== undefined) return cached;
-    cached = null; // Unsupported/denied queries retain protection, including on retries.
+    if (cached !== undefined && (cached !== null || performance.now() < retryAfter)) return cached;
+    cached = null;
+    retryAfter = Infinity;
     try {
         const options = { encoding: 'utf8', timeout: 3000, maxBuffer: 16384, windowsHide: true };
         let value;
@@ -42,7 +46,11 @@ function getSystemBootId() {
         if (UUID.test(value || '') && value !== EMPTY_UUID) {
             cached = `${process.platform}:${value.toLowerCase()}`;
         }
-    } catch { /* No PID/time-based fallback can prove that orphan descendants stopped. */ }
+    } catch (error) {
+        // Keep unknown identity conservative during this request. Only a later
+        // request may retry a transient Windows probe on the same host.
+        if (process.platform === 'win32' && retryableProbeErrors.has(error.code)) retryAfter = performance.now() + 1000;
+    }
     return cached;
 }
 

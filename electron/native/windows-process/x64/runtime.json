@@ -1,8 +1,17 @@
 {
+  "version": 2,
+  "platform": "win32",
   "arch": "x64",
-  "source": "0495bc4c6f67a5d701e0651e1a1af35454528e3c0f125e4b0da0de005da22ebe",
+  "napi": 8,
+  "source": "a2d9c60f14d160a437fd6225277524cec284534e424cd8cc294763763eb2a915",
+  "recipe": "39c3d2b03f9742314a68e5b6235f4727616fdbec27907b30652c209b5e131b95",
+  "toolchain": {
+    "kind": "msvc",
+    "compiler": "cl.exe",
+    "headers": "explicit-node-api-headers"
+  },
   "files": {
-    "aily-job.node": "80ec71f00ef9582e630c6616d1cdc1510e03610aed97854a6e48207d247ffb24",
-    "aily-job-launcher.exe": "3921e0d12b3b0487a8d1cb7ed3c915b57285071e8e7ae31ffd2b4c3d0656f5c5"
+    "aily-job.node": "73ba63f6d172a63cf8d33caf64bc09d0c0cdb86d7fed1a9edb5da53271fecb5b",
+    "aily-job-launcher.exe": "721d2cf0406400dc083cb73634ef12e12ee240bb20d2386b5b1039cd92914ce1"
   }
 }

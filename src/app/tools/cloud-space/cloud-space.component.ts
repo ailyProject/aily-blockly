@@ -363,16 +363,23 @@ export class CloudSpaceComponent {
 
     const abiPath = window['path'].join(prjPath, 'project.abi');
     const aciPath = window['path'].join(prjPath, 'project.aci');
+    const hasAci = window['fs'].existsSync(aciPath);
     const isCoder = detectProjectMode({
       manifest: cloudPackageJson,
       hasAbi: window['fs'].existsSync(abiPath),
-      hasAci: window['fs'].existsSync(aciPath),
+      hasAci,
     }) === 'coder';
     let savedProgram: SavedProjectProgram | undefined;
     if (isCoder) {
       // Coder 保存的是源码工作区，不依赖 Blockly ABI/ABS 或外置数据运行时。
-      if (!window['fs'].existsSync(window['path'].join(prjPath, 'sketch'))
-        && !window['fs'].existsSync(aciPath)) {
+      let hasSource = window['fs'].existsSync(window['path'].join(prjPath, 'sketch'));
+      if (!hasSource && hasAci) {
+        try {
+          const aci = window['fs'].statSync(aciPath);
+          hasSource = aci._isFile && aci.size > 0;
+        } catch { /* Treat unavailable legacy source as missing. */ }
+      }
+      if (!hasSource) {
         this.message.error('Coder 项目源码不存在，无法打包');
         return;
       }

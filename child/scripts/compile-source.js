@@ -3,7 +3,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const project = require('./aily-code-project');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
+const { renameForAtomicReplace } = require('./atomic-replace');
+const { isGeneratedBuildHeader, sharedGeneratedArtifacts, confirmSharedGeneratedArtifacts } = require('./build-source-capture');
 const sourceFault = message => Object.assign(new Error(`BUILD_SOURCE_STALE: ${message}`), { code: 'BUILD_SOURCE_STALE' });
 const stamp = stat => [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
 
@@ -36,6 +38,7 @@ function captureBlocklyCompileSource(config, filename, previous) {
             || stamp(fs.fstatSync(fd)) !== stamp(before) || stamp(fs.lstatSync(expectedPath)) !== stamp(before)) {
             throw sourceFault('Materialized Blockly sketch bytes differ from the captured request.');
         }
+        confirmSharedGeneratedArtifacts(config, path.dirname(expectedPath));
         return Object.freeze({ path: expectedPath, sha256: digest, stamp: stamp(before) });
     } finally { fs.closeSync(fd); }
 }
@@ -46,6 +49,60 @@ function assertPhysicalTree(root) {
     if (stat.isDirectory()) {
         for (const name of fs.readdirSync(root)) assertPhysicalTree(path.join(root, name));
     } else if (!stat.isFile()) throw new Error(`Unsupported compile source: ${root}`);
+}
+
+async function updateDerivedFile(filename, bytes, mode) {
+    const current = fs.lstatSync(filename, { throwIfNoEntry: false });
+    if (current?.isSymbolicLink()) throw sourceFault('Derived sketch file traverses a link.');
+    if (current?.isFile() && current.nlink === 1 && current.size === bytes.length
+        && (await fs.promises.readFile(filename)).equals(bytes)) {
+        if (stamp(fs.lstatSync(filename)) !== stamp(current)) throw sourceFault('Derived sketch file changed during staging.');
+        if (mode !== undefined && (current.mode & 0o777) !== mode) fs.chmodSync(filename, mode);
+        return;
+    }
+    if (current?.isDirectory()) fs.rmSync(filename, { recursive: true });
+    const staged = path.join(path.dirname(filename), `.sketch-stage-${randomUUID()}.tmp`);
+    try {
+        await fs.promises.writeFile(staged, bytes, { flag: 'wx', mode });
+        if (mode !== undefined) fs.chmodSync(staged, mode);
+        renameForAtomicReplace(staged, filename);
+    } finally { fs.rmSync(staged, { force: true }); }
+}
+
+/** The caller owns the shared workspace for the entire staging operation. */
+async function syncSharedSketch(source, destination, generated, code) {
+    const overrides = new Map((generated ?? []).map(({ fileName, content }) => [fileName, Buffer.from(content)]));
+    overrides.set('sketch.ino', Buffer.from(code));
+    async function syncDirectory(from, to, isRoot = false) {
+        const current = fs.lstatSync(to, { throwIfNoEntry: false });
+        if (current && !current.isDirectory()) fs.unlinkSync(to);
+        fs.mkdirSync(to, { recursive: true });
+        const copies = from ? fs.readdirSync(from).filter(name => !isRoot || (!overrides.has(name)
+            && !(generated && isGeneratedBuildHeader(name)))) : [];
+        const desired = new Set(copies);
+        if (isRoot) for (const name of overrides.keys()) desired.add(name);
+
+        // Prune first so a case-only source rename cannot resolve to the old name on disk.
+        for (const name of fs.readdirSync(to)) {
+            if (!desired.has(name)) fs.rmSync(path.join(to, name), { recursive: true });
+        }
+        for (const name of copies) {
+            const input = path.join(from, name), output = path.join(to, name);
+            const before = fs.lstatSync(input);
+            if (before.isDirectory()) {
+                await syncDirectory(input, output);
+            } else {
+                if (!before.isFile()) throw sourceFault('Unsupported source in the derived sketch.');
+                const bytes = await fs.promises.readFile(input);
+                if (bytes.length !== before.size || stamp(fs.lstatSync(input)) !== stamp(before)) {
+                    throw sourceFault('Project source changed during sketch staging.');
+                }
+                await updateDerivedFile(output, bytes, before.mode & 0o777);
+            }
+        }
+        if (isRoot) for (const [name, bytes] of overrides) await updateDerivedFile(path.join(to, name), bytes);
+    }
+    await syncDirectory(source, destination, true);
 }
 
 /** Only the derived Blockly sketch is replaceable. Coder's sketch is user-owned. */
@@ -74,20 +131,26 @@ async function prepareCompileSource(config) {
     const temporary = path.join(root, '.temp');
     const destination = path.join(temporary, 'sketch');
     const source = path.join(root, 'src');
-    if (fs.existsSync(source)) assertPhysicalTree(source);
+    const hasSource = fs.existsSync(source);
+    if (hasSource) assertPhysicalTree(source);
     // Validate the exact, owned destination before recursive removal. Never follow links.
     if (fs.existsSync(temporary) && fs.realpathSync(temporary) !== temporary) {
         throw new Error('Blockly temporary directory must not be a symlink/junction.');
     }
     if (fs.existsSync(destination)) assertPhysicalTree(destination);
     fs.mkdirSync(temporary, { recursive: true });
+    const generated = sharedGeneratedArtifacts(config);
+    const filename = path.join(destination, 'sketch.ino');
+    if (config.execution?.layout === 'shared') {
+        await syncSharedSketch(hasSource ? source : undefined, destination, generated, config.code);
+        return filename;
+    }
     fs.rmSync(destination, { recursive: true, force: true });
     fs.mkdirSync(destination);
-    if (fs.existsSync(source)) {
+    if (hasSource) {
         // Async cp avoids the bundled Node's Windows Unicode cpSync crash.
         await fs.promises.cp(source, destination, { recursive: true });
     }
-    const filename = path.join(destination, 'sketch.ino');
     // Generated code owns the entry, even when src contains an old sketch.ino.
     fs.writeFileSync(filename, config.code);
     return filename;

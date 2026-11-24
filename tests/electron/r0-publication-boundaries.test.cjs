@@ -5,6 +5,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { fork } = require('node:child_process');
 const { before, after, test } = require('node:test');
 const { buildSync } = require('esbuild');
+const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
 
 const repo = path.resolve(__dirname, '../..');
 const root = path.join(repo, 'tests/test-results', `r0-publication-${Date.now()}-${randomUUID().slice(0, 8)}`);
@@ -233,6 +234,99 @@ test('the existing journal persists complete unsaved Working S1 while candidate 
   record('dirty-working-journal', { result, summary: { workingS1Durable: true,
     publishedS0Untouched: true, oldCandidateIntentRetained: true, newRecoveryStack: false,
     guiCaptureExercised: false } });
+});
+
+async function preparedNativeSave(name) {
+  const { project, input } = await fixture(name);
+  const save = launch('native-v2-commit', project, JSON.stringify({ version: 2, operation: 'project_save', requestId: 'pub2-' + randomUUID() }));
+  const { ref, prepared } = await save.until(message => message.event === 'native-abi-written', 'native ABI written');
+  const port = await openProjectSyncStorage(project, () => {});
+  assert.equal(await port.read('prepared.json'), prepared);
+  assert.equal(await port.read('committed.json'), input.expectedPointer);
+  return { save, ref, port, project, input, kernel: require(bundle) };
+}
+
+function recoveryPort(port) {
+  return { ...port, withLock: action => port.withLock(storage => action({ ...storage, replace: (key, expected, content) => {
+    assert.notEqual(key, 'project.abi', 'Recovery must never replay the original ABI write');
+    return storage.replace(key, expected, content);
+  } })) };
+}
+
+async function assertOriginalSaveSettled({ kernel, port, project, ref, input }) {
+  const observed = await kernel.observeNativePublication(port, project, ref.request, { originalTargetPid: ref.executor.hostPid });
+  const { binding } = await kernel.generationEvidence(input.next.projection, input.next.abi);
+  assert.equal(observed.saveReceipt.requestId, ref.request.requestId);
+  assert.equal(observed.result.publication.status, 'COMMITTED');
+  assert.equal(await port.read('prepared.json'), null);
+  assert.equal(await port.read('project.abi'), input.next.abi);
+  assert.equal(digest(await port.read('project.abs.map.json')), binding.mapHash);
+  assert.equal(JSON.parse(await port.read('operation.json')).id, ref.operationId);
+}
+
+test('prepared recovery contract accepts the live save completing before recovery acquires the lock', async () => {
+  const context = await preparedNativeSave('prepared-live-completed');
+  const { save, port, project, kernel } = context, storage = recoveryPort(port);
+  let entered = false, unlockedPreparedRead = false;
+  const recovery = { ...storage,
+    read(key) {
+      if (!entered && key === 'prepared.json') unlockedPreparedRead = true;
+      return storage.read(key);
+    },
+    async withLock(action) {
+      if (!entered) {
+        entered = true;
+        save.child.send({ action: 'continue' });
+        const { result } = await save.until(message => message.event === 'result', 'original save completion');
+        assert.equal(result.publication.status, 'COMMITTED');
+        assert.equal((await save.closed).code, 0);
+      }
+      return storage.withLock(action);
+    },
+  };
+  assert.equal(await kernel.recoverAbsProjectOperation(recovery, project, () => {}), null);
+  assert.equal(entered, true);
+  assert.equal(unlockedPreparedRead, false, 'Recovery admission reads prepared only while holding the project lock');
+  await assertOriginalSaveSettled(context);
+});
+
+test('prepared recovery contract lets two recovery callers converge on the same interrupted save', async () => {
+  const context = await preparedNativeSave('prepared-two-recoveries');
+  const { save, port, project, kernel } = context, storage = recoveryPort(port);
+  assert.equal(save.child.kill('SIGKILL'), true);
+  await save.closed;
+  const second = recoveryPort(await openProjectSyncStorage(project, () => {}));
+  let released = false, settledBeforeRelease = false;
+  const first = { ...storage, async withLock(action) {
+    const result = await storage.withLock(action);
+    if (!released) {
+      // The earlier implementation released the lock after inspection. A second
+      // recovery could settle that same record before the first used its token.
+      released = true;
+      settledBeforeRelease = await port.read('prepared.json') === null;
+      assert.equal(await kernel.recoverAbsProjectOperation(second, project, () => {}), null);
+    }
+    return result;
+  } };
+  assert.equal(await kernel.recoverAbsProjectOperation(first, project, () => {}), null);
+  assert.equal(released, true);
+  assert.equal(settledBeforeRelease, true, 'The inspection and prepared cleanup use the same project lock');
+  await assertOriginalSaveSettled(context);
+});
+
+test('prepared recovery contract refuses conflicting source evidence and retains the original save', async () => {
+  const { save, port, project, ref, kernel } = await preparedNativeSave('prepared-conflicting-evidence');
+  assert.equal(save.child.kill('SIGKILL'), true);
+  await save.closed;
+  const foreign = '{"foreign":"retain this different map version"}';
+  fs.writeFileSync(path.join(project, 'project.abs.map.json'), foreign);
+  const keys = ['prepared.json', 'committed.json', 'operation.json', 'project.abi', 'project.abs', 'project.abs.map.json'];
+  const read = () => Promise.all(keys.map(key => port.read(key)));
+  const before = await read();
+  await assert.rejects(kernel.recoverAbsProjectOperation(recoveryPort(port), project, () => {}), { code: 'ABS_TRANSACTION_CONFLICT' });
+  assert.deepEqual(await read(), before);
+  assert.equal(JSON.parse(before[2]).id, ref.operationId);
+  assert.equal(before[5], foreign);
 });
 
 after(async () => {

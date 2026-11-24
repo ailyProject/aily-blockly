@@ -1,6 +1,6 @@
 import { Subject } from 'rxjs';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../src/app/utils/local-build-switch.utils';
-import { CLOUD_BUILD_LOCAL_REQUESTED, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
+import { CLOUD_BUILD_LOCAL_REQUESTED, isCloudBuildServiceFailure, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
 import { ProjectService } from '../src/app/services/domains/project/project.service';
 
 function deferred<T>() {
@@ -8,6 +8,30 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+describe('confirmed cloud service failure', () => {
+  it('recognizes structured gateway and worker faults after the cloud request settles', () => {
+    expect(isCloudBuildServiceFailure({ code: 'gateway_closing', httpStatus: 503 })).toBeTrue();
+    expect(isCloudBuildServiceFailure({ code: 'GATEWAY_HTTP_ERROR', httpStatus: 502 })).toBeTrue();
+    expect(isCloudBuildServiceFailure({ code: 'NODE_CAPACITY_EXCEEDED' })).toBeTrue();
+    expect(isCloudBuildServiceFailure({ code: 'CLOUD_BOARD_OFFLINE' })).toBeTrue();
+  });
+
+  it('leaves unconfirmed cancellation, input, authentication and compiler failures to their own handling', () => {
+    for (const fault of [
+      { code: 'gateway_closing', httpStatus: 503, remoteCleanupConfirmed: false },
+      { code: 'NODE_CAPACITY_EXCEEDED', cleanupConfirmed: false },
+      { code: 'GATEWAY_ERROR', httpStatus: 429 },
+      { code: 'AUTH_TOKEN_INVALID', httpStatus: 401 },
+      { code: 'GATEWAY_UNREACHABLE' },
+      { code: 'BUILD_TIMEOUT' },
+      { code: 'BUILD_SOURCE_STALE' },
+      { code: 'CI_RESOURCE_UNSUPPORTED' },
+      { code: 'COMPILE_ERROR' },
+      new Error('HTTP 503'),
+    ]) expect(isCloudBuildServiceFailure(fault)).withContext(JSON.stringify(fault)).toBeFalse();
+  });
+});
 
 describe('switching a running cloud build to local', () => {
   async function fixture() {
@@ -113,6 +137,7 @@ describe('task-local compile backend lifetime', () => {
 
   it('keeps the upload local after its nested compiler finishes, then restores cloud', async () => {
     const upload = project.beginBuildBackendOperation(), compile = project.beginBuildBackendOperation();
+    expect(upload.isNested).toBeFalse(); expect(compile.isNested).toBeTrue();
     compile.useLocal(); compile.release(); compile.release();
     expect(upload.local).toBeTrue(); expect(project.isCloudBuild()).toBeFalse();
     expect(await project.resolveCompileBackend()).toBe('local');

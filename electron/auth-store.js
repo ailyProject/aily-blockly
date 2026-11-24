@@ -2,6 +2,22 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
+const LOCK_ERRORS = new Set(['AUTH_CREDENTIALS_LOCK_TIMEOUT', 'AUTH_CREDENTIALS_LOCK_UNVERIFIED', 'AUTH_CREDENTIALS_LOCK_SHUTDOWN']);
+
+async function runAuthCredentialIpc(operation) {
+  try { return await operation(); }
+  catch (error) {
+    let code = 'AUTH_CREDENTIALS_STORAGE_IO';
+    if (LOCK_ERRORS.has(error?.code)) code = error.code;
+    else if (['MODULE_NOT_FOUND', 'ERR_DLOPEN_FAILED', 'BUILD_WORKSPACE_CHANGED', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      code = 'AUTH_CREDENTIALS_LOCK_UNAVAILABLE';
+    } else if (['EACCES', 'EPERM', 'EROFS'].includes(error?.code)) code = 'AUTH_CREDENTIALS_STORAGE_DENIED';
+    // Electron's rejected invoke copies an exception message, losing typed fields.
+    // Return only a stable classification. Native paths and request bodies stay local.
+    return { credentialError: { version: 1, code } };
+  }
+}
+
 function readRecord(filePath) {
   try {
     const value = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -87,4 +103,4 @@ function createAuthStore(appDataPath, withLock) {
   };
 }
 
-module.exports = { createAuthStore };
+module.exports = { createAuthStore, runAuthCredentialIpc };

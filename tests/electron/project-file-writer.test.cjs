@@ -275,7 +275,15 @@ test('refuses hard-linked targets and linked internal storage directories', asyn
 
 test('reports cleanup warnings without misreporting committed bytes as a failed save', async () => {
   const root = project(); initialize(root);
-  const files = { ...fs, closeSync(fd) { fs.closeSync(fd); throw new Error('close callback failed'); } };
+  let ownerDescriptor;
+  const files = { ...fs, openSync(file, ...args) {
+    const descriptor = fs.openSync(file, ...args);
+    if (args[0] === 'wx') ownerDescriptor = descriptor;
+    return descriptor;
+  }, closeSync(descriptor) {
+    fs.closeSync(descriptor);
+    if (descriptor === ownerDescriptor) throw new Error('close callback failed');
+  } };
   const result = await replaceProjectText(request(root, 'after'), guard, { files });
 
   assert.equal(result.status, 'COMMITTED'); assert.deepEqual(result.warnings, ['close callback failed']);
@@ -353,7 +361,10 @@ test('backup conflicts, unsafe links and failures stop ABI publication', async (
       fs.rmdirSync(path.dirname(backupPath(root))); fs.symlinkSync(project(), path.dirname(backupPath(root)), 'junction');
     }
 
-    if (kind === 'link-failure') files = { ...fs, linkSync() { throw new Error('backup failed'); } };
+    if (kind === 'link-failure') files = { ...fs, linkSync(source, destination) {
+      if (destination === backupPath(root)) throw new Error('backup failed');
+      fs.linkSync(source, destination);
+    } };
 
     const result = await replaceProjectText(migrationRequest(root), guard, { files });
 
@@ -363,7 +374,10 @@ test('backup conflicts, unsafe links and failures stop ABI publication', async (
 
 test('late external edits are retained and never become the wrong backup', async () => {
   const root = project(); initialize(root);
-  const files = { ...fs, linkSync(...args) { fs.linkSync(...args); initialize(root, 'external'); } };
+  const files = { ...fs, linkSync(source, destination) {
+    fs.linkSync(source, destination);
+    if (destination === backupPath(root)) initialize(root, 'external');
+  } };
   const result = await replaceProjectText(migrationRequest(root), guard, { files });
 
   assert.equal(result.status, 'NOT_COMMITTED'); assert.equal(result.code, 'PROJECT_FILE_CONFLICT');

@@ -189,7 +189,10 @@ export class CmdService {
     window['cmd'].run(cmdOptions).then((result: any) => {
       if (settled) return;
       if (!result.success) {
-        subject.error(new Error(result.error));
+        subject.error(Object.assign(new Error(result.error), {
+          ...(typeof result.code === 'string' ? { code: result.code } : {}),
+          ...(result.buildOutcome === 'not-started' ? { buildOutcome: result.buildOutcome } : {}),
+        }));
       }
     }).catch((error: any) => {
       if (settled) return;

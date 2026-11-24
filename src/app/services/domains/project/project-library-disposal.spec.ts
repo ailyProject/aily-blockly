@@ -1,6 +1,7 @@
 import { BehaviorSubject, Subject } from 'rxjs';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
+import { ProjectNavigationTransition } from './project-navigation-transition';
 
 describe('Blockly dependency discard belongs to editor disposal', () => {
   function fixture() {
@@ -13,6 +14,8 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
       loadedBlocklyProjectPath: '/source',
       coderProjectsSubject: new BehaviorSubject([]), coderOperationsSubject: new BehaviorSubject(new Map()),
       projectLifecycle: new ProjectLifecycleGate(),
+      projectNavigationIntentRevision: 0,
+      viewRevision: 0,
       messageService: { error: jasmine.createSpy('error'), warning: jasmine.createSpy('warning') },
       getProjectMode: () => 'blockly',
       stopProjectCommands: async () => { events.push('stop'); },
@@ -101,6 +104,59 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     expect(await service.close()).toBeFalse(); expect(commit).not.toHaveBeenCalled(); expect(dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('closes the saved canvas without publishing dependency changes when damaged ABS recovery stays in place', async () => {
+    const { service, events } = fixture();
+    const commit = jasmine.createSpy('accept departure').and.resolveTo();
+    const dispose = jasmine.createSpy('dispose');
+    service.application.prepareBlocklyRecoveryDiscard = async () => ({ commit, dispose, preserveRecovery: true });
+    expect(await service.close()).toBeTrue();
+    expect(events).toEqual(['stop', 'dispose', 'close']);
+    expect(service.discardLibraryChanges).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  for (const problem of ['damaged journal', 'active writer'] as const) {
+    it(`checks same-project reload recovery before retiring the canvas with a ${problem}`, async () => {
+      const { service, events, mounted } = fixture();
+      const commit = jasmine.createSpy('release departure admission').and.resolveTo();
+      const dispose = jasmine.createSpy('dispose departure admission');
+      const writerBusy = Object.assign(new Error('original writer still active'), { code: 'PROJECT_FILE_BUSY' });
+      Object.assign(service, {
+        electronService: { isElectron: false, exists: () => true },
+        ensureProjectModeAllowed: async () => true,
+        dependencyLifecycleState: { beginPreparation: () => ({}) },
+        rememberDependencyBackend: (session: unknown) => session,
+        assertProjectDependencySession: () => {},
+        publishCoderWorkspaceContext: () => {}, publishCoderOperations: () => {},
+        projectActivationSubject: new Subject(),
+        waitForProjectOpenCompletion: jasmine.createSpy('load from saved ABI').and.resolveTo(),
+      });
+      service.application.prepareBlocklyRecoveryDiscard = jasmine.createSpy('preflight retained operation').and.callFake(async () => {
+        expect(mounted()).toBeTrue();
+        events.push('prepare');
+        if (problem === 'active writer') throw writerBusy;
+        return { commit, dispose, preserveRecovery: true };
+      });
+      const reload = service.projectOpenInternal('/source', { reason: 'chat-tool-reload' });
+      if (problem === 'active writer') {
+        await expectAsync(reload).toBeRejectedWith(writerBusy);
+        expect(events).toEqual(['stop', 'prepare']);
+        expect(mounted()).toBeTrue();
+        expect(commit).not.toHaveBeenCalled();
+        expect(service.waitForProjectOpenCompletion).not.toHaveBeenCalled();
+      } else {
+        expect(await reload).toBeTrue();
+        expect(events.slice(0, 3)).toEqual(['stop', 'prepare', 'dispose']);
+        expect(service.waitForProjectOpenCompletion).toHaveBeenCalledTimes(1);
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(dispose).toHaveBeenCalledTimes(1);
+      }
+      expect(service.application.prepareBlocklyRecoveryDiscard).toHaveBeenCalledOnceWith('/source', 'reload');
+      expect(service.discardLibraryChanges).not.toHaveBeenCalled();
+    });
+  }
+
   for (const decision of ['cancel', 'focus']) it(`retains the source activation after target lock ${decision}`, async () => {
     const { service, mounted } = fixture();
     const previous = window['projectLock'];
@@ -115,6 +171,77 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
       expect(service.discardLibraryChanges).not.toHaveBeenCalled();
       expect(service.router.navigate).not.toHaveBeenCalled();
     } finally { window['projectLock'] = previous; }
+  });
+
+  function scopedOpen(service: any) {
+    const previous = window['projectLock'];
+    const navigate = jasmine.createSpy('view navigation').and.resolveTo({ ok: true });
+    window['projectLock'] = { navigate };
+    const requestId = 'cec15bcf-8adf-4c69-828f-68eb8ea5b588';
+    const transition = new ProjectNavigationTransition();
+    const expected = { requestId, rendererGeneration: 3, sourceProject: '/source', projectPath: '/target' };
+    Object.assign(service, {
+      electronService: { isElectron: true, exists: () => true, currentRendererGeneration: 3 },
+      ensureProjectModeAllowed: async () => true,
+      rememberDependencyBackend: (session: unknown) => session,
+      assertProjectDependencySession: () => {},
+    });
+    service.application.settleEnvironmentBeforeOpen = jasmine.createSpy('preflight').and.resolveTo();
+    return {
+      navigate, transition, expected,
+      open: () => service.projectOpen('/target', { interactive: false, navigation: { requestId, transition } }),
+      restore: () => { window['projectLock'] = previous; },
+    };
+  }
+
+  it('releases the exact target reservation when source recovery is busy after preflight', async () => {
+    const { service, events, mounted } = fixture();
+    const f = scopedOpen(service);
+    service.application.prepareBlocklyRecoveryDiscard = async () => {
+      expect(service.application.settleEnvironmentBeforeOpen).toHaveBeenCalled();
+      throw Object.assign(new Error('source writer busy'), { code: 'PROJECT_FILE_BUSY' });
+    };
+    try {
+      await expectAsync(f.open()).toBeRejectedWithError('source writer busy');
+      expect(f.navigate.calls.allArgs()).toEqual([
+        ['reserve', f.expected, { force: false }],
+        ['release', f.expected, { pendingOnly: true }],
+      ]);
+      expect(service.currentProjectPath).toBe('/source');
+      expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
+      expect(mounted()).toBeTrue();
+      expect(events).toEqual(['stop']);
+    } finally { f.restore(); }
+  });
+
+  it('settles Stop before handoff while the external window synchronization reply is still pending', async () => {
+    const { service, events, graph, mounted } = fixture();
+    const f = scopedOpen(service);
+    let acknowledge!: (value: boolean) => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { started = resolve; });
+    graph.and.callFake(() => {
+      started();
+      return new Promise<boolean>(resolve => { acknowledge = resolve; });
+    });
+    try {
+      const original = service.withProjectLifecycleAdmission(() => {}, (owner: symbol) =>
+        service.projectOpen('/target', { interactive: false, lifecycleOwner: owner,
+          navigation: { requestId: f.expected.requestId, transition: f.transition } }));
+      await waiting;
+      expect(f.transition.stop()).toBeTrue();
+      expect(await original).toBeFalse();
+      expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
+      acknowledge(true);
+      await Promise.resolve();
+      expect(f.navigate.calls.allArgs()).toEqual([
+        ['reserve', f.expected, { force: false }],
+        ['release', f.expected, { pendingOnly: true }],
+      ]);
+      expect(service.currentProjectPath).toBe('/source');
+      expect(events).toEqual([]);
+      expect(mounted()).toBeTrue();
+    } finally { f.restore(); }
   });
 
   it('keeps failed dependency recovery retryable without reviving the retired canvas', async () => {

@@ -11,7 +11,8 @@ const { CloudBuildBroker } = require('./broker');
 const { uploadCloudArtifact } = require('./uploader');
 // 集中接收云编译 IPC，校验窗口身份并管理取消；烧录仍调用本机轻量工具。
 function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => false, getGatewaySettings, getAuth, querySource, getRuntimeRoot, backend, powerSaveBlocker, uploadArtifact = uploadCloudArtifact,
-  platform = process.platform, getRegion = () => process.env.AILY_REGION, prepareCloudUpload = cloudRecipe.stageCloudRecipeUpload, runCloudUpload = uploadRuntime.runCloudUpload }) {
+  getRegion = () => process.env.AILY_REGION, buildFlavor = process.env.AILY_BUILD_FLAVOR,
+  prepareCloudUpload = cloudRecipe.stageCloudRecipeUpload, runCloudUpload = uploadRuntime.runCloudUpload }) {
   const uploads = new Map();
   const uploadSessions = new Map();
   const closeUploadSession = async key => {
@@ -47,8 +48,9 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
   };
   const broker = new CloudBuildBroker({ getOwner, getGatewaySettings, getAuth, querySource, acquirePowerSaveBlocker, getAppDataPath: () => path.dirname(getRuntimeRoot()) });
   const assertCloudSupported = () => {
-    if (platform !== 'win32' || getRegion() !== 'cn') {
-      throw Object.assign(new Error('Cloud compilation is currently available only on Windows in the cn region.'), { code: 'CLOUD_BUILD_UNAVAILABLE' });
+    const region = getRegion();
+    if (typeof region !== 'string' || !region || region === 'eu' || buildFlavor === 'global') {
+      throw Object.assign(new Error('Cloud compilation is unavailable in the international edition or before region initialization.'), { code: 'CLOUD_BUILD_UNAVAILABLE' });
     }
   };
   const assertCloudBackend = revision => {
@@ -72,7 +74,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       const owner = getOwner(event.sender);
       // 设置子窗口只有连接检查权限；提交任务、读取固件及烧录必须属于当前主页面。
       if (!owner && !['finishArtifactUpload','cancelUpload'].includes(request.action) && !(deploymentRead && canReadGateway(event.sender))) throw Object.assign(new Error('Cloud build operations require the current main window; application settings can only read deployment identity or check Gateway health.'), { code: 'CLOUD_BUILD_FORBIDDEN' });
-      // 以主进程平台和区域为准，旧偏好或渲染层参数不能放开云请求；初始化读取和清理仍可执行。
+      // 以主进程版本和区域为准，旧偏好或渲染层参数不能放开云请求；初始化读取和清理仍可执行。
       if (!['configuration', 'cancel', 'cancelUpload', 'finishArtifactUpload', 'invalidate'].includes(request.action)) assertCloudSupported();
       if (['targets', 'compile', 'analysis'].includes(request.action)) request.settings = await broker.configuration();
       // 跨窗口设置保存可能早于旧页面的 IPC 到达；主进程必须拒绝关闭后的迟到任务。
@@ -197,8 +199,10 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       } else throw new Error('Unknown cloud build operation.');
       return { ok: true, result };
     } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
+      ...(Number.isInteger(error.httpStatus) ? { httpStatus: error.httpStatus } : {}),
       ...(error.code === 'BUILD_SOURCE_STALE' && error.sourceReason ? { sourceReason: error.sourceReason } : {}),
       ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
+      ...(error.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(error.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
       ...(typeof error.logComplete === 'boolean' ? { logComplete: error.logComplete } : {}) } }; }
   };

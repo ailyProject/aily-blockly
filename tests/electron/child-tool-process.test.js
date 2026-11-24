@@ -48,6 +48,42 @@ test('a running shared Runtime keeps its pinned package after an update activate
   } finally { await service.stop('fixture'); global.window = originalWindow; }
 });
 
+test('reacquiring an idle Runtime replaces a relinked development generation once', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true, devSessionId: 'first-generation' });
+  harness.window.fs.readFileSync = () => JSON.stringify({ devSessionId: harness.devSessionId });
+  harness.window.childToolSession.release = async () => {
+    harness.releaseCalls += 1;
+    return { success: true }; // Main keeps the process alive during its own release grace period.
+  };
+  harness.window.childToolSession.restart = async payload => {
+    harness.restartCalls.push(payload);
+    return harness.window.childToolSession.unregister(payload);
+  };
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  try {
+    const first = await service.acquire('fixture');
+    await service.release('fixture');
+    assert.equal(await service.acquire('fixture'), first);
+    assert.equal(harness.runCalls.length, 1);
+
+    harness.devSessionId = 'second-generation';
+    assert.equal(await service.acquire('fixture'), first, 'keep the active editor lease');
+    await service.release('fixture');
+    await service.release('fixture');
+    const [second, concurrent] = await Promise.all([service.acquire('fixture'), service.acquire('fixture')]);
+    assert.equal(second.devSessionId, 'second-generation');
+    assert.equal(concurrent, second);
+    assert.equal(harness.runCalls.length, 2);
+    assert.equal(harness.releaseCalls, 1);
+    assert.equal(harness.restartCalls.length, 1);
+    assert.equal(harness.restartCalls[0].restartShared, undefined);
+  } finally { await service.stop('fixture'); global.window = originalWindow; }
+});
+
 test('stopping a window with no lease does not stop another window Runtime', async () => {
   const processModule = await processModulePromise;
   const originalWindow = global.window;
@@ -147,6 +183,34 @@ test('launch lock acquisition rechecks a Runtime registered by another renderer'
     assert.equal(finished, true);
   } finally { await service.stop('fixture'); global.window = originalWindow; }
 });
+
+for (const reportsReady of [false, true]) {
+  test(`a missing spawn acknowledgement does not strand a managed launch (ready: ${reportsReady})`, async () => {
+    const processModule = await processModulePromise;
+    const originalWindow = global.window;
+    const harness = createHarness({ ready: false });
+    const config = { ...fixtureConfig(20), catalogId: 'fixture' };
+    const finished = [];
+    harness.window.electronAPI = { subapps: {
+      async prepareLaunch() { return { config, token: 'launch-token' }; },
+      async finishLaunch(token) { finished.push(token); },
+    } };
+    harness.window.cmd.run = (input) => {
+      harness.runCalls.push(input);
+      if (reportsReady) queueMicrotask(() => harness.emitCaptured(input.streamId, readyOutput(4100)));
+      return new Promise(() => {});
+    };
+    global.window = harness.window;
+    processModule.replaceChildToolConfigs([config]);
+    const service = createService(processModule);
+    try {
+      await assert.rejects(service.acquire('fixture'), reportsReady ? /startup was not acknowledged/ : /did not report ready/);
+      assert.equal(harness.runCalls[0].subappLaunchToken, 'launch-token');
+      assert.deepEqual(harness.killCalls, [harness.runCalls[0].streamId]);
+      assert.deepEqual(finished, ['launch-token']);
+    } finally { await service.stop('fixture'); global.window = originalWindow; }
+  });
+}
 
 test('UI acquisition rejects headless packages before borrowing or spawning a runtime', async () => {
   const processModule = await processModulePromise, originalWindow = global.window;
@@ -531,6 +595,7 @@ function createHarness(options) {
   let stateListener = null;
   const harness = {
     ready: options.ready,
+    devSessionId: options.devSessionId,
     acquireCalls: 0,
     runCalls: [],
     killCalls: [],
@@ -633,7 +698,7 @@ function createHarness(options) {
         harness.runCalls.push(input);
         if (harness.ready) {
           queueMicrotask(() => {
-            activeListeners.get(input.streamId)?.(readyOutput(4100));
+            activeListeners.get(input.streamId)?.(readyOutput(4100, harness.devSessionId));
           });
         }
         return { success: true, streamId: input.streamId, pid: 1000 + harness.runCalls.length };
@@ -649,7 +714,7 @@ function createHarness(options) {
   return harness;
 }
 
-function readyOutput(port) {
+function readyOutput(port, devSessionId) {
   return {
     type: 'stdout',
     data: `${JSON.stringify({
@@ -660,6 +725,7 @@ function readyOutput(port) {
         wsUrl: `ws://127.0.0.1:${port}/ws`,
         port,
         pid: 5000 + port,
+        devSessionId,
       },
     })}\n`,
   };

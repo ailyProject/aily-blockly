@@ -9,7 +9,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
-import { ProjectService } from '@domain/project/public-api';
+import { BoardAuthPromptService, ProjectService } from '@domain/project/public-api';
 import { BuilderService } from '../code-editor/services/builder.service';
 import { BuilderService as TopBuilderService } from '@domain/build/public-api';
 import { UploaderService } from '@domain/device/public-api';
@@ -185,6 +185,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (changes['active'] && this.active) {
       this.aiCoderDiffBridge.setWorkspaceRoot(this.projectPath);
       this.aiCoderDiffBridge.registerEmbed(this.coderEmbedFrame?.nativeElement?.contentWindow ?? null);
+      if (this.coderEmbedWorkspaceRoot) void this.promptLoginForAuthRequiredBoard(this.coderEmbedWorkspaceRoot);
       requestAnimationFrame(() => this.requestCoderEmbedLayoutRefresh());
     }
   }
@@ -287,6 +288,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private buildOutputsWatchDebounce?: ReturnType<typeof setTimeout>;
   /** 只允许最近一次异步 host-context 解析结果写入 iframe，避免空旧快照覆盖完整目录。 */
   private coderHostContextGeneration = 0;
+  private boardAuthPromptGeneration?: number;
   private coderInitialContextFrame: Window | null = null;
   private coderInitialContextRoot = '';
 
@@ -314,6 +316,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     private readonly elementRef: ElementRef<HTMLElement>,
     private readonly codeSuggestionHostBridge: CodeSuggestionHostBridgeService,
     private readonly coderRuntime: CoderProjectRuntimeService,
+    private readonly boardAuthPrompt: BoardAuthPromptService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -698,11 +701,33 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.projectService.stateSubject.next('loaded');
     // 依赖已存在时尽早同步，供 Header 串口/开发板菜单使用
     await this.syncBoardConfigForHeader(session);
+    void this.promptLoginForAuthRequiredBoard(projectPath, session);
   }
 
   /** 与 Blockly loadProject 一致：写入 ProjectService.currentBoardConfig */
   private async syncBoardConfigForHeader(session = this.dependencySession): Promise<void> {
     await this.projectService.syncCurrentBoardConfig(session);
+  }
+
+  private async promptLoginForAuthRequiredBoard(projectPath: string, session = this.dependencySession): Promise<void> {
+    const generation = this.coderBootstrapGeneration;
+    const isCurrent = () => this.active && this.coderBootstrapGeneration === generation
+      && this.boardAuthPromptGeneration !== generation && this.isCurrentCoderWorkspace(projectPath, session);
+    if (!isCurrent()) return;
+
+    try {
+      const boardModule = await this.projectService.getBoardModule();
+      if (!boardModule || !isCurrent()) return;
+      const boardPackage = await this.projectService.getBoardPackageJson(boardModule);
+      if (!isCurrent()) return;
+      await this.boardAuthPrompt.promptIfRequired(boardPackage, () => {
+        if (!isCurrent()) return false;
+        this.boardAuthPromptGeneration = generation;
+        return true;
+      });
+    } catch (error) {
+      if (isCurrent()) console.warn('[CodeEditorPro] Failed to check board authentication requirement:', error);
+    }
   }
 
   private showCoderDependencyInstallFailure(projectPath: string, session: ProjectDependencySession, detail: string): void {
@@ -752,6 +777,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       await this.syncBoardConfigForHeader(session);
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+      void this.promptLoginForAuthRequiredBoard(projectPath, session);
       await this.writeCoderEmbedHints(projectPath, session);
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       await this.pushAilyCoderHostContext(projectPath, session);

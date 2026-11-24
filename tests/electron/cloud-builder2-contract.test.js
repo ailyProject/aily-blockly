@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
 const protocol = require('../../electron/cloud-build/protocol');
 const { validateCloudRecipePlan } = require('../../electron/cloud-build/cloud-recipe-contract');
 const { checkedRecipe, cloudUploadRequirements, bindRecipe } = require('../../electron/cloud-build/cloud-recipe-upload');
-const { boardUploadConfig, networkUploadConfig, verifyStagedUpload } = require('../../electron/cloud-build/cloud-upload-runtime');
+const { boardUploadConfig, localDependencyPath, networkUploadConfig, verifyStagedUpload } = require('../../electron/cloud-build/cloud-upload-runtime');
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-builder2-')));
@@ -106,3 +106,19 @@ test('network OTA uses the signed primary BIN and verifies its staged bytes', t 
   fs.writeFileSync(filename, 'modified');
   assert.throws(() => verifyStagedUpload(f.record, staged), { code: 'ARTIFACT_INVALID' });
 });
+
+
+test('cloud tools on Unix resolve the exact physical package from the isolated npm prefix',
+  { skip: process.platform === 'win32' }, t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-cloud-tools-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const requirement = { kind: 'tool', name: '@aily-project/tool-citool-cli', id: 'citool-cli', version: '1.2.2' };
+    const wrapper = path.join(root, '.aily-cloud-tools', 'lib', 'node_modules', '@aily-project', 'tool-citool-cli', 'package.json');
+    const directory = path.join(root, 'tools', 'citool-cli@1.2.2');
+    fs.mkdirSync(path.dirname(wrapper), { recursive: true });
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(wrapper, JSON.stringify({ name: requirement.name, version: requirement.version }));
+    assert.deepEqual(localDependencyPath(root, requirement), { directory, runtimeVersion: '1.2.2' });
+    fs.writeFileSync(wrapper, JSON.stringify({ name: requirement.name, version: '1.2.3' }));
+    assert.throws(() => localDependencyPath(root, requirement), { code: 'UPLOADER_MISSING' });
+  });

@@ -1,4 +1,4 @@
-import { splitAbsState } from './abs-full-state';
+import { decodeAbsState, splitAbsState } from './abs-full-state';
 import { captureAbsCustomFunctions } from './abs-custom-functions';
 import { absJson, createAbsProjection, indexAbsAbi } from './abs-identity-map';
 import { reconcileAbsDraft } from './abs-reconciler';
@@ -36,6 +36,58 @@ describe('pure typed custom-function preparation', () => {
     const refs = getAbsProcedureReferences(result.workspace, result.contracts.procedures);
     expect(refs.some(ref => ref.statePath === '/extraState/paramVarIds/0')).toBeTrue();
     expect(refs.some(ref => ref.kind === 'procedure' && ref.modelId === definition.id)).toBeTrue();
+  });
+
+  it('exports a reusable call signature and keeps model identities in the native snapshot', async () => {
+    const original = await run(), projection = await base(original.workspace, original.contracts);
+    const { program } = splitAbsState(projection.abs);
+    expect(program).not.toMatch(/funcVarId|paramVarIds|nextParamVarSeq/);
+    expect((await decodeAbsState(projection.abs)).workspace).toEqual(original.workspace);
+    const line = program.split('\n').find(text => text.startsWith('custom_function_call_return_advance('))!;
+    const append = (call: string) => {
+      const at = projection.abs.indexOf('\n# @project-state:'), text = '\n' + call;
+      const candidate = projection.abs.slice(0, at) + text + projection.abs.slice(at);
+      return reconcileAbsDraft(projection, candidate, { ...adapter.syntax(candidate, projection.workspace),
+        fieldDefinition: adapter.field, prepareBlock: adapter.prepare, sourceEdits: [[{ start: at, end: at, text }]] });
+    };
+    const appended = await append(line);
+    const [, first, second] = appended.workspace.blocks.blocks;
+    expect(second.id).not.toBe(first.id);
+    expect(second.fields!['FUNC_NAME']).toEqual(first.fields!['FUNC_NAME']);
+    expect((second.extraState as any).funcVarId).toBe((first.extraState as any).funcVarId);
+    const bad = line.replace('@extra:{', '@extra:{"funcVarId":"unowned",');
+    await expectAsync(append(bad)).toBeRejectedWith(jasmine.objectContaining({
+      code: 'ABS_CUSTOM_FUNCTION_INVALID', message: jasmine.stringMatching(/custom_function_call_return_advance.*work/),
+      range: jasmine.objectContaining({ start: jasmine.any(Number) }),
+    }));
+  });
+
+  it('keeps the original callee when a new call wraps its old conditional', async () => {
+    const callA = 'custom_function_call_return_advance(FUNC_NAME=$oldFn)';
+    const callB = 'custom_function_call_return_advance(FUNC_NAME=$guardFn)';
+    const definitions = ['oldFn', 'guardFn'].map(name => `custom_function_def("${name}", int)`).join('\n');
+    const source = '# ABS Schema: 2\n' + definitions + '\nconditional(TEST=' + callA + ')';
+    const options = (text: string, workspace: any) => ({ ...adapter.syntax(text, workspace),
+      fieldDefinition: adapter.field, prepareBlock: adapter.prepare });
+    const first = await reconcileAbsDraft(await base(), source, { ...options(source, empty),
+      variableCreation: { requestId: 'guard-function-test', variables: [{ name: 'oldFn', type: 'FUNC' }, { name: 'guardFn', type: 'FUNC' }] } });
+    const baseline = await base(first.workspace, first.contracts);
+    const old = first.workspace.blocks.blocks[2].inputs!['TEST'].block!;
+    const { start: at, end } = baseline.map.nodes.find(node => node.blockId === old.id)!;
+    const originalCall = baseline.abs.slice(at, end);
+    const guard = originalCall.replace('$oldFn', '$guardFn');
+    const text = guard + ', BODY=conditional(TEST=' + originalCall + ')';
+    const candidate = baseline.abs.slice(0, at) + text + baseline.abs.slice(end);
+    const changed = await reconcileAbsDraft(baseline, candidate, { ...options(candidate, baseline.workspace),
+      sourceEdits: [[{ start: at, end, text }]] });
+    const condition = changed.workspace.blocks.blocks[2];
+    expect(condition.inputs!['BODY'].block!.inputs!['TEST'].block!.id).toBe(old.id);
+    const inserted = condition.inputs!['TEST'].block!;
+    expect(inserted.id).not.toBe(old.id);
+    expect((inserted.extraState as any).funcVarId).toBe((first.workspace.blocks.blocks[1].extraState as any).funcVarId);
+    const retarget = baseline.abs.slice(0, at) + guard + baseline.abs.slice(end);
+    await expectAsync(reconcileAbsDraft(baseline, retarget, { ...options(retarget, baseline.workspace),
+      sourceEdits: [[{ start: at, end, text: guard }]] })).toBeRejected();
   });
 
   it('accepts README typed positional pairs and forward calls without duplicating @extra signatures', async () => {

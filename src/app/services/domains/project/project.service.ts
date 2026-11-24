@@ -1,7 +1,8 @@
 import { ensureProjectPartitionFile } from './project-partitions';
-import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
+import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, ensureCoderProjectFile, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
+import { ProjectNavigationTransition, type ProjectViewReservation } from './project-navigation-transition';
 import { projectViewOpenError } from './project-view-ownership';
 import { ProjectDependencyLifecycle, type ProjectDependencySession } from './project-dependency-lifecycle';
 import { BehaviorSubject, Subject, firstValueFrom } from 'rxjs';
@@ -43,6 +44,7 @@ import {
   isAilyLibraryPackageName,
   isAilyScopedPackageName,
   requireProjectProgramPublication,
+  type ProjectStorageAttachment,
 } from '@shared/public-api';
 import {
   CODER_TEMPLATE_DIRECTORY,
@@ -76,7 +78,8 @@ import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './proj
 import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRecoveryTargetReload } from './project-recovery-targets';
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
 import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, type ProjectSaveReceiptResponse } from './project-save-receipts';
-import { ProjectRecoveryRequests } from './project-recovery-request';
+import { ProjectRecoveryRequests, sameRecoveryAttachment } from './project-recovery-request';
+import { openProjectRecoveryBackup } from './project-recovery-backup';
 import { withCurrentProjectRecoveryStatus } from './project-recovery-status';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
@@ -138,6 +141,13 @@ export interface CoderWorkspaceContext {
   activeProject: string;
 }
 
+interface ProjectRecoveryOwner {
+  path: string;
+  attachment?: ProjectStorageAttachment;
+  stopped: boolean;
+  task?: Promise<Record<string, any>>;
+}
+
 interface ProjectOpenOptions {
   reason?: ProjectActivationReason;
   saveBeforeReload?: boolean;
@@ -146,12 +156,16 @@ interface ProjectOpenOptions {
   interactive?: boolean;
   /** In-process ownership only; never accepted from IPC/Agent parameters. */
   lifecycleOwner?: symbol;
+  onViewActivated?: (project: string | null, revision: number) => void | Promise<void>;
   /** Host-only exact journal authority. Never accepted from IPC/Agent options. */
   recoveryReopen?: { assertCurrent(): void };
   /** Recovery-copy navigation preserves the original source recovery view. */
   retainRecovery?: true;
   /** Internal create-only authority. The final activation checks before changing the view. */
-  createActivation?: { signal: AbortSignal; assertCurrent(): void; beginHandoff(): void; markActivated(): void };
+  createActivation?: { signal: AbortSignal; assertCurrent(): void; beginHandoff(): void; recordActivation?(): Promise<boolean>; markActivated(): void };
+  /** One-time Main claim, supplied only by the cold-start file receiver. */
+  startupRestore?: string;
+  navigation?: { requestId: string; transition: ProjectNavigationTransition };
 }
 
 interface ProjectCreationOptions {
@@ -185,7 +199,8 @@ export interface BlocklyProjectLoadStatus {
 export class ProjectService {
   private independentRepairNormalization?: { project: string; transitions: Record<string, any>[] };
   private recoveryTargets?: ProjectRecoveryTargets;
-  private failedLoadRecoveries?: Map<string, { path: string; task: Promise<Record<string, any>> }>;
+  private failedLoadRecoveries?: Map<string, ProjectRecoveryOwner>;
+  private pendingRecoveryStops?: Map<string, { attachment: ProjectStorageAttachment; until: number }>;
   private get savedRecoveryTargets(): ProjectRecoveryTargets { return this.recoveryTargets ??= new ProjectRecoveryTargets(); }
 
   stateSubject = new BehaviorSubject<ProjectState>('default');
@@ -197,6 +212,8 @@ export class ProjectService {
   // 当前项目路径的订阅源
   private currentProjectPathSubject = new BehaviorSubject<string>('');
   currentProjectPath$ = this.currentProjectPathSubject.asObservable();
+  private viewRevision = 0;
+  private recoveredCreateSession?: { project: string; sessionId: string };
 
   private readonly coderOperations = new Map<symbol, CoderProjectOperation>();
   readonly coderOperationSubject = new BehaviorSubject<CoderProjectOperation | null>(null);
@@ -649,12 +666,12 @@ export class ProjectService {
     return true;
   }
 
-  private async discardDepartingBlocklyProject(projectPath: string, reconcile = false, discardRecovery = false): Promise<boolean> {
-    const discard = discardRecovery ? await this.application.prepareBlocklyRecoveryDiscard?.(projectPath) : undefined;
+  private async discardDepartingBlocklyProject(projectPath: string, reconcile = false, recovery?: 'discard' | 'reload'): Promise<boolean> {
+    const discard = recovery && await this.application.prepareBlocklyRecoveryDiscard?.(projectPath, recovery);
     try {
       if (!(await this.retireBlocklyEditor(projectPath))) return false;
       await discard?.commit();
-      await this.discardLibraryChanges(projectPath, reconcile);
+      if (!discard?.preserveRecovery) await this.discardLibraryChanges(projectPath, reconcile);
       return true;
     } catch (error) {
       // Keep the main-process edit session for a subsequent close/reopen retry.
@@ -1058,7 +1075,11 @@ export class ProjectService {
 
   private projectActivationSubject = new Subject<ProjectActivationEvent>();
   projectActivation$ = this.projectActivationSubject.asObservable();
-  private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease } | null = null;
+  private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease;
+    startupRestore?: string; startupPreparation?: AbortController; navigation?: ProjectNavigationTransition } | null = null;
+  private activeProjectViewReservation?: ProjectViewReservation;
+  private projectNavigationIntentRevision = 0;
+  private closedRestartSession?: { project: string; sessionId: string };
   private readonly projectLifecycle = new ProjectLifecycleGate();
   private dependencyLifecycleState?: ProjectDependencyLifecycle;
   private projectCommandStopCloud?: WeakMap<ProjectDependencySession, Promise<void>>;
@@ -1099,9 +1120,31 @@ export class ProjectService {
     if (path && this.getProjectMode(path) === 'coder') {
       this.registerCoderProject(path);
     }
+    if (this.recoveredCreateSession && !this.isSameProjectPath(path, this.recoveredCreateSession.project)) {
+      this.recoveredCreateSession = undefined;
+    }
+    this.viewRevision += 1;
     this.currentProjectPathSubject.next(path);
     if (!this.isCoderProjectContext) this.publishCoderWorkspaceContext();
     if (!this.isCoderProjectContext) this.publishCoderOperations();
+  }
+
+  get projectViewRevision(): number {
+    return this.viewRevision;
+  }
+
+  get closedRestartSessionHint(): { project: string; sessionId: string } | undefined {
+    return this.currentProjectPath ? undefined : this.closedRestartSession;
+  }
+
+  getRecoveredCreateSessionId(project: string): string | undefined {
+    const binding = this.recoveredCreateSession;
+    return binding && this.isSameProjectPath(project, binding.project) && this.isSameProjectPath(project, this.currentProjectPath)
+      ? binding.sessionId : undefined;
+  }
+
+  private clearRecoveredCreateSessionId(project: string, sessionId: string): void {
+    if (sessionId && this.getRecoveredCreateSessionId(project) === sessionId) this.recoveredCreateSession = undefined;
   }
 
   get isProjectOpening(): boolean {
@@ -1435,6 +1478,11 @@ export class ProjectService {
   async init() {
     if (this.electronService.isElectron) {
       this.registerProjectRootPathSettingListener();
+      window['ipcRenderer'].on('project-create-recovery-acknowledged', (_event, receipt) => {
+        if (typeof receipt?.project === 'string' && typeof receipt.sessionId === 'string') {
+          this.clearRecoveredCreateSessionId(receipt.project, receipt.sessionId);
+        }
+      });
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         if (message.data.action == 'open-project' || message.data.action === 'open-project-in-coder') {
@@ -1461,11 +1509,14 @@ export class ProjectService {
       });
 
       // 监听来自文件关联的打开请求
-      window['ipcRenderer'].on('open-project-from-file', async (event, projectPath) => {
+      window['ipcRenderer'].on('open-project-from-file', async (_event, request) => {
+        const projectPath = typeof request === 'string' ? request : request?.projectPath;
+        const startupRestore = typeof request === 'object' ? request?.startupTicket : undefined;
+        if (typeof projectPath !== 'string' || typeof request !== 'string' && typeof startupRestore !== 'string') return;
         console.log('Received open-project-from-file event:', projectPath);
         try {
-          await this.projectOpen(projectPath);
-          console.log('Successfully opened project from file association');
+          if (await this.projectOpen(projectPath, startupRestore ? { startupRestore } : {}))
+            console.log('Successfully opened project from file association');
         } catch (error) {
           console.error('Error opening project from file association:', error);
           this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + error.message);
@@ -1653,22 +1704,25 @@ export class ProjectService {
   private updateNewProjectPackageJson(
     projectPath: string,
     newProjectData: NewProjectData,
-    options?: { removeCloudId?: boolean; coderTemplate?: boolean }
+    options?: { removeCloudId?: boolean; coderEntry?: string }
   ) {
     const inputName = String(newProjectData.name ?? '').trim();
     const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
     packageJson.name = deriveProjectPackageName(inputName);
     packageJson.nickname = inputName;
     // Coder 使用 Arduino 模板；框架固定为 arduino，不沿用 Blockly 表单中的其他 devmode。
-    if (!options?.coderTemplate && newProjectData.devmode) {
+    if (!options?.coderEntry && newProjectData.devmode) {
       packageJson.devmode = newProjectData.devmode;
     }
 
-    if (options?.coderTemplate) {
+    if (options?.coderEntry) {
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
       const boardRange = this.normalizeAilyCodeBoardDepRange(newProjectData.board.version);
       recordCoderBoardTemplateDependencies(packageJson, boardPackageName, packageJson.dependencies || {});
-      applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange);
+      applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange, {
+        entry: options.coderEntry,
+        arduinoSketch: packageJson.arduinoSketch === true,
+      });
     }
 
     window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
@@ -1714,16 +1768,16 @@ export class ProjectService {
         boardPackageName,
       );
       const selectedBoard = { name: boardPackageName, version: newProjectData.board.version };
-      const reusableTemplate = isAilyBoardPackageName(boardPackageName)
-        ? isCoderTemplate
-          ? findReusableCoderBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
-          : templateDirectory === 'template'
-            ? findReusableBlocklyBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
-            : undefined
+      const canReuseBoardPackage = isAilyBoardPackageName(boardPackageName);
+      const reusableCoderTemplate = canReuseBoardPackage && isCoderTemplate
+        ? findReusableCoderBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
+        : undefined;
+      const reusableBlocklyTemplate = canReuseBoardPackage && templateDirectory === 'template'
+        ? findReusableBlocklyBoardTemplate(boardPackagePath, selectedBoard, window['path'], window['fs'])
         : undefined;
 
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
-      if (!reusableTemplate) {
+      if (!reusableCoderTemplate && !reusableBlocklyTemplate) {
         stage = 'board-install';
         const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
         // 创建前还没有 package.json，用向导选定的 devmode 决定板包仓库。
@@ -1748,26 +1802,28 @@ export class ProjectService {
 
       stage = 'board-template';
       check();
-      const creationTemplate = reusableTemplate ?? (isCoderTemplate
-        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
-        : undefined);
-      const templatePath = creationTemplate?.templatePath
+      const coderTemplate = isCoderTemplate
+        ? reusableCoderTemplate ?? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
+        : undefined;
+      const blocklyTemplatePath = reusableBlocklyTemplate?.templatePath
         ?? window['path'].join(boardPackagePath, templateDirectory);
-      if (!window['fs'].existsSync(templatePath)) {
-        throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
+      const requiredTemplatePath = coderTemplate?.packagePath ?? blocklyTemplatePath;
+      if (!window['fs'].existsSync(requiredTemplatePath)) {
+        throw new Error(coderTemplate
+          ? `Coder 板卡模板缺少 package.json: ${requiredTemplatePath}`
+          : `板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${requiredTemplatePath}`);
       }
       stage = 'project-files';
       check();
-      if (isCoderTemplate) {
+      let coderEntry: string | undefined;
+      if (coderTemplate) {
         window['fs'].mkdirSync(projectPath);
         copiedProjectPath = projectPath;
         authority?.markCreated(projectPath);
-        copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
-          useDefaultSource: creationTemplate?.useDefaultSource === true,
-        });
+        coderEntry = copyCoderArduinoTemplate(coderTemplate, projectPath, window['path'], window['fs']);
       } else {
         // 复制 Blockly 模板文件到项目目录
-        this.importProjectDirectory(templatePath, projectPath);
+        this.importProjectDirectory(blocklyTemplatePath, projectPath);
         // Only this completed copy proves a new partial project belongs to
         // this request. An existing target or a copy that throws does not.
         copiedProjectPath = projectPath;
@@ -1779,8 +1835,9 @@ export class ProjectService {
       }
       check();
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
-        coderTemplate: isCoderTemplate,
+        coderEntry,
       });
+      if (isCoderTemplate) ensureCoderProjectFile(projectPath);
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
         this.metrics.record('project_created');
@@ -1815,6 +1872,7 @@ export class ProjectService {
 
       await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
+      if (mode === 'coder') ensureCoderProjectFile(projectPath);
       const created = await this.finishProjectCreation(projectPath, options);
       if (created) this.metrics.record('project_created');
       return created;
@@ -1940,14 +1998,16 @@ export class ProjectService {
    * keeps its existing policy; this path neither saves nor discards edits. */
   async reopenRecoveredBlocklyProject(path: string, assertCurrent: () => void): Promise<{ project: string; activated: boolean }> {
     const source = this.currentProjectPath;
-    let reopening = false;
     const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
-    const check = () => {
+    const assertView = () => {
       assertCurrent();
       if (!source || path !== source || this.currentProjectPath !== source || this.getProjectMode(source) !== 'blockly') {
         fail('ABS_REOPEN_CONTEXT_STALE', 'Recovered project is not the exact active Blockly project.');
       }
-      if ((!reopening && this.isProjectOpening) || this.dependencyLifecycle.isBusy(source)
+    };
+    const check = () => {
+      assertView();
+      if (this.isProjectOpening || this.dependencyLifecycle.isBusy(source)
         || this.getCoderOperation(source) || this.application.hasActiveProjectMutation(source)
         || this.application.hasActiveBlocklyBuildOrUpload(source)) {
         fail('ABS_REOPEN_BUSY', 'A project task is still active; recovery did not save, discard or stop it.');
@@ -1963,9 +2023,8 @@ export class ProjectService {
         fail('ABS_REOPEN_LIBRARY_STATE_UNAVAILABLE', 'Recovery requires verified library-manager state.');
       }
       if (libraries.dirty || libraries.busy) fail('ABS_REOPEN_LIBRARY_CHANGES', 'Pending library edits are retained; reopen cannot discard them.');
-      reopening = true;
       const activated = await this.projectOpen(source, { reason: 'abs-journal-reopen', lifecycleOwner: lifecycle.token,
-        recoveryReopen: { assertCurrent: check } });
+        recoveryReopen: { assertCurrent: assertView } });
       // projectOpen already awaits normal editor load completion. Never call
       // the retired canvas guard after teardown; the coordinator verifies the
       // replacement activation and mirrors after this returns.
@@ -1977,26 +2036,40 @@ export class ProjectService {
   // 打开项目
   async projectOpen(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}) {
     options.createActivation?.assertCurrent();
+    options.recoveryReopen?.assertCurrent();
+    options.navigation?.transition.assertCurrent();
     const selectedSketch = /\.ino$/i.test(projectPath) ? projectPath : undefined;
     projectPath = normalizeProjectOpenPath(projectPath);
+    const startupRestore = options.startupRestore;
+    const navigationRevision = startupRestore ? 0 : this.beginExplicitNavigation();
+    if (startupRestore) {
+      const available = () => !this.projectNavigationIntentRevision && !this.currentProjectPath && !this.projectOpenTask;
+      if (!available()
+        || !await window['projectLock']?.checkStartupRestore?.(projectPath, startupRestore)
+        || !available()) return false;
+    }
     if (selectedSketch && this.getProjectMode(projectPath) === 'blockly') {
       await this.configService.init();
       if (this.configService.getPreferredChatAgentRuntimeMode() === 'coder') {
         return this.openProjectInCoder(selectedSketch);
       }
     }
-    if (this.projectOpenTask) {
+    const opening = this.projectOpenTask;
+    if (opening?.startupRestore && !this.currentProjectPath) {
+      await opening.promise.catch(() => false);
+    } else if (opening) {
       if (options.interactive === false) throw projectViewOpenError(projectPath, { code: 'PROJECT_VIEW_BUSY',
         error: 'An existing project navigation is still in progress; no replacement was queued.' });
-      if (this.isSameProjectPath(this.projectOpenTask.path, projectPath)) {
-        return this.projectOpenTask.promise;
+      if (this.isSameProjectPath(opening.path, projectPath)) {
+        return opening.promise;
       }
-      await this.projectOpenTask.promise;
+      await opening.promise;
     }
 
     // Coder activation retains editors; only reload destroys the selected runtime.
     const reason = options.reason || (this.isSameProjectPath(this.currentProjectPath, projectPath) ? 'reload' : 'open');
-    const coderActivation = this.getProjectMode(projectPath) === 'coder'
+    const targetMode = this.getProjectMode(projectPath);
+    const coderActivation = targetMode === 'coder'
       && reason !== 'reload' && reason !== 'chat-tool-reload';
     const paths = coderActivation && !this.boardSwitchLifecycle
       ? [projectPath] : [this.currentProjectPath, projectPath];
@@ -2005,12 +2078,25 @@ export class ProjectService {
       const stopping = paths.filter(path => this.dependencyLifecycle.isStopping(path));
       if (stopping.length) await Promise.all(stopping.map(path => this.observeProjectCommandStop(path)));
       options.createActivation?.assertCurrent();
+      options.navigation?.transition.assertCurrent();
+      if (navigationRevision !== this.projectNavigationIntentRevision) return false;
       lease = this.acquireProjectLifecycle(paths, options.lifecycleOwner, !coderActivation);
     }
     catch (error) { this.message.warning((error as Error).message); return false; }
     let session: ProjectDependencySession | undefined;
-    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; });
-    const task = { path: projectPath, paths, promise, lease };
+    const startupPreparation = startupRestore ? new AbortController() : undefined;
+    const switchingBlocklyView = targetMode === 'blockly' && this.currentProjectPath
+      && !this.isSameProjectPath(this.currentProjectPath, projectPath) && !options.createActivation && !options.recoveryReopen;
+    if (!options.navigation && switchingBlocklyView) {
+      options = { ...options, navigation: { requestId: crypto.randomUUID(), transition: new ProjectNavigationTransition() } };
+    }
+    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }, startupPreparation?.signal).catch(error => {
+      if (startupRestore && (error as { code?: string })?.code === 'PROJECT_STARTUP_OPEN_SUPERSEDED') return false;
+      if (startupPreparation?.signal.aborted && error === startupPreparation.signal.reason) return false;
+      throw error;
+    });
+    const task = { path: projectPath, paths, promise, lease, startupRestore, startupPreparation,
+      navigation: switchingBlocklyView ? options.navigation?.transition : undefined };
     this.projectOpenTask = task;
     const release = () => {
       task.lease.release();
@@ -2038,6 +2124,13 @@ export class ProjectService {
       signal?.removeEventListener('abort', release);
       release();
     }
+  }
+
+  private beginExplicitNavigation(): number {
+    if (!this.projectNavigationIntentRevision) window['projectLock']?.cancelStartupRestore?.();
+    const revision = ++this.projectNavigationIntentRevision;
+    this.projectOpenTask?.startupPreparation?.abort();
+    return revision;
   }
 
   async rebuildBlocklyRuntimeAfterLibraryChange(projectPath = this.currentProjectPath, assertOwner?: () => void): Promise<void> {
@@ -2297,12 +2390,21 @@ export class ProjectService {
     });
   }
 
-  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}, onPreparation?: (session: ProjectDependencySession) => void): Promise<boolean> {
+  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {},
+    onPreparation?: (session: ProjectDependencySession) => void, startupSignal?: AbortSignal): Promise<boolean> {
     const previousProjectPath = this.currentProjectPath;
+    const previousReservation = this.activeProjectViewReservation;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
     const isSwitchingProject = !!previousProjectPath
       && !this.isSameProjectPath(previousProjectPath, projectPath);
     const creation = options.createActivation;
+    const startup = options.startupRestore;
+    const superseded = () => Object.assign(new Error('A newer project navigation superseded startup restoration.'), {
+      code: 'PROJECT_STARTUP_OPEN_SUPERSEDED',
+    });
+    const assertStartup = () => {
+      if (startup && (this.projectNavigationIntentRevision || this.currentProjectPath)) throw superseded();
+    };
     const checkCreation = async () => {
       try {
         creation?.assertCurrent();
@@ -2323,14 +2425,16 @@ export class ProjectService {
     // Reject before acquiring locks, closing windows, changing routes or publishing activation.
     if (!(await this.ensureProjectModeAllowed(projectPath))) return false;
     creation?.assertCurrent();
+    assertStartup();
 
     const recovery = activationReason === 'abs-journal-reopen' ? options.recoveryReopen : undefined;
     if (activationReason === 'abs-journal-reopen' && !recovery) throw new Error('Journal reopen requires in-process recovery authority.');
-    recovery?.assertCurrent();
+    options.recoveryReopen?.assertCurrent();
 
     // Coder tabs keep their iframe and in-flight operations. Activating another
     // project only changes the host projection; it does not save or recreate editors.
     if (this.getProjectMode(projectPath) === 'coder') {
+      if (startup) return false;
       const reload = activationReason === 'reload' || activationReason === 'chat-tool-reload';
       if (reload && this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
         if (this.getCoderOperation(projectPath)) throw new Error('工程正在编译或上传，请等待完成后重新加载');
@@ -2356,6 +2460,12 @@ export class ProjectService {
           await window['projectLock']?.release(projectPath);
           throw error;
         }
+        try {
+          ensureCoderProjectFile(projectPath);
+        } catch (error) {
+          // A legacy project can still be opened from its folder when the launch file cannot be created.
+          console.warn('补齐 Coder 项目入口失败:', error);
+        }
       }
       if (creation) {
         await checkCreation();
@@ -2365,7 +2475,7 @@ export class ProjectService {
         try {
           await this.stopProjectCommands(previousProjectPath);
           creation?.assertCurrent();
-          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, !options.retainRecovery))) {
+          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, options.retainRecovery ? undefined : 'discard'))) {
             if (!retained) await window['projectLock']?.release(projectPath);
             return false;
           }
@@ -2373,7 +2483,7 @@ export class ProjectService {
           if (!retained) await window['projectLock']?.release(projectPath);
           throw error;
         }
-        await window['projectLock']?.release(previousProjectPath);
+        await this.releaseProjectViewLock(previousProjectPath, previousReservation);
       }
       if (!retained) {
         this.registerCoderProject(projectPath);
@@ -2403,175 +2513,267 @@ export class ProjectService {
     }
 
     const originalOpen = this.projectOpenTask;
+    const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
+    const prepareBeforeHandoff = abiIsExist && isSwitchingProject && !creation && !recovery;
+    const navigation = prepareBeforeHandoff ? options.navigation?.transition : undefined;
+    const rendererGeneration = this.electronService.currentRendererGeneration;
+    const reservation: ProjectViewReservation | undefined = navigation && rendererGeneration > 0 && window['projectLock']?.navigate
+      ? { requestId: options.navigation!.requestId, rendererGeneration, sourceProject: previousProjectPath, projectPath }
+      : undefined;
+    let promoted = false;
+    const sourceView = this.projectViewRevision;
+    const assertSourceView = () => {
+      navigation?.assertCurrent();
+      if (prepareBeforeHandoff && (this.currentProjectPath !== previousProjectPath || this.projectViewRevision !== sourceView))
+        throw Object.assign(new Error('The original view changed during target preparation.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    };
     let ownsNewTargetLock = false;
     const releasePreparedTargetLock = async () => {
+      if (reservation) {
+        if (promoted) return;
+        try { await window['projectLock'].navigate('release', reservation, { pendingOnly: true }); }
+        catch (error) { console.warn('project-lock release after open preparation:', error); }
+        return;
+      }
       if (!ownsNewTargetLock) return;
       ownsNewTargetLock = false;
       // A stopped task can outlive its renderer lease. A newer open of the
       // same target now owns the shared native view lock.
       if (this.isSameProjectPath(projectPath, this.currentProjectPath)
         || this.projectOpenTask && this.projectOpenTask !== originalOpen
+          && (!startup || this.projectOpenTask.startupRestore !== startup)
           && this.isSameProjectPath(projectPath, this.projectOpenTask.path)) return;
       try { await window['projectLock']?.release(projectPath); }
-      catch (error) { console.warn('project-lock release after create preparation:', error); }
+      catch (error) { console.warn('project-lock release after open preparation:', error); }
     };
-    if (this.electronService.isElectron && window['projectLock']) {
-      let r = await window['projectLock'].tryAcquire(projectPath);
-      if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
-      if (!r.ok && options.interactive === false) throw projectViewOpenError(projectPath, r);
-      if (!r.ok && r.conflict && r.holder) {
-        const action = await this.promptProjectLockConflict(r.holder);
-        if (action === 'cancel') {
-          return false;
-        }
-        if (action === 'focus') {
-          await window['projectLock'].focusProcess(r.holder.pid);
-          return false;
-        }
-        r = await window['projectLock'].tryAcquire(projectPath, { force: true });
-        if (!r.ok) {
-          this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
-          return false;
-        }
-      } else if (!r.ok) {
-        this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
-        return false;
-      }
-      if (creation) {
-        ownsNewTargetLock = !r.alreadyHeld;
-        try { creation.assertCurrent(); }
-        catch (error) { await releasePreparedTargetLock(); throw error; }
-      }
-    }
-
     const beginPreparation = () => {
       const session = this.rememberDependencyBackend(this.dependencyLifecycle.beginPreparation(projectPath));
       onPreparation?.(session);
       return session;
     };
     let preparedSession: ProjectDependencySession | undefined;
-    if (creation) {
-      // The target's environment may wait on a native queue. Complete this
-      // cancellable work before touching the previously active project.
-      const session = beginPreparation();
-      const check = () => { creation.assertCurrent(); this.assertProjectDependencySession(session); };
-      const abort = () => {
-        this.dependencyLifecycle.release(session);
-        void releasePreparedTargetLock();
-      };
-      creation.signal.addEventListener('abort', abort, { once: true });
-      try {
-        check();
-        await this.application.settleEnvironmentBeforeOpen?.(projectPath, check);
-        check();
-        preparedSession = session;
-        // Source teardown must keep ownership until it settles; a pending
-        // handoff does not attest that the target canvas was activated.
-        if (previousProjectPath || this.router.url.startsWith('/main/blockly-editor')) creation.beginHandoff();
-      } catch (error) {
-        this.dependencyLifecycle.release(session);
-        await releasePreparedTargetLock();
-        throw error;
-      } finally {
-        creation.signal.removeEventListener('abort', abort);
-      }
-    }
-    if (isSwitchingProject && !(await this.application.closeConnectionGraphWindows())) {
-      if (this.electronService.isElectron && window['projectLock']
-        && !this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
-        try {
-          await window['projectLock'].release(projectPath);
-        } catch (e) {
-          console.warn('project-lock release after window close failure:', e);
+    try {
+      if (this.electronService.isElectron && window['projectLock']) {
+        const provisional = prepareBeforeHandoff ? { provisional: true } : undefined;
+        const acquire = (force = false) => {
+          assertSourceView();
+          const work = reservation
+            ? window['projectLock'].navigate('reserve', reservation, { force })
+            : window['projectLock'].tryAcquire(projectPath, force ? { ...provisional, force } : provisional);
+          return reservation ? navigation!.wait(work) : work;
+        };
+        let r = await acquire();
+        if (!r.ok && startup) return false;
+        if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
+        if (!r.ok && options.interactive === false) throw projectViewOpenError(projectPath, r);
+        if (!r.ok && r.conflict && r.holder) {
+          const action = await this.promptProjectLockConflict(r.holder);
+          if (action === 'cancel') {
+            return false;
+          }
+          if (action === 'focus') {
+            await window['projectLock'].focusProcess(r.holder.pid);
+            return false;
+          }
+          r = await acquire(true);
+          if (!r.ok) {
+            this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
+            return false;
+          }
+        } else if (!r.ok) {
+          this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
+          return false;
+        }
+        if (creation || startup || prepareBeforeHandoff) {
+          ownsNewTargetLock = !r.alreadyHeld;
+          try { creation?.assertCurrent(); assertStartup(); }
+          catch (error) { if (!prepareBeforeHandoff) await releasePreparedTargetLock(); throw error; }
         }
       }
-      this.warnConnectionGraphWindowCloseFailure();
-      return false;
-    }
-    if (creation && previousProjectPath) await checkCreation();
 
-    if (recovery) {
-      const libraries = await window['libraryDependencies']?.status(projectPath);
-      recovery.assertCurrent();
-      if (!libraries || libraries.dirty !== false || libraries.busy !== false) {
-        throw new Error('Library state changed before recovered workspace activation; all edits were retained.');
+      if (creation || prepareBeforeHandoff) {
+        const session = beginPreparation();
+        const check = () => {
+          creation?.assertCurrent();
+          assertSourceView();
+          this.assertProjectDependencySession(session);
+        };
+        const abort = () => {
+          this.dependencyLifecycle.release(session);
+          void releasePreparedTargetLock();
+        };
+        creation?.signal.addEventListener('abort', abort, { once: true });
+        try {
+          check();
+          const preparing = this.application.settleEnvironmentBeforeOpen?.(projectPath, check, navigation?.signal);
+          if (preparing) await (navigation ? navigation.wait(preparing) : preparing);
+          check();
+          preparedSession = session;
+          if (creation && (previousProjectPath || this.router.url.startsWith('/main/blockly-editor'))) creation.beginHandoff();
+        } catch (error) {
+          if (creation) this.dependencyLifecycle.release(session);
+          if (!prepareBeforeHandoff) await releasePreparedTargetLock();
+          throw error;
+        } finally {
+          creation?.signal.removeEventListener('abort', abort);
+        }
       }
-      // The lifecycle gate already excludes new project tasks. Retire only its
-      // proven-idle dependency session; do not send process-stop/cancel commands.
-      const idle = this.dependencyLifecycle.get(projectPath);
-      if (idle) this.dependencyLifecycle.release(idle);
-    } else if (previousProjectPath && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
-      try {
-        await this.stopProjectCommands(previousProjectPath);
-      } catch (error) {
-        if (isSwitchingProject) await window['projectLock']?.release(projectPath);
-        this.message.warning((error as Error).message);
+      const closeGraph = () => this.application.closeConnectionGraphWindows();
+      if (isSwitchingProject && !(await (navigation ? navigation.wait(closeGraph()) : closeGraph()))) {
+        if (!prepareBeforeHandoff && this.electronService.isElectron && window['projectLock']
+          && !this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
+          try {
+            await window['projectLock'].release(projectPath);
+          } catch (e) {
+            console.warn('project-lock release after window close failure:', e);
+          }
+        }
+        this.warnConnectionGraphWindowCloseFailure();
         return false;
       }
-    }
+      assertSourceView();
+      navigation?.beginHandoff();
+      if (creation && previousProjectPath) await checkCreation();
 
-    if (!recovery && previousProjectPath
-      && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
-      const reconcilesHistory = activationReason === 'chat-tool-reload'
-        && this.isSameProjectPath(previousProjectPath, projectPath);
-      if (creation) await checkCreation();
-      if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, isSwitchingProject && !options.retainRecovery))) {
-        if (isSwitchingProject) await window['projectLock']?.release(projectPath);
-        return false;
+      if (recovery) {
+        const libraries = await window['libraryDependencies']?.status(projectPath);
+        recovery.assertCurrent();
+        if (!libraries || libraries.dirty !== false || libraries.busy !== false) {
+          throw new Error('Library state changed before recovered workspace activation; all edits were retained.');
+        }
+        // The lifecycle gate already excludes new project tasks. Retire only its
+        // proven-idle dependency session; do not send process-stop/cancel commands.
+        const idle = this.dependencyLifecycle.get(projectPath);
+        if (idle) this.dependencyLifecycle.release(idle);
+      } else if (previousProjectPath && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
+        try {
+          await this.stopProjectCommands(previousProjectPath);
+        } catch (error) {
+          if (!prepareBeforeHandoff && isSwitchingProject) await window['projectLock']?.release(projectPath);
+          this.message.warning((error as Error).message);
+          return false;
+        }
       }
-    }
-    if (activationReason === 'chat-tool-reload' && !this.isSameProjectPath(previousProjectPath, projectPath)) {
-      await this.discardLibraryChanges(projectPath, true);
-    }
 
-    if (this.electronService.isElectron
-      && previousProjectPath
-      && !this.isSameProjectPath(previousProjectPath, projectPath)
-      && window['projectLock']
-      && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
-      try {
-        await window['projectLock'].release(previousProjectPath);
-      } catch (e) {
-        console.warn('project-lock release:', e);
+      if (!recovery && previousProjectPath
+        && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
+        const reconcilesHistory = activationReason === 'chat-tool-reload'
+          && this.isSameProjectPath(previousProjectPath, projectPath);
+        if (creation) await checkCreation();
+        const recoveryMode = !isSwitchingProject ? 'reload' : options.retainRecovery ? undefined : 'discard';
+        if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory, recoveryMode))) {
+          if (!prepareBeforeHandoff && isSwitchingProject) await window['projectLock']?.release(projectPath);
+          return false;
+        }
       }
+      if (activationReason === 'chat-tool-reload' && !this.isSameProjectPath(previousProjectPath, projectPath)) {
+        await this.discardLibraryChanges(projectPath, true);
+      }
+
+      if (prepareBeforeHandoff && this.electronService.isElectron && window['projectLock']) {
+        assertSourceView();
+        this.assertProjectDependencySession(preparedSession!);
+        const selected = reservation
+          ? await this.observeProjectViewPromotion(reservation)
+          : await window['projectLock'].tryAcquire(projectPath);
+        if (!selected.ok || reservation && selected.selected !== true) throw projectViewOpenError(projectPath, selected);
+        assertSourceView();
+        if (reservation) this.activeProjectViewReservation = reservation;
+        promoted = true;
+      }
+
+      if (!reservation && this.electronService.isElectron
+        && previousProjectPath
+        && !this.isSameProjectPath(previousProjectPath, projectPath)
+        && window['projectLock']
+        && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
+        try {
+          await this.releaseProjectViewLock(previousProjectPath, previousReservation);
+        } catch (e) {
+          console.warn('project-lock release:', e);
+        }
+      }
+    } finally {
+      if (prepareBeforeHandoff && !promoted) await releasePreparedTargetLock();
     }
 
     const session = preparedSession ?? beginPreparation();
-    if (!preparedSession && this.getProjectMode(projectPath) === 'blockly') {
-      await this.application.settleEnvironmentBeforeOpen?.(projectPath, () => this.assertProjectDependencySession(session));
-      this.assertProjectDependencySession(session);
-    }
-    if (!creation) this.beginBlocklyProjectLoad(projectPath);
-
-    const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
+    let startupViewId: string | undefined;
     const recordNavigation = async () => {
       try {
-        const navigation = await window['projectLock'].recordActive(projectPath);
+        const navigation = await window['projectLock'].recordActive(projectPath, startup);
+        if (startup) {
+          if (navigation?.ok !== true) throw superseded();
+          startupViewId = navigation.activationViewId;
+          assertStartup();
+        }
         if (navigation?.ok !== true) console.warn('Project crash navigation could not be recorded:', navigation);
-      } catch (error) { console.warn('Project crash navigation could not be recorded:', error); }
+        else if (typeof navigation.recoverySessionId === 'string') {
+          this.recoveredCreateSession = { project: projectPath, sessionId: navigation.recoverySessionId };
+        }
+      } catch (error) {
+        if (startup) throw error;
+        console.warn('Project crash navigation could not be recorded:', error);
+      }
       this.assertProjectDependencySession(session);
     };
-    if (!creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
-    const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
-    if (blocklyRouteIsBeingReused) {
-      // Angular reuses the component when only query params change. Take an
-      // awaited SPA hop so ngOnDestroy can dispose the old workspace/runtime
-      // before currentProjectPath starts pointing at the next project.
-      await this.router.navigate(['/main/guide'], { replaceUrl: true });
-      this.assertProjectDependencySession(session);
+    try {
+      const guard = () => { this.assertProjectDependencySession(session); assertStartup(); };
+      const preparing = () => { guard(); recovery?.assertCurrent(); };
+      if (!preparedSession && abiIsExist) {
+        preparing();
+        await this.application.settleEnvironmentBeforeOpen?.(projectPath, preparing, startupSignal);
+        preparing();
+      }
+      if (!creation && !startup && !recovery) this.beginBlocklyProjectLoad(projectPath);
+      if (!creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
+      if (recovery) {
+        // This is the last point before disposing the source editor. Its
+        // session token changes on purpose when the accepted reopen proceeds.
+        recovery.assertCurrent();
+        this.beginBlocklyProjectLoad(projectPath);
+      }
+      if (abiIsExist && this.router.url.startsWith('/main/blockly-editor')) {
+        // Dispose the reused editor before currentProjectPath changes.
+        await this.router.navigate(['/main/guide'], { replaceUrl: true });
+      }
+      guard();
+    } catch (error) {
+      if (startup) {
+        this.dependencyLifecycle.release(session);
+        if (startupViewId) {
+          try { await window['projectLock']?.clearActive?.(projectPath, { expectedViewId: startupViewId }); }
+          catch (clearError) { console.warn('Project crash navigation could not be cleared:', clearError); }
+        }
+        await releasePreparedTargetLock();
+      }
+      throw error;
     }
 
+    let createNavigationRecorded = false;
     // 更新当前项目路径和包数据
     if (creation) {
-      try { creation.assertCurrent(); creation.markActivated(); }
+      try {
+        creation.assertCurrent();
+        if (abiIsExist && creation.recordActivation) {
+          // Once the exact handoff is durable, Stop must settle that request instead of revoking it.
+          creation.beginHandoff();
+          try { createNavigationRecorded = await creation.recordActivation(); }
+          catch (error) { console.warn('Original create navigation could not be recorded:', error); }
+          this.assertProjectDependencySession(session);
+        }
+        creation.markActivated();
+      }
       catch (error) {
         this.dependencyLifecycle.release(session);
         await releasePreparedTargetLock();
         throw error;
       }
-      this.beginBlocklyProjectLoad(projectPath);
     }
+    if (creation || startup) this.beginBlocklyProjectLoad(projectPath);
+    this.closedRestartSession = undefined;
     this.currentProjectPath = projectPath;
+    await options.onViewActivated?.(projectPath, this.projectViewRevision);
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
     this.projectActivationSubject.next({
       path: projectPath,
@@ -2579,7 +2781,7 @@ export class ProjectService {
       reason: activationReason,
       sessionResource: options.sessionResource ?? null,
     });
-    if (creation && abiIsExist && window['projectLock']?.recordActive) await recordNavigation();
+    if (creation && abiIsExist && !createNavigationRecorded && window['projectLock']?.recordActive) await recordNavigation();
 
     if (activationReason === 'reload' || activationReason === 'chat-tool-reload') {
       // Angular ignores navigation to the exact same route and query params. Move off the
@@ -2693,9 +2895,10 @@ export class ProjectService {
 
   /** The observer may disconnect; the admitted task still owns its real save. */
   startProjectSaveReceipt(path: string, request: ProjectSaveRequest,
-    run: () => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
+    run: () => Promise<Record<string, any>>,
+    rejectBeforeWriter?: (failure: { code: string; message: string }) => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
     const context = this.saveContext(path);
-    return this.projectSaveReceipts.start(path, request, context, this.guardSaveContext(path, context, run));
+    return this.projectSaveReceipts.start(path, request, context, this.guardSaveContext(path, context, run, rejectBeforeWriter));
   }
 
   getProjectSaveReceipt(path: string, request: ProjectSaveRequest): Promise<ProjectSaveReceiptResponse> {
@@ -2711,12 +2914,16 @@ export class ProjectService {
       await this.application.observeProjectPublication?.(project, original, originalTargetPid) ?? null);
   }
 
-  private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>) {
+  private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>,
+    rejectBeforeWriter?: (failure: { code: string; message: string }) => Promise<Record<string, any>>) {
     return async () => {
       const current = this.saveContext(path);
-      if (current[1] === true || context.some((value, i) => value !== current[i])) throw Object.assign(
-        new Error('The original save project session changed before execution. No save was started.'),
-        { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE' });
+      if (current[1] === true || context.some((value, i) => value !== current[i])) {
+        const failure = { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE',
+          message: 'The original save project session changed before execution. No save was started.' };
+        if (rejectBeforeWriter) return rejectBeforeWriter(failure);
+        throw Object.assign(new Error(failure.message), { code: failure.code });
+      }
       return run();
     };
   }
@@ -2902,10 +3109,12 @@ export class ProjectService {
   /** Same-project recovery owns its own exact request. A lost response can only
    * observe that request; it cannot replay navigation or apply an AI candidate. */
   recoverFailedBlocklyProject(requestId: string, observe = false,
-    recoverReadyProject?: () => Promise<Record<string, any>>,
-    prepareRecovery?: () => Promise<void>): Promise<Record<string, any>> {
-    const path = this.currentProjectPath;
-    if (!/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
+    recoverReadyProject?: (assertCurrent: () => void) => Promise<Record<string, any>>,
+    prepareRecovery?: (assertCurrent: () => void) => Promise<void>,
+    originalProject?: string): Promise<Record<string, any>> {
+    const path = observe && originalProject ? originalProject : this.currentProjectPath;
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,96}$/.test(requestId) || !path)
+      return Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', project: path });
     const currentResult = (task: Promise<Record<string, any>>) => task.then(result => {
       const sameProject = this.currentProjectPath === path;
       const status = this.getBlocklyProjectLoadStatus(path);
@@ -2919,52 +3128,51 @@ export class ProjectService {
     });
     const receipts = this.failedLoadRecoveries ??= new Map();
     const original = receipts.get(requestId);
-    if (original) return original.path === path ? currentResult(original.task) : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    if (original?.task) return this.isSameProjectPath(original.path, path) ? currentResult(original.task) :
+      Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
+    const owner: ProjectRecoveryOwner = { path, stopped: false };
+    const view = this.projectViewRevision, session = projectDataRuntime.getSessionToken(), generation = this.electronService?.currentRendererGeneration;
+    const current = () => {
+      const pendingStop = this.pendingRecoveryStops?.get(requestId);
+      if (owner.stopped || pendingStop && pendingStop.until > Date.now() && sameRecoveryAttachment(owner.attachment, pendingStop.attachment))
+        throw Object.assign(new Error('The original recovery was stopped.'), { code: 'PROJECT_RECOVERY_CANCELLED' });
+      if (this.currentProjectPath !== path || this.projectViewRevision !== view
+        || projectDataRuntime.getSessionToken() !== session || this.electronService?.currentRendererGeneration !== generation)
+        throw Object.assign(new Error('The original recovery view is no longer current.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+      const capture = window['fs']?.captureProjectAttachment;
+      if (owner.attachment && capture) {
+        let attached = false;
+        try { attached = sameRecoveryAttachment(owner.attachment, capture(path)); }
+        catch { /* A missing path cannot retain the original physical authority. */ }
+        if (!attached) throw Object.assign(new Error('The original recovery attachment changed.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+      }
+    };
+    if (!observe) receipts.set(requestId, owner);
     const task = (async () => {
       const receipt = { version: 2, requestId, action: 'recover_project', candidateApplied: false };
-      const current = () => {
-        if (this.currentProjectPath !== path) throw new Error('The original recovery project is no longer current.');
-      };
-      const journal = new ProjectRecoveryRequests(path, current);
+      const journal = new ProjectRecoveryRequests(path, observe ? () => {} : current);
       let owned = false;
       const unknown = () => ({ ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'unknown',
         code: 'PROJECT_RECOVERY_REQUEST_UNKNOWN', candidateApplied: false,
         loadStatus: this.getBlocklyProjectLoadStatus(path),
         message: 'The original recovery has no completed receipt. Inspect the current project; no recovery was replayed.' });
       try {
-        const previous = await journal.observe(requestId);
+        if (!observe) owner.attachment = (await openProjectRecoveryBackup(path, current)).attachment;
+        const previous = await journal.observe(requestId, observe && !this.isSameProjectPath(path, this.currentProjectPath));
         if (previous.result) return { ...previous.result, recoveryObservation: { durable: true, resultKnown: true } };
-        if (observe || previous.started || !await journal.begin(requestId)) return unknown();
+        if (observe || previous.started || !await journal.begin(requestId, attachment => {
+          if (owner.attachment && !sameRecoveryAttachment(owner.attachment, attachment))
+            throw Object.assign(new Error('The original recovery attachment changed.'), { code: 'PROJECT_RECOVERY_CONTEXT_STALE' });
+        })) return unknown();
         owned = true;
-        await prepareRecovery?.();
+        await prepareRecovery?.(current);
         current();
-        const result = await (async () => {
-        if (recoverReadyProject) {
-          const result = await recoverReadyProject();
-          return { ...result, operation: 'abs_recovery', project: path, receipt, recoveryState: result['ready'] ? 'completed' : 'failed', candidateApplied: false };
-        }
-        this.assertSavedRecoveryContext(path);
-        // A fresh, byte-bound repair admission is independent from persistent
-        // lineage. It is valid for this current failed activation only.
-        let saved = await this.savedRecoveryTargets.inspect(path, () => this.assertSavedRecoveryContext(path));
-        if (!saved) {
-          const check = () => this.assertSavedRecoveryContext(path);
-          const fragment = await this.application.captureBlocklyRecoveryFragment?.(path) ?? { error: 'Partial view capture is unavailable.' };
-          const snapshot = await captureProjectDiskRecovery(path, check, fragment);
-          try {
-            const outcome = await snapshot.publish(path);
-            if (snapshot.activationBlocked) throw new Error(snapshot.activationBlocked.message);
-            await this.savedRecoveryTargets.remember({ ...outcome, project: path, sourceProject: path, activated: false }, check);
-          } finally { snapshot.dispose(); }
-          saved = await this.savedRecoveryTargets.inspect(path, check);
-        }
-        if (!saved) throw new Error('No complete current saved document could be verified.');
-        const result = await this.reloadSavedRecoveryTarget(path);
-        return { ...result, operation: 'abs_recovery', receipt, recoveryState: result.ready ? 'completed' : 'failed', candidateApplied: false,
-          ...(result.ready ? {} : { code: 'PROJECT_RECOVERY_LOAD_FAILED', message: result.loadStatus?.error ?? result.message ?? 'The same project is not ready.' }) };
-        })();
-        await journal.complete(requestId, result);
-        return result;
+        const outcome = await (recoverReadyProject ? recoverReadyProject(current) : this.recoverSavedBlocklyView(path, current));
+        const result = { ...outcome, operation: 'abs_recovery', project: path, receipt,
+          recoveryState: outcome['ready'] ? 'completed' : 'failed', candidateApplied: false };
+        try { await journal.complete(requestId, result); }
+        catch { return { ...unknown(), code: 'PROJECT_RECOVERY_RECEIPT_UNCERTAIN' }; }
+        return { ...result, recoveryObservation: { durable: true, resultKnown: true } };
       } catch (error) {
         const result = { ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'failed', candidateApplied: false,
           code: typeof (error as any)?.code === 'string' ? (error as any).code : 'PROJECT_RECOVERY_LOAD_FAILED',
@@ -2973,11 +3181,70 @@ export class ProjectService {
           try { await journal.complete(requestId, result); }
           catch { return { ...unknown(), code: 'PROJECT_RECOVERY_RECEIPT_UNCERTAIN' }; }
         }
-        return result;
+        return owned ? { ...result, recoveryObservation: { durable: true, resultKnown: true } } : result;
       }
     })();
-    if (!observe) receipts.set(requestId, { path, task });
+    if (!observe) {
+      owner.task = task;
+      void task.then(() => { if (receipts.get(requestId) === owner) receipts.delete(requestId); });
+    }
     return currentResult(task);
+  }
+
+  private async recoverSavedBlocklyView(path: string, assertCurrent: () => void): Promise<Record<string, any>> {
+    const check = () => { assertCurrent(); this.assertSavedRecoveryContext(path); };
+    check();
+    // Fresh byte-bound repair admission belongs to this failed activation.
+    let saved = await this.savedRecoveryTargets.inspect(path, check);
+    if (!saved) {
+      check();
+      const fragment = await this.application.captureBlocklyRecoveryFragment?.(path) ?? { error: 'Partial view capture is unavailable.' };
+      const snapshot = await captureProjectDiskRecovery(path, check, fragment);
+      try {
+        const outcome = await snapshot.publish(path);
+        if (snapshot.activationBlocked) throw new Error(snapshot.activationBlocked.message);
+        await this.savedRecoveryTargets.remember({ ...outcome, project: path, sourceProject: path, activated: false }, check);
+      } finally { snapshot.dispose(); }
+      saved = await this.savedRecoveryTargets.inspect(path, check);
+    }
+    if (!saved) throw new Error('No complete current saved document could be verified.');
+    check();
+    const result = await this.reloadSavedRecoveryTarget(path, assertCurrent);
+    return result.ready ? { ...result } : { ...result, code: 'PROJECT_RECOVERY_LOAD_FAILED',
+      message: result.loadStatus?.error ?? result.message ?? 'The same project is not ready.' };
+  }
+
+  async cancelFailedBlocklyProject(path: string, requestId: string): Promise<Record<string, any>> {
+    const response = { operation: 'abs_recovery', project: path };
+    const refused = { ...response, ok: false, code: 'PROJECT_RECOVERY_CONTEXT_STALE' };
+    if (!path || typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,96}$/.test(requestId)) return refused;
+    const eligible = () => {
+      const original = this.failedLoadRecoveries?.get(requestId);
+      return original ? this.isSameProjectPath(original.path, path) : this.isSameProjectPath(this.currentProjectPath, path);
+    };
+    if (!eligible()) return refused;
+    const { attachment } = await openProjectRecoveryBackup(path, () => {});
+    if (!attachment || !eligible()) return refused;
+    let owner = this.failedLoadRecoveries?.get(requestId);
+    if (!owner) {
+      const original = await new ProjectRecoveryRequests(path, () => {}).observe(requestId);
+      if (original.started) return { ...response, ok: true, recoveryCancellation: { requestId, accepted: false } };
+      if (!eligible()) return refused;
+      owner = this.failedLoadRecoveries?.get(requestId);
+    }
+    if (owner?.attachment && !sameRecoveryAttachment(owner.attachment, attachment)) return refused;
+    const pending = this.pendingRecoveryStops ??= new Map();
+    const now = Date.now();
+    for (const [id, stop] of pending) if (stop.until <= now) pending.delete(id);
+    const prior = pending.get(requestId);
+    if (prior && !sameRecoveryAttachment(prior.attachment, attachment)) return refused;
+    // Retain a short exact fence if Stop crossed the dispatch on its way to
+    // this Host. It grants no write or terminal receipt authority.
+    if (pending.size >= 128 && !pending.has(requestId) && !owner?.attachment) return refused;
+    if (pending.size < 128 || pending.has(requestId))
+      pending.set(requestId, { attachment, until: now + 30000 });
+    if (owner?.attachment) owner.stopped = true;
+    return { ...response, ok: true, recoveryCancellation: { requestId, accepted: true } };
   }
 
   /** Native bootstrap is available only in the exact same-build child created
@@ -3050,8 +3317,10 @@ export class ProjectService {
 
   /** Reload the exact current saved source after fresh byte-bound admission;
    * persistent history never replaces this per-operation verification. */
-  async reloadSavedRecoveryTarget(path = this.currentProjectPath): Promise<SavedRecoveryTargetReload> {
+  async reloadSavedRecoveryTarget(path = this.currentProjectPath, assertCurrent?: () => void): Promise<SavedRecoveryTargetReload> {
+    assertCurrent?.();
     const before = await this.inspectSavedRecoveryTarget(path);
+    assertCurrent?.();
     if (!before) throw Object.assign(new Error('No current saved-recovery admission exists; inspect and recover this same project from verified current content.'),
       { code: 'PROJECT_RECOVERY_TARGET_UNVERIFIED' });
     if (before.unsavedLibraryChanges) throw new Error('Pending library-manager edits remain; recovery does not discard or save them implicitly.');
@@ -3061,6 +3330,7 @@ export class ProjectService {
       const primary = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');
       if (`sha256:${await sha256Hex(primary)}` !== before.abiHash) throw new Error('Recovery target bytes changed before reload.');
       const check = () => {
+        assertCurrent?.();
         this.assertSavedRecoveryContext(path);
         if (window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== primary) {
           throw Object.assign(new Error('The recovery primary changed during partial capture. Preserve the newer document and inspect again.'),
@@ -3075,11 +3345,14 @@ export class ProjectService {
         ?? { error: 'The partial native capture API is unavailable.' };
       check(); snapshot = await captureProjectDiskRecovery(path, check, fragment);
       const archive = await snapshot.publish(path);
+      check();
       if (snapshot.activationBlocked) return { ok: false, project: path, ready: false,
         activationBlocked: snapshot.activationBlocked, recoveryArchive: archive.recoveryArchive,
         message: snapshot.activationBlocked.message };
       release = snapshot.freezeForActivation?.();
-      const activated = await this.projectOpen(path, { reason: 'reload', saveBeforeReload: false, lifecycleOwner: lease.token });
+      const activated = await this.projectOpen(path, { reason: assertCurrent ? 'abs-journal-reopen' : 'reload',
+        saveBeforeReload: false, lifecycleOwner: lease.token,
+        ...(assertCurrent ? { recoveryReopen: { assertCurrent } } : {}) });
       const ready = activated === true && this.isSameProjectPath(path, this.currentProjectPath)
         && this.getBlocklyProjectLoadStatus(path).ready;
       const afterAbi = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');
@@ -3307,6 +3580,7 @@ export class ProjectService {
       try {
         await assertSnapshot();
         window['fs'].copyProjectDirectory(source, target);
+        ensureCoderProjectFile(target);
         const packageJson = JSON.parse(manifest);
         const name = window['path'].basename(target);
         delete packageJson.cloudId;
@@ -3377,7 +3651,8 @@ export class ProjectService {
     return targetProjectPath;
   }
 
-  async close(options: { save?: boolean; lifecycleOwner?: symbol } = {}) {
+  async close(options: { save?: boolean; lifecycleOwner?: symbol;
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void> } = {}) {
     if (this.coderOperationsSubject.value.size) {
       this.message.warning('工程正在编译或上传');
       return false;
@@ -3387,6 +3662,11 @@ export class ProjectService {
       this.message.warning('项目正在写入或执行宿主操作，请等待完成后再关闭。');
       return false;
     }
+    const navigationRevision = this.beginExplicitNavigation();
+    const pendingStartup = this.projectOpenTask;
+    if (pendingStartup?.startupRestore && !this.currentProjectPath) await pendingStartup.promise.catch(() => false);
+    if (pendingStartup?.navigation?.stop()) await pendingStartup.promise.catch(() => false);
+    if (navigationRevision !== this.projectNavigationIntentRevision) return false;
     const opening = this.projectOpenTask;
     if (opening && !this.boardSwitchLifecycle && this.dependencyLifecycle.get(opening.path)) {
       // Transfer admission to close so it can cancel an opening that waits for editor readiness.
@@ -3424,10 +3704,10 @@ export class ProjectService {
       }
       for (const project of closingPaths) {
         if (this.isSameProjectPath(project, path) && this.getProjectMode(project) === 'blockly') {
-          if (!(await this.discardDepartingBlocklyProject(project, false, options.save !== true))) return false;
+          if (!(await this.discardDepartingBlocklyProject(project, false, options.save === true ? undefined : 'discard'))) return false;
         } else await this.discardLibraryChanges(project);
       }
-      return await this.closeInternal(closingPaths);
+      return await this.closeInternal(closingPaths, options.onViewActivated);
     } finally { lease.release(); }
   }
 
@@ -3509,15 +3789,20 @@ export class ProjectService {
     }
   }
 
-  private async closeInternal(paths: string[]) {
+  private async closeInternal(paths: string[], onViewActivated?: (project: string | null, revision: number) => void | Promise<void>) {
+    const reservation = this.activeProjectViewReservation;
+    let closedRestartSession: typeof this.closedRestartSession;
     if (this.currentProjectPath && window['projectLock']?.clearActive) {
-      try { await window['projectLock'].clearActive(this.currentProjectPath); }
+      try {
+        const cleared = await window['projectLock'].clearActive(this.currentProjectPath, { retainInterruptedSource: !onViewActivated });
+        if (cleared?.ok && cleared.cleared) closedRestartSession = cleared.closedSession;
+      }
       catch (error) { console.warn('Project crash navigation could not be cleared:', error); }
     }
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {
       try {
         for (const path of paths) {
-          await window['projectLock'].release(path);
+          await this.releaseProjectViewLock(path, reservation);
         }
       } catch (e) {
         console.warn('project-lock release:', e);
@@ -3528,7 +3813,9 @@ export class ProjectService {
     this.coderWorkspaceSubject.next(null);
     this.coderProjectContexts.clear();
     this.publishCoderProjects();
+    this.closedRestartSession = closedRestartSession;
     this.currentProjectPath = '';
+    await onViewActivated?.(null, this.projectViewRevision);
     this.loadingBlocklyProjectPath = '';
     this.loadedBlocklyProjectPath = '';
     this.blocklyProjectLoadFailure = null;
@@ -3540,6 +3827,26 @@ export class ProjectService {
     // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
     await this.router.navigate(['/main/guide'], { replaceUrl: true });
     return true;
+  }
+
+  private async releaseProjectViewLock(projectPath: string, reservation?: ProjectViewReservation): Promise<void> {
+    const lock = window['projectLock'];
+    if (reservation && this.isSameProjectPath(projectPath, reservation.projectPath)) {
+      const result = await lock?.navigate('release', reservation);
+      if (result?.ok && this.activeProjectViewReservation === reservation) this.activeProjectViewReservation = undefined;
+    } else await lock?.release(projectPath);
+  }
+
+  private async observeProjectViewPromotion(reservation: ProjectViewReservation) {
+    const lock = window['projectLock'];
+    const observe = () => lock.navigate('observe', reservation);
+    let timer: ReturnType<typeof setTimeout>;
+    // Acknowledgement loss after Main changed the view is resolved by a
+    // read-only lookup. Never resubmit the transition.
+    const observation = new Promise(resolve => { timer = setTimeout(() => resolve(observe()), 1_500); });
+    try {
+      return await Promise.race([lock.navigate('promote', reservation).catch(observe), observation]);
+    } finally { clearTimeout(timer!); }
   }
 
   async activateCreatedProject(projectPath: string, options: ProjectCreationOptions = {}): Promise<boolean> {
@@ -3602,10 +3909,11 @@ export class ProjectService {
       const packagePath = window['path'].join(projectPath, 'package.json');
       const manifest = window['fs'].existsSync(packagePath)
         ? JSON.parse(window['fs'].readFileSync(packagePath, 'utf8')) : undefined;
+      const hasAbi = window['fs'].existsSync(window['path'].join(projectPath, 'project.abi'));
       return detectProjectMode({
         manifest,
-        hasAbi: window['fs'].existsSync(window['path'].join(projectPath, 'project.abi')),
-        hasCompleteAbs: window['fs'].existsSync(window['path'].join(projectPath, 'project.abs'))
+        hasAbi,
+        hasCompleteAbs: !hasAbi && window['fs'].existsSync(window['path'].join(projectPath, 'project.abs'))
           && window['fs'].readFileSync(window['path'].join(projectPath, 'project.abs'), 'utf8').includes('\n# @project-state:'),
         hasAci: window['fs'].existsSync(window['path'].join(projectPath, 'project.aci')),
         hasArduinoSketch: !!findArduinoSketchEntry(projectPath),
@@ -3761,7 +4069,10 @@ export class ProjectService {
       this.message.error(this.translate.instant('PROJECT.MODE_UNKNOWN'));
       return false;
     }
-    if (mode === this.configService.getPreferredChatAgentRuntimeMode()) return true;
+    if (mode === this.configService.getPreferredChatAgentRuntimeMode()) {
+      await this.configService.initializeProjectCompileBackend();
+      return true;
+    }
 
     const application = getProjectApplicationName(mode);
     let installed = false;
@@ -4165,6 +4476,7 @@ export class ProjectService {
     const session = this.getProjectDependencySession(projectPath);
     const operations = this.localBuildOperations ??= new Map();
     let operation = operations.get(session);
+    const isNested = !!operation;
     if (!operation) { operation = { local: false, owners: 0 }; operations.set(session, operation); }
     operation.owners++;
     let released = false;
@@ -4173,6 +4485,7 @@ export class ProjectService {
       this.assertProjectDependencySession(session);
     };
     return {
+      isNested,
       get local() { return operation.local; },
       useLocal: () => { guard(); operation.local = true; },
       useCloud: () => {
@@ -4252,6 +4565,11 @@ export class ProjectService {
     }
     // 以接口支持字段为准；HTTP、超时和协议错误由主进程保留，不作为不支持。
     const unsupported = support.supported === false;
+    if (unsupported && support.reason === 'offline') {
+      this.boardCompileBackends?.delete(projectPath);
+      throw Object.assign(new Error(`${this.translate.instant('PROJECT.CLOUD_BOARD_OFFLINE')} (${boardModule}@${boardVersion})`),
+        { code: 'CLOUD_BOARD_OFFLINE' });
+    }
     (this.boardCompileBackends ??= new Map()).set(projectPath, { settingsKey, boardModule, boardVersion, cloud: !unsupported });
     if (unsupported) throw this.unsupportedCloudBoard(boardModule, boardVersion);
     return 'cloud';
@@ -5320,7 +5638,6 @@ export class ProjectService {
     let reloadPromise: Promise<void> | null = null;
     let nativePublication: Record<string, unknown> | undefined;
     try {
-      const separator = this.platformService.getPlatformSeparator();
       if (!this.currentProjectPath) {
         throw new Error('当前项目路径未设置');
       }
@@ -5392,12 +5709,11 @@ export class ProjectService {
       );
       // Coder switching follows the same compatibility rule as project creation:
       // prefer template_arduino (including its legacy spelling), but fall back to
-      // the shared template when the board package has no Coder-specific template.
+      // the shared template when the Coder-specific manifest is missing.
       // Existing sketch sources are intentionally preserved during a board switch.
-      const templatePath = isAilyCode
-        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path']).templatePath
-        : window['path'].join(boardPackagePath, 'template');
-      const templatePackageJsonPath = `${templatePath}${separator}package.json`;
+      const templatePackageJsonPath = isAilyCode
+        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path']).packagePath
+        : window['path'].join(boardPackagePath, 'template', 'package.json');
 
       if (window['fs'].existsSync(templatePackageJsonPath)) {
         // 读取模板package.json

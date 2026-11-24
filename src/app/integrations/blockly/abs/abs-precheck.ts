@@ -80,8 +80,11 @@ export function precheckAbs(source: string, contracts: AbsAuthoringContracts): A
           ...(s.inline?.child ? { inline: { ...s.inline, child: placeholder(s.inline.child) } } : {}) })) };
       const [bound] = bindAbsSyntax([shallow], { ...contracts,
         prepareExtraState: raw => raw.type === node.type ? extra : undefined,
-        argumentOrder: (type, state, fields) => type === node.type
-          ? contracts.argumentOrder?.(type, state, fields) ?? contracts.blockContract(type, state, fields)?.argumentOrder : undefined });
+        // Shorthand values look up their own block contract during binding.
+        argumentOrder: (type, state, fields) => contracts.argumentOrder?.(type, state, fields)
+          ?? contracts.blockContract(type, state, fields)?.argumentOrder,
+        fieldDefinition: (type, name) => contracts.fieldDefinition?.(type, name)
+          ?? contracts.blockContract(type)?.fields[name] });
       const shape = contracts.blockContract(node.type, bound.extraState, Object.fromEntries(Object.entries(bound.fields).map(([name, token]) => [name, token.value])));
       if (!shape) { deferred.add(node.type); continue; }
       for (const [name, token] of Object.entries(bound.fields)) {

@@ -285,3 +285,80 @@ test('an unreferenced broken generation is moved aside so the latest package can
   store.activate(root, ENTRY, prepared);
   assert.equal(store.readSelection(root, { id: ENTRY.id, package: ENTRY.package }).version, ENTRY.version);
 });
+
+test('collects only unreferenced generations outside the three newest release versions', async t => {
+  const { root } = fixture(t);
+  const releases = new Map();
+  for (let patch = 1; patch <= 11; patch += 1) {
+    const entry = { ...ENTRY, version: `0.1.${patch}` };
+    releases.set(patch, { entry, prepared: await prepare(root, entry) });
+  }
+  const active = store.activePath(root, ENTRY);
+  for (const [previous, selected, backup] of [
+    [1, 2, 'aily-dev-backup'],
+    [3, 4, 'aily-next-backup'],
+    [5, 6],
+  ]) {
+    for (const patch of [previous, selected]) {
+      const { entry, prepared } = releases.get(patch);
+      store.activate(root, entry, prepared, { mode: 'pinned' });
+    }
+    if (backup) fs.copyFileSync(active, `${active}.${backup}`);
+  }
+
+  const candidates = store.collectObsoleteVersions(root, releases.get(11).entry);
+  assert.deepEqual(candidates.sort((a, b) => a.version.localeCompare(b.version)), [7, 8].map(patch => {
+    const { entry, prepared } = releases.get(patch);
+    return { version: entry.version, directory: prepared.project };
+  }));
+  assert.equal(store.readSelection(root, ENTRY).version, '0.1.6');
+  for (const { prepared } of releases.values()) assert.ok(fs.existsSync(prepared.project));
+});
+
+test('skips local builds, unverified directories and junctions when recognizing releases', async t => {
+  const { temporary, root } = fixture(t);
+  const obsoleteEntry = { ...ENTRY, version: '0.1.30' };
+  const obsolete = await prepare(root, obsoleteEntry, { installMode: 'legacy-npm' });
+  for (const version of ['0.1.31', '0.1.32']) await prepare(root, { ...ENTRY, version });
+  const current = await prepare(root);
+  store.activate(root, ENTRY, current);
+  await prepare(root, { ...ENTRY, version: '0.2.0-dev' }, { distribution: null, installMode: 'development' });
+  await prepare(root, { ...ENTRY, version: '0.2.0-next' }, { distribution: null, installMode: 'next' });
+
+  const parent = path.dirname(current.project);
+  const unverified = await prepare(root, { ...ENTRY, version: '0.2.2' });
+  fs.rmSync(path.join(unverified.project, 'ready.json'));
+  const outside = await prepare(path.join(temporary, 'outside'), { ...ENTRY, version: '0.2.3' });
+  fs.symlinkSync(outside.project, path.join(parent, outside.version), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.mkdirSync(path.join(parent, '.staging-0.2.4'));
+
+  const active = store.activePath(root, ENTRY);
+  fs.writeFileSync(`${active}.aily-dev-backup`, JSON.stringify({ devActiveOriginallyMissing: true }));
+  fs.writeFileSync(`${active}.aily-next-backup`, JSON.stringify({ nextActiveOriginallyMissing: true }));
+
+  assert.deepEqual(store.collectObsoleteVersions(root, ENTRY), [{ version: obsolete.version, directory: obsolete.project }]);
+  assert.ok(fs.existsSync(outside.project));
+});
+
+test('does not nominate releases when a selector cannot be verified', async t => {
+  const { root } = fixture(t);
+  for (const version of ['0.1.30', '0.1.31', '0.1.32']) await prepare(root, { ...ENTRY, version });
+  store.activate(root, ENTRY, await prepare(root));
+  const active = store.activePath(root, ENTRY);
+  const original = fs.readFileSync(active);
+  assert.equal(store.collectObsoleteVersions(root, ENTRY).length, 1);
+
+  for (const file of [active, `${active}.aily-dev-backup`, `${active}.aily-next-backup`]) {
+    fs.writeFileSync(file, '{');
+    let candidates;
+    try {
+      candidates = store.collectObsoleteVersions(root, ENTRY);
+    } catch (error) {
+      assert.ok(error instanceof SyntaxError, `Unexpected error for ${path.basename(file)}: ${error.message}`);
+      candidates = [];
+    }
+    assert.deepEqual(candidates, [], path.basename(file));
+    if (file === active) fs.writeFileSync(active, original);
+    else fs.rmSync(file);
+  }
+});

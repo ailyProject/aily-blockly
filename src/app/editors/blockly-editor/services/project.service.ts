@@ -27,6 +27,7 @@ import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-s
 import { AbsOperationJournal, type NativeSaveOperationRef } from '../../../integrations/blockly/abs/abs-operation-journal';
 import type { RuntimePublicationObservation } from '../../../integrations/blockly/abs/abs-runtime-publication-observation';
 import { settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
+import { readSavedAbiAfterRecoveryFailure } from '../../../integrations/blockly/abs/abs-project-open';
 import type { AbsLoadNormalizationInput, AbsLoadNormalizationOutcome } from '../../../integrations/blockly/abs/abs-load-normalization';
 import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent, requireProjectProgramPublication } from '@shared/public-api';
 import { publishAbsRecoveryCopy } from '../../../integrations/blockly/abs/abs-recovery-copy';
@@ -235,6 +236,18 @@ export class _ProjectService {
     } catch { return undefined; }
   }
 
+  /** Only the exact bytes acknowledged by native load may stand for its
+   * normalized document. Re-reading a legacy file can allocate new identities. */
+  hasUnsavedChangesAtLoadedAbi(project: string, diskText: string, document: BlocklyProjectDocument): boolean | undefined {
+    const context = this.captureSaveContext(project);
+    context.assertCurrent();
+    const scope = this.cleanScope();
+    if (this.cleanState.readSavedAbiRecipe(scope) !== diskText) return undefined;
+    const known = this.cleanState.compare(scope, diskText, this.blocklyService.getProjectAbiForSave(document));
+    context.assertCurrent();
+    return known;
+  }
+
   /** Pair the prepared source with the acknowledged hydrated save. Native capture verifies the saved bytes independently. */
   async compareSavedBuildDocument(project: string, documentText: string) {
     try {
@@ -423,7 +436,9 @@ export class _ProjectService {
     try { await discard.commit(); } finally { discard.dispose(); }
   }
 
-  async prepareRetainedDiscard(path: string): Promise<{ commit(): Promise<void>; dispose(): void }> {
+  async prepareRetainedDiscard(path: string, mode: 'discard' | 'reload' = 'discard'): Promise<{
+    commit(): Promise<void>; dispose(): void; preserveRecovery?: true;
+  }> {
     const context = this.captureSaveContext(path);
     return this.blocklyService.runRecoveryCopyOperation(async () => {
       context.assertCurrent();
@@ -434,10 +449,17 @@ export class _ProjectService {
         if (disposed || this.currentProjectPath !== path) throw new Error('The accepted recovery discard expired.');
       };
       const port = await openAbsHostStorage(path, guard);
-      await settleAbsProjectTransaction(port, path, guard);
-      const journal = new AbsOperationJournal(port, path), retained = await journal.inspect();
-      return { commit: async () => { guard(); if (retained) await journal.finish(retained.id, guard); },
-        dispose: () => { disposed = true; } };
+      const journal = new AbsOperationJournal(port, path);
+      const dispose = () => { disposed = true; };
+      try {
+        await settleAbsProjectTransaction(port, path, guard);
+        const retained = await journal.inspect();
+        return { commit: async () => { guard(); if (mode === 'discard' && retained) await journal.finish(retained.id, guard); }, dispose };
+      } catch (error) {
+        await readSavedAbiAfterRecoveryFailure(port, error, guard);
+        // Preserve the unverified recovery record and its dependency state.
+        return { commit: async () => { guard(); }, dispose, preserveRecovery: true };
+      }
     });
   }
 

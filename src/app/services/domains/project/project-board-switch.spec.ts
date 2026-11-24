@@ -77,9 +77,9 @@ describe('board switch project persistence', () => {
     expect(manifest.dependencies['@aily-project/board-old']).toBeUndefined();
     expect(service.finishBoardSwitchWithoutPackageWatcher).toHaveBeenCalledTimes(1);
   });
-  it('lets Coder switch to a board that only provides the shared template', async () => {
+  it('uses the shared manifest when the dedicated Coder template only provides project files', async () => {
     const service: any = fixture();
-    window['path'].isExists = (value: string) => value.endsWith('/template');
+    window['path'].isExists = (value: string) => value.endsWith('/template_arduino') || value.endsWith('/template/package.json');
     window['fs'].readFileSync = jasmine.createSpy('read').and.returnValue(JSON.stringify({
       board: 'Shared Template Board', dependencies: { [target]: '1', '@aily-project/lib-core': '1' },
     }));
@@ -105,7 +105,7 @@ describe('board switch project persistence', () => {
   });
   it('does not require a source template when switching an existing Coder project', async () => {
     const service: any = fixture();
-    window['path'].isExists = (value: string) => value.endsWith('/template_arduino');
+    window['path'].isExists = (value: string) => /\/template_arduino(?:\/package\.json)?$/.test(value);
     window['fs'].existsSync = (value: string) => !value.endsWith('/project.aci');
     service.isAilyCodeProject = () => true;
     service.getPackageJson = async () => ({ name: 'coder-project', type: 'coder', entry: 'firmware/app.cpp',
@@ -122,7 +122,7 @@ describe('board switch project persistence', () => {
   });
   it('replaces only receipted Coder template libraries while retaining user additions and version overrides', async () => {
     const service: any = fixture();
-    window['path'].isExists = (value: string) => value.endsWith('/template_arduino');
+    window['path'].isExists = (value: string) => /\/template_arduino(?:\/package\.json)?$/.test(value);
     window['fs'].readFileSync = jasmine.createSpy('read').and.callFake((value: string) => JSON.stringify(
       value.includes('/board-old/')
         ? { dependencies: { '@aily-project/board-old': '1', '@aily-project/lib-onebutton': '^1', '@aily-project/lib-display': '^1' } }
@@ -181,9 +181,10 @@ describe('board switch project persistence', () => {
     service.normalizeAilyCodeBoardDepRange = (ProjectService.prototype as any).normalizeAilyCodeBoardDepRange;
     (ProjectService.prototype as any).updateNewProjectPackageJson.call(service, '/project', {
       name: 'My Coder Project', board: { name: target, version: '1' },
-    }, { coderTemplate: true });
+    }, { coderEntry: 'src/main.ino' });
     const manifest = JSON.parse(window['fs'].writeFileSync.calls.mostRecent().args[1]);
     expect(manifest.type).toBe('coder');
+    expect(manifest.entry).toBe('src/main.ino');
     expect(manifest.coderBoardTemplateDependencies).toEqual({
       schemaVersion: 1, boardPackageName: target, dependencies: { '@aily-project/lib-core': '1' },
     });

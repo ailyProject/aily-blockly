@@ -6,7 +6,7 @@ import { ProcessState, NoticeService } from '@core/app-shell/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
 import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
-import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { CLOUD_BUILD_LOCAL_REQUESTED, isCloudBuildServiceFailure } from '../../../utils/cloud-build-progress.utils';
 import { NpmService } from '../../../services/domains/dependencies/public-api';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
@@ -74,6 +74,24 @@ describe('Blockly compile and upload handoff', () => {
     version: 1, executionId: '11111111-1111-4111-8111-111111111111',
     buildRequestId: 'prepared-build', inputDigest: 'a'.repeat(64), abiHash: 'sha256:' + 'b'.repeat(64),
   } as const;
+
+  it('passes the exact live-verified shared firmware to BLE even when a newer receipt points to the same directory', async () => {
+    const f = uploadFixture();
+    const selected = { ...firmware, layout: 'shared', logicalProjectPath: '/project', currentProjectPath: '/project',
+      buildPath: '/project/.build', preprocessPath: '/project/.temp/preprocess.json' };
+    const latest = { ...selected, executionId: '22222222-2222-4222-8222-222222222222', buildRequestId: 'another-build' };
+    const resolveExecution = jasmine.createSpy('resolveBuildExecution').and.callFake((_project, config) => config ? selected : latest);
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, sharedBuildExecutionVersion: 1, resolveBuildExecution: resolveExecution });
+    f.uploader.serialService.currentPortInfo = { type: 'ble' };
+    f.uploader.uploaderBleService = { authorizeDevice: async () => {} };
+    f.uploader.workflowService.startUpload = () => true;
+    f.uploader.uploadByBle = jasmine.createSpy('uploadByBle').and.resolveTo({ state: 'done' });
+
+    expect(await f.run()).toEqual({ state: 'done' });
+    expect(resolveExecution).toHaveBeenCalledOnceWith('/project', jasmine.objectContaining({ code: f.prepared.code }));
+    expect(f.uploader.uploadByBle.calls.mostRecent().args[3]).toBe(selected);
+    expect(f.builder.build).not.toHaveBeenCalled();
+  });
 
   function exposePreparedExecution(buildInput = firmware) {
     const inspect = jasmine.createSpy('inspectBuildExecution').and.returnValue({
@@ -335,8 +353,8 @@ describe('Blockly compile and upload handoff', () => {
       compileValidationService: { triggerAfterSuccessfulCompile() {} },
       appendCompileLog() {}, saveBuildInfo: async () => {}, handleCompileError() {},
     });
-    const start = async (requestId?: string) => {
-      const result = service.build(undefined, requestId).catch((error: any) => error);
+    const start = async (requestId?: string, preparation = {}) => {
+      const result = service.build(undefined, requestId, {}, preparation).catch((error: any) => error);
       // Let asynchronous macro hashing/publication and request preparation finish.
       for (let n = 0; n < 100 && !service.cmdService.spawn.calls.count(); n++) {
         await new Promise(resolve => setTimeout(resolve, 1));
@@ -679,7 +697,65 @@ describe('Blockly compile and upload handoff', () => {
     expect(operation.release).toHaveBeenCalledTimes(1);
   });
 
-  for (const ending of ['cloud', 'local', 'unsupported', 'cancel']) it(`keeps the same Blockly caller through a cloud/local round trip ending in ${ending}`, async () => {
+  for (const stage of ['board-support', 'target-profile', 'cloud-run', 'changed', 'nested-upload', 'sdk-unsupported']) {
+    it(`reports Blockly cloud failure without starting local compilation: ${stage}`, async () => {
+      const f = compileFixture();
+      const operation = { local: false, isNested: stage === 'nested-upload', useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
+      f.service.projectService.beginBuildBackendOperation = () => operation;
+      f.service.projectService.isCloudBuild = () => !operation.local;
+      f.service.configService.getCompileBackend = () => 'cloud';
+      const offline = Object.assign(new Error('Gateway unavailable'), { code: 'gateway_closing', httpStatus: 503 });
+      Object.assign(f.service.npmService, {
+        prepareCompileBackend: async () => { if (stage === 'board-support') throw offline; },
+        ensureCloudLibrarySources: async () => {},
+        prepareLocalCompileBackend: jasmine.createSpy('prepareLocal').and.callFake(async () => {
+          expect(operation.local).toBeTrue();
+          expect(operation.release).not.toHaveBeenCalled();
+        }),
+      });
+      if (stage === 'target-profile') f.service.projectService.getBoardConfigMenu.and.rejectWith(offline);
+      f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.callFake(async () => {
+        if (stage === 'changed') f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+        if (stage === 'sdk-unsupported') throw Object.assign(new Error('Unsupported SDK'), { code: 'CI_RESOURCE_UNSUPPORTED' });
+        throw offline;
+      });
+      let guard: (() => void) | undefined;
+      const { result } = await f.start('cloud-service-failure', { localFallback: {
+        recordCloudFailure: (error: unknown, check: () => void) => { if (isCloudBuildServiceFailure(error)) guard = check; },
+      } });
+      expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+      expect(f.service.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+      const completed = await result;
+      expect(completed.state).toBe('error');
+      expect(completed.buildLog.requestId).toBe('cloud-service-failure');
+      if (['board-support', 'target-profile', 'cloud-run'].includes(stage)) expect(guard).not.toThrow();
+      else if (stage === 'changed') expect(guard).toThrowError(/canvas changed/);
+      else expect(guard).toBeUndefined();
+      if (stage === 'sdk-unsupported') expect(completed.code).toBe('CI_RESOURCE_UNSUPPORTED');
+      expect(operation.release).toHaveBeenCalledTimes(1);
+      expect(f.service.configService.getCompileBackend()).toBe('cloud');
+    });
+  }
+
+  it('uses local Blockly compilation only when the AI request carries a checked cloud receipt', async () => {
+    const f = compileFixture();
+    const operation = { local: false, isNested: false, useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
+    f.service.projectService.beginBuildBackendOperation = () => operation;
+    f.service.projectService.isCloudBuild = () => !operation.local;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService.prepareLocalCompileBackend = jasmine.createSpy('prepareLocal').and.resolveTo();
+    const assertCurrent = jasmine.createSpy('assertCurrent');
+    const { result } = await f.start('explicit-local', { localFallback: { local: { fromRequestId: 'original-cloud', assertCurrent } } });
+    expect(f.service.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
+    expect(assertCurrent).toHaveBeenCalledTimes(3);
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    const completed = await result;
+    expect(completed.state).toBe('done');
+    expect(completed.buildLog.requestId).toBe('explicit-local');
+    expect(f.files.get(completed.buildLog.path)).toContain('AI requested local compilation after cloud build original-cloud');
+  });
+
+  for (const ending of ['cloud', 'local', 'unsupported', 'outage', 'cancel']) it(`keeps the same Blockly caller through a cloud/local round trip ending in ${ending}`, async () => {
     const f = compileFixture();
     const operation = { local: false, useLocal() { this.local = true; }, useCloud() { this.local = false; }, release: jasmine.createSpy('release') };
     f.service.projectService.beginBuildBackendOperation = () => operation;
@@ -698,6 +774,7 @@ describe('Blockly compile and upload handoff', () => {
       getProjectDependencySession: () => ({ projectPath: '/project' }), assertProjectDependencySession() {},
       resolveCompileBackend: async () => {
         if (ending === 'unsupported') throw Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+        if (ending === 'outage') throw Object.assign(new Error('Cloud worker offline'), { code: 'CLOUD_BOARD_OFFLINE' });
         return 'cloud';
       },
     });
@@ -730,8 +807,8 @@ describe('Blockly compile and upload handoff', () => {
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
     const completed = await result;
-    expect(completed.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
-    expect(f.service.metrics.record.calls.allArgs()).toEqual(ending === 'cancel' || ending === 'unsupported'
+    expect(completed.state).toBe(ending === 'cancel' ? 'warn' : ['unsupported', 'outage'].includes(ending) ? 'error' : 'done');
+    expect(f.service.metrics.record.calls.allArgs()).toEqual(['cancel', 'unsupported', 'outage'].includes(ending)
       ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
     if (ending === 'unsupported') {
       expect(completed.text).toContain('Board no longer supports cloud builds');
@@ -739,7 +816,7 @@ describe('Blockly compile and upload handoff', () => {
       expect(operation.local).toBeFalse();
       expect(f.service.localSwitchAction).toBeUndefined();
     }
-    expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
+    expect(clouds).toBe(['cancel', 'unsupported', 'outage'].includes(ending) ? 1 : 2);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);
   });

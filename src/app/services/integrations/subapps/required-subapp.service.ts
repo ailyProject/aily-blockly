@@ -245,7 +245,7 @@ export class RequiredSubappService {
 
     this.setOperation(id, { status: 'installing' });
     try {
-      if (entry.installed) {
+      if (entry.installed || entry.uninstalling) {
         await this.subappManager.reinstall(id, { forceClose: true });
       } else {
         await this.subappManager.install(id);

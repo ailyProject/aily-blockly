@@ -15,6 +15,7 @@ fs.mkdirSync(resultRoot, { recursive: true });
 const output = fs.mkdtempSync(path.join(resultRoot, 'run-'));
 const appdata = path.join(output, 'appdata');
 const installRoot = path.join(appdata, 'npm-global/app');
+const otherId = 'publication-fixture';
 const source = version => path.join(installRoot, 'store/subapp-aily-chat', version, 'source');
 const report = { platform: process.platform, output, scope: 'production Electron IPC/preload/renderer service plus real fixture runtime; isolated contract shell', scenarios: [] };
 let application, page, log;
@@ -31,12 +32,12 @@ async function finish(expectedError = null) {
   else assert.equal(outcome.error, null);
   return outcome;
 }
-async function launch(expected) {
-  const config = await page.evaluate(async () => {
-    const selected = await window.electronAPI.subapps.prepareLaunch({ id: 'aily-chat' });
+async function launch(expected, id = 'aily-chat') {
+  const config = await page.evaluate(async id => {
+    const selected = await window.electronAPI.subapps.prepareLaunch({ id });
     try { return selected.config; }
     finally { await window.electronAPI.subapps.finishLaunch(selected.token); }
-  });
+  }, id);
   assert.equal(config.version, expected);
   assert.equal(await api('execute', config), expected);
 }
@@ -97,10 +98,13 @@ try {
   await api('arm', '1.0.0', 'transient'); await start('install'); await finish(); await launch('1.0.0');
   assert.equal((await api('stats')).observed.length, 2);
   record('first install retries real native rename denials', await api('stats'));
+  await page.evaluate(id => window.electronAPI.subapps.install({ id }), otherId);
 
   await api('arm', '1.0.0', 'gated'); await start('reinstall'); await queueLaunchDuringRetry();
+  await launch('1.0.0', otherId);
+  assert.equal(await page.evaluate(() => window.queuedLaunchSettled), false, 'only the package being replaced should wait');
   await api('unlock'); await finish(); await finishQueuedLaunch('1.0.0');
-  record('concurrent IPC launch waits for reinstall publication', await api('stats'));
+  record('same-package launch waits for publication while a different package starts', await api('stats'));
 
   const marker = path.join(source('1.0.0'), 'rollback-marker.txt'); fs.writeFileSync(marker, 'preserve');
   await api('arm', '1.0.0', 'persistent'); await start('reinstall'); await queueLaunchDuringRetry();

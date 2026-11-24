@@ -62,7 +62,8 @@ test('a current snapshot overrides a stale .temp entry and rejects invalid or am
 });
 
 test('copies generated source, user headers, components, configuration and outer dependencies', t => {
-  const {source}=fixture(t);
+  const {source,write}=fixture(t);
+  write('project.aci', 'data belonging to the source project');
   const original=fs.readFileSync(path.join(source,'package.json'),'utf8');
   const target=convertBlocklyProjectToCoder(source);
   const manifest=JSON.parse(fs.readFileSync(path.join(target,'package.json'),'utf8'));
@@ -79,9 +80,11 @@ test('copies generated source, user headers, components, configuration and outer
   for(const file of ['sketch/src/variables.h','sketch/src/secondary.cpp','components/local/src/helper.cpp','local/package.json']) {
     assert.ok(fs.existsSync(path.join(target,file)),file);
   }
-  for(const file of ['project.abi','project.aci','node_modules','.temp','.aily','sketch/package.json','sketch/sketch.ino','sketch/secondary.cpp','src']) {
+  for(const file of ['project.abi','node_modules','.temp','.aily','sketch/package.json','sketch/sketch.ino','sketch/secondary.cpp','src']) {
     assert.equal(fs.existsSync(path.join(target,file)),false,file);
   }
+  assert.equal(fs.readFileSync(path.join(target,'project.aci'),'utf8'),'');
+  assert.equal(fs.readFileSync(path.join(source,'project.aci'),'utf8'),'data belonging to the source project');
   assert.equal(fs.readFileSync(path.join(source,'package.json'),'utf8'),original);
   assert.ok(fs.existsSync(path.join(source,'project.abi')));
 });

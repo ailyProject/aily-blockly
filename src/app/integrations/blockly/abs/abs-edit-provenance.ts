@@ -4,6 +4,11 @@ import { indexAbsSyntax } from './abs-identity-map';
 /** UTF-16 text splices captured by the edit tool, never block IDs or ABS metadata. */
 export interface AbsSourceEdit { start: number; end: number; text: string }
 export type AbsSourceEdits = AbsSourceEdit[][];
+/** Host-only coordinate origin for an exact accepted author input. */
+export interface AbsSourceEditOrigin {
+  source: string;
+  anchors: Array<{ originalStart: number; start: number; end: number }>;
+}
 
 function assertAbsSourceEditRanges(value: unknown): asserts value is AbsSourceEdits | undefined {
   if (value === undefined) return;
@@ -34,21 +39,26 @@ export function assertAbsSourceEdits(value: unknown): asserts value is AbsSource
   }
 }
 
-/** Only unchanged call-name tokens carry identity. Diagnostics share the same
+/** Only unchanged call tokens (or verified literal tokens) carry identity. Diagnostics share the same
  * exact replay used for matching, not a second heuristic. */
 export function inspectAbsSourceEdits(before: string, after: string, original: AbsSyntaxNode[], edited: AbsSyntaxNode[],
-  batches?: AbsSourceEdits) {
+  batches?: AbsSourceEdits, origin?: AbsSourceEditOrigin) {
   // Fixed CandidateRefs are checksum/byte-bound and replayed by the Host reader;
   // old external proofs already passed bounded wire admission. Both use these
   // same range, token-identity and complete replay checks.
   assertAbsSourceEditRanges(batches);
   const matches = new Map<AbsSyntaxNode, AbsSyntaxNode>();
   const replaced = new Set<AbsSyntaxNode>();
-  if (!batches) return { matches, replaced };
-  const anchors = indexAbsSyntax(original).filter(({ node }) => before.slice(node.start, node.start + node.type.length) === node.type)
-    .map(({ node }) => ({ node, start: node.start, end: node.start + node.type.length, alive: true }));
-  let source = before;
-  for (const batch of batches) {
+  if (!batches && !origin) return { matches, replaced };
+  const authored = origin && new Map(origin.anchors.map(anchor => [anchor.originalStart, anchor]));
+  const anchors = indexAbsSyntax(original).flatMap(({ node }) => {
+    const end = node.start + node.type.length;
+    const range = authored ? authored.get(node.start)
+      : before.slice(node.start, end) === node.type ? { start: node.start, end } : undefined;
+    return range ? [{ node, start: range.start, end: range.end, alive: true }] : [];
+  });
+  let source = origin?.source ?? before;
+  for (const batch of batches ?? []) {
     if (batch.some(edit => edit.end > source.length)) throw new AbsSyncError('ABS_SOURCE_EDITS_INVALID', 'ABS edit range exceeds its source.');
     for (const anchor of anchors) {
       if (!anchor.alive) continue;

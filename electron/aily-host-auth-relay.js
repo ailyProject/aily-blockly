@@ -7,27 +7,43 @@ const {
 
 // The main process owns pending requests; renderer refresh cannot own their lifetime.
 class AilyHostAuthRelay {
-    constructor({ sendToRenderer, sendToProcess, timeoutMs = 15000, maxPending = 128 }) {
+    constructor({ sendToRenderer, sendToProcess, timeoutMs = 15000, maxPending = 128,
+        reportFailure = event => console.warn('[DAILY_HOST_AUTH_FAILURE]', event) }) {
         this.sendToRenderer = sendToRenderer;
         this.sendToProcess = sendToProcess;
         this.timeoutMs = timeoutMs;
         this.maxPending = maxPending;
+        this.reportFailure = reportFailure;
         this.pending = new Map();
         this.ready = false;
         this.closed = false;
     }
 
     reply(request, result) {
-        void this.sendToProcess(request.streamId, {
-            channel: AILY_HOST_AUTH_CHANNEL, type: 'response', requestId: request.requestId,
-            result: normalizeAilyHostAuthResult(result),
+        const normalized = normalizeAilyHostAuthResult(result);
+        const evidence = { operation: request.operation, correlationId: request.correlationId,
+            durationMs: Math.max(0, Math.round(performance.now() - request.startedAt)) };
+        if (!normalized.ok) {
+            Object.assign(normalized, evidence);
+            if (normalized.errorCode !== 'AUTH_SIGNED_OUT') this.reportFailure({
+                code: normalized.errorCode, phase: normalized.phase, ...evidence,
+            });
+        }
+        const failedDelivery = () => this.reportFailure({
+            code: 'HOST_AUTH_PROCESS_UNAVAILABLE', phase: 'process-ipc', ...evidence,
         });
+        try { void Promise.resolve(this.sendToProcess(request.streamId, {
+            channel: AILY_HOST_AUTH_CHANNEL, type: 'response', requestId: request.requestId,
+            result: normalized,
+        })).catch(failedDelivery); }
+        catch { failedDelivery(); }
     }
 
     handle(toolId, streamId, message) {
         const parsed = parseAilyHostAuthRequest(toolId, message);
         if (!parsed.handled) return false;
-        const request = { ...parsed, streamId, relayId: randomUUID() };
+        const correlationId = randomUUID();
+        const request = { ...parsed, streamId, relayId: correlationId, correlationId, startedAt: performance.now() };
         if (!parsed.valid) {
             this.reply(request, parsed.result);
             return true;

@@ -28,6 +28,23 @@ interface CloudBuildProgressCallbacks {
 
 export const CLOUD_BUILD_LOCAL_REQUESTED = 'CLOUD_BUILD_LOCAL_REQUESTED';
 
+export interface BuildLocalFallbackControl {
+  recordCloudFailure?: (error: unknown, assertCurrent: () => void | Promise<void>) => void;
+  local?: { fromRequestId: string; assertCurrent: () => void | Promise<void> };
+}
+
+const KNOWN_CLOUD_WORKER_FAILURES = new Set([
+  'CLOUD_BOARD_OFFLINE', 'NODE_CAPACITY_EXCEEDED', 'node_restarted', 'offer_lost', 'task_missing', 'worker_stopped',
+]);
+const GATEWAY_SERVER_FAILURES = new Set(['GATEWAY_HTTP_ERROR', 'GATEWAY_ERROR', 'internal_error', 'gateway_closing']);
+
+export function isCloudBuildServiceFailure(error: unknown): boolean {
+  const fault = error as { code?: string; httpStatus?: number; cleanupConfirmed?: boolean; remoteCleanupConfirmed?: boolean } | undefined;
+  if (!fault?.code || fault.cleanupConfirmed === false || fault.remoteCleanupConfirmed === false) return false;
+  return KNOWN_CLOUD_WORKER_FAILURES.has(fault.code)
+    || (GATEWAY_SERVER_FAILURES.has(fault.code) && typeof fault.httpStatus === 'number' && [500, 502, 503, 504].includes(fault.httpStatus));
+}
+
 interface CloudBuildRunResult {
   success?: boolean;
   reused?: boolean;
