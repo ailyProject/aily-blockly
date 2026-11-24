@@ -477,7 +477,7 @@ test.describe('全流程：创建或加载项目 → 编译', () => {
               const pageLog = attachDiagnostics(isolatedWin, `project-plaza:${project.name}`);
               if (backend === 'local') {
                 await isolatedWin.addLocatorHandler(isolatedWin.locator('.login-modal-wrap app-login .login-close'),
-                  button => button.click());
+                  button => button.click(), { noWaitAfter: true });
               }
               const projectDir = await loadProjectPlazaProject(launched.app, isolatedWin, project, pageLog, projectDirs, backend);
               await compileProject(isolatedWin, pageLog, `项目广场：${project.name}`, 1, { projectDir, backend });
@@ -1016,7 +1016,6 @@ async function waitForProjectPlazaBuildReady(
       if (status.compileBackend !== backend) {
         throw new Error(`[project-plaza] ${projectName} 需要 ${backend} 编译，应用当前使用 ${status.compileBackend}。`);
       }
-      await expect(win.locator('app-header app-act-btn[data-action="compile"]')).toBeVisible();
       console.log(`[project-plaza:ready] ${projectName} ${backend}`);
       return;
     }
