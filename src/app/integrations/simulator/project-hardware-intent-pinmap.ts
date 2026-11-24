@@ -22,7 +22,10 @@ export async function readProjectHardwareBoardPinmap(packagePath: string, board:
 
       const functions = Array.isArray(pin['functions']) ? pin['functions'].map(record)
         .filter(fn => fn['disabled'] !== true && fn['visible'] !== false)
-        .map(fn => ({ name: fn['name'], type: fn['type'] })) : [];
+        .map(fn => ({
+          name: typeof fn['name'] === 'string' ? fn['name'].trim() : fn['name'],
+          type: fn['type'],
+        })) : [];
 
       return { id: pin['id'], x: Number(pin['x']), y: Number(pin['y']),
         layout: pin['layout'] === 'vertical' ? 'vertical' : 'horizontal', functions };

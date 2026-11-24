@@ -1062,6 +1062,23 @@ function getOpenedProjectPathFromWindow() {
   }
 }
 
+function getSimulatorProjectName(sender) {
+  if (sender !== mainWindow?.webContents) return '';
+
+  const root = getOpenedProjectPathFromWindow();
+
+  if (!root) return '';
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+
+    return [manifest.nickname, manifest.name].find(value => typeof value === 'string' && value.trim())?.trim()
+      || path.basename(root);
+  } catch {
+    return path.basename(root);
+  }
+}
+
 function rendererCommandAvailability() {
   if (!mainWindow || !mainWindow.webContents || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
     return 'closed';
@@ -3296,7 +3313,7 @@ function createWindow() {
   const subappReleaseTrustRoot = loadBundledSubappReleaseTrustRoot();
 
   registerSubappManagerHandlers(() => mainWindow, {
-    browserExecutionRegistry,
+    browserExecutionRegistry: { ...browserExecutionRegistry, getSimulatorProjectName },
     releaseTrustPolicies: subappReleaseTrustRoot.policies,
     isCoderProjectOpen: () => getBuildProduct() === 'coder'
       && !!(projectContextState.workspace || heldProjectLockNormalized || coderOpenProjects.length),
