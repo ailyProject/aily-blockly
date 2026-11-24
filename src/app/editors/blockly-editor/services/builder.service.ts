@@ -19,7 +19,7 @@ import { type BlockCodeMapping } from '../components/blockly/generators/arduino/
 import { BlocklyService } from './blockly.service';
 import { _ProjectService as BlocklyProjectService } from './project.service';
 
-import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { canDeferGeneratedArtifactRecovery, isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { BuilderService, CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint, type BuildInput, type BlocklyBuildInput, type BuildSnapshot, type ResolvedBuildExecution } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { firstValueFrom } from 'rxjs';
@@ -1208,19 +1208,18 @@ export class _BuilderService {
     const python = normalizeProjectMode(this.projectService.currentPackageData) === 'python';
     if (!workspace || !projectPath || isCancelled()) return false;
     return this.blocklyService.runWithBackgroundProjectCode(async (prepared, assertCurrent) => {
-      if (this.isolatedBuilds() && !this.isCloudBuild()) {
-        assertCurrent();
-        this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
-        return;
+      if (!this.isolatedBuilds() || this.isCloudBuild()) {
+        try {
+          await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
+          assertCurrent();
+          await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, python ? undefined : prepared.code);
+          assertCurrent();
+          if (python) await this.writeTextFileAtomic(this.electronService.pathJoin(projectPath, PYTHON_PROJECT_ENTRY), prepared.code);
+        } catch (error) {
+          if (!await canDeferGeneratedArtifactRecovery(projectPath, error)) throw error;
+        }
       }
-      await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
       assertCurrent();
-      await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, python ? undefined : prepared.code);
-      assertCurrent();
-      if (python) {
-        await this.writeTextFileAtomic(this.electronService.pathJoin(projectPath, PYTHON_PROJECT_ENTRY), prepared.code);
-        assertCurrent();
-      }
       this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
     }, () => isCancelled() || projectPath !== this.projectService.currentProjectPath
       || isBlocklyWorkspaceInteracting(workspace), true);
