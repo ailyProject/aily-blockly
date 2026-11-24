@@ -25,6 +25,51 @@ test('materialized checks bind exact UTF-8 input and detect a changed-and-restor
     fs.unlinkSync(entry); fs.renameSync(alternate, entry);
     assert.throws(() => captureBlocklyCompileSource(f.config, entry, captured), { code: 'BUILD_SOURCE_STALE' });
 });
+test('shared Blockly staging preserves identical files and prunes removed or replaced inputs', async t => {
+    const f = fixture(t);
+    const header = 'variables_main-12345678.h';
+    const oldHeader = 'objects_old-12345678.h';
+    const retainedInput = 'nested/保留.h';
+    const removedInput = 'nested/removed.cpp';
+    f.config.execution = { layout: 'shared' };
+    f.config.generatedArtifacts = [{ fileName: header, content: '#define VALUE 1' }, { fileName: oldHeader, content: '' }];
+    f.put(`src/${header}`, 'obsolete declaration on disk');
+    f.put('src/sketch.ino', 'obsolete sketch on disk');
+    f.put(`src/${retainedInput}`, 'unchanged user header');
+    f.put(`src/${removedInput}`, 'removed user source');
+    f.put('src/flipped/old.h', 'old nested source');
+    const filename = await prepareCompileSource(f.config);
+    const destination = path.dirname(filename);
+    const entry = name => path.join(destination, name);
+    const stable = ['sketch.ino', header, retainedInput];
+    for (const name of stable) fs.utimesSync(entry(name), 1_600_000_000, 1_600_000_000);
+    const stats = name => {
+        const { ino, size, mtimeMs, ctimeMs } = fs.statSync(entry(name));
+        return { ino, size, mtimeMs, ctimeMs };
+    };
+    const before = stable.map(stats);
+    const proof = captureBlocklyCompileSource(f.config, filename);
+    assert.equal(await prepareCompileSource(f.config), filename);
+    assert.deepEqual(stable.map(stats), before);
+    assert.deepEqual(captureBlocklyCompileSource(f.config, filename, proof), proof);
+    assert.equal(fs.readFileSync(entry(header), 'utf8'), '#define VALUE 1');
+
+    f.config.code = f.config.code.replace('setup()', 'setup( )');
+    f.config.generatedArtifacts = [{ fileName: header, content: '#define VALUE 2' }];
+    fs.unlinkSync(path.join(f.root, 'src', removedInput));
+    fs.rmSync(path.join(f.root, 'src/flipped'), { recursive: true });
+    f.put('src/flipped', 'replacement source file');
+    await prepareCompileSource(f.config);
+    assert.equal(fs.readFileSync(filename, 'utf8'), f.config.code);
+    assert.equal(fs.readFileSync(entry(header), 'utf8'), '#define VALUE 2');
+    assert.equal(fs.readFileSync(entry('flipped'), 'utf8'), 'replacement source file');
+    assert.equal(fs.existsSync(entry(oldHeader)), false);
+    assert.equal(fs.existsSync(entry(removedInput)), false);
+    assert.deepEqual(stats(retainedInput), before[2]);
+    assert.equal(fs.readFileSync(path.join(f.root, 'src/sketch.ino'), 'utf8'), 'obsolete sketch on disk');
+    assert.notDeepEqual(stats('sketch.ino'), before[0]);
+    assert.doesNotThrow(() => captureBlocklyCompileSource(f.config, filename));
+});
 test('Coder keeps its existing capture contract instead of applying Blockly paths or fingerprints', t => {
     const f = fixture(t, true);
     assert.equal(captureBlocklyCompileSource(f.config, path.join(f.root, 'sketch/src/main.cpp')), undefined);

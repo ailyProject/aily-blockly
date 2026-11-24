@@ -15,6 +15,7 @@ const execution = require('../../child/scripts/build-execution-workspace');
 const { createBuildWorkspaceSupervisor, acquireBuildWorkspace, releaseManagedBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
 const { holdWindowsFileWithoutDeleteSharing } = require('../fixtures/windows-file-sharing.cjs');
 
+const supported = process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64');
 const boardModule = '@aily-project/board-shared-test';
 const writeJson = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value)); };
 const readJson = file => JSON.parse(fs.readFileSync(file));
@@ -45,7 +46,9 @@ if (mode === 'old-host') {
   const lease = acquireBuildWorkspace(project, 'compile');
   execution.startBuildExecution(original, lease);
   lease.markDelegated();
-  const leaf = spawn(process.execPath, [__filename, 'descendant', project], { detached: true, windowsHide: true, stdio: 'ignore' });
+  const leaf = spawn(process.execPath, [__filename, 'descendant', project], {
+    detached: process.platform === 'win32', windowsHide: true, stdio: 'ignore',
+  });
   leaf.unref();
   writeJson(path.join(project, '.build', 'parent-ready.json'), { pid: process.pid });
   setInterval(() => {}, 1000);
@@ -69,7 +72,7 @@ if (mode === 'old-host') {
     .catch(error => { console.error(error); process.exitCode = 1; });
 } else {
   test('a restarted host retires the exact managed tree before a new request can reuse or clear the real .build', {
-    skip: process.platform !== 'win32' || process.arch !== 'x64', timeout: 35000,
+    skip: !supported, timeout: 35000,
   }, async () => {
     const temp = fs.realpathSync(os.tmpdir());
     const owned = fs.realpathSync(fs.mkdtempSync(path.join(temp, 'aily-shared-build-')));
@@ -83,7 +86,8 @@ if (mode === 'old-host') {
       writeJson(path.join(project, 'node_modules', boardModule, 'package.json'), { name: boardModule });
       writeJson(path.join(project, 'node_modules', boardModule, 'board.json'), { compilerParam: '-b test:test:test' });
       writeJson(path.join(project, 'project.abi'), { saved: 'unmodified' });
-      const old = execution.prepareBuildExecution(compileConfig(project, 'original-request'), undefined, 'compile', { shared: true });
+      const storageOptions = { shared: true, cache: process.platform === 'win32' };
+      const old = execution.prepareBuildExecution(compileConfig(project, 'original-request'), undefined, 'compile', storageOptions);
       originalHost = fork(__filename, ['old-host', project, old.configFilePath], {
         windowsHide: true, env: process.env, stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
       });
@@ -97,7 +101,7 @@ if (mode === 'old-host') {
 
       originalHost.kill('SIGKILL');
       await exited;
-      const next = execution.prepareBuildExecution(compileConfig(project, 'next-request'), undefined, 'compile', { shared: true });
+      const next = execution.prepareBuildExecution(compileConfig(project, 'next-request'), undefined, 'compile', storageOptions);
       await withSharedBuildAdmission(project, { operation: 'compile' }, () => {
         const previous = execution.inspectBuildExecution(project, 'original-request');
         const admitted = execution.validateSharedBuildLaunch(next.configFilePath, project, 'compile');

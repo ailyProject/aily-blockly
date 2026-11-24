@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { constants: { MAX_STRING_LENGTH } } = require('node:buffer');
 const { createHash, randomUUID } = require('node:crypto');
 const { sourceManifest } = require('./build-source-capture');
 const { captureLibrarySource } = require('./library-source-evidence');
@@ -154,17 +155,40 @@ function resolveEspSrUploadCommand(prepared, directory) {
     return command.replace(pair.pattern, '');
 }
 
-function readSharedPreprocess(root) {
+function readSharedPreprocess(root, { parse = true } = {}) {
     const filename = path.join(root, '.temp', 'preprocess.json');
     const stat = fs.lstatSync(filename);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024
+    // Builder writes the whole JSON result as a string. Use the runtime's
+    // string budget instead of a smaller project-specific recipe limit.
+    if (!stat.isFile() || stat.nlink !== 1 || !stat.size || stat.size > MAX_STRING_LENGTH
         || fs.realpathSync(filename) !== filename) throw new Error('Invalid shared build recipe.');
-    const bytes = fs.readFileSync(filename);
-    const prepared = JSON.parse(bytes.toString('utf8'));
+    const matches = current => current.isFile() && current.nlink === 1 && current.ino === stat.ino
+        && (current.dev === stat.dev || (process.platform === 'win32' && stat.dev === 0))
+        && current.size === stat.size && current.mtimeMs === stat.mtimeMs && current.ctimeMs === stat.ctimeMs;
+    // Verification only needs the digest of the previously validated recipe.
+    const buffer = Buffer.allocUnsafe(parse ? stat.size : Math.min(stat.size, 256 * 1024));
+    const digest = createHash('sha256');
+    const fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    try {
+        if (!matches(fs.fstatSync(fd))) throw new Error('Invalid shared build recipe.');
+        let read = 0;
+        while (read < stat.size) {
+            const offset = parse ? read : 0;
+            const count = fs.readSync(fd, buffer, offset, Math.min(buffer.length, stat.size - read), null);
+            if (!count) throw new Error('Invalid shared build recipe.');
+            digest.update(buffer.subarray(offset, offset + count));
+            read += count;
+        }
+        if (fs.readSync(fd, buffer, 0, 1, null) || !matches(fs.fstatSync(fd)) || !matches(fs.lstatSync(filename))
+            || fs.realpathSync(filename) !== filename) throw new Error('Invalid shared build recipe.');
+    } finally { fs.closeSync(fd); }
+    const fingerprint = digest.digest('hex');
+    if (!parse) return { fingerprint };
+    const prepared = JSON.parse(buffer.toString('utf8'));
     const directory = path.join(root, '.build');
     if (prepared.success !== true || typeof prepared.envVars?.BUILD_PATH !== 'string'
         || fs.realpathSync(prepared.envVars.BUILD_PATH) !== directory) throw new Error('Invalid shared build recipe.');
-    return { prepared, fingerprint: hash(bytes) };
+    return { prepared, fingerprint };
 }
 
 function captureGeneratedUploadFiles(root, sharedPreprocess) {
@@ -204,7 +228,7 @@ function readBlocklyUploadArtifacts(buildPath) {
     const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
     if (saved.schemaVersion !== 2) return []; // Older/custom builds retain safe discovery.
     if (saved.firmware !== captureFirmware(root) || !Array.isArray(saved.uploadFiles)
-        || (saved.executionId && saved.preprocess !== readSharedPreprocess(root).fingerprint)
+        || (saved.executionId && saved.preprocess !== readSharedPreprocess(root, { parse: false }).fingerprint)
         || saved.uploadFiles.some(file => typeof file !== 'string' || path.isAbsolute(file)
             || path.relative(directory, path.resolve(directory, file)).startsWith('..')
             || isRequestDirectory(path.relative(directory, path.resolve(directory, file))))) {
@@ -238,7 +262,7 @@ function canReuseBlocklyUpload(config, generatorDigest) {
         const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
         return saved.schemaVersion === 2 && typeof saved.firmware === 'string'
             && saved.executionId === sharedSlot(config)
-            && (!saved.executionId || saved.preprocess === readSharedPreprocess(root).fingerprint)
+            && (!saved.executionId || saved.preprocess === readSharedPreprocess(root, { parse: false }).fingerprint)
             && saved.inputs === captureBlocklyUploadInputs(config, generatorDigest) && saved.firmware === captureFirmware(root);
     } catch { return false; } // Missing/changed/unreadable inputs require compilation.
 }
