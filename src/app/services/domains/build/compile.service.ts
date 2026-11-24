@@ -22,7 +22,7 @@ import { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogRefere
 import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, buildSourceStale, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
-import { runCloudBuildWithProgress, cloudBuildProgressPresentation, type BuildLocalFallbackControl, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, runCloudBuildWithProgress, cloudBuildProgressPresentation, type BuildLocalFallbackControl, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 import {
@@ -146,6 +146,10 @@ export class CompileService {
     return this.compileAttemptWithBackend(options);
   }
 
+  runLocalCompileFromDisk(projectPath: string): Promise<DiskCompileResult> {
+    return this.compileAttemptWithBackend({ projectPath }, true);
+  }
+
   private async compileAttemptWithBackend(options: DiskCompileOptions, retryLocally = false): Promise<DiskCompileResult> {
     options = { ...options, requestId: options.requestId ?? crypto.randomUUID() };
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
@@ -233,9 +237,7 @@ export class CompileService {
         await this.switchCloudCompileToLocal(root, context);
         await fallback.assertCurrent();
       } else if (retryLocally) {
-        context.backendOperation.useLocal();
-        context.cloud = false;
-        await this.npmService.prepareLocalCompileBackend(root, () => this.cancelled, () => this.cancel());
+        await this.switchCloudCompileToLocal(root, context);
       }
       if (context.cloud && !context.backendOperation.isNested && !options.preprocessOnly && !options.graphSemanticRevision
         && !options.recordProjectDelivery && options.localFallback?.recordCloudFailure) {
@@ -257,7 +259,7 @@ export class CompileService {
           };
         } catch { /* Failure to capture an exact source only withholds the fallback offer. */ }
       }
-      if (!fallback && this.configService.getCompileBackend() === 'cloud') {
+      if (!fallback && !retryLocally && this.configService.getCompileBackend() === 'cloud') {
         await this.npmService.prepareCompileBackend(root, () => this.cancelled);
         if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
         if (context.settingsKey !== this.configService.getCompileSettingsKey() || root !== this.projectService.currentProjectPath) {
@@ -328,9 +330,10 @@ export class CompileService {
     try {
       if (!cloud) await this.npmService.ensureLocalCompilerDependencies(root);
       if (this.configService.isCoderProduct()) {
-        await this.npmService.assertCoderDependenciesReady(root);
+        await this.npmService.assertCoderDependenciesReady(root, cloud);
       }
     } catch (error) {
+      if (cloud && canOfferLocalBuildFallback(error)) throw error;
       const text = error instanceof Error ? error.message : String(error);
       this.message.warning(text);
       return { success: false, result: { state: 'warn', text, buildOutcome: 'not-started' } };

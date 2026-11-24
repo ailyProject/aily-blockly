@@ -789,6 +789,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         await this.npmService.ensureProjectAndBoardDeps(projectPath, {
           onRetryInstall: () => void run(),
           onBoardDepsSettled: refreshEmbedAfterDeps,
+          onRetryLocally: () => {
+            if (this.isCurrentCoderWorkspace(projectPath, session)) return this.topBuilderService.buildCoderLocally(projectPath);
+          },
         }, session);
       } catch (error) {
         if (this.isCurrentCoderWorkspace(projectPath, session)) console.error('install board dependencies error', error);
