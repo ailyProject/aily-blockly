@@ -154,7 +154,8 @@ describe('Blockly compile and upload handoff', () => {
     const bridge = Object.assign(Object.create(BlocklyLiveOperationBridgeService.prototype), {
       projectService: { currentProjectPath: '/project', isCloudBuild: () => false,
         captureCurrentProjectGuard: () => () => true, ensureBlocklyLibraryRuntimeReady: ensureReady },
-      blocklyEditor: { getProjectRevisionSnapshot: async () => ({ changed: false }) },
+      blocklyEditor: { hasUnsavedBuildChanges: jasmine.createSpy('hasUnsavedBuildChanges').and.resolveTo(false),
+        getProjectRevisionSnapshot: jasmine.createSpy('getProjectRevisionSnapshot').and.resolveTo({ changed: true }) },
       serialService: { getSerialPorts: async () => ports, selectSerialPort },
       uploaderService: { upload },
     });
@@ -183,11 +184,36 @@ describe('Blockly compile and upload handoff', () => {
     const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
     expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
       .toEqual(jasmine.objectContaining({ ok: true, preparedFirmware: firmware }));
+    expect(f.bridge.blocklyEditor.hasUnsavedBuildChanges).toHaveBeenCalledOnceWith();
+    expect(f.bridge.blocklyEditor.getProjectRevisionSnapshot).not.toHaveBeenCalled();
     expect(f.upload).toHaveBeenCalledOnceWith('/project', 'COM99', { preparedFirmware: firmware });
     f.upload.and.resolveTo({ state: 'warn' });
     expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
       .toEqual(jasmine.objectContaining({ ok: false, code: 'PREPARED_FIRMWARE_UPLOAD_UNCONFIRMED' }));
   });
+
+  it('reuses cloud firmware with an unsaved canvas viewport', async () => {
+    const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+    f.bridge.projectService.isCloudBuild = () => true;
+    expect(await f.bridge.executeProjectUpload({ reuseCloudFirmware: true }))
+      .toEqual(jasmine.objectContaining({ ok: true, reuseCloudFirmware: true }));
+    expect(f.bridge.blocklyEditor.hasUnsavedBuildChanges).toHaveBeenCalledOnceWith();
+    expect(f.bridge.blocklyEditor.getProjectRevisionSnapshot).not.toHaveBeenCalled();
+    expect(f.upload).toHaveBeenCalledOnceWith('/project', 'COM99', { reuseCloudFirmware: true });
+  });
+
+  for (const mode of ['local', 'cloud']) {
+    it(`rejects an unsaved program edit before the strict ${mode} upload`, async () => {
+      const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+      const cloud = mode === 'cloud';
+      f.bridge.projectService.isCloudBuild = () => cloud;
+      f.bridge.blocklyEditor.hasUnsavedBuildChanges.and.resolveTo(true);
+      expect(await f.bridge.executeProjectUpload(cloud ? { reuseCloudFirmware: true } : { preparedFirmware: firmware }))
+        .toEqual(jasmine.objectContaining({ ok: false, code: 'BUILD_ARTIFACT_STALE' }));
+      expect(f.selectSerialPort).not.toHaveBeenCalled();
+      expect(f.upload).not.toHaveBeenCalled();
+    });
+  }
 
   it('allows a prepared recovery firmware upload without changing the cloud preference', async () => {
     const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);

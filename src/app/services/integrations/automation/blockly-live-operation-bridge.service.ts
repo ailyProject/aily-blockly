@@ -2270,8 +2270,8 @@ export class BlocklyLiveOperationBridgeService {
       }
       const { ports, selection } = await this.getSerialPortSelection(requestedPort);
       if (options) {
-        const revision = await this.blocklyEditor.getProjectRevisionSnapshot();
-        if (!current?.() || revision.changed || this.projectService.isCloudBuild() !== reuseCloud) {
+        const changed = await this.blocklyEditor.hasUnsavedBuildChanges();
+        if (!current?.() || changed || this.projectService.isCloudBuild() !== reuseCloud) {
           throw Object.assign(new Error('The active Blockly project changed after compilation.'), { code: 'BUILD_ARTIFACT_STALE' });
         }
         if (firmware) requirePreparedBuildExecution(project, firmware);

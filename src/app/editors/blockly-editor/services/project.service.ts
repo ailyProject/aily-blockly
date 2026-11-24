@@ -23,6 +23,7 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave, ProjectSaveDataRuntime } from './prepared-project-save';
 import { fenceBlocklyWorkspaceInput, type BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
+import { projectBuildDocument } from './blockly-project-revision';
 import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
 import { AbsOperationJournal, type NativeSaveOperationRef } from '../../../integrations/blockly/abs/abs-operation-journal';
 import type { RuntimePublicationObservation } from '../../../integrations/blockly/abs/abs-runtime-publication-observation';
@@ -571,39 +572,60 @@ export class _ProjectService {
 
     usedLibraries: string[];
   }> {
+    return { algorithm: 'sha256', scope: 'normalized-materialized-project-abi', ...await this.readAbiRevisionSnapshot(false) };
+  }
+
+  async hasUnsavedBuildChanges(): Promise<boolean> {
+    return (await this.readAbiRevisionSnapshot(true)).changed;
+  }
+
+  private async readAbiRevisionSnapshot(forBuild: boolean) {
     const context = this.captureSaveContext(this.currentProjectPath);
     context.assertCurrent();
     await projectDataRuntime.flushPending(); context.assertCurrent();
 
-    const { document, revision } = this.blocklyService.captureProjectSnapshot();
+    const capture = () => forBuild
+      ? this.blocklyService.readAfterWorkspaceEdit(() => this.blocklyService.captureBuildSnapshot())
+      : this.blocklyService.captureProjectSnapshot();
+    const { document, revision } = await capture();
+    context.assertCurrent();
     const path = `${this.currentProjectPath}/project.abi`;
     const diskText = window['fs'].readFileSync(path, 'utf8');
-    const memory = canonicalProjectJsonStringify(this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(document)));
+    const diskInput = JSON.parse(diskText);
+    const serialize = (value: unknown) => {
+      const normalized = this.blocklyService.normalizeProjectAbi(value);
+      return canonicalProjectJsonStringify(forBuild ? projectBuildDocument(normalized) : normalized);
+    };
+    const memory = serialize(this.blocklyService.getProjectAbiForSave(document));
     const usedLibraries = Object.keys(this.blocklyService.getProjectUsedLibraryManifest(undefined, document));
 
-    const assertCurrent = () => {
+    let diskBuildText: string | undefined;
+    const assertCurrent = async () => {
       context.assertCurrent();
-      if (this.blocklyService.captureProjectSnapshot().revision !== revision || window['fs'].readFileSync(path, 'utf8') !== diskText) {
-        throw new Error('Project changed during ABI revision verification.');
-      }
+      const current = await capture();
+      context.assertCurrent();
+      const currentDisk = window['fs'].readFileSync(path, 'utf8');
+      // Autosave may have written a new viewport while we resolved sidecars.
+      // Compare the underlying build document before accepting that disk change.
+      const diskChanged = currentDisk !== diskText && (!forBuild
+        || serialize(JSON.parse(currentDisk)) !== (diskBuildText ??= serialize(diskInput)));
+      if (current.revision !== revision || diskChanged) throw new Error('Project changed during ABI revision verification.');
     };
     // A cache miss after reopen/eviction is not missing project data. Resolve the fixed disk snapshot.
-    const materialized = await materializeGenericProjectDataValues(JSON.parse(diskText), {
+    const materialized = await materializeGenericProjectDataValues(diskInput, {
       // Per-resource guards are lightweight; compare whole-project revisions at phase boundaries.
       // Re-serializing the project for every resource makes this read-only query quadratic.
       resolve: async <TValue>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<TValue>(ref); context.assertCurrent(); return value; },
     });
-    assertCurrent();
-    const disk = canonicalProjectJsonStringify(this.blocklyService.normalizeProjectAbi(materialized));
+    await assertCurrent();
+    const disk = serialize(materialized);
     const [memoryHash, diskHash] = await Promise.all([
       sha256Hex(memory),
       sha256Hex(disk),
     ]);
-    assertCurrent();
+    await assertCurrent();
 
     return {
-      algorithm: 'sha256',
-      scope: 'normalized-materialized-project-abi',
       memoryHash,
       diskHash,
       changed: memoryHash !== diskHash,
