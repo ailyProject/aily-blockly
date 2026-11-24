@@ -12,7 +12,7 @@ const { prepareCompileSource } = require('../../child/scripts/compile-source');
 function loadTs(file, window) {
  const source = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../../src/app/services/domains/project', file), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  const exports = {};
- vm.runInNewContext(source, {exports,window});
+ vm.runInNewContext(source, {exports,require,window});
  return exports;
 }
 function fixture(t, name = 'Blink') {
@@ -67,6 +67,15 @@ test('file launch resolves paths with spaces, relative second-instance paths, an
  assert.equal(projectDirectoryFromArgs(['coder',`--open-project=${root}`]),root);
  fs.mkdirSync(path.join(root,'fake.ino')); assert.equal(projectDirectoryForFile(path.join(root,'fake.ino')),null);
 });
+test('an empty project.aci opens its Coder project directory', t => {
+ const {root,api} = fixture(t,'Coder 工程');
+ const marker = path.join(root,'project.aci');
+ fs.writeFileSync(marker,'');
+ assert.equal(projectDirectoryForFile(marker),root);
+ assert.equal(projectDirectoryFromArgs(['coder','project.aci'],root),root);
+ assert.equal(projectDirectoryFromArgs(['coder',`--open-project=${marker}`]),root);
+ assert.equal(api.normalizeProjectOpenPath(marker),root);
+});
 test('nested sketches resolve to their outer Blockly or Coder project before any stub is written', t => {
  const {root,api}=fixture(t);
  fs.mkdirSync(path.join(root,'.temp','sketch'),{recursive:true});
@@ -78,7 +87,7 @@ test('nested sketches resolve to their outer Blockly or Coder project before any
  fs.writeFileSync(path.join(root,'package.json'),'{"type":"coder"}');
  assert.equal(api.normalizeProjectOpenPath(file),root);
 });
-test('Coder packages register ino on all platforms without giving Blockly the association',()=>{
+test('Coder packages register aci and ino on all platforms without giving Blockly the associations',()=>{
  const config={regions:{cn:{updater:'https://example.test/blockly'}}};
  const coder=createBuilderConfig(createBuildPlan(['--product','coder'],config),{});
  const blockly=createBuilderConfig(createBuildPlan([],config),{});

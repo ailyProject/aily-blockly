@@ -329,6 +329,13 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         }, 3000);
       });
 
+      if (projectPath !== this.projectService.currentProjectPath) return;
+      if (this.builderService.usesSharedBuildCache(projectPath)) {
+        await this.builderService.clearCache(projectPath);
+        this.messageService.success('Clear build folder success');
+        return;
+      }
+
       const defaultBuildPath = await this.projectService.getBuildPath();
 
       if (window['fs'].existsSync(defaultBuildPath)) {

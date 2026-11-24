@@ -1,4 +1,5 @@
 export * from './coder/coder-board-resolution';
+export { BoardAuthPromptService } from './board-auth-prompt.service';
 export { coderSourceDirectory, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 export * from './coder/coder-project-create-operation';
 export * from './coder/coder-project-template';

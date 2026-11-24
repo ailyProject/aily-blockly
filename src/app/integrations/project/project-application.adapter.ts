@@ -32,9 +32,10 @@ import { firstValueFrom } from 'rxjs';
 import { PasteInstallDialogComponent } from '../../editors/blockly-editor/components/paste-install-dialog/paste-install-dialog.component';
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { openAbsHostStorage } from '../blockly/abs/abs-host-storage';
-import { settleAbsProjectTransaction } from '../blockly/abs/abs-project-restart';
+import { settleAbsProjectOpen } from '../blockly/abs/abs-project-restart';
+import { readSavedAbiAfterRecoveryFailure } from '../blockly/abs/abs-project-open';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
-import { settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
+import { observeOpenEnvironment, settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
 import { mergeGeneratorMacros } from '../../editors/blockly-editor/services/prepared-generator-config';
 import { captureBuildSource } from '../../utils/build-publication.utils';
 
@@ -63,14 +64,18 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     return this.blocklyEditorProjectService.publishEnvironmentMutation(project, mutate, request);
   }
 
-  async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void): Promise<void> {
-    // Dependency preparation shares the file lock and refuses an interrupted
-    // source transaction even when it has no linked dependency environment.
+  async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void, startupSignal?: AbortSignal): Promise<void> {
+    // Inspect the original transaction before handoff. A damaged history can
+    // defer recovery when the saved ABI already provides a canvas to open.
     if (window['fs']?.projectSyncStorageVersion === 2) {
-      const storage = await openAbsHostStorage(project, assertCurrent);
-      await settleAbsProjectTransaction(storage, storage.attachment?.root ?? project, assertCurrent);
+      const storage = await observeOpenEnvironment(() => openAbsHostStorage(project, assertCurrent), startupSignal);
+      const observed = startupSignal
+        ? { ...storage, read: (key: string) => observeOpenEnvironment(() => storage.read(key), startupSignal) }
+        : storage;
+      try { await settleAbsProjectOpen(observed, storage.attachment?.root ?? project, assertCurrent); }
+      catch (error) { await readSavedAbiAfterRecoveryFailure(observed, error, assertCurrent); }
     }
-    await settleLinkedProjectEnvironment(project, assertCurrent);
+    await settleLinkedProjectEnvironment(project, assertCurrent, undefined, startupSignal);
   }
 
   async openCoderBoardSelector(projectPath: string): Promise<void> {
@@ -237,7 +242,8 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   }
 
   observeProjectPublication(path: string, request: ProjectSaveRequest, originalTargetPid?: number) {
-    return this.injector.get(AbsWorkspaceSyncService).observeNativeSave(path, request, originalTargetPid);
+    return this.injector.get(AbsWorkspaceSyncService).observeNativeSave(path, request, originalTargetPid,
+      () => this.projectService.projectViewRevision);
   }
 
   async inspectBlocklyConflict(path: string) {
@@ -370,9 +376,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     }
   }
 
-  async prepareBlocklyRecoveryDiscard(path: string) {
+  async prepareBlocklyRecoveryDiscard(path: string, mode?: 'discard' | 'reload') {
     if (!this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) throw new Error('The departing recovery view changed.');
-    return this.blocklyEditorProjectService.prepareRetainedDiscard(path);
+    return this.blocklyEditorProjectService.prepareRetainedDiscard(path, mode);
   }
 
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any {

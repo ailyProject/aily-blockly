@@ -1,5 +1,6 @@
 import * as Blockly from 'blockly';
 import { AbsBaselineStore } from './abs-baseline-store';
+import { absMapJson } from './abs-map-json';
 import { inspectAbsBaselineRecovery, inspectAbsGenerationForRecovery, recoverAbsBaseline, recoverAbsLocationMetadata } from './abs-baseline-recovery';
 import { AbsGenerationToolsService } from './abs-generation-tools.service';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
@@ -69,8 +70,9 @@ describe('automatic location metadata recovery', () => {
   const document = { schemaVersion: 3, activePageId: 'main', openedPageIds: ['main'],
     pages: [{ id: 'main', title: 'main', content: { blocks: { blocks: [{ id: 'keep', type: 'math_number',
       fields: { NUM: 7 }, icons: { comment: { text: 'keep comment' } } }] } } }], sharedModel: { procedureBlocks: [] } };
-  async function fixture() {
+  async function fixture(authoring = false) {
     const files = new Map<string, string>();
+    if (authoring) files.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
     const read = async (key: string) => files.get(key) ?? null;
     const port = { read, withLock: async <T>(operation: (storage: any) => Promise<T>) => operation({ read,
       replace: async (key: string, expected: string | null, value: string | null) => {
@@ -144,6 +146,17 @@ describe('automatic location metadata recovery', () => {
       expect(f.files.get('project.abi')).toBe(f.abi); expect(f.files.get('project.abs')).toBe(f.projection.abs);
     });
   }
+  it('repairs a canonical same-generation map with an incorrect association while retaining a project-v1 draft', async () => {
+    const f = await fixture(true), map = JSON.parse(f.files.get('project.abs.map.json')!);
+    map.nodes[0].blockId = 'unrelated';
+    const drift = absJson(map), draft = f.projection.abs + '\n# preserved author draft', pointer = f.files.get('committed.json');
+    f.files.set('project.abs.map.json', drift); f.files.set('project.abs', draft);
+    await recoverAbsLocationMetadata(f.port, oldScope, () => {});
+    expect(f.files.get('project.abs.map.json')).toBe(absMapJson(f.projection.map));
+    expect(f.files.get('project.abs')).toBe(draft); expect(f.files.get('project.abi')).toBe(f.abi);
+    expect(f.files.get('committed.json')).toBe(pointer);
+    expect([...f.files].some(([key, value]) => key.startsWith('recoveries/map-') && JSON.parse(value).map === drift)).toBeTrue();
+  });
   it('does not rebind an unproven draft or a competing complete primary', async () => {
     for (const key of ['project.abs', 'project.abi']) {
       const f = await fixture();

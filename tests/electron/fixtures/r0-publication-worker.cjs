@@ -124,6 +124,29 @@ async function native() {
   return result;
 }
 
+async function nativeSaveCommit() {
+  const fixture = readFixture(), port = await open();
+  const store = new kernel.AbsBaselineStore(port, scope);
+  const journal = new kernel.AbsOperationJournal(port, project);
+  const application = new kernel.AbsApplicationJournal(port, project);
+  const request = await kernel.nativeSaveIdentity(project, JSON.parse(point));
+  await new kernel.OriginalRequestAdmissions(port, project).reserveSave(request, 1, guard);
+  const { ref } = await journal.beginDocumentSave({ request, document: fixture.baseProjection.document, disk: fixture.next.expected }, guard);
+  const generation = fixture.next.projection.map.generation;
+  const evidence = await kernel.generationEvidence(fixture.next.projection, fixture.next.abi);
+  await store.stage(fixture.next, fixture.expectedPointerHash);
+  await application.stageNativeSave({ ref, evidence, inputAbiHash: await kernel.hashAbsText(fixture.next.expected.abi) }, guard);
+  const publication = await store.commit(generation, guard, async (text, expected, access) => {
+    if (!await access.replace('project.abi', expected, text)) throw new Error('Native ABI CAS failed.');
+    send({ event: 'native-abi-written', ref, prepared: await access.read('prepared.json') });
+    await pause('native-after-abi');
+  });
+  if (publication.status !== 'COMMITTED' || !await application.sealNativeSave(ref, guard))
+    throw new Error('Native fixture did not settle.');
+  await journal.finish(ref.operationId, guard);
+  return { publication, ref };
+}
+
 async function dirtyJournal() {
   const fixture = readFixture(), port = await open(), journal = new kernel.AbsOperationJournal(port, project);
   // The production apply caller passes materialized before.document, not the
@@ -146,6 +169,7 @@ async function dirtyJournal() {
   let result;
   if (mode === 'fixture') result = await fixture();
   else if (mode === 'dirty-journal') result = await dirtyJournal();
+  else if (mode === 'native-v2-commit') result = await nativeSaveCommit();
   else if (mode === 'native-v2-observe') {
     const request = JSON.parse(fs.readFileSync(path.join(project, 'r0-native-request.json'), 'utf8'));
     result = await new kernel.AbsApplicationJournal(await open(), project).observeNativeSave(request, guard);

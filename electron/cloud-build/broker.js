@@ -10,7 +10,7 @@ const protocol = require('./protocol');
 const inputManifest = require('./input-manifest');
 const { captureSnapshot, captureIdentity } = require('./snapshot');
 const ciResources = require('./ci-resource-preparation');
-const { collectCloudArtifacts, removeOwnedDirectory } = require('./artifact-store');
+const { cloudArtifactWorkspace, collectCloudArtifacts, removeOwnedDirectory } = require('./artifact-store');
 const { captureCloudBuildAbi, publishCloudBuildSource } = require('./build-source');
 const { artifactUploadInfo: getArtifactUploadInfo } = require('./uploader');
 const { cloudUploadRequirements } = require('./cloud-recipe-upload');
@@ -42,6 +42,7 @@ function gatewayUrl(value) {
   return { url: url.toString().replace(/\/$/u, ''), local };
 }
 const abortFault = () => protocol.error('CANCELLED', 'Cloud build cancelled.');
+const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled', 'timed_out']);
 const staleSource = (sourceReason, message) => Object.assign(protocol.error('BUILD_SOURCE_STALE', message), { sourceReason });
 const AUTH_USER = Symbol('cloud-build-user');
 const CLIENT_INPUT_METRICS = ['captureMs', 'identityMs', 'manifestPrepareMs', 'manifestResolveMs', 'blobUploadMs', 'commitMs', 'encodingMs',
@@ -110,9 +111,19 @@ function trustedGateway(settings, caps) {
   catch { throw protocol.error('SIGNATURE_INVALID', 'Gateway requires a valid Ed25519 signing public key.'); }
   return publicKey;
 }
+const usesIsolatedArtifacts = config => config?.isolatedCloudBuild === true;
 function retainedBuildConfig(config) {
-  return Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
+  const retained = Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
     .filter(key => config[key] !== undefined).map(key => [key, config[key]]));
+  if (usesIsolatedArtifacts(config)) {
+    retained.isolatedCloudBuild = true;
+    if (config.generatedArtifacts !== undefined) retained.generatedArtifacts = config.generatedArtifacts?.map(({ fileName, content }) => ({ fileName, content })) ?? null;
+  }
+  return retained;
+}
+function retainedBuildBytes(config) {
+  return Buffer.byteLength(config.code || '') + (config.generatedArtifacts || []).reduce((size, artifact) =>
+    size + Buffer.byteLength(artifact.fileName) + Buffer.byteLength(artifact.content), 0);
 }
 function supportedRequest(input) {
   if ((input.action && !['compile', 'analysis'].includes(input.action)) || (input.recordProjectDelivery !== undefined && input.recordProjectDelivery !== false)
@@ -571,6 +582,9 @@ class CloudBuildBroker {
     const requestId = input.requestId;
     if (typeof requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(requestId) || this.requests.has(requestId)) throw protocol.error('BUILD_BUSY', 'Cloud build request is invalid or already running.');
     const root = fs.realpathSync(input.config?.currentProjectPath);
+    if (usesIsolatedArtifacts(input.config) && input.config.sourceCapture?.mode !== 'blockly') {
+      throw protocol.error('INVALID_INPUT', 'Isolated cloud compilation requires a captured Blockly build.');
+    }
     if ([...this.requests.values()].some(item => item.root === root)) throw protocol.error('BUILD_BUSY', 'This project already has a cloud task.');
     const record = { requestId, buildRequestId: input.buildRequestId || requestId, root, sender, generation: owner.generation, config: input.config,
       settings: { ...(input.settings || {}) }, controller: new AbortController(), logsController: new AbortController(), onProgress, startedAt: Date.now(),
@@ -738,6 +752,7 @@ class CloudBuildBroker {
         const statusStarted = performance.now();
         try {
           status = await this.request(record.settings, `/api/v1/build/jobs/${record.jobId}${cursor}`, undefined, record.controller.signal);
+          record.lastStatusServerFailure = undefined;
           const unchanged = status.stateVersion === observedVersion && status.lastSeq === observedSeq;
           // 代理忽略等待参数或网关等待容量不足时，退回普通轮询，防止高频空转。
           if (canWait && unchanged && performance.now() - statusStarted < waitBudget / 2) statusWaiting = false;
@@ -752,9 +767,11 @@ class CloudBuildBroker {
             statusWaiting = false; delay = this.activePollIntervalMs ?? this.pollIntervalMs; continue;
           }
           if (record.controller.signal.aborted || (error.httpStatus && error.httpStatus < 500 && error.httpStatus !== 429)) throw error;
+          record.lastStatusServerFailure = error.httpStatus >= 500 && error.httpStatus < 600 ? error : undefined;
           delay = Math.min(Math.max(delay, this.pollIntervalMs) * 2, 60000); this.progress(record, { stage: 'reconnecting' }); continue;
         }
         record.attempt = status.attempt;
+        record.remoteTerminal = status.jobId === record.jobId && terminalJobStates.has(status.status);
         this.progress(record, { stage: status.stage || status.status, progress: status.progress ?? status.stageProgress ?? 0, status: status.status, attempt: status.attempt });
         pullLogs(status.lastSeq);
         if (['succeeded', 'failed', 'timed_out'].includes(status.status)) {
@@ -779,7 +796,7 @@ class CloudBuildBroker {
             await this.assertCurrent(record);
             this.progress(record, { stage: 'preparing', previousJobId: record.jobId });
             record.previousCIJobId = record.jobId;
-            record.jobId = undefined; record.posted = false; record.postBody = undefined;
+            record.jobId = undefined; record.posted = false; record.postBody = undefined; record.remoteTerminal = false;
             record.selectedProfileDigest = undefined;
             record.submissionRequestId = 'ci-' + crypto.randomUUID();
             if (record.targetCandidates) record.targetCandidates = new Map([...record.targetCandidates]
@@ -800,10 +817,16 @@ class CloudBuildBroker {
       }
     } catch (error) {
       if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
-      await this.cancelRemote(record).catch(() => {});
-      const failure = error.cleanupConfirmed === false ? error
+      const stopped = await this.cancelRemote(record).catch(() => undefined);
+      let failure = error.cleanupConfirmed === false ? error
         : record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
-      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete });
+      if (failure.code === 'BUILD_TIMEOUT' && record.lastStatusServerFailure) failure = record.lastStatusServerFailure;
+      // A successful cancel HTTP response may only say "cancelling". Keep that
+      // distinct from a confirmed terminal job when the renderer considers a fallback.
+      const remoteCleanupConfirmed = !record.posted || record.remoteTerminal
+        || (stopped?.jobId === record.jobId && terminalJobStates.has(stopped?.status));
+      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete,
+        ...(remoteCleanupConfirmed ? {} : { remoteCleanupConfirmed: false }) });
     } finally {
       clearTimeout(deadline);
       try { if (typeof releasePowerSaveBlocker === 'function') releasePowerSaveBlocker(); }
@@ -811,7 +834,7 @@ class CloudBuildBroker {
       record.logsController.abort();
       if (this.requests.get(requestId) === record && !record.cleanupBlocked) this.requests.delete(requestId);
       releasePrevious?.();
-      this.collectArtifacts(root);
+      this.collectArtifacts(root, undefined, usesIsolatedArtifacts(record.config));
     }
   }
   async fetchCompletedResult(record) {
@@ -840,6 +863,7 @@ class CloudBuildBroker {
         || previous.gatewayUrl !== gatewayUrl(record.settings.gatewayUrl).url
         || previous.publicKey.trim() !== record.publicKey.trim()
         || previous.manifest.action !== action
+        || usesIsolatedArtifacts(previous.config) !== usesIsolatedArtifacts(record.config)
         || previous.uploadPlan !== record.uploadPlan || !matchesUploadPlan(record.uploadPlan, previous.manifest)
         || previous.manifest.profileDigest !== (record.profile.digest || record.profile.profileDigest)
         || previous.snapshot.inputDigest !== record.snapshot.inputDigest) return null;
@@ -952,7 +976,9 @@ class CloudBuildBroker {
         parts.pop();
       }
     }
-    const temporary = path.join(record.root, '.temp');
+    const isolated = usesIsolatedArtifacts(record.config);
+    const workspaceRoot = cloudArtifactWorkspace(record.root, { isolated, create: true });
+    const temporary = path.join(workspaceRoot, '.temp');
     fs.mkdirSync(temporary, { recursive: true });
     if (fs.realpathSync(temporary) !== temporary || fs.lstatSync(temporary).isSymbolicLink()) throw protocol.error('UNSAFE_PATH', 'Cloud import temporary directory is linked.');
     const staging = path.join(temporary, `cloud-import-${crypto.randomUUID()}`);
@@ -995,10 +1021,10 @@ class CloudBuildBroker {
       if (downloadFailure) throw downloadFailure;
       await this.assertCurrent(record);
       this.progress(record, { stage: 'verifying', progress: 100 });
-      const lease = acquireBuildWorkspace(record.root, 'publish');
+      const lease = acquireBuildWorkspace(cloudArtifactWorkspace(record.root, { isolated }), 'publish');
       try {
         await this.assertCurrent(record); lease.assertOwned();
-        const directory = path.join(record.root, '.build', 'cloud');
+        const directory = path.join(workspaceRoot, '.build', 'cloud');
         fs.mkdirSync(directory, { recursive: true });
         if (fs.lstatSync(directory).isSymbolicLink() || fs.realpathSync(directory) !== directory) throw protocol.error('UNSAFE_PATH', 'Cloud artifact directory is linked.');
         published = path.join(directory, `${record.jobId}-${crypto.randomUUID()}`);
@@ -1014,11 +1040,11 @@ class CloudBuildBroker {
           snapshot: { inputDigest: record.snapshot.inputDigest, boardDigest: record.snapshot.boardDigest, boardVersion: record.snapshot.boardVersion },
           directory: published, manifest, signature: result.signature });
         this.trimCompletedRecords();
-        this.collectArtifacts(record.root, lease);
+        this.collectArtifacts(record.root, lease, isolated);
       } finally { lease.release(); }
-    } catch (error) { if (published) { try { removeOwnedDirectory(record.root, published); } catch { /* 不确定归属的路径保留现场。 */ } } throw error; }
+    } catch (error) { if (published) { try { removeOwnedDirectory(workspaceRoot, published); } catch { /* 不确定归属的路径保留现场。 */ } } throw error; }
     finally {
-      try { if (fs.existsSync(staging)) removeOwnedDirectory(record.root, staging); } catch { /* 暂存路径被替换时不能跟随链接清理。 */ }
+      try { if (fs.existsSync(staging)) removeOwnedDirectory(workspaceRoot, staging); } catch { /* 暂存路径被替换时不能跟随链接清理。 */ }
       delete record.staging;
     }
   }
@@ -1050,26 +1076,41 @@ class CloudBuildBroker {
       if (released) return; released = true;
       const count = this.artifactUsers.get(record.directory) - 1;
       if (count) this.artifactUsers.set(record.directory, count); else this.artifactUsers.delete(record.directory);
-      this.collectArtifacts(record.root);
+      this.collectArtifacts(record.root, undefined, usesIsolatedArtifacts(record.config));
     };
   }
-  acquireArtifactLease(record) { return acquireBuildWorkspace(record.root, 'verify'); }
-  collectArtifacts(root, lease) {
-    try {
-      const protectedDirectories = [...this.active.values()].filter(item => item.root === root).map(item => item.directory);
-      for (const item of this.requests.values()) if (item.root === root && item.staging) protectedDirectories.push(item.staging);
-      protectedDirectories.push(...this.artifactUsers.keys());
-      return collectCloudArtifacts(root, { protectedDirectories, retention: this.retention, lease });
-    } catch { return []; } // 工作区忙碌或路径归属不明确时延后清理。
+  acquireArtifactLease(record) {
+    const workspace = cloudArtifactWorkspace(record.root, { isolated: usesIsolatedArtifacts(record.config) });
+    return acquireBuildWorkspace(workspace, 'verify');
+  }
+  collectArtifacts(root, lease, isolated) {
+    const protectedDirectories = [...this.active.values()].filter(item => item.root === root).map(item => item.directory);
+    for (const item of this.requests.values()) if (item.root === root && item.staging) protectedDirectories.push(item.staging);
+    protectedDirectories.push(...this.artifactUsers.keys());
+    const layouts = isolated === undefined ? [false, true] : [isolated];
+    return layouts.flatMap(useIsolated => {
+      try {
+        const workspace = cloudArtifactWorkspace(root, { isolated: useIsolated });
+        return collectCloudArtifacts(workspace, { protectedDirectories, retention: this.retention, lease });
+      } catch { return []; } // 工作区忙碌或路径归属不明确时延后清理。
+    });
   }
   trimCompletedRecords() {
-    let bytes = [...this.active.values()].reduce((sum, item) => sum + Buffer.byteLength(item.config.code || ''), 0);
+    let bytes = [...this.active.values()].reduce((sum, item) => sum + retainedBuildBytes(item.config), 0);
     const newestRoot = [...this.active.keys()].at(-1);
     for (const [root, record] of this.active) {
       if (this.active.size <= 1 || (this.active.size <= 16 && bytes <= 32 * 1024 * 1024)) break;
       if (root === newestRoot || this.artifactUsers.has(record.directory)) continue;
-      record.controller.abort(abortFault()); this.active.delete(root); bytes -= Buffer.byteLength(record.config.code || ''); this.collectArtifacts(root);
+      record.controller.abort(abortFault()); this.active.delete(root); bytes -= retainedBuildBytes(record.config);
+      this.collectArtifacts(root, undefined, usesIsolatedArtifacts(record.config));
     }
+  }
+  hasArtifact(sender, projectPath) {
+    const owner = this.owner(sender);
+    const record = this.active.get(fs.realpathSync(projectPath));
+    // A lookup hint only. Every consumer still verifies identity, inputs, signature and bytes.
+    return record?.sender === sender && record.generation === owner.generation
+      && record.manifest.action === 'compile' && !record.controller.signal.aborted;
   }
   async artifactPath(sender, projectPath, config) {
     this.owner(sender);
@@ -1082,7 +1123,9 @@ class CloudBuildBroker {
   }
   async reusable(sender, config, profileDigest) {
     const root = fs.realpathSync(config.currentProjectPath), record = this.active.get(root);
-    if (!record || record.sender !== sender || config.code !== record.config.code || config.boardModule !== record.config.boardModule
+    if (!record || record.sender !== sender || record.manifest.action !== 'compile'
+        || config.code !== record.config.code || config.boardModule !== record.config.boardModule
+        || usesIsolatedArtifacts(config) !== usesIsolatedArtifacts(record.config)
         || (profileDigest !== undefined && profileDigest !== record.manifest.profileDigest)) return false;
     try {
       const capabilities = await this.capabilities(record.settings, record.controller.signal);
@@ -1100,13 +1143,13 @@ class CloudBuildBroker {
       return true;
     } catch { return false; }
   }
-  async artifactUploadInfo(sender, projectPath) {
+  async artifactUploadInfo(sender, projectPath, portType) {
     this.owner(sender);
     const root = fs.realpathSync(projectPath), record = this.active.get(root);
     if (!record || record.sender !== sender || !await this.reusable(sender, record.config) || this.active.get(root) !== record) {
       throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
     }
-    if (record.manifest.flashPlan?.protocol === 'cloud-recipe') return cloudUploadRequirements(record);
+    if (record.manifest.flashPlan?.protocol === 'cloud-recipe') return cloudUploadRequirements(record, { portType });
     const info = getArtifactUploadInfo(record);
     const boardRoot = path.join(root, 'node_modules', ...record.manifest.boardModule.split('/'));
     const boardPackage = JSON.parse(fs.readFileSync(path.join(boardRoot, 'package.json'), 'utf8'));
@@ -1185,12 +1228,14 @@ class CloudBuildBroker {
     for (const root of roots) this.collectArtifacts(root);
     return Promise.allSettled(cancelled);
   }
-  invalidateAll() {
-    const roots = new Set(this.active.keys()), cancelled = [];
-    for (const record of this.active.values()) record.controller.abort(abortFault());
-    this.active.clear();
+  invalidateAll({ keepCompleted = false } = {}) {
+    const roots = new Set([...this.requests.values()].map(record => record.root)), cancelled = [];
+    for (const [root, record] of this.active) {
+      // Results published by a still-pending request have not cleared its final checks yet.
+      if (keepCompleted && !roots.has(root)) continue;
+      record.controller.abort(abortFault()); this.active.delete(root); roots.add(root);
+    }
     for (const record of this.requests.values()) {
-      roots.add(record.root);
       record.controller.abort(abortFault()); if (!record.cleanupBlocked) this.requests.delete(record.requestId); cancelled.push(this.cancelRemote(record));
     }
     for (const root of roots) this.collectArtifacts(root);

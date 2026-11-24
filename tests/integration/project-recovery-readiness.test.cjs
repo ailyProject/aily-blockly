@@ -1,21 +1,25 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 const { createHash, webcrypto } = require('node:crypto');
 const ts = require('typescript');
+const { openProjectSyncStorage, openProjectSyncStorageBridge } = require('../../electron/project-sync-storage');
+const { rootAttachment } = require('../../electron/project-file-lock-owner');
 
 const root = path.resolve(__dirname, '../..');
 const sha = value => createHash('sha256').update(value).digest('hex');
 
-function fixture() {
+function fixture(nativeProject) {
   const files = new Map(), modules = new Map();
-  const project = '/project';
+  const project = nativeProject || '/project';
   let projectSessionId = 'project-session-1';
   let load = { project, ready: true, state: 'loaded' };
   let statusReads = 0, recoveries = 0, preparations = 0;
-  const globals = { window: { crypto: webcrypto, platform: { isWindows: false } }, TextEncoder, TextDecoder,
+  const globals = { window: { crypto: webcrypto, platform: { isWindows: process.platform === 'win32' && !!nativeProject },
+    path: nativeProject ? path : path.posix }, TextEncoder, TextDecoder,
     Buffer, structuredClone, console, setTimeout, clearTimeout,
     projectDataRuntime: { getSessionToken: () => projectSessionId } };
   const compile = (source, file, imports = {}) => {
@@ -48,10 +52,11 @@ function fixture() {
     }).join('\n');
     return compile(`export class ${className} {\n${text}\n}`, file, imports)[className];
   }
+  const attachment = { version: 1, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
   globals.window.fs = { projectSyncStorageVersion: 2, openProjectSyncStorage: async (target, guard) => {
     assert.equal(target, project);
     const read = async key => { guard(); return files.get(key) ?? null; };
-    return { read, withLock: run => new Promise((resolve, reject) => run({ read,
+    return { attachment, read, withLock: run => new Promise((resolve, reject) => run({ attachment, read,
       replace: async (key, expected, value) => {
         const before = await read(key);
         if ((before === null ? null : 'sha256:' + sha(before)) !== expected) return false;
@@ -59,15 +64,19 @@ function fixture() {
       }
     }, result => result.ok ? resolve(result.value) : reject(Object.assign(new Error(result.error.message), { code: result.error.code })))) };
   } };
+  if (nativeProject) Object.assign(globals.window.fs, { openProjectSyncStorage: openProjectSyncStorageBridge,
+    realpathAsync: fs.promises.realpath, captureProjectAttachment: project => rootAttachment(fs.realpathSync.native(project)) });
   const Service = selectClass('src/app/services/domains/project/project.service.ts', 'ProjectService',
-    ['recoverFailedBlocklyProject'], {
-      ProjectRecoveryRequests: loadModule('src/app/services/domains/project/project-recovery-request.ts').ProjectRecoveryRequests,
+    ['recoverFailedBlocklyProject', 'recoverSavedBlocklyView', 'cancelFailedBlocklyProject'], {
+      ...loadModule('src/app/services/domains/project/project-recovery-request.ts'),
+      ...loadModule('src/app/services/domains/project/project-recovery-backup.ts'),
       withCurrentProjectRecoveryStatus: loadModule('src/app/services/domains/project/project-recovery-status.ts').withCurrentProjectRecoveryStatus,
     });
   const service = new Service();
   const reload = async () => { recoveries++; return { ok: true, project, ready: true, loadStatus: structuredClone(load) }; };
-  Object.assign(service, { currentProjectPath: project, coderProjects: [],
+  Object.assign(service, { currentProjectPath: project, projectViewRevision: 1, coderProjects: [],
     getProjectMode: () => 'blockly', getBlocklyProjectLoadStatus: () => { statusReads++; return structuredClone(load); },
+    isSameProjectPath: (a, b) => a === b,
     electronService: { currentRendererGeneration: 1 }, isProjectOpening: false, isProjectTransitionInProgress: () => false,
     assertSavedRecoveryContext() {}, savedRecoveryTargets: { inspect: async () => ({ project }) }, reloadSavedRecoveryTarget: reload,
   });
@@ -80,6 +89,7 @@ function fixture() {
   Object.assign(bridge, { projectService: service, boardSwitchInProgress: false, absApplyInProgress: false,
     aiOperations: { hasBlocking: () => false } });
   return { service, bridge, files, project, reload,
+    replaceView() { projectSessionId = 'replacement-project-session'; service.projectViewRevision++; },
     failed() { load = { project, ready: false, state: 'error', error: 'Later library rebuild failed' };
       projectSessionId = 'project-session-2'; service.electronService.currentRendererGeneration = 2; },
     get statusReads() { return statusReads; }, get recoveries() { return recoveries; }, get preparations() { return preparations; },
@@ -133,4 +143,107 @@ test('a project switch while an original recovery is pending cannot return curre
   const result = await pending;
   assert.equal(result.currentProjectRuntime.ready, false); assert.equal(result.currentProjectRuntime.sameProject, false);
   assert.notEqual(result.ok, true); assert.equal(result.currentProjectRuntime.projectSessionId, null);
+});
+
+test('a same-path replacement retires the departed view but the original refusal stays queryable', async () => {
+  const f = fixture(), entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const requestId = 'view-replaced-original-recovery';
+  let touched = false;
+  const pending = f.service.recoverFailedBlocklyProject(requestId, false, async guard => {
+    entered.resolve(); await release.promise;
+    guard?.(); touched = true;
+    return { ok: true, ready: true };
+  });
+  await entered.promise;
+  f.replaceView();
+  release.resolve();
+  const result = await pending;
+  assert.equal(touched, false);
+  assert.equal(result.code, 'PROJECT_RECOVERY_CONTEXT_STALE');
+  assert.equal(result.currentProjectRuntime.projectSessionId, 'replacement-project-session');
+  f.service.failedLoadRecoveries = undefined;
+  const observed = await f.service.recoverFailedBlocklyProject(requestId, true);
+  assert.equal(observed.code, 'PROJECT_RECOVERY_CONTEXT_STALE');
+  assert.equal(observed.receipt.requestId, requestId);
+  assert.equal(observed.recoveryObservation?.resultKnown, true);
+});
+
+test('an explicit Stop can fence only its exact original recovery before dispatch reaches admission', async () => {
+  const f = fixture(), requestId = 'stopped-before-recovery-dispatch';
+  const stop = project => f.bridge.executeOperation({ operation: 'abs_recovery', path: project,
+    params: { version: 2, action: 'cancel_project', requestId } });
+  assert.equal((await stop('/different-project')).ok, false);
+  assert.equal((await stop(f.project)).ok, true);
+  assert.equal(f.files.size, 0, 'A pre-admission fence cannot claim a completed original request');
+  const prevented = await f.service.recoverFailedBlocklyProject(requestId, false, f.reload);
+  assert.equal(prevented.ok, false);
+  assert.equal(prevented.code, 'PROJECT_RECOVERY_CANCELLED');
+  assert.equal(f.recoveries, 0);
+  assert.equal((await f.service.recoverFailedBlocklyProject('new-independent-recovery', false, f.reload)).ok, true);
+  assert.equal(f.recoveries, 1);
+});
+
+test('an explicit Stop settles the original request after it has started without affecting a newer request', async () => {
+  const f = fixture(), entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const requestId = 'stopped-after-recovery-admission';
+  const pending = f.service.recoverFailedBlocklyProject(requestId, false, async guard => {
+    entered.resolve(); await release.promise; guard?.();
+    return { ok: true, ready: true };
+  });
+  await entered.promise;
+  const stop = await f.bridge.executeOperation({ operation: 'abs_recovery', path: f.project,
+    params: { version: 2, action: 'cancel_project', requestId } });
+  assert.equal(stop.ok, true);
+  assert.equal(stop.recoveryCancellation?.requestId, requestId);
+  const newer = await f.service.recoverFailedBlocklyProject('new-after-recovery-stop', false, f.reload);
+  assert.equal(newer.ok, true);
+  release.resolve();
+  assert.equal((await pending).code, 'PROJECT_RECOVERY_CANCELLED');
+  f.service.failedLoadRecoveries = undefined;
+  const verified = await f.service.recoverFailedBlocklyProject(requestId, true);
+  assert.equal(verified.code, 'PROJECT_RECOVERY_CANCELLED');
+  assert.equal(verified.recoveryObservation?.resultKnown, true);
+  assert.equal((await f.service.recoverFailedBlocklyProject('new-after-recovery-stop', true)).ok, true);
+});
+
+test('an explicit Stop revokes a detached owner waiting for the real project lock and leaves the lock holder intact', async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-recovery-owner-'));
+  t.after(() => {
+    assert.equal(path.dirname(base), path.resolve(os.tmpdir()));
+    assert.match(path.basename(base), /^aily-recovery-owner-[A-Za-z0-9]+$/);
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+  const f = fixture(fs.realpathSync(base)), entered = Promise.withResolvers(), holding = Promise.withResolvers(), release = Promise.withResolvers();
+  const requestId = 'recovery-waiting-for-native-lock';
+  let wrote = false, newerLock;
+  const pending = f.service.recoverFailedBlocklyProject(requestId, false, async guard => {
+    const store = await openProjectSyncStorage(f.project, guard);
+    const exactNewerLock = await openProjectSyncStorage(f.project, () => {});
+    newerLock = exactNewerLock.withLock(async () => { holding.resolve(); await release.promise; });
+    await holding.promise;
+    entered.resolve();
+    return store.withLock(async () => { wrote = true; return { ok: true, ready: true }; });
+  });
+  try {
+    await entered.promise;
+    const lock = path.join(f.project, '.aily', 'project-files.write.lock');
+    const marker = fs.readFileSync(lock);
+    f.service.currentProjectPath = path.join(f.project, 'newer-view');
+    const stop = await f.bridge.executeOperation({ operation: 'abs_recovery', path: f.project,
+      params: { version: 2, action: 'cancel_project', requestId } });
+    assert.equal(stop.recoveryCancellation?.accepted, true);
+    assert.deepEqual(fs.readFileSync(lock), marker);
+    assert.equal(wrote, false);
+  } finally {
+    release.resolve();
+    await newerLock;
+  }
+  const stopped = await pending;
+  assert.equal(stopped.currentProjectRuntime.sameProject, false);
+  assert.equal(stopped.code, 'PROJECT_RECOVERY_CANCELLED');
+  const durable = await f.bridge.executeOperation({ operation: 'abs_recovery', path: f.project,
+    params: { action: 'recover_project', requestId, observe: true } });
+  assert.equal(durable.code, 'PROJECT_RECOVERY_CANCELLED');
+  assert.equal(durable.recoveryObservation?.resultKnown, true);
+  assert.equal(wrote, false);
 });

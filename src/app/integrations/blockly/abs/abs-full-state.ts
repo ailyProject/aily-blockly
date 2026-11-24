@@ -1,5 +1,5 @@
 import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
-import { absSyntaxOptions } from './abs-syntax-contracts';
+import { absSyntaxOptions, readableExtraState } from './abs-syntax-contracts';
 import { absJson } from './abs-json';
 import { hashAbsText, indexAbsSyntax } from './abs-identity-map';
 import { parseAbsSyntax } from './abs-syntax';
@@ -14,7 +14,7 @@ interface NodeState {
   next?: Record<string, unknown>;
 }
 interface FullState {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   programHash: string;
   document: unknown;
   workspace?: AbsAbiWorkspace;
@@ -37,15 +37,17 @@ export function splitAbsState(source: string): { program: string; state: string 
 export function assertAbsStateUnchanged(candidate: string, baseline: string): void {
   const next = splitAbsState(candidate).state;
   if (next !== null && next !== splitAbsState(baseline).state) {
-    throw new AbsSyncError('ABS_STATE_EDIT_FORBIDDEN', 'Project state is host-owned. Edit the readable blocks; use history to restore a complete snapshot.');
+    throw new AbsSyncError('ABS_STATE_EDIT_FORBIDDEN',
+      'Project state is host-owned. Edit the readable blocks; use history to restore a complete snapshot.',
+      undefined, [], { reason: 'host-project-state' });
   }
 }
 
 export async function encodeAbsState(program: string, document: unknown,
-  blocks: ReadonlyMap<string, AbsAbiBlock>, contracts: AbsProjectionContracts, workspace: AbsAbiWorkspace, legacyPaths = false): Promise<string> {
+  blocks: ReadonlyMap<string, AbsAbiBlock>, contracts: AbsProjectionContracts, workspace: AbsAbiWorkspace, version: FullState['version'] = 2): Promise<string> {
   // Preorder already belongs to the readable program. Repeating every full
   // ancestor path here makes long chains quadratic in bytes as well as time.
-  const nodes: FullState['nodes'] = legacyPaths ? Object.create(null) : [];
+  const nodes: FullState['nodes'] = version === 1 ? Object.create(null) : [];
   for (const { node, path } of indexAbsSyntax(parseAbsSyntax(program, absSyntaxOptions(workspace, contracts)))) {
     const original = blocks.get(path) ?? invalid('Visible block is missing from the renderer.');
     // Each descendant has its own entry. Copying the whole remaining subtree
@@ -77,7 +79,7 @@ export async function encodeAbsState(program: string, document: unknown,
   };
   const skeleton = strip(document, []);
   if (new Set(roots.map(root => root.path)).size !== rootBlocks.size) return invalid('Project document does not contain every visible root.');
-  // Captured grammar variants are read-only parsing hints, never replacement block state.
+  // Keep serializer state once. Typed-function snapshots also use it to restore the host-owned model IDs.
   const syntax: AbsAbiWorkspace = { blocks: { blocks: [...blocks.values()].map(block => ({
     id: block.id, type: block.type,
     ...(Object.hasOwn(block, 'extraState') ? { extraState: block.extraState } : {}),
@@ -91,7 +93,7 @@ export async function encodeAbsState(program: string, document: unknown,
     if (!page) return invalid('The composed workspace differs from its complete project document.');
     workspaceState = { workspacePage: page.id };
   } else workspaceState = { workspace: { ...workspace, blocks: { ...workspace.blocks, blocks: [] } } };
-  const state: FullState = { ...workspaceState, syntax, version: legacyPaths ? 1 : 2, programHash: await hashAbsText(program), document: skeleton, roots, nodes, contracts };
+  const state: FullState = { ...workspaceState, syntax, version, programHash: await hashAbsText(program), document: skeleton, roots, nodes, contracts };
   return program + MARKER + absJson(state);
 }
 
@@ -101,23 +103,32 @@ export async function decodeAbsState(source: string): Promise<{ document: unknow
   if (text === null) return invalid('ABS has no complete project state.');
   let state: FullState;
   try { state = JSON.parse(text); } catch { return invalid('Malformed project state JSON.'); }
-  if (![1, 2].includes(state?.version) || state.programHash !== await hashAbsText(program)
+  if (![1, 2, 3].includes(state?.version) || state.programHash !== await hashAbsText(program)
+    || state.version === 3 && !Array.isArray(state.syntax?.blocks?.blocks)
     || !Array.isArray(state.roots) || !state.nodes || typeof state.nodes !== 'object'
-    || Array.isArray(state.nodes) !== (state.version === 2) || !state.contracts?.fields) {
+    || Array.isArray(state.nodes) !== (state.version >= 2) || !state.contracts?.fields) {
     return invalid('Incomplete or edited ABS snapshot; apply the draft against its baseline first.');
   }
+  const functionStates = new Map(state.version === 3 ? state.syntax.blocks.blocks
+    .filter(block => state.contracts.procedures?.[block.id]?.family === 'custom-functions-v1')
+    .map(block => [block.id, block] as const) : []);
   const used = new Set<string>();
   const built = new Map<string, AbsAbiBlock>();
   const syntaxRoots = parseAbsSyntax(program, state.syntax ? absSyntaxOptions(state.syntax, state.contracts) : {});
   const entries = indexAbsSyntax(syntaxRoots);
   for (let index = entries.length - 1; index >= 0; index--) {
-    const { node, path } = entries[index], key = state.version === 2 ? index : path;
+    const { node, path } = entries[index], key = state.version >= 2 ? index : path;
     if (!Object.hasOwn(state.nodes, key) || used.has(path)) return invalid('Missing or duplicate block state.');
     used.add(path);
     const residual: NodeState = Array.isArray(state.nodes) ? state.nodes[index] : state.nodes[path];
     const block = { ...residual.attributes, type: node.type } as AbsAbiBlock;
     if (residual.fields !== undefined) block.fields = { ...Object.fromEntries(Object.entries(node.fields).map(([key, token]) => [key, token.value])), ...residual.fields };
-    if (Object.hasOwn(node, 'extraState')) block.extraState = node.extraState;
+    const original = functionStates.get(block.id);
+    if (state.version === 3 && state.contracts.procedures?.[block.id]?.family === 'custom-functions-v1') {
+      if (!original || original.type !== node.type || absJson(readableExtraState(original, state.contracts)) !== absJson(node.extraState))
+        return invalid('Function signature differs from its captured serializer state.');
+      block.extraState = original.extraState;
+    } else if (Object.hasOwn(node, 'extraState')) block.extraState = node.extraState;
     if (residual.inputs !== undefined) block.inputs = Object.fromEntries(Object.entries(residual.inputs).map(([name, input]) => {
       const child = node.inputs[name];
       if (!!child !== !!input.kind) return invalid('Input state does not match the readable program.');

@@ -4,7 +4,7 @@ import { matchAbsIdentities } from './abs-identity-matcher';
 import { parseAbsSyntax } from './abs-syntax';
 import { absSyntaxOptions } from './abs-syntax-contracts';
 import type { AbsProjection, AbsSyntaxNode } from './abs-state';
-import type { AbsSourceEdits } from './abs-edit-provenance';
+import type { AbsSourceEditOrigin, AbsSourceEdits } from './abs-edit-provenance';
 
 /** Transaction-local pure analysis. Nothing received from a callback or returned
  * as a draft is retained here. Each draft still owns a full mutable snapshot. */
@@ -57,11 +57,11 @@ function candidateAnalysis(baseline: ReturnType<typeof baselineAnalysis>, source
   let matched: { key: string; originals: ReadonlyMap<string, AbsSyntaxNode> } | undefined;
   return {
     snapshot: baseline.snapshot, validate: baseline.validate,
-    async match(edited: AbsSyntaxNode[], sourceEdits?: AbsSourceEdits) {
+    async match(edited: AbsSyntaxNode[], sourceEdits?: AbsSourceEdits, sourceEditOrigin?: AbsSourceEditOrigin) {
       await baseline.validate();
       const { original, originalIds, identity } = baseline.original();
       const entries = indexAbsSyntax(edited);
-      const key = absJson({ syntax: edited, sourceEdits: sourceEdits ?? null });
+      const key = absJson({ syntax: edited, sourceEdits: sourceEdits ?? null, sourceEditOrigin: sourceEditOrigin ?? null });
       let matches: ReadonlyMap<AbsSyntaxNode, AbsSyntaxNode>;
       if (matched?.key === key) {
         matches = new Map(entries.flatMap(({ node, path }) => {
@@ -69,7 +69,8 @@ function candidateAnalysis(baseline: ReturnType<typeof baselineAnalysis>, source
           return original ? [[node, original]] : [];
         }));
       } else {
-        matches = await matchAbsIdentities(baseline.source, source, original, edited, sourceEdits, identity.requiresIdentity, baseline.fingerprint);
+        matches = await matchAbsIdentities(baseline.source, source, original, edited, sourceEdits,
+          identity.requiresIdentity, baseline.fingerprint, sourceEditOrigin, identity.fixedCallTarget);
         matched = { key, originals: new Map(entries.flatMap(({ node, path }) => {
           const original = matches.get(node);
           return original ? [[path, original]] : [];

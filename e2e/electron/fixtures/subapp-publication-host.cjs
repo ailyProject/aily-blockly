@@ -13,24 +13,33 @@ app.setPath('userData', path.join(output, 'profile'));
 const { portableSubappTarball } = require(path.join(repo, 'tests/electron/fixtures/npm-tarball-fixture'));
 const { registerSubappManagerHandlers } = require(path.join(repo, 'electron/subapp-manager'));
 const ID = 'aily-chat', PACKAGE = '@aily-project/subapp-aily-chat';
+const OTHER = 'publication-fixture', OTHER_PACKAGE = '@aily-project/subapp-publication-fixture';
+const otherArchive = portableSubappTarball({ packageName: OTHER_PACKAGE, version: '1.0.0', id: OTHER });
 let version = '1.0.0', window, server, lock, offline = false, downloads = 0;
 const archives = new Map();
+
+function catalogEntry(id, packageName, release, archive, tarball) {
+  const namespace = id.replaceAll('-', '_').toUpperCase();
+  return { id, package: packageName, version: release, namespace, titleKey: `${namespace}.NAME`, app: { enabled: true },
+    dist: { tarball: `http://127.0.0.1:${server.address().port}${tarball}`,
+      integrity: `sha512-${createHash('sha512').update(archive).digest('base64')}` } };
+}
 
 app.whenReady().then(async () => {
   server = http.createServer((request, response) => {
     if (!archives.has(version)) archives.set(version, portableSubappTarball({ packageName: PACKAGE, version, id: ID }));
-    const archive = archives.get(version);
     if (request.url.endsWith('.tgz')) {
       downloads++;
       if (offline) { response.writeHead(503); response.end('Fixture offline'); return; }
+      const archive = request.url === '/other.tgz' ? otherArchive : archives.get(version);
       response.writeHead(200, { 'content-length': archive.length, 'content-type': 'application/octet-stream' });
       response.end(archive); return;
     }
     response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ [ID]: { id: ID, package: PACKAGE, version, namespace: 'AILY_CHAT',
-      titleKey: 'AILY_CHAT.NAME', app: { name: 'Aily Chat', enabled: true },
-      dist: { tarball: `http://127.0.0.1:${server.address().port}/package.tgz`,
-        integrity: `sha512-${createHash('sha512').update(archive).digest('base64')}` } } }));
+    response.end(JSON.stringify({
+      [ID]: catalogEntry(ID, PACKAGE, version, archives.get(version), '/package.tgz'),
+      [OTHER]: catalogEntry(OTHER, OTHER_PACKAGE, '1.0.0', otherArchive, '/other.tgz'),
+    }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const indexUrl = () => `http://127.0.0.1:${server.address().port}/index-${version}.json`;

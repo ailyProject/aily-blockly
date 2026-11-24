@@ -1,10 +1,12 @@
 import type { AuthService } from '../auth.service';
 import { getServerUrl } from '../../../../configs/api.config';
+import { HostCredentialOperationError } from './host-credential-ipc';
 
 export const AILY_HOST_AUTH_REQUEST_CHANNEL = 'child-tool-host-auth-request';
 export const AILY_HOST_AUTH_RESPONSE_CHANNEL = 'child-tool-host-auth-response';
 
 export type AilyHostAuthOperation = 'access-token' | 'refresh-access-token' | 'logout';
+type AilyHostAuthPhase = 'request' | 'initialize' | 'lease' | 'refresh' | 'logout' | HostCredentialOperationError['phase'];
 
 export interface AilyHostAuthRuntimeRequest {
   relayId?: unknown;
@@ -21,6 +23,7 @@ export interface AilyHostAuthRuntimeResult {
   generation: number;
   errorCode?: string;
   message?: string;
+  phase?: AilyHostAuthPhase;
 }
 
 export interface AilyHostAuthRuntimeAuthService {
@@ -28,6 +31,7 @@ export interface AilyHostAuthRuntimeAuthService {
   readonly isSessionInvalidating: boolean;
   readonly currentUser?: { readonly id?: string } | null;
   initializeAuth(): Promise<void>;
+  getAuthInitializationCredentialFailure?(): HostCredentialOperationError | undefined;
   getToken2(): Promise<string | null>;
   getAuthCredentialGeneration(): number;
   refreshAuthToken(): Promise<boolean>;
@@ -73,54 +77,60 @@ export function createAilyHostAuthRequestHandler(
   return async (request): Promise<AilyHostAuthRuntimeResult> => {
     const operation = normalizeOperation(request.operation);
     if (!operation) {
-      return failure(authService, 'HOST_AUTH_INVALID_REQUEST', 'Unsupported host authentication operation');
+      return failure(authService, 'HOST_AUTH_INVALID_REQUEST', 'Unsupported host authentication operation', 'request');
     }
 
-    if (operation === 'logout') {
-      await authService.logout();
-      return {
-        ok: true,
-        authenticated: false,
-        generation: authService.getAuthCredentialGeneration(),
-      };
-    }
-
-    // The main window normally owns an already-initialized AuthService. Only
-    // recover startup state when the bridge is called before that initialization
-    // has completed; otherwise every Aily API request would repeat `/me`.
-    if (!authService.hasLocalAuthSession && !authService.isSessionInvalidating) {
-      await authService.initializeAuth();
-    }
-    if (operation === 'access-token') {
+    let phase: AilyHostAuthPhase = 'initialize';
+    const lease = () => {
+      phase = 'lease';
       return readLease();
-    }
+    };
+    try {
+      if (operation === 'logout') {
+        phase = 'logout';
+        await authService.logout();
+        return {
+          ok: true,
+          authenticated: false,
+          generation: authService.getAuthCredentialGeneration(),
+        };
+      }
 
-    const rejectedGeneration = normalizeGeneration(request.rejectedGeneration);
-    if (
-      rejectedGeneration !== undefined
-      && rejectedGeneration !== authService.getAuthCredentialGeneration()
-    ) {
-      return readLease();
-    }
+      // An initialized host reuses the local session without repeating /me.
+      if (!authService.hasLocalAuthSession && !authService.isSessionInvalidating) {
+        await authService.initializeAuth();
+        const credentialFailure = authService.getAuthInitializationCredentialFailure?.();
+        if (credentialFailure) throw credentialFailure;
+      }
+      if (operation === 'access-token') return await lease();
 
-    if (!authService.hasLocalAuthSession || authService.isSessionInvalidating) {
-      return failure(authService, 'AUTH_SIGNED_OUT', 'The host account is signed out');
-    }
+      const rejectedGeneration = normalizeGeneration(request.rejectedGeneration);
+      if (rejectedGeneration !== undefined && rejectedGeneration !== authService.getAuthCredentialGeneration()) {
+        return await lease();
+      }
+      if (!authService.hasLocalAuthSession || authService.isSessionInvalidating) {
+        return failure(authService, 'AUTH_SIGNED_OUT', 'The host account is signed out');
+      }
 
-    if (!refreshPromise) {
-      const operationPromise = authService.refreshAuthToken();
-      refreshPromise = operationPromise;
-      const clearOperation = () => {
-        if (refreshPromise === operationPromise) refreshPromise = null;
-      };
-      void operationPromise.then(clearOperation, clearOperation);
+      phase = 'refresh';
+      if (!refreshPromise) {
+        const operationPromise = authService.refreshAuthToken();
+        refreshPromise = operationPromise;
+        const clearOperation = () => {
+          if (refreshPromise === operationPromise) refreshPromise = null;
+        };
+        void operationPromise.then(clearOperation, clearOperation);
+      }
+      if (!await refreshPromise) {
+        return failure(authService, 'AUTH_REFRESH_FAILED', 'The host could not refresh the access token', phase);
+      }
+      return await lease();
+    } catch (error) {
+      if (error instanceof HostCredentialOperationError) {
+        return failure(authService, error.code, 'The host could not access its local credentials', error.phase);
+      }
+      return failure(authService, 'HOST_AUTH_FAILED', 'The host authentication operation failed', phase);
     }
-
-    const refreshed = await refreshPromise;
-    if (!refreshed) {
-      return failure(authService, 'AUTH_REFRESH_FAILED', 'The host could not refresh the access token');
-    }
-    return readLease();
   };
 }
 
@@ -138,12 +148,7 @@ export function registerAilyChatHostAuthRuntimeBridge(
 
     void handleRequest(request as AilyHostAuthRuntimeRequest)
       .then(result => ipcRenderer.send?.(AILY_HOST_AUTH_RESPONSE_CHANNEL, { relayId, result }))
-      .catch(() => {
-        ipcRenderer.send?.(AILY_HOST_AUTH_RESPONSE_CHANNEL, {
-          relayId,
-          result: failure(authService, 'HOST_AUTH_FAILED', 'The host authentication operation failed'),
-        });
-      });
+      .catch(() => console.warn('[DAILY_HOST_AUTH_REPLY_UNAVAILABLE]'));
   };
 
   const cleanup = ipcRenderer.on(AILY_HOST_AUTH_REQUEST_CHANNEL, listener);
@@ -156,7 +161,7 @@ export function registerAilyChatHostAuthRuntimeBridge(
     });
     void handleRequest(request as AilyHostAuthRuntimeRequest)
       .then(reply)
-      .catch(() => reply(failure(authService, 'HOST_AUTH_FAILED', 'The host authentication operation failed')));
+      .catch(() => console.warn('[CLOUD_BUILD_AUTH_REPLY_UNAVAILABLE]'));
   };
   const cloudCleanup = ipcRenderer.on('cloud-build-auth-query', cloudListener);
   return () => {
@@ -171,6 +176,7 @@ function failure(
   authService: AilyHostAuthRuntimeAuthService,
   errorCode: string,
   message: string,
+  phase?: AilyHostAuthPhase,
 ): AilyHostAuthRuntimeResult {
   return {
     ok: false,
@@ -178,6 +184,7 @@ function failure(
     generation: authService.getAuthCredentialGeneration(),
     errorCode,
     message,
+    ...(phase ? { phase } : {}),
   };
 }
 

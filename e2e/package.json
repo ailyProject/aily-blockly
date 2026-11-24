@@ -24,6 +24,7 @@
     "test:serial-product": "cd .. && node ./e2e/electron/subapp-product.acceptance.mjs",
     "test:serial-owner-crash": "cd .. && node ./e2e/electron/subapp-owner-crash.acceptance.mjs",
     "test:subapp-owner-recovery": "cd .. && node ./e2e/electron/subapp-owner-recovery.acceptance.mjs",
+    "test:subapp-launch-faults": "cd .. && node ./e2e/electron/subapp-launch-faults.acceptance.mjs",
     "test:subapp-publish-lock": "cd .. && node --test e2e/electron/subapp-publish-lock.acceptance.mjs",
     "test:subapp-publication": "cd .. && node e2e/electron/subapp-publication.acceptance.mjs",
     "test:abs-save-consistency": "cd .. && node ./e2e/electron/abs-save-consistency.acceptance.mjs",

@@ -72,6 +72,23 @@ describe('project build receipt store', () => {
     expect((await new ProjectBuildReceipts().status('/isolated', request('with-log'))).result).toBeUndefined();
   });
 
+  it('observes a durable admission refusal and keeps the same request from replaying', async () => {
+    const original = window['builder'];
+    const refused = { version: 1, buildRequestId: 'refused', status: 'not-started',
+      code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED', message: 'The previous cache owner is unverified.' };
+    window['builder'] = { inspectBuildExecution: () => refused };
+    try {
+      const store = new ProjectBuildReceipts(0, 0, readNativeBuildReceipt);
+      const run = jasmine.createSpy('run');
+      const status = await store.status('/project', request('refused'));
+      expect(status.buildReceipt.state).toBe('completed');
+      expect(status.result).toEqual(jasmine.objectContaining({ ok: false, buildOutcome: 'not-started',
+        code: refused.code, message: refused.message }));
+      expect((await store.start('/project', request('refused'), 'compile', run)).result).toEqual(status.result);
+      expect(run).not.toHaveBeenCalled();
+    } finally { window['builder'] = original; }
+  });
+
   it('retains running ownership beyond retention while only evicting completed entries', fakeAsync(() => {
     const store = new ProjectBuildReceipts(50, 1);
     let finish!: (result: Record<string, any>) => void;
@@ -99,6 +116,77 @@ describe('project build receipt store', () => {
     });
     expect(answer.buildReceipt.state).toBe('completed');
     expect(answer.result).toEqual(jasmine.objectContaining({ ok: false, code: 'BUILD_SOURCE_STALE', message: 'source changed' }));
+  });
+
+  for (const code of ['node_restarted', 'CLOUD_TARGET_UNAVAILABLE']) it(`requires an explicit, separate, same-project request after ${code}`, async () => {
+    const store = new ProjectBuildReceipts();
+    const guard = jasmine.createSpy('guard');
+    const local = jasmine.createSpy('local').and.callFake(async control => {
+      expect(control.local.fromRequestId).toBe('cloud');
+      await control.local.assertCurrent();
+      return { ok: true };
+    });
+    const first = await store.start('/isolated', request('cloud', 10_000), 'compile', async control => {
+      control.recordCloudFailure?.({ code }, guard);
+      return { ok: false, code };
+    });
+    expect(first.buildReceipt.state).toBe('completed');
+    expect(first.result).toEqual({ ok: false, code, localFallback: { fromRequestId: 'cloud' } });
+    expect((await store.status('/isolated', request('cloud'))).result).toBe(first.result);
+    expect(local).not.toHaveBeenCalled();
+    expect(() => store.start('/wrong', request('wrong-project'), 'local', local, 'cloud')).toThrowError(/another project/);
+    const replay = store.start('/isolated', request('local', 10_000), 'local', local, 'cloud');
+    const sameRetry = store.start('/isolated', request('local', 10_000), 'local', local, 'cloud');
+    expect(() => store.start('/isolated', request('duplicate'), 'local', local, 'cloud')).toThrowError(/No matching live cloud build failure/);
+    expect((await replay).result?.['ok']).toBeTrue();
+    expect((await sameRetry).result?.['ok']).toBeTrue();
+    expect(local).toHaveBeenCalledTimes(1);
+    expect(guard).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects explicit fallback after the original project source changes', async () => {
+    const store = new ProjectBuildReceipts(), local = jasmine.createSpy('local');
+    let sourceCurrent = true;
+    await store.start('/isolated', request('cloud', 10_000), 'compile', async control => {
+      control.recordCloudFailure?.({ code: 'CLOUD_BOARD_OFFLINE' }, () => {
+        if (!sourceCurrent) throw new Error('Original canvas changed.');
+      });
+      return { ok: false };
+    });
+    sourceCurrent = false;
+    const refused = await store.start('/isolated', request('local', 10_000), 'local', local, 'cloud');
+    expect(refused.result).toEqual(jasmine.objectContaining({ ok: false, code: 'BUILD_FALLBACK_UNAVAILABLE', buildOutcome: 'not-started' }));
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('withholds retry authority for ordinary compiler errors, unconfirmed remote cleanup and cancelled requests', async () => {
+    const store = new ProjectBuildReceipts(), local = jasmine.createSpy('local');
+    const cases = [
+      { fault: { code: 'COMPILE_ERROR' }, outcome: 'failed' },
+      { fault: { code: 'node_restarted', remoteCleanupConfirmed: false }, outcome: 'failed' },
+      { fault: { code: 'node_restarted' }, outcome: 'cancelled' },
+    ];
+    for (const [index, { fault, outcome }] of cases.entries()) {
+      const id = `cloud-${index}`;
+      const first = await store.start('/isolated', request(id, 10_000), 'compile', async control => {
+        control.recordCloudFailure?.(fault, () => {});
+        return { ok: false, buildOutcome: outcome };
+      });
+      expect(first.result?.['localFallback']).toBeUndefined();
+      expect(() => store.start('/isolated', request('local'), 'local', local, id)).toThrowError(/No matching live cloud build failure/);
+    }
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('does not authorize an unreported local option when finalizing the cloud build throws', async () => {
+    const store = new ProjectBuildReceipts(), local = jasmine.createSpy('local');
+    const first = await store.start('/isolated', request('cloud', 10_000), 'compile', async control => {
+      control.recordCloudFailure?.({ code: 'CLOUD_BOARD_OFFLINE' }, () => {});
+      throw new Error('Cannot finalize the cloud build receipt.');
+    });
+    expect(first.result?.['localFallback']).toBeUndefined();
+    expect(() => store.start('/isolated', request('local'), 'local', local, 'cloud')).toThrowError(/No matching live cloud build failure/);
+    expect(local).not.toHaveBeenCalled();
   });
 
   for (const value of [null, {}, { version: 2, requestId: 'id' }, { version: 1, requestId: '../id' },

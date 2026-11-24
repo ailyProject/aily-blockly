@@ -39,7 +39,8 @@ describe('board cloud support and local fallback', () => {
 
   for (const reason of ['not_enabled', 'not_supported', 'offline']) it(`${reason} requires explicit local selection before preparing SDK dependencies`, async () => {
     support.reason = reason;
-    await expectAsync(npm.prepareCompileBackend('/project')).toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_BOARD_UNSUPPORTED' }));
+    const code = reason === 'offline' ? 'CLOUD_BOARD_OFFLINE' : 'CLOUD_BOARD_UNSUPPORTED';
+    await expectAsync(npm.prepareCompileBackend('/project')).toBeRejectedWith(jasmine.objectContaining({ code }));
     expect(project.isCloudBuild()).toBeTrue();
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
     expect(npm.ensureCoderDependencyLibrarySources).not.toHaveBeenCalled();

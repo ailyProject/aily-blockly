@@ -115,7 +115,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     session.notice.stateSubject.subscribe(notice => {
       if (notice?.onRetryLocally) {
         const retry = notice.onRetryLocally;
-        const current = this.projects.captureCurrentProjectGuard();
+        const current = session.project.captureCurrentProjectGuard();
         notice = { ...notice, onRetryLocally: () => {
           if (!this.isActive(path) || !current() || session.busy) return;
           // The explicit retry repairs dependencies and must still participate
@@ -181,7 +181,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     }
   }
 
-  build(path: string, options: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string } = {}): Promise<any> {
+  build(path: string, options: NonNullable<Parameters<CoderExecutionPort['build']>[1]> = {}): Promise<any> {
     return this.run(path, 'build', async session => {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);

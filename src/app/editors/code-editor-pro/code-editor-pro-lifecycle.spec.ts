@@ -3,6 +3,62 @@ import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
 import { ProjectService } from '@domain/project/public-api';
 
 describe('CodeEditorFrameComponent dependency preparation', () => {
+  it('checks the installed board on project load and again when a board switch reloads the project', fakeAsync(() => {
+    const root = '/project';
+    const originalPath = window['path'];
+    window['path'] = { resolve: (path: string) => path };
+    const lifecycle = (Object.create(ProjectService.prototype) as any).dependencyLifecycle;
+    const component: any = Object.create(CodeEditorFrameComponent.prototype);
+    const openBoard = { name: '@aily-project/board-open', auth: true };
+    const switchedBoard = { name: '@aily-project/board-switched', auth: true };
+    const openLogin = jasmine.createSpy('openLogin');
+    let board = openBoard;
+    Object.assign(component, {
+      active: true,
+      coderBootstrapGeneration: 0,
+      electronService: { isElectron: false, readFile: () => '{"name":"project","type":"coder"}', setTitle() {} },
+      configService: { getApplicationName: () => 'Coder' },
+      aiCoderDiffBridge: { setWorkspaceRoot() {} },
+      projectService: {
+        getProjectDependencySession: (path: string) => lifecycle.ensure(path),
+        assertProjectDependencySession: (session: any) => lifecycle.assertCurrent(session),
+        runProjectDependencyTask: (session: any, work: () => Promise<void>) => lifecycle.run(session, work),
+        finishProjectDependencyPreparation: (session: any) => lifecycle.finishPreparation(session),
+        discardLibraryChanges: async () => {},
+        addRecentlyProject() {},
+        stateSubject: { next() {} },
+        syncCurrentBoardConfig: async () => true,
+        getBoardModule: async () => board.name,
+        getBoardPackageJson: async () => board,
+      },
+      boardAuthPrompt: { promptIfRequired: async (manifest: unknown, canPrompt: () => boolean) => {
+        await Promise.resolve();
+        if (canPrompt()) openLogin(manifest);
+      } },
+      beginCoderEmbedLoading() {},
+      ensureProjectPackageJsonExists: async () => {},
+      ensureNpmDepsWithRetry: async () => {},
+      initCoderEmbed: async () => {},
+      setupBuildOutputsWatch() {},
+    });
+    try {
+      lifecycle.beginPreparation(root);
+      void component.bootstrap(root);
+      flushMicrotasks();
+      expect(openLogin).toHaveBeenCalledOnceWith(openBoard);
+
+      void component.promptLoginForAuthRequiredBoard(root);
+      flushMicrotasks();
+      expect(openLogin).toHaveBeenCalledTimes(1);
+
+      board = switchedBoard;
+      lifecycle.beginPreparation(root);
+      void component.bootstrap(root);
+      flushMicrotasks();
+      expect(openLogin.calls.allArgs()).toEqual([[openBoard], [switchedBoard]]);
+    } finally { window['path'] = originalPath; }
+  }));
+
   it('keeps preparation active after the iframe starts until platform dependencies settle', fakeAsync(() => {
     const originalPath = window['path'];
     window['path'] = { resolve: (path: string) => path };

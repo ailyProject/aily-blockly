@@ -377,22 +377,28 @@ async function main() {
     //     uploadParam: configUploadParam
     // });
 
-    let coderWorkspace;
+    let workspace;
     try {
         // 1. 路径准备
         if (config.verifyCoderBuild === true) {
-            coderWorkspace = acquireBuildWorkspace(currentProjectPath, 'verify');
-            const expectedBuildPath = path.join(coderWorkspace.projectRoot, '.build');
+            workspace = acquireBuildWorkspace(currentProjectPath, 'verify');
+            const expectedBuildPath = path.join(workspace.projectRoot, '.build');
             if (fs.realpathSync(buildPath) !== expectedBuildPath || !canReuseCoderUpload(config)) {
                 throw new Error('BUILD_ARTIFACT_STALE: Coder firmware or inputs changed; build again.');
             }
         }
         if (config.buildExecution) {
-            const selected = require('./build-execution-workspace').resolveBuildExecution(config.buildExecution.logicalProjectPath);
+            const original = config.buildExecution;
+            let selected;
+            if (original.layout === 'shared') {
+                if (!process.env.AILY_BUILD_WORKSPACE_SUPERVISOR) throw new Error('Shared upload requires the managed process launcher.');
+                ({ workspace, selected } = require('./shared-build-firmware').acquireSharedBuildFirmware(original));
+            } else selected = require('./build-execution-workspace').resolveBuildExecution(original.logicalProjectPath);
             if (!selected || selected.currentProjectPath !== currentProjectPath || selected.buildPath !== buildPath
-                || selected.buildRequestId !== config.buildExecution.buildRequestId || selected.inputDigest !== config.buildExecution.inputDigest) {
+                || selected.buildRequestId !== original.buildRequestId || selected.inputDigest !== original.inputDigest) {
                 throw new Error('BUILD_ARTIFACT_STALE: Upload does not belong to the current completed build execution.');
             }
+            if (original.layout === 'shared') workspace.markDelegated();
         }
         const tempPath = path.join(currentProjectPath, '.temp');
         // const buildPath = path.join(tempPath, 'build');
@@ -546,7 +552,7 @@ async function main() {
                     logger.log(`Executing: ${shellCmd} ${cmdArgs.join(' ')}`);
 
                     const exitCode = await new Promise((resolveCmd, rejectCmd) => {
-                        coderWorkspace?.markDelegated();
+                        workspace?.markDelegated();
                         const child = spawn(shellCmd, cmdArgs, {
                             cwd: buildPath,
                             shell: true,
@@ -669,7 +675,7 @@ async function main() {
         // 12. 执行上传命令。部分旧版 SDK 包装脚本会吞掉底层工具的异常并返回 0，
         // 因此在透传输出的同时保留末尾内容，用致命错误文本兜底校正退出码。
         const result = await new Promise((resolve, reject) => {
-            coderWorkspace?.markDelegated();
+            workspace?.markDelegated();
             const child = spawn(shellCommand, args, {
                 cwd: buildPath,
                 shell: true,
@@ -717,7 +723,7 @@ async function main() {
         logger.error(`[ERROR] ${error.message}`);
         process.exitCode = 1;
     } finally {
-        coderWorkspace?.release();
+        workspace?.release();
     }
 }
 

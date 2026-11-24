@@ -94,3 +94,29 @@ test('process exit and renderer send failure release only the affected request',
     assert.equal(failed.replies[0].result.errorCode, 'HOST_AUTH_UNAVAILABLE');
     assert.equal(failed.relay.pending.size, 0);
 });
+
+test('the original relay keeps sanitized host failure evidence over renderer replacement', () => {
+    const failures = [], h = harness({ reportFailure: failure => failures.push(failure) });
+    h.relay.rendererReady();
+    h.request();
+    const original = h.sent[0].relayId;
+    h.relay.rendererUnavailable();
+    h.relay.rendererReady();
+    const current = h.sent[1].relayId;
+    assert.equal(h.relay.complete(original, {ok:true, accessToken:'superseded'}), false);
+    h.relay.complete(current, {ok:false, errorCode:'AUTH_CREDENTIALS_LOCK_UNVERIFIED',
+        phase: 'credential-lock', message:'secret (some private path)', accessToken:'secret'});
+    const { result } = h.replies[0];
+    assert.equal(result.errorCode, 'AUTH_CREDENTIALS_LOCK_UNVERIFIED');
+    assert.equal(result.phase, 'credential-lock');
+    assert.match(result.correlationId, /^[a-f0-9-]{36}$/);
+    assert.equal(result.correlationId, original);
+    assert.doesNotMatch(JSON.stringify(result), /secret|private path/);
+    assert.deepEqual(failures, [{
+        code: result.errorCode,
+        phase: result.phase,
+        operation: 'access-token',
+        correlationId: result.correlationId,
+        durationMs: result.durationMs,
+    }]);
+});

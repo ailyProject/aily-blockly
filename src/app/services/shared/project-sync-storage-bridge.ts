@@ -4,6 +4,13 @@ export interface ProjectStorageAttachment {
   readonly version: 1; readonly root: string;
   readonly identity: { readonly dev: string; readonly ino: string; readonly birthtimeNs: string };
 }
+export interface LegacyProjectFileLockObservation {
+  readonly attachment: ProjectStorageAttachment;
+  readonly marker: { readonly ino: string; readonly birthtimeNs: string };
+}
+export interface ProjectFileLockObservation extends LegacyProjectFileLockObservation {
+  readonly marker: LegacyProjectFileLockObservation['marker'] & { readonly token: string; readonly sha256: string };
+}
 export interface ProjectStorageExecutor {
   readonly version: 1; readonly hostPid: number | null; readonly storagePid: number;
   readonly instanceId: string; readonly processIdentity: string | null; readonly bootId: string | null;
@@ -16,27 +23,44 @@ export interface ProjectStorageExecutorObservation {
 export interface CopiedProjectLockRecovery {
   readonly original: { attachment: ProjectStorageAttachment; executor: ProjectStorageExecutor };
   readonly expected: Readonly<Record<string, string | null>>;
+  readonly phase?: 'prepared' | 'committed';
+}
+export interface InvalidAbsMirrorRecovery {
+  key: 'project.abs' | 'project.abs.map.json';
+  abiHash: string;
+  committedHash: string | null;
+  operationHash: string | null;
+  absHash?: string;
+  replacement: string | null;
 }
 export interface ProjectStorageAccess {
   readonly attachment?: ProjectStorageAttachment;
   readonly executor?: ProjectStorageExecutor;
   read(key: string): Promise<string | null>;
   replace(key: string, expected: string | null, content: string | null): Promise<boolean>;
+  retireInvalidAbsMirror?(request: InvalidAbsMirrorRecovery): Promise<boolean>;
 }
 interface NativeProjectStorageAccess extends ProjectStorageAccess {
   readResult?(key: string): Promise<ProjectStorageSettlement<string | null>>;
   replaceResult?(key: string, expected: string | null, content: string | null): Promise<ProjectStorageSettlement<boolean>>;
+  retireInvalidAbsMirrorResult?(request: InvalidAbsMirrorRecovery): Promise<ProjectStorageSettlement<boolean>>;
 }
 export interface ProjectStorageBridge {
+  retireMalformedPointers?(includeCommitted?: boolean): Promise<void>;
   readonly attachment?: ProjectStorageAttachment;
   readonly executor?: ProjectStorageExecutor;
   observeExecutor?(original: ProjectStorageExecutor): Promise<ProjectStorageExecutorObservation>;
+  retireEmptyProjectFileLock?(observation: LegacyProjectFileLockObservation): Promise<boolean>;
+  retireProjectFileLock?(observation: ProjectFileLockObservation): Promise<boolean>;
   retireCopiedLock?(proof: CopiedProjectLockRecovery): Promise<void>;
   read(key: string): Promise<string | null>;
   withLock<T>(run: (storage: ProjectStorageAccess, settle: (result: ProjectStorageSettlement<T>) => void) => void): Promise<T>;
 }
 export interface NativeProjectStorageBridge extends ProjectStorageBridge {
+  retireMalformedPointersResult?(includeCommitted?: boolean): Promise<ProjectStorageSettlement<void>>;
   observeExecutorResult?(original: ProjectStorageExecutor): Promise<ProjectStorageSettlement<ProjectStorageExecutorObservation>>;
+  retireEmptyProjectFileLockResult?(observation: LegacyProjectFileLockObservation): Promise<ProjectStorageSettlement<boolean>>;
+  retireProjectFileLockResult?(observation: ProjectFileLockObservation): Promise<ProjectStorageSettlement<boolean>>;
   retireCopiedLockResult?(proof: CopiedProjectLockRecovery): Promise<ProjectStorageSettlement<void>>;
   readResult?(key: string): Promise<ProjectStorageSettlement<string | null>>;
   withLockResult?<T>(run: (storage: NativeProjectStorageAccess,
@@ -61,10 +85,19 @@ export function projectStorageBridge(storage: NativeProjectStorageBridge, assert
   return {
     attachment: storage.attachment,
     executor: storage.executor,
+    ...(storage.retireMalformedPointersResult ? { retireMalformedPointers: async (includeCommitted = false) => {
+      assertCurrent(); value(await storage.retireMalformedPointersResult!(includeCommitted)); assertCurrent();
+    } } : {}),
     ...(storage.observeExecutor ? { observeExecutor: async (original: ProjectStorageExecutor) => {
       assertCurrent();
       const observed = storage.observeExecutorResult ? value(await storage.observeExecutorResult(original)) : await storage.observeExecutor!(original);
       assertCurrent(); return observed;
+    } } : {}),
+    ...(storage.retireEmptyProjectFileLockResult ? { retireEmptyProjectFileLock: async (observation: LegacyProjectFileLockObservation) => {
+      assertCurrent(); const archived = value(await storage.retireEmptyProjectFileLockResult!(observation)); assertCurrent(); return archived;
+    } } : {}),
+    ...(storage.retireProjectFileLockResult ? { retireProjectFileLock: async (observation: ProjectFileLockObservation) => {
+      assertCurrent(); const retired = value(await storage.retireProjectFileLockResult!(observation)); assertCurrent(); return retired;
     } } : {}),
     ...(storage.retireCopiedLockResult ? { retireCopiedLock: async (proof: CopiedProjectLockRecovery) => {
       assertCurrent(); value(await storage.retireCopiedLockResult!(proof)); assertCurrent();
@@ -82,6 +115,9 @@ export function projectStorageBridge(storage: NativeProjectStorageBridge, assert
             : { ok: true as const, value: await locked.replace(key, expected, content) };
           assertCurrent(); return value(result);
         },
+        ...(locked.retireInvalidAbsMirrorResult ? { retireInvalidAbsMirror: async (request: InvalidAbsMirrorRecovery) => {
+          assertCurrent(); const retired = value(await locked.retireInvalidAbsMirrorResult!(request)); assertCurrent(); return retired;
+        } } : {}),
       }, settle)).then(result => { assertCurrent(); return value(result); });
     },
   };

@@ -1,9 +1,10 @@
-import { test, expect, closeAilyElectronApp, getMainWindow, launchAilyElectron, navigate } from '../fixtures/electron-app';
+import { test, expect, closeAilyElectronApp, getMainWindow, launchAilyElectron, navigate, readAilyHostOperation } from '../fixtures/electron-app';
 import {
   canRequestErrorDecision,
   formatTerminalError,
   requestErrorDecision,
 } from '../error-decision';
+import { createHash } from 'node:crypto';
 import { extractCompileDiagnostic } from '../compile-diagnostic';
 import { FullFlowCheckpoint, shouldStopOnError } from '../full-flow-checkpoint';
 import { readFullFlowMode } from '../full-flow-mode';
@@ -13,7 +14,7 @@ import {
   selectProjectPlazaSample,
 } from '../project-plaza-selection';
 import { readFileSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -36,6 +37,8 @@ import path from 'node:path';
  *
  *   # 项目广场全量编译（交互终端遇错时询问继续/中止；设置 AILY_E2E_STOP_ON_ERROR=0 可自动继续）
  *   $env:AILY_E2E_MODE = 'project-plaza'
+ *   # 云编译须指定 backend=cloud 并提供 AILY_E2E_CLOUD_ACCESS_TOKEN；默认 local。
+ *   # AILY_E2E_PROJECT_PLAZA_IDS 接受精确项目 ID，AILY_E2E_PROJECT_PLAZA_REFRESH=1 验证编译后刷新。
  *   npm --prefix e2e run test:fast -- full-flow.spec.ts
  *
  * 本机需具备：内置 Node 工具链（child/node）和全局安装的 aily-builder 命令、该开发板可安装
@@ -66,6 +69,8 @@ const PROJECT_PLAZA_SAMPLE_SEED = process.env['AILY_E2E_PROJECT_PLAZA_SAMPLE_SEE
 const PROJECT_PLAZA_SKIP_PROJECT_IDS = PROJECT_PLAZA_ENABLED
   ? readProjectPlazaSkipProjectIds(process.env['AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS'])
   : new Set<string>();
+const PROJECT_PLAZA_IDS = readProjectPlazaSkipProjectIds(process.env['AILY_E2E_PROJECT_PLAZA_IDS']);
+const PROJECT_PLAZA_BACKEND = process.env['AILY_E2E_PROJECT_PLAZA_BACKEND'] || 'local';
 const POLL_INTERVAL_MS = 250;
 const BOARD_COMPILE_ATTEMPTS = 2;
 const PROJECT_PLAZA_PAGE_SIZE = 100;
@@ -135,6 +140,8 @@ function readBoardKeywords(): string[] {
 
   return keywords;
 }
+
+if (PROJECT_PLAZA_ENABLED && PROJECT_PLAZA_BACKEND === 'cloud') test.use({ trace: 'off', video: 'off' });
 
 test.describe('全流程：创建或加载项目 → 编译', () => {
   const projectDirs: string[] = [];
@@ -355,6 +362,10 @@ test.describe('全流程：创建或加载项目 → 编译', () => {
   projectPlazaTest('应能让项目广场选定的项目完成编译', async ({ electronApp }) => {
     test.setTimeout(24 * 60 * 60 * 1000);
 
+    const backend = PROJECT_PLAZA_BACKEND;
+    if (backend !== 'local' && backend !== 'cloud') throw new Error('AILY_E2E_PROJECT_PLAZA_BACKEND 必须为 local 或 cloud。');
+    const cloudAccessToken = backend === 'cloud' ? process.env['AILY_E2E_CLOUD_ACCESS_TOKEN'] : undefined;
+    if (backend === 'cloud' && !cloudAccessToken) throw new Error('云编译复验需要 AILY_E2E_CLOUD_ACCESS_TOKEN。');
     const win = await getMainWindow(electronApp);
     attachDiagnostics(win);
 
@@ -366,12 +377,17 @@ test.describe('全流程：创建或加载项目 → 编译', () => {
       label: `${project.name} (ID: ${project.id || '缺失'})`,
       project,
     }));
-    const selectedCandidates = selectProjectPlazaSample(
-      allCandidates,
-      PROJECT_PLAZA_SAMPLE_RATE,
-      PROJECT_PLAZA_SAMPLE_SEED,
-    );
-    if (PROJECT_PLAZA_SAMPLE_RATE < 1) {
+    const byId = new Map(allCandidates.map(candidate => [candidate.project.id, candidate]));
+    const selectedCandidates = PROJECT_PLAZA_IDS.size
+      ? [...PROJECT_PLAZA_IDS].map(id => {
+          const candidate = byId.get(id);
+          if (!candidate) throw new Error(`项目广场缺少指定的项目 ID ${id}。`);
+          return candidate;
+        })
+      : selectProjectPlazaSample(allCandidates, PROJECT_PLAZA_SAMPLE_RATE, PROJECT_PLAZA_SAMPLE_SEED);
+    if (PROJECT_PLAZA_IDS.size) {
+      console.log(`[project-plaza] ${backend} 固定 ID：${selectedCandidates.map(({ label }) => label).join('；')}`);
+    } else if (PROJECT_PLAZA_SAMPLE_RATE < 1) {
       console.log(
         `[project-plaza] 随机抽样 ${selectedCandidates.length}/${allCandidates.length} 个项目，` +
           `比例=${PROJECT_PLAZA_SAMPLE_RATE}，seed=${PROJECT_PLAZA_SAMPLE_SEED}。`,
@@ -381,7 +397,8 @@ test.describe('全流程：创建或加载项目 → 编译', () => {
       );
     }
 
-    const checkpoint = new FullFlowCheckpoint('project-plaza');
+    const selectionKey = createHash('sha256').update(JSON.stringify(selectedCandidates.map(item => item.key).sort())).digest('hex').slice(0, 16);
+    const checkpoint = new FullFlowCheckpoint(`project-plaza-${backend}-${selectionKey}`);
     const checkpointRun = await checkpoint.begin(selectedCandidates);
     if (checkpointRun.resumed) {
       console.log(
@@ -447,13 +464,32 @@ test.describe('全流程：创建或加载项目 → 编译', () => {
         const startedAt = Date.now();
         try {
           await test.step(`[${item.position}/${checkpointRun.total}] 加载并编译 ${project.name}`, async () => {
-            const launched = await launchAilyElectron();
+            const launched = await launchAilyElectron({
+              config: { compile: { backend }, blocklyOnboardingCompleted: true },
+              ...(backend === 'cloud' ? {
+                cloudAccessToken,
+                environment: { AILY_BUILD_FLAVOR: 'cn', AILY_E2E_TOOLCHAIN_SEED: '' },
+              } : {}),
+            });
             let operationFailure: { error: unknown } | undefined;
             try {
               const isolatedWin = await getMainWindow(launched.app);
               const pageLog = attachDiagnostics(isolatedWin, `project-plaza:${project.name}`);
-              await loadProjectPlazaProject(isolatedWin, project, pageLog, projectDirs);
-              await compileProject(isolatedWin, pageLog, `项目广场：${project.name}`, 1);
+              if (backend === 'local') {
+                await isolatedWin.addLocatorHandler(isolatedWin.locator('.login-modal-wrap app-login .login-close'),
+                  button => button.click(), { noWaitAfter: true });
+              }
+              const projectDir = await loadProjectPlazaProject(launched.app, isolatedWin, project, pageLog, projectDirs, backend);
+              await compileProject(isolatedWin, pageLog, `项目广场：${project.name}`, 1, { projectDir, backend });
+              if (process.env['AILY_E2E_PROJECT_PLAZA_REFRESH'] === '1') {
+                const refreshLogStart = pageLog.totalMessages;
+                const blocks = isolatedWin.locator('.blocklyWorkspace .blocklyBlockCanvas > .blocklyDraggable');
+                const before = await blocks.count();
+                await isolatedWin.reload({ waitUntil: 'domcontentloaded' });
+                await waitForProjectPlazaBuildReady(launched.app, isolatedWin, projectDir, project.name, backend, pageLog, refreshLogStart);
+                await expect(blocks).toHaveCount(before);
+                console.log(`[project-plaza:refresh] ${project.name} ${backend} 恢复画布。`);
+              }
             } catch (error) {
               operationFailure = { error };
               if (STOP_ON_ERROR) {
@@ -906,10 +942,12 @@ async function readProjectPlazaPage(
 }
 
 async function loadProjectPlazaProject(
+  app: Parameters<typeof readAilyHostOperation>[0],
   win: Awaited<ReturnType<typeof getMainWindow>>,
   project: ProjectPlazaCandidate,
   pageLog: PageLogBuffer,
   projectDirs: string[],
+  backend: 'local' | 'cloud',
 ): Promise<string> {
   if (!project.id) {
     throw new Error(
@@ -929,8 +967,7 @@ async function loadProjectPlazaProject(
       break;
     }
 
-    const messageText =
-      (await win.locator('.ant-message-error').last().innerText().catch(() => '')) || '';
+    const messageText = (await win.locator('.ant-message-error').allInnerTexts()).at(-1) || '';
     if (/加载示例失败|load example failed/i.test(messageText)) {
       throw new Error(`[project-plaza] 加载项目失败：${messageText.trim()}`);
     }
@@ -950,97 +987,41 @@ async function loadProjectPlazaProject(
   }
   projectDirs.push(projectDir);
 
-  if (/\/main\/blockly-editor/.test(editorRoute)) {
-    await waitForBlocklyProjectLoaded(win, pageLog, loadLogStart, project.name, loadDeadline);
-    await waitForDependencyInstallDone(
-      win,
-      pageLog,
-      PROJECT_PLAZA_INSTALL_TIMEOUT_MS,
-      loadLogStart,
-    );
-  } else {
-    const remainingLoadTime = Math.max(1, loadDeadline - Date.now());
-    await expect(win.locator('app-header .project-box')).not.toHaveText('', {
-      timeout: Math.min(30_000, remainingLoadTime),
-    });
-  }
-
-  const compileBtn = win.locator('app-header app-act-btn[data-action="compile"]');
-  await expect(compileBtn).toBeVisible({ timeout: 60_000 });
+  await waitForProjectPlazaBuildReady(app, win, projectDir, project.name, backend, pageLog, loadLogStart);
   return projectDir;
 }
 
-async function waitForBlocklyProjectLoaded(
+async function waitForProjectPlazaBuildReady(
+  app: Parameters<typeof readAilyHostOperation>[0],
   win: Awaited<ReturnType<typeof getMainWindow>>,
-  pageLog: PageLogBuffer,
-  loadLogStart: number,
+  projectDir: string,
   projectName: string,
-  deadline: number,
+  backend: 'local' | 'cloud',
+  pageLog: PageLogBuffer,
+  logStart: number,
 ): Promise<void> {
-  let lastStatus = '';
-
+  const deadline = Date.now() + PROJECT_PLAZA_INSTALL_TIMEOUT_MS;
+  let lastBridgeError = '';
   while (Date.now() < deadline) {
-    if (win.isClosed()) {
-      throw new Error('[project-plaza] Blockly 项目加载期间 Electron 页面意外关闭。');
-    }
-
-    const [state, footerText] = await withTimeout(
-      Promise.all([
-        win.evaluate(() => {
-          const projectService = (window as any).projectService;
-          return String(projectService?.stateSubject?.value || '');
-        }),
-        win.locator('app-footer .state').innerText().catch(() => ''),
-      ]),
-      Math.max(1, deadline - Date.now()),
-      `[project-plaza] ${projectName} 的 Blockly 项目加载超过 ${PROJECT_PLAZA_LOAD_TIMEOUT_MS}ms。`,
-    );
-    const normalizedFooterText = footerText.trim();
-    const status = `state=${state || 'unknown'} footer="${normalizedFooterText}"`;
-    if (status !== lastStatus) {
-      console.log(`[project-plaza:load:${projectName}] ${status}`);
-      lastStatus = status;
-    }
-
-    if (state === 'loaded') {
+    if (win.isClosed()) throw new Error(`[project-plaza] ${projectName} 加载时窗口已关闭。`);
+    const logs = getPageLogMessagesSince(pageLog, logStart);
+    const failedInstall = logs.find(line => line.includes('install board dependencies error'));
+    if (failedInstall) throw new Error(failedInstall);
+    const status = await readAilyHostOperation(app, 'project_load_status', projectDir).catch((error: Error) => {
+      lastBridgeError = error.message;
+      return null;
+    });
+    if (status?.error) throw new Error(`[project-plaza] ${projectName} 加载失败：${status.error}`);
+    if (status?.ready && status.dependenciesPreparing === false) {
+      if (status.compileBackend !== backend) {
+        throw new Error(`[project-plaza] ${projectName} 需要 ${backend} 编译，应用当前使用 ${status.compileBackend}。`);
+      }
+      console.log(`[project-plaza:ready] ${projectName} ${backend}`);
       return;
     }
-    if (state === 'error') {
-      throw new Error(`[project-plaza] Blockly 项目加载失败，最后阶段：${normalizedFooterText || '未知'}。`);
-    }
-
-    const firstStoredMessage = pageLog.totalMessages - pageLog.messages.length;
-    const loadLogs = pageLog.messages.slice(Math.max(0, loadLogStart - firstStoredMessage)).join('\n');
-    if (/\[ProjectService\] project open completion timed out:|\[pageerror\]/i.test(loadLogs)) {
-      const lastError = loadLogs
-        .split('\n')
-        .filter((line) => /\[ProjectService\] project open completion timed out:|\[pageerror\]/i.test(line))
-        .at(-1);
-      throw new Error(`[project-plaza] Blockly 项目加载异常：${lastError}`);
-    }
-
     await win.waitForTimeout(POLL_INTERVAL_MS);
   }
-
-  throw new Error(
-    `[project-plaza] Blockly 项目加载超时（${PROJECT_PLAZA_LOAD_TIMEOUT_MS}ms），最后状态：${lastStatus || '未知'}。`,
-  );
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
+  throw new Error(`[project-plaza] ${projectName} 等待 ${backend} 编译准备超时（${PROJECT_PLAZA_INSTALL_TIMEOUT_MS}ms）。${lastBridgeError}`);
 }
 
 function formatDuration(durationMs: number): string {
@@ -1295,6 +1276,7 @@ async function compileProject(
   pageLog: PageLogBuffer,
   projectLabel: string,
   attempts: number,
+  target?: { projectDir: string; backend: 'local' | 'cloud' },
 ): Promise<void> {
   const failures: Array<{ attempt: number; message: string }> = [];
 
@@ -1302,7 +1284,7 @@ async function compileProject(
     const attemptLabel = attempts > 1 ? `第 ${attempt} 次编译` : '编译';
     console.log(`[compile] ${projectLabel}：准备${attemptLabel}。`);
     try {
-      await compileOnce(win, pageLog, attemptLabel);
+      await compileOnce(win, pageLog, attemptLabel, target);
       console.log(`[compile] ${projectLabel}：${attemptLabel}成功。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1324,6 +1306,7 @@ async function compileOnce(
   win: Awaited<ReturnType<typeof getMainWindow>>,
   pageLog: PageLogBuffer,
   attemptLabel: string,
+  target?: { projectDir: string; backend: 'local' | 'cloud' },
 ): Promise<void> {
   const compileBtn = win.locator('app-header app-act-btn[data-action="compile"]');
   await expect(compileBtn).toBeVisible({ timeout: 60_000 });
@@ -1333,8 +1316,28 @@ async function compileOnce(
   const noticeBeforeCompile = await getNoticeText(win);
   await dismissOnboardingIfVisible(win, 5_000);
   console.log(`[compile:${attemptLabel}] 点击编译按钮。`);
+  const started = Date.now();
   await compileBtn.click({ timeout: 30_000 });
-  await waitForCompileDone(win, pageLog, compileLogStart, noticeBeforeCompile, attemptLabel);
+  if (target) {
+    const resultPath = path.join(target.projectDir, '.log', 'compile', 'latest-result.json');
+    let result: { finishedAt?: number; success?: boolean; message?: string; fullStdErr?: string;
+      buildSource?: { kind?: string; status?: string; jobId?: string } } = {};
+    await expect.poll(async () => {
+      const raw = await readFile(resultPath, 'utf8').catch(() => '');
+      if (!raw) return false;
+      try { result = JSON.parse(raw); } catch { return false; }
+      return (result.finishedAt ?? 0) >= started;
+    }, { timeout: COMPILE_TIMEOUT_MS, message: `等待本次 ${target.backend} 编译回执` }).toBe(true);
+    if (!result.success) throw new Error(result.fullStdErr || result.message || '编译回执报告失败。');
+    const cloud = result.buildSource?.kind === 'cloud-build-source';
+    expect(cloud, '回执的编译后端').toBe(target.backend === 'cloud');
+    if (cloud) {
+      expect(result.buildSource?.status).toBe('available');
+      expect(result.buildSource?.jobId).toBeTruthy();
+    }
+  } else {
+    await waitForCompileDone(win, pageLog, compileLogStart, noticeBeforeCompile, attemptLabel);
+  }
 }
 
 async function waitForCompileDone(

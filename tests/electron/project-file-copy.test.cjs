@@ -4,7 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { test, after } = require('node:test');
-const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
+const { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
 const roots = [];
 const directory = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-project-copy-')); roots.push(root); return root; };
 
@@ -76,12 +76,14 @@ test('project copies exclude writer/lifecycle transient files and preserve recov
   const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
     `.project.abs.map.json.${id}.tmp`, `.project-data-backup.${id}.tmp`, `.abs-sync-${id}.tmp`,
     `.aily/abs-sync/.abs-sync-${id}.tmp`, `.aily/abs-sync/baselines/.abs-sync-${id}.tmp`,
-    '.aily/build-executions/run/project/node_modules/dependency.c'];
+    `.aily/.project-files.write.lock.${id}.tmp`, '.aily/build-executions/run/project/node_modules/dependency.c',
+    '.aily/cloud-build/.build/cloud/job/firmware.bin'];
   const included = ['project.abi', 'project.abs', 'project.abs.map.json', 'project.abi.pre-project-data.bak', 'user.tmp',
     '.aily/abs-sync/recovery.json', '.aily/abs-sync/prepared.json', '.aily/abs-sync/baselines/g1.json',
     '.aily/abs-sync/user.tmp', `nested/.abs-sync-${id}.tmp`, '.aily/project-data-backups/original.abi', 'assets/project-data/ab/resource.bin',
     'src/user.lock', 'nested/.aily/project-files.write.lock', 'nested/.aily/project-open.lock',
-    'nested/.aily/build-executions/data.txt', `.project.abi.${'a'.repeat(36)}.tmp`];
+    'nested/.aily/build-executions/data.txt', `.project.abi.${'a'.repeat(36)}.tmp`,
+    `.aily/.project-files.write.lock.${'a'.repeat(36)}.tmp`, `nested/.aily/.project-files.write.lock.${id}.tmp`];
   for (const file of [...excluded, ...included]) {
     const full = path.join(source, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
   }
@@ -103,6 +105,31 @@ test('save-as copies exclude root runtime directories without filtering nested p
     assert.equal(fs.readFileSync(path.join(source, file), 'utf8'), file);
   }
   for (const file of included) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
+});
+
+test('Coder template copies preserve the project skeleton and leave entry selection to the creator', () => {
+  const source = directory(); const target = directory();
+  const included = ['sketch/src/main.ino', 'sketch/src/helper.h', 'sketch/libraries/Extra/library.properties', 'assets/greeting.txt', 'README.md'];
+  const excluded = ['package.json', 'project.aci', '.build/firmware.bin', '.aily/project-open.lock'];
+  for (const file of [...included, ...excluded]) {
+    const full = path.join(source, file);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, file);
+  }
+
+  copyCoderTemplateDirectory(source, target);
+
+  for (const file of included) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
+  for (const file of excluded) assert.equal(fs.existsSync(path.join(target, file)), false);
+});
+
+test('Coder template copies reject linked directories before following them for entry creation', () => {
+  const source = directory(); const target = directory(); const external = directory();
+  fs.writeFileSync(path.join(external, 'original.ino'), 'external source');
+  fs.symlinkSync(external, path.join(source, 'sketch'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => copyCoderTemplateDirectory(source, target), /symbolic links/);
+  assert.deepEqual(fs.readdirSync(target), []);
+  assert.equal(fs.readFileSync(path.join(external, 'original.ino'), 'utf8'), 'external source');
 });
 
 test('save-as skips history junctions when Electron cannot create symbolic links', t => {

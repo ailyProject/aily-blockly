@@ -100,7 +100,7 @@ import { BlocklyToolboxPaneComponent } from './components/blockly-toolbox-pane/b
 import { BlocklyWorkspacePagesComponent } from './components/blockly-workspace-pages/blockly-workspace-pages.component';
 import { BlocklyConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
-import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
+import { canDeferGeneratedArtifactRecovery, isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
 import { _BuilderService } from '../../services/builder.service';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 import { installPasteLibrariesManaged } from '../../services/paste-project-libraries';
@@ -2277,12 +2277,14 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
               this.clearGeneratedArtifactRetry();
             }
           } catch (error) {
-            if (!isBuildWorkspaceBusyError(error)) throw error;
-            this.scheduleGeneratedArtifactRetry(
-              projectPath,
-              generated.artifacts,
-              this.blocklyService.getWorkspaceContentRevision(),
-            );
+            if (isBuildWorkspaceBusyError(error)) {
+              this.scheduleGeneratedArtifactRetry(projectPath, generated.artifacts,
+                this.blocklyService.getWorkspaceContentRevision());
+            } else {
+              if (!await canDeferGeneratedArtifactRecovery(projectPath, error)) throw error;
+              assertContext(); assertCurrent();
+              this.clearGeneratedArtifactRetry();
+            }
           }
           assertContext(); assertCurrent();
 
@@ -2374,6 +2376,9 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           this.generatedArtifactRetryTimer = setTimeout(() => void attempt(), 1000);
           return;
         }
+        if (await canDeferGeneratedArtifactRecovery(projectPath, error)) return;
+        if (token !== this.generatedArtifactRetryToken || this.destroy$.isStopped
+          || projectPath !== this.projectService.currentProjectPath) return;
         console.error('Code generation error:', error);
       }
     };

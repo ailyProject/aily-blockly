@@ -9,7 +9,7 @@ describe('Uploader command lifecycle during project close', () => {
   let output: Subject<any>;
 
   beforeEach(() => {
-    original = { path: window['path'], fs: window['fs'] };
+    original = { path: window['path'], fs: window['fs'], builder: window['builder'], cloudBuild: window['cloudBuild'] };
     window['path'] = {
       join: (...parts: string[]) => parts.join('/'),
       basename: (path: string) => path.split('/').pop(),
@@ -306,6 +306,67 @@ describe('Uploader command lifecycle during project close', () => {
     expect(f.outcome.result.state).toBe('error');
     expect(service.workflowService.finishUpload).toHaveBeenCalledWith(false, jasmine.any(String));
   }));
+
+  for (const editor of ['Blockly', 'Coder']) {
+    for (const [lastBuild, selected, valid] of [
+      ['local', 'cloud', true],
+      ['cloud', 'local', true],
+      ['local', 'cloud', false],
+    ] as const) {
+      it(`${editor} uploads after a separate ${lastBuild} build (preference=${selected}, reusable=${valid})`, fakeAsync(() => {
+        const operation = {
+          local: false,
+          useLocal() { this.local = true; },
+          useCloud() { this.local = false; },
+          release() { this.local = false; },
+        };
+        Object.assign(service.projectService, {
+          beginBuildBackendOperation: () => operation,
+          isCloudBuild: () => selected === 'cloud' && !operation.local,
+          isAilyCodeProject: () => editor === 'Coder',
+          assertProjectDependencySession() {},
+        });
+        window['builder'] = { canReuseBlocklyUpload: async () => true, canReuseCoderUpload: async () => true };
+        service.prepareCloudUploader = jasmine.createSpy('prepareCloudUploader').and.resolveTo('legacy');
+        service.uploadCloudResult = jasmine.createSpy('uploadCloudResult').and.resolveTo({ state: 'done' });
+
+        let origin: 'local' | 'cloud' = lastBuild;
+        window['cloudBuild'] = {
+          hasArtifact: async () => origin === 'cloud',
+          artifactPath: async () => '/verified-cloud-artifact',
+        };
+        let rebuilt = false;
+        const builder = editor === 'Blockly' ? service._builderService : (service.hostBuilderService = {});
+        const checked: string[] = [];
+        builder.canReuseBuildForUpload = async (_a, _b, backend = service.projectService.isCloudBuild() ? 'cloud' : 'local') => {
+          checked.push(backend);
+          return backend === origin && (valid || rebuilt);
+        };
+        builder.build = jasmine.createSpy('build').and.callFake(async () => {
+          expect(service.projectService.isCloudBuild()).toBe(selected === 'cloud');
+          rebuilt = true;
+          origin = selected;
+          return { state: 'done' };
+        });
+        const writeConfig = spyOn(window['fs'], 'writeFileSync');
+
+        const { outcome } = startProgressUpload();
+        output.complete();
+        flushMicrotasks();
+
+        expect(outcome.result?.state).toBe('done');
+        expect(checked[0]).toBe(lastBuild);
+        expect(builder.build).toHaveBeenCalledTimes(valid ? 0 : 1);
+        const useLocalFirmware = (valid ? lastBuild : selected) === 'local';
+        expect(service.cmdService.spawn).toHaveBeenCalledTimes(useLocalFirmware ? 1 : 0);
+        expect(service.uploadCloudResult).toHaveBeenCalledTimes(useLocalFirmware ? 0 : 1);
+        if (useLocalFirmware) {
+          expect(JSON.parse(writeConfig.calls.mostRecent().args[1] as string).buildPath).toBe('/project/build');
+        }
+        expect(service.projectService.isCloudBuild()).toBe(selected === 'cloud');
+      }));
+    }
+  }
 
   it('stops the local upload process after its cloud prerequisite was switched to local', fakeAsync(() => {
     const operation = { local: false, release: jasmine.createSpy('release') };

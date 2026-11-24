@@ -1,5 +1,6 @@
 import { Inject, Injectable, Optional } from '@angular/core';
 import { firstValueFrom, Subject } from 'rxjs';
+import type { BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
 import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
 import {
   CmdService,
@@ -74,6 +75,7 @@ export class BuilderService {
     requestId?: string;
     expectedProjectPath?: string;
     clearCache?: boolean;
+    localFallback?: BuildLocalFallbackControl;
   } = {}) {
     const activePath = this.projectService.currentProjectPath;
     const targetPath = projectPath || activePath;
@@ -90,6 +92,8 @@ export class BuilderService {
       if (coder) return await this.buildFromProjectPath(targetPath, options);
       return await this.buildCurrentBlocklyProject(targetPath, {
         source: options.source, requestId: options.requestId, clearCache: options.clearCache,
+        ...(options.localFallback ? { localFallback: options.localFallback } : {}),
+        ...(options.preprocessOnly ? { preprocessOnly: true } : {}),
       });
     } finally {
       finish();
@@ -140,6 +144,8 @@ export class BuilderService {
       graphSemanticRevision?: string;
       requestId?: string;
       clearCache?: boolean;
+      preprocessOnly?: boolean;
+      localFallback?: BuildLocalFallbackControl;
     },
   ) {
     let checkpoint: BuildCheckpoint | undefined;
@@ -165,11 +171,13 @@ export class BuilderService {
         error.buildInput = (buildResult as any)?.buildInput;
         error.buildSnapshot = buildResult?.buildSnapshot;
         error.buildOutcome = (buildResult as any)?.buildOutcome;
+        if (typeof (buildResult as any)?.code === 'string') error.code = (buildResult as any).code;
         error.buildResult = buildResult;
         if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
         throw error;
       }
 
+      if (payload.preprocessOnly) return buildResult;
       this.notifyBuildCompletion(buildResult, true);
       if (checkpoint?.startedAt) persistBuildResult(projectPath, true, buildResult, undefined, checkpoint, payload.source);
       this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
@@ -178,6 +186,7 @@ export class BuilderService {
       if (!error || typeof error !== 'object') error = new Error(String(error));
       // Editor admission (busy/stale/unmounted) does not attest a compiler exit.
       if (!checkpoint?.startedAt) error.buildOutcome = 'not-started';
+      if (payload.preprocessOnly) throw error;
       // console.error('编译失败:', error);
       this.notifyBuildCompletion(error, false);
       if (checkpoint?.startedAt && error?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
@@ -194,11 +203,19 @@ export class BuilderService {
     return normalize(left) === normalize(right);
   }
 
-  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string } = {}) {
+  /** The Coder dependency notice already owns the project build operation. */
+  buildCoderLocally(projectPath: string) {
+    return this.buildFromProjectPath(projectPath, { source: 'manual' }, true);
+  }
+
+  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string;
+    localFallback?: BuildLocalFallbackControl } = {}, retryLocally = false) {
     let compileResult: Awaited<ReturnType<CompileService['runCompileFromDisk']>>;
     try {
       await this.persistActiveCoderProjectBeforeBuild(projectPath);
-      compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
+      compileResult = retryLocally
+        ? await this.compileService.runLocalCompileFromDisk(projectPath)
+        : await this.compileService.runCompileFromDisk({ projectPath, ...options });
     } catch (error) {
       this.notifyBuildCompletion(error, false, options);
       throw error;
@@ -212,6 +229,7 @@ export class BuilderService {
       error.buildLog = buildResult?.buildLog;
       error.buildInput = buildResult?.buildInput;
       error.buildOutcome = buildResult?.buildOutcome;
+      if (typeof buildResult?.code === 'string') error.code = buildResult.code;
       error.buildResult = buildResult;
       if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
       if (!options.preprocessOnly && buildResult?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
@@ -273,12 +291,13 @@ export class BuilderService {
   }
 
   /** 本地与云端复用都先把当前编辑器内容保存到磁盘。 */
-  async canReuseBuildForUpload(projectPath: string, isCancelled: () => boolean = () => false): Promise<boolean> {
+  async canReuseBuildForUpload(projectPath: string, isCancelled: () => boolean = () => false, backend?: 'cloud' | 'local'): Promise<boolean> {
     if (!this.projectService.isAilyCodeProject(projectPath)) return false;
-    const cloud = this.projectService.isCloudBuild(projectPath);
+    const selectedCloud = this.projectService.isCloudBuild(projectPath);
+    const cloud = backend ? backend === 'cloud' : selectedCloud;
     if (!cloud && !window['builder']?.canReuseCoderUpload) return false;
     await this.persistActiveCoderProjectBeforeBuild(projectPath);
-    if (isCancelled() || this.projectService.isCloudBuild(projectPath) !== cloud) return false;
+    if (isCancelled() || this.projectService.isCloudBuild(projectPath) !== selectedCloud) return false;
     return cloud ? this.compileService.canReuseCloudBuildForUpload(projectPath, isCancelled)
       : this.compileService.canReuseLocalCoderBuildForUpload(projectPath, isCancelled);
   }
@@ -337,11 +356,25 @@ export class BuilderService {
     });
   }
 
+  usesSharedBuildCache(projectPath: string): boolean {
+    return !!projectPath && window['builder']?.sharedBuildExecutionVersion === 1
+      && !this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCloudBuild();
+  }
+
+  private async clearSharedBuildCache(projectPath: string, preserveSketch: boolean): Promise<void> {
+    const bridge = window['builder'];
+    if (typeof bridge?.clearSharedBuildCache !== 'function') {
+      throw new Error('Shared build cache cleanup is unavailable.');
+    }
+    await bridge.clearSharedBuildCache(projectPath, { preserveSketch });
+  }
+
   /**
    * 清除可安全重建的编译与本地库缓存，保留当前 Blockly 生成的 sketch。
    * 供需要在同一次调用中立即继续构建的流程使用。
    */
   async clearBuildCache(projectPath: string): Promise<void> {
+    if (this.usesSharedBuildCache(projectPath)) return this.clearSharedBuildCache(projectPath, true);
     const buildPath = this.electronService.pathJoin(projectPath, '.build');
     const isAilyCode = this.projectService.isAilyCodeProject(projectPath);
     const librariesPath = this.electronService.pathJoin(projectPath, '.temp', 'libraries');
@@ -385,6 +418,7 @@ export class BuilderService {
    * 完整清除缓存。该操作会删除生成的 sketch，仅用于随后会重新预处理的流程。
    */
   async clearCache(projectPath: string) {
+    if (this.usesSharedBuildCache(projectPath)) return this.clearSharedBuildCache(projectPath, false);
     try {
       const tempPath = projectPath + '/.temp';
       const buildPath = this.electronService.pathJoin(projectPath, '.build');

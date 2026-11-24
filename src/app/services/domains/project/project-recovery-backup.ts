@@ -1,7 +1,8 @@
 import { sha256Hex } from '../../../utils/crypto.utils';
-import { projectStorageBridge } from '@shared/public-api';
+import { projectStorageBridge, type ProjectStorageAttachment } from '@shared/public-api';
 
 interface RecoveryStorage {
+  readonly attachment?: ProjectStorageAttachment;
   read(key: string): Promise<string | null>;
   withLock<T>(run: (storage: { read(key: string): Promise<string | null>;
     replace(key: string, expected: string | null, text: string): Promise<boolean> },

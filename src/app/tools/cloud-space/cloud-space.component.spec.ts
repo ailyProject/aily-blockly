@@ -33,7 +33,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       mkdirSync: (path: string) => directories.add(path),
       rmSync: jasmine.createSpy('rm'),
       unlinkSync: (path: string) => files.delete(path),
-      statSync: (path: string) => ({ size: files.get(path)?.length || 0 }),
+      statSync: (path: string) => ({ _isFile: files.has(path), size: files.get(path)?.length || 0 }),
     };
     window['path'] = { join: (...parts: string[]) => parts.join('/') };
     const filePath = (key: string) => root + '/' + (['package.json', 'project.abi', 'project.abs', 'project.abs.map.json'].includes(key) ? key : '.aily/abs-sync/' + key);
@@ -89,6 +89,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(window['fs'].readFileSync).not.toHaveBeenCalledWith(`${root}/project.abi`, 'utf8');
     expect(component.message.error).not.toHaveBeenCalled();
     const command = component.cmdService.runAsync.calls.first().args[0];
+    expect(command).toContain('"-xr!.*/"');
     expect(command).not.toContain('"-xr!.*"');
     expect(command).toContain('"-x!sketch/preprocess.json"');
     expect(command).toContain('"-x!sketch/library-cache.json"');
@@ -113,8 +114,9 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(getStore).not.toHaveBeenCalled();
   });
 
-  it('rejects a Coder project with no source workspace before packing', async () => {
+  it('rejects a Coder project with only an empty project association file before packing', async () => {
     directories.delete(`${root}/sketch`);
+    files.set(`${root}/project.aci`, '');
     expect(await component.packageProject(root)).toBeUndefined();
     expect(component.message.error).toHaveBeenCalledWith('Coder 项目源码不存在，无法打包');
     expect(component.cmdService.runAsync).not.toHaveBeenCalled();

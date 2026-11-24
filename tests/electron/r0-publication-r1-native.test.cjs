@@ -35,15 +35,15 @@ async function worker(mode, project) {
     assert.equal(await closed, 0); return result;
   } finally { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; } }
 }
-async function fixture() {
+async function fixture(operation = 'project_save') {
   const project = fs.mkdtempSync(path.join(root, 'project-'));
   await worker('fixture', project);
   const input = JSON.parse(fs.readFileSync(path.join(project, 'r0-input.json'), 'utf8'));
   const port = await openProjectSyncStorage(project, guard), scope = { projectKey: project, pageId: 'main' };
   const store = new kernel.AbsBaselineStore(port, scope), journal = new kernel.AbsOperationJournal(port, project);
   const application = new kernel.AbsApplicationJournal(port, project);
-  const request = { version: 2, requestId: 'pub2-' + randomUUID(), operation: 'project_save',
-    inputDigest: await kernel.hashAbsText(kernel.absJson({ project, operation: 'project_save' })) };
+  const request = { version: 2, requestId: 'pub2-' + randomUUID(), operation,
+    inputDigest: await kernel.hashAbsText(kernel.absJson({ project, operation })) };
   fs.writeFileSync(path.join(project, 'r0-native-request.json'), JSON.stringify(request));
   return { project, input, port, store, journal, application, request };
 }
@@ -67,6 +67,200 @@ async function publish(ctx, { complete = true, seal = true } = {}) {
   if (seal) await ctx.journal.finish(ref.operationId, guard);
   return { ref, facts };
 }
+
+async function withUnreadableFile(filename, inspect) {
+  const before = fs.readFileSync(filename), unreadable = Buffer.from([0xff, 0xfe, 0xc0, 0xaf]);
+  fs.writeFileSync(filename, unreadable);
+  try {
+    await inspect();
+    assert.deepEqual(fs.readFileSync(filename), unreadable, 'Observation cannot write the current files.');
+  } finally { fs.writeFileSync(filename, before); }
+}
+
+function readOnlyPort(ctx) {
+  return { ...ctx.port, withLock() { assert.fail('Observation should not claim a write lease.'); } };
+}
+
+async function applicationInput(ctx, requestId, port = ctx.port) {
+  const { input, project } = ctx;
+  const source = input.next.inputAbs;
+  const hash = await kernel.hashAbsText(source);
+  const validation = { version: 2, requestId,
+    base: (await kernel.generationEvidence(input.baseProjection, input.next.expected.abi)).binding,
+    candidate: { hash, bytes: Buffer.byteLength(source) },
+    workspaceRevision: 1, workingCandidate: { version: 1, id: randomUUID(), revisionHash: '4'.repeat(64) },
+    libraryRuntimeFingerprint: '5'.repeat(64), validation: { ok: true, scope: 'prepared-generation' } };
+  await new kernel.OriginalRequestAdmissions(port, project).reserveApplication(requestId, hash, guard);
+  return { kind: 'abs-apply', document: input.baseProjection.document, disk: input.next.expected,
+    candidate: { source, generation: input.baseProjection.map.generation, hash }, application: { requestId, validation } };
+}
+
+async function publishApplication(ctx, { seal = true } = {}) {
+  const input = await applicationInput(ctx, ctx.request.requestId);
+  const id = await ctx.journal.begin(input, guard);
+  await ctx.store.stage(ctx.input.next, ctx.input.expectedPointerHash);
+  const outcome = { publication: { status: 'COMMITTED', generation: 'r0-next', abiSaved: true, absMirrored: true, mapPublished: true },
+    requiresReload: false, evidence: await kernel.generationEvidence(ctx.input.next.projection, ctx.input.next.abi),
+    appliedRevision: 1, warnings: [], derivedOutputs: { published: true } };
+  await ctx.application.stage(id, input.application.validation, outcome, guard);
+  assert.equal((await ctx.store.commit('r0-next', guard, async (text, expected, storage) =>
+    assert.equal(await storage.replace('project.abi', expected, text), true))).status, 'COMMITTED');
+  if (seal) {
+    assert.equal(await ctx.application.seal(id, guard), true);
+    await ctx.application.complete(id, outcome, guard);
+    await ctx.journal.finish(id, guard);
+  }
+  return { id, outcome };
+}
+
+test('ABS apply observes its sealed original result through unreadable current ABS or map', async () => {
+  const ctx = await fixture('abs_apply'), { id, outcome } = await publishApplication(ctx);
+  const observer = new kernel.AbsApplicationJournal(readOnlyPort(ctx), ctx.project);
+  const pid = ctx.port.executor.hostPid, requestId = ctx.request.requestId;
+  assert.equal((await observer.observe(requestId, guard)).result.applicationObservation.current, true);
+  const document = structuredClone(ctx.input.next.projection.document);
+  document.pages[0].content.blocks.blocks[0].fields.VALUE = 103;
+  const generation = 'later-save', abi = JSON.stringify(document, null, 2);
+  const projection = await kernel.createAbsProjection(kernel.composeBlocklyPage(document, 'main'), { document, generation,
+    baselineRef: kernel.absBaselineKey(generation), scope: { projectKey: ctx.project, pageId: 'main' },
+    savedAbiHash: await kernel.hashAbsText(kernel.absJson(document)) });
+  await ctx.store.stage({ mode: 'import', inputAbs: projection.abs, projection, abi, expected: await ctx.store.captureDisk() });
+  assert.equal((await ctx.store.commit(generation, guard, async (text, expected, storage) =>
+    assert.equal(await storage.replace('project.abi', expected, text), true))).status, 'COMMITTED');
+  assert.equal((await observer.observe(requestId, guard)).result.applicationObservation.current, false);
+  for (const mirror of ['project.abs', 'project.abs.map.json']) {
+    await withUnreadableFile(path.join(ctx.project, mirror), async () => {
+      const observed = (await observer.observe(requestId, guard, pid)).result;
+      assert.deepEqual(observed.publication, outcome.publication);
+      assert.deepEqual(observed.evidence, outcome.evidence);
+      assert.deepEqual(observed.applicationObservation, { version: 1, requestId, observationOnly: true, resultKnown: true, current: false });
+      assert.equal(observed.publicationObservation.operationId, id);
+      await assert.rejects(observer.observe(requestId, guard, pid + 1), { code: 'ABS_APPLY_OBSERVATION_INVALID' });
+      for (const record of ['commit', 'result']) {
+        await withUnreadableFile(path.join(ctx.project, '.aily/abs-sync/recoveries', `application-${record}-${id}.json`),
+          () => assert.rejects(observer.observe(requestId, guard, pid), { code: 'ABS_STORAGE_ENCODING_INVALID' }));
+      }
+    });
+  }
+  await withUnreadableFile(path.join(ctx.project, 'project.abs'), () =>
+    withUnreadableFile(path.join(ctx.project, 'project.abi'), () =>
+      assert.rejects(observer.observe(requestId, guard, pid), { code: 'ABS_STORAGE_ENCODING_INVALID' })));
+  assert.equal((await ctx.store.captureDisk()).abi, abi);
+});
+
+test('unreadable current ABS cannot promote an unsealed ABS application', async () => {
+  const ctx = await fixture('abs_apply');
+  await publishApplication(ctx, { seal: false });
+  await withUnreadableFile(path.join(ctx.project, 'project.abs'), () =>
+    assert.rejects(new kernel.AbsApplicationJournal(readOnlyPort(ctx), ctx.project)
+      .observe(ctx.request.requestId, guard, ctx.port.executor.hostPid), { code: 'ABS_STORAGE_ENCODING_INVALID' }));
+});
+
+for (const phase of ['snapshot', 'index', 'pointer']) {
+  test(`lost ABS ${phase} acknowledgement only settles the exact request before the pending pointer`, async () => {
+    const ctx = await fixture('abs_apply'), { port, project } = ctx;
+    const requestId = ctx.request.requestId, pid = port.executor.hostPid;
+    const input = await applicationInput(ctx, requestId);
+    const disk = await ctx.store.captureDisk(), oldPointer = await port.read('operation.json');
+    let lost = false;
+    const faulting = { ...port, withLock: callback => port.withLock(storage => callback({ ...storage,
+      replace: async (key, expected, text) => {
+        const replaced = await storage.replace(key, expected, text);
+        const targeted = phase === 'snapshot' ? key.startsWith('recoveries/operation-')
+          : phase === 'index' ? key.startsWith('recoveries/request-') : key === 'operation.json';
+        if (targeted && replaced && !lost) {
+          lost = true;
+          throw Object.assign(Error('Lost original ABS journal acknowledgement'), { code: 'ABS_COMMIT_UNCERTAIN' });
+        }
+        return replaced;
+      } })) };
+    await assert.rejects(new kernel.AbsOperationJournal(faulting, project).begin(input, guard), { code: 'ABS_COMMIT_UNCERTAIN' });
+    assert.equal(lost, true);
+    assert.deepEqual(await ctx.store.captureDisk(), disk);
+    const observation = (await ctx.application.observe(requestId, guard, pid)).result;
+    if (phase === 'pointer') {
+      assert.equal(observation.publication.status, 'UNKNOWN');
+      assert.equal(observation.applicationObservation.resultKnown, false);
+      assert.notEqual(await port.read('operation.json'), oldPointer);
+      return;
+    }
+    assert.equal(await port.read('operation.json'), oldPointer);
+    assert.deepEqual(observation.admission, { status: 'NOT_STARTED', requestId });
+    assert.equal(observation.publication.status, 'NOT_COMMITTED');
+    await assert.rejects(ctx.application.observe(requestId, guard, pid + 1), { code: 'ABS_APPLY_OBSERVATION_INVALID' });
+    await assert.rejects(ctx.journal.begin(input, guard), { code: 'ABS_APPLY_REQUEST_ALREADY_RECORDED' });
+    const newer = await applicationInput(ctx, randomUUID());
+    const newerId = await ctx.journal.begin(newer, guard);
+    const newerPointer = await port.read('operation.json');
+    assert.equal(JSON.parse(newerPointer).id, newerId);
+    assert.deepEqual((await ctx.application.observe(requestId, guard, pid)).result, observation);
+    assert.equal(await port.read('operation.json'), newerPointer);
+  });
+}
+
+for (const operation of ['project_save', 'history_restore']) {
+  test(`${operation} observes the sealed original result through unreadable current ABS or map`, async () => {
+    const ctx = await fixture(operation), published = await publish(ctx);
+    const port = readOnlyPort(ctx), observer = new kernel.AbsApplicationJournal(port, ctx.project);
+    for (const mirror of ['project.abs', 'project.abs.map.json']) {
+      await withUnreadableFile(path.join(ctx.project, mirror), async () => {
+        const observed = await observer.observeNativeSave(ctx.request, guard);
+        assert.deepEqual(observed, { state: 'completed', ref: published.ref, result: published.facts, current: false });
+        const status = await kernel.observeNativePublication(port, ctx.project, ctx.request,
+          { originalTargetPid: (published.ref.executor.hostPid ?? process.pid) + 1 });
+        assert.equal(status.code, 'PROJECT_SAVE_EXECUTOR_MISMATCH');
+        assert.equal(status.saveReceipt.state, 'unknown');
+        assert.equal(status.result, undefined);
+        await assert.rejects(observer.observeNativeSave({ ...ctx.request, inputDigest: 'sha256:' + 'f'.repeat(64) }, guard),
+          { code: 'ABS_NATIVE_SAVE_REQUEST_CONFLICT' });
+        const proof = path.join(ctx.project, '.aily/abs-sync/recoveries', `application-commit-${published.ref.operationId}.json`);
+        await withUnreadableFile(proof, () => assert.rejects(observer.observeNativeSave(ctx.request, guard),
+          { code: 'ABS_STORAGE_ENCODING_INVALID' }));
+      });
+    }
+    // An unreadable mirror cannot cancel an independent concurrent rejection.
+    await withUnreadableFile(path.join(ctx.project, 'project.abs'), () =>
+      withUnreadableFile(path.join(ctx.project, 'project.abi'), () =>
+        assert.rejects(observer.observeNativeSave(ctx.request, guard), { code: 'ABS_STORAGE_ENCODING_INVALID' })));
+  });
+}
+
+test('unreadable current ABS cannot promote a staged and unsealed result', async () => {
+  const ctx = await fixture(), { ref } = await publish(ctx, { complete: false, seal: false });
+  await withUnreadableFile(path.join(ctx.project, 'project.abs'), async () => {
+    const observed = await new kernel.AbsApplicationJournal(readOnlyPort(ctx), ctx.project).observeNativeSave(ctx.request, guard);
+    assert.equal(observed.state, 'unknown');
+    assert.equal(observed.publication.status, 'UNKNOWN');
+    assert.deepEqual(observed.ref, ref);
+    assert.equal(observed.result, undefined);
+  });
+});
+
+test('an unreadable later prepared generation does not invalidate the sealed History result', async () => {
+  const ctx = await fixture('history_restore'), published = await publish(ctx);
+  const observer = new kernel.AbsApplicationJournal(readOnlyPort(ctx), ctx.project);
+  const document = structuredClone(ctx.input.next.projection.document), generation = 'later-prepared';
+  document.pages[0].content.blocks.blocks[0].fields.VALUE = 103;
+  const abi = JSON.stringify(document, null, 2);
+  const projection = await kernel.createAbsProjection(kernel.composeBlocklyPage(document, 'main'), { document, generation,
+    baselineRef: kernel.absBaselineKey(generation), scope: { projectKey: ctx.project, pageId: 'main' },
+    savedAbiHash: await kernel.hashAbsText(kernel.absJson(document)) });
+  await ctx.store.stage({ mode: 'import', inputAbs: projection.abs, projection, abi, expected: await ctx.store.captureDisk() });
+  const admitted = Promise.withResolvers(), advance = Promise.withResolvers();
+  const writing = ctx.store.commit(generation, guard, async (text, expected, access) => {
+    admitted.resolve(); await advance.promise;
+    assert.equal(await access.replace('project.abi', expected, text), true);
+  });
+  try {
+    await Promise.race([admitted.promise, writing]);
+    await withUnreadableFile(path.join(ctx.project, '.aily/abs-sync/prepared.json'), async () => {
+      assert.deepEqual(await observer.observeNativeSave(ctx.request, guard),
+        { state: 'completed', ref: published.ref, result: published.facts, current: false });
+    });
+  } finally { advance.resolve(); await writing; }
+  assert.equal((await writing).status, 'COMMITTED');
+  assert.equal((await ctx.store.captureDisk()).abi, abi);
+});
 
 test('native admission reuses original S1/request/page and rejects a changed digest or legacy ID', async () => {
   const ctx = await fixture(), first = await admit(ctx);

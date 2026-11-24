@@ -127,6 +127,21 @@ describe('Coder concurrent process integration', () => {
     await click(); expect(retry).not.toHaveBeenCalled();
   });
 
+  it('allows a background dependency failure to retry locally after activating its project', async () => {
+    const session = runtime.getSession('/b');
+    const retry = jasmine.createSpy('retry').and.callFake(() => session.notice.update({ state: 'done' }));
+    project.getProjectDependencyBlockMessage.and.returnValue('dependency failure');
+    session.notice.update({ state: 'error', onRetry: () => {}, onRetryLocally: retry });
+    const click = session.state.notice!.onRetryLocally!;
+    await click();
+    expect(retry).not.toHaveBeenCalled();
+    project.currentProjectPath = '/b';
+    project.currentProjectPath$.next('/b');
+    await click();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(runtime.getState('/b').build).toBe('done');
+  });
+
   it('does not start a build while board source/configuration is being synchronized', async () => {
     project.isProjectTransitionInProgress.and.returnValue(true);
     await expectAsync(runtime.build('/a')).toBeRejectedWithError(/配置正在更新/);
