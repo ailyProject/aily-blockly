@@ -22,8 +22,9 @@ import {
 } from '@shared/public-api';
 
 export type FirmwareUploadOptions =
-  | { preparedFirmware: BuildInput; reuseCloudFirmware?: never }
-  | { preparedFirmware?: never; reuseCloudFirmware: true };
+  | { preparedFirmware: BuildInput; reuseCloudFirmware?: never; reuseExistingFirmware?: never }
+  | { preparedFirmware?: never; reuseCloudFirmware: true; reuseExistingFirmware?: never }
+  | { preparedFirmware?: never; reuseCloudFirmware?: never; reuseExistingFirmware: true };
 
 @Injectable({
   providedIn: 'root'
@@ -190,7 +191,6 @@ export class UploaderService {
     const projectCurrent = firmware ? this.projectService.captureCurrentProjectGuard() : undefined;
     const assertUploadCurrent = () => {
       if (firmware && (this.projectService.isAilyCodeProject(projectPath) || this.isPythonProject()
-        || this.projectService.isCloudBuild() !== Boolean(firmware.reuseCloudFirmware)
         || !projectCurrent?.() || this.projectService.currentProjectPath !== projectPath
         || this.serialService.currentPort !== port)) {
         throw Object.assign(new Error('Prepared firmware upload no longer owns the requested project and port.'),

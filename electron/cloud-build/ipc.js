@@ -105,7 +105,9 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
         event.sender.once('destroyed', stopped);
         try { result = await broker.run(event.sender, request, send); }
         finally { event.sender.removeListener('destroyed', stopped); }
-      } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId);
+      } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId, {
+        discardCompletedArtifact: request.discardCompletedArtifact === true,
+      });
       else if (request.action === 'hasArtifact') result = broker.hasArtifact(event.sender, request.projectPath);
       else if (request.action === 'artifactPath') result = await broker.artifactPath(event.sender, request.projectPath);
       else if (request.action === 'artifactUploadInfo') {

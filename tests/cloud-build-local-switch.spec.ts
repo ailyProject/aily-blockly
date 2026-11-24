@@ -59,7 +59,7 @@ describe('switching a running cloud build to local', () => {
     const f = await fixture();
     expect(f.switch()).toBeTrue(); expect(f.switch()).toBeFalse();
     await Promise.resolve();
-    expect(f.bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'owned' });
+    expect(f.bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'owned', discardCompletedArtifact: true });
     f[first].resolve(first === 'run' ? { success: true } : true);
     for (let n = 0; n < 5; n++) await Promise.resolve();
     expect(f.settled()).toBeFalse();
@@ -122,7 +122,7 @@ describe('switching before the cloud request is submitted', () => {
     requirements.resolve([]);
     expect((await result).code).toBe(invalidated ? 'BUILD_SOURCE_STALE' : CLOUD_BUILD_LOCAL_REQUESTED);
     expect(bridge.run).not.toHaveBeenCalled();
-    expect(bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'preparing' });
+    expect(bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'preparing', discardCompletedArtifact: true });
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(requestSwitch()).toBeFalse();
   });

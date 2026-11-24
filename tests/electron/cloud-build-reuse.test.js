@@ -73,6 +73,32 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
 });
 
+for (const reuse of [false, true]) {
+  test(`a manual switch revokes only firmware granted by its completed cloud request (reuse=${reuse})`, async t => {
+    const f = fixture(t);
+    const first = await f.run();
+    const requestId = reuse ? 'run-2' : 'run-1';
+    if (reuse) {
+      const second = await f.run();
+      assert.equal(second.reused, true);
+      assert.equal(second.artifactPath, first.artifactPath);
+    }
+    assert.equal(f.broker.requests.size, 0);
+    assert.equal(await f.broker.cancel(f.sender, requestId), false);
+    const switchToLocal = { discardCompletedArtifact: true };
+    assert.equal(await f.broker.cancel({}, requestId, switchToLocal), false);
+    assert.equal(await f.broker.cancel(f.sender, reuse ? 'run-1' : 'not-submitted', switchToLocal), false);
+    f.generation++;
+    assert.equal(await f.broker.cancel(f.sender, requestId, switchToLocal), false);
+    f.generation--;
+    assert.equal(f.broker.hasArtifact(f.sender, f.root), true);
+    assert.equal(await f.broker.cancel(f.sender, requestId, switchToLocal), true);
+    assert.equal(f.broker.hasArtifact(f.sender, f.root), false);
+    assert.equal(await f.broker.artifactPath(f.sender, f.root, f.config), null);
+    assert.equal(f.jobs, 1);
+  });
+}
+
 test('backend switches and saved pan/zoom keep a verified download available for upload', async t => {
   const f = fixture(t);
   const abi = path.join(f.root, 'project.abi');

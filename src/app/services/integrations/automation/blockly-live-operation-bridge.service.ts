@@ -17,7 +17,7 @@ import type { BuildLocalFallbackControl } from '../../../utils/cloud-build-progr
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { AiOperationRegistryService } from './ai-operation-registry.service';
 import { SubappAgentBridgeService } from '@integration/subapps/public-api';
-import { isAilyLibraryPackageName, isAilyScopedPackageName, requireProjectProgramPublication,
+import { isAilyLibraryPackageName, isAilyScopedPackageName, normalizeProjectMode, requireProjectProgramPublication,
   type ProjectStorageAttachment } from '@shared/public-api';
 import { boardPublicationRequest } from '../../domains/project/project-board-publication-request';
 import {
@@ -86,6 +86,8 @@ const PROJECT_MUTATIONS = new Set([
 ]);
 const buildFallbackControl = Symbol('buildFallbackControl');
 type ProjectBuildParameters = Record<string, any> & { [buildFallbackControl]?: BuildLocalFallbackControl };
+const firmwareUploadFields = ['preparedFirmware', 'reuseCloudFirmware', 'reuseExistingFirmware'] as const;
+const uploadNotStarted = { uploadStarted: false, uploadOutcome: 'not-started' } as const;
 const projectLockMaintenance = new Set(['retire_empty_project_lock', 'retire_project_file_lock']);
 const diskRecoveryObservations = new Set(['history_observe', 'read_draft']);
 
@@ -1069,8 +1071,9 @@ export class BlocklyLiveOperationBridgeService {
     if (this.projectService.getProjectMode(coderPath) === 'coder'
       && ['project_build', 'project_upload', 'serial_ports_list', 'project_save'].includes(payload.operation)) {
       if (payload.operation === 'project_upload'
-        && ['preparedFirmware', 'reuseCloudFirmware'].some(key => Object.hasOwn(payload.params ?? {}, key))) {
+        && firmwareUploadFields.some(key => Object.hasOwn(payload.params ?? {}, key))) {
         return { ok: false, operation: 'project_upload', project: coderPath, code: 'PREPARED_FIRMWARE_UNAVAILABLE',
+          ...uploadNotStarted,
           message: 'Firmware reuse requires an active Blockly project.' };
       }
       if (!this.projectService.coderProjects.some(project => this.normalizePath(project.path) === this.normalizePath(coderPath))) {
@@ -1459,6 +1462,10 @@ export class BlocklyLiveOperationBridgeService {
       this.readAilyToolStatus('aily-builder', window['builder']),
       this.readAilyToolStatus('aily-linter', window['linter']),
     ]);
+    const project = this.projectService.currentProjectPath;
+    const blocklyFirmware = this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
+      && this.projectService.getProjectMode(project) === 'blockly'
+      && (normalizeProjectMode(this.projectService.currentPackageData) || 'arduino') === 'arduino';
 
     return {
       ok: true,
@@ -1469,8 +1476,9 @@ export class BlocklyLiveOperationBridgeService {
           ? { projectNavigationSettlement: 1, ...(window['projectLock']?.recordNavigation ? { projectNavigationRecovery: 1 } : {}) } : {}),
         ...(window['projectLock']?.recordCreatedActive && this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
           ? { projectCreateRecovery: 1 } : {}),
-        projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1 },
-      lifecycle: { version: 1, sourceProject: this.projectService.currentProjectPath || null },
+        projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1,
+        ...(blocklyFirmware ? { projectExistingFirmwareReuse: 1, projectCrossBackendFirmwareReuse: 1 } : {}) },
+      lifecycle: { version: 1, sourceProject: project || null },
       projectViewRevision: this.projectService.projectViewRevision,
       app: {
         name: this.configService.getApplicationName(),
@@ -2237,42 +2245,35 @@ export class BlocklyLiveOperationBridgeService {
     const project = this.projectService.currentProjectPath;
     const firmware = Object.hasOwn(params, 'preparedFirmware') ? readPreparedBuildInput(params['preparedFirmware']) : undefined;
     const reuseCloud = Object.hasOwn(params, 'reuseCloudFirmware');
-    if (reuseCloud && (params['reuseCloudFirmware'] !== true || firmware)) {
-      throw Object.assign(new Error('Invalid cloud firmware reuse request.'), { code: 'PREPARED_FIRMWARE_INVALID' });
+    const reuseExisting = Object.hasOwn(params, 'reuseExistingFirmware');
+    if ((reuseCloud && params['reuseCloudFirmware'] !== true)
+      || (reuseExisting && params['reuseExistingFirmware'] !== true)
+      || firmwareUploadFields.filter(key => Object.hasOwn(params, key)).length > 1) {
+      throw Object.assign(new Error('Invalid firmware reuse request.'), { code: 'PREPARED_FIRMWARE_INVALID' });
     }
     const options: FirmwareUploadOptions | undefined = firmware ? { preparedFirmware: firmware }
-      : reuseCloud ? { reuseCloudFirmware: true } : undefined;
-    const current = options ? this.projectService.captureCurrentProjectGuard() : undefined;
-    const preparedInCloudProject = !!firmware && this.projectService.isCloudBuild();
-    if (firmware && (window['builder']?.isolatedBuildExecutionVersion !== 1
-      || (preparedInCloudProject && !await window['builder']?.requiresIsolatedBuildRecovery?.(project)))) {
-      throw Object.assign(new Error('Prepared firmware upload requires an isolated local Blockly build.'),
+      : reuseCloud ? { reuseCloudFirmware: true } : reuseExisting ? { reuseExistingFirmware: true } : undefined;
+    const projectCurrent = options ? this.projectService.captureCurrentProjectGuard() : undefined;
+    const settingsKey = options ? this.configService.getCompileSettingsKey() : undefined;
+    const current = () => projectCurrent?.() && this.configService.getCompileSettingsKey() === settingsKey;
+    if (firmware && window['builder']?.isolatedBuildExecutionVersion !== 1) {
+      throw Object.assign(new Error('Prepared firmware upload requires a verified local Blockly build.'),
         { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
     }
-    if (reuseCloud && !this.projectService.isCloudBuild()) {
-      throw Object.assign(new Error('Cloud firmware reuse requires the active Blockly cloud build backend.'),
-        { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
-    }
-    if (firmware && !requirePreparedBuildExecution(project, firmware).isolatedRecovery && preparedInCloudProject) {
-      throw Object.assign(new Error('Prepared firmware belongs to a different build backend.'),
-        { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
-    }
+    if (firmware) requirePreparedBuildExecution(project, firmware);
     await this.projectService.ensureBlocklyLibraryRuntimeReady(project);
     const requestedPort = typeof params['port'] === 'string' ? params['port'].trim() : undefined;
-    let recoveryBackend: ReturnType<ProjectService['beginBuildBackendOperation']> | undefined;
+    let uploadDispatched = false;
     try {
-      if (preparedInCloudProject) {
-        if (!current?.() || !this.projectService.isCloudBuild()) {
-          throw Object.assign(new Error('The active Blockly project changed before upload.'), { code: 'BUILD_ARTIFACT_STALE' });
-        }
-        recoveryBackend = this.projectService.beginBuildBackendOperation(project);
-        recoveryBackend.useLocal();
-      }
       const { ports, selection } = await this.getSerialPortSelection(requestedPort);
       if (options) {
         const changed = await this.blocklyEditor.hasUnsavedBuildChanges();
-        if (!current?.() || changed || this.projectService.isCloudBuild() !== reuseCloud) {
+        if (!current()) {
           throw Object.assign(new Error('The active Blockly project changed after compilation.'), { code: 'BUILD_ARTIFACT_STALE' });
+        }
+        if (changed) {
+          throw Object.assign(new Error('Save the changed Blockly program before uploading its firmware.'), reuseExisting
+            ? { code: 'PROJECT_REUSABLE_FIRMWARE_REQUIRED', requiresSave: true } : { code: 'BUILD_ARTIFACT_STALE' });
         }
         if (firmware) requirePreparedBuildExecution(project, firmware);
       }
@@ -2282,6 +2283,7 @@ export class BlocklyLiveOperationBridgeService {
           operation: 'project_upload',
           project: this.projectService.currentProjectPath,
           code: selection.reason === 'ambiguous' ? 'serial_port_ambiguous' : 'serial_port_not_found',
+          ...(options ? uploadNotStarted : {}),
           message: selection.message,
           ports: ports.map(port => this.serializeSerialPort(port)),
           candidates: selection.candidates.map(candidate => ({
@@ -2293,9 +2295,10 @@ export class BlocklyLiveOperationBridgeService {
       }
 
       const selectedPort = await this.serialService.selectSerialPort(selection.selected.name);
-      if (options && !current?.()) {
-        throw Object.assign(new Error('The active Blockly project changed before upload.'), { code: 'BUILD_ARTIFACT_STALE' });
+      if (options && (!current() || selectedPort?.name !== selection.selected.name)) {
+        throw Object.assign(new Error('The active Blockly project or selected port changed before upload.'), { code: 'BUILD_ARTIFACT_STALE' });
       }
+      uploadDispatched = true;
       const uploadResult = options ? await this.uploaderService.upload(project, selectedPort.name, options)
         : await this.uploaderService.upload();
       if (options && uploadResult?.state !== 'done') {
@@ -2307,6 +2310,8 @@ export class BlocklyLiveOperationBridgeService {
         operation: 'project_upload',
         project: options ? project : this.projectService.currentProjectPath,
         ...options,
+        ...(options && uploadResult?.firmwareBackend ? { firmwareBackend: uploadResult.firmwareBackend } : {}),
+        ...(options && uploadResult?.firmwareBuildRequestId ? { firmwareBuildRequestId: uploadResult.firmwareBuildRequestId } : {}),
         selectedPort: this.serializeSerialPort(selectedPort),
         selection: {
           reason: selection.reason,
@@ -2320,14 +2325,14 @@ export class BlocklyLiveOperationBridgeService {
       return {
         ok: false,
         operation: 'project_upload',
-        project: this.projectService.currentProjectPath,
+        project: options ? project : this.projectService.currentProjectPath,
         ...(options && typeof error?.code === 'string' ? { code: error.code } : {}),
+        ...(options && (!uploadDispatched || error?.code === 'PROJECT_REUSABLE_FIRMWARE_REQUIRED') ? uploadNotStarted : {}),
+        ...(options && error?.requiresSave === true ? { requiresSave: true } : {}),
         selectedPort: this.serialService.currentPort || null,
         message: error?.text || error?.message || String(error),
         uploadResult: error?.result,
       };
-    } finally {
-      recoveryBackend?.release();
     }
   }
 

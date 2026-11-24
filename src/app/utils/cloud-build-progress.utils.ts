@@ -62,7 +62,7 @@ interface CloudBuildProgressBridge {
   preparationRequirements?: (request: { requestId: string; [option: string]: unknown }) => Promise<Array<{ name: string; version: string; installed: boolean }>>;
   run: (request: { requestId: string; [option: string]: unknown }) => Promise<CloudBuildRunResult>;
   completeCIToolPreparation?: (request: { requestId: string; nonce: string; error?: string }) => Promise<unknown>;
-  cancel: (request: { requestId: string }) => unknown;
+  cancel: (request: { requestId: string; discardCompletedArtifact?: true }) => unknown;
   onProgress: (listener: (event: CloudBuildProgressEvent) => void) => (() => void) | void;
 }
 
@@ -238,7 +238,7 @@ export async function runCloudBuildWithProgress(
     callbacks.localSwitch?.(() => {
       if (settled || switching || !callbacks.isCurrent()) return false;
       switching = true;
-      cancellation = Promise.resolve().then(() => bridge.cancel({ requestId: request.requestId }))
+      cancellation = Promise.resolve().then(() => bridge.cancel({ requestId: request.requestId, discardCompletedArtifact: true }))
         .then(() => ({}), error => ({ error }));
       return true;
     });

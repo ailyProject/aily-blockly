@@ -375,22 +375,7 @@ export class _BuilderService {
         if (publish) await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
-        const runtimeRevision = getActiveProjectGeneratorRevision();
-        const dataSession = projectDataRuntime.getSessionToken(), pageId = this.blocklyService.getActivePageId();
-        // Match the captured build revision before launch and before accepting
-        // a result. Save-only view changes are outside that revision.
-        const assertFresh = () => {
-          if (projectPath !== this.projectService.currentProjectPath || dataSession !== projectDataRuntime.getSessionToken()) {
-            throw buildSourceStale('project', 'Project changed after code capture.');
-          }
-          if (workspace !== this.blocklyService.workspace) throw buildSourceStale('workspace', 'Workspace changed after code capture.');
-          if (this.blocklyService.isWorkspaceEditBlocked()) throw buildSourceStale('busy', 'Workspace is unavailable for source verification.');
-          if (pageId !== this.blocklyService.getActivePageId()) throw buildSourceStale('page', 'Active page changed after code capture.');
-          if (runtimeRevision !== getActiveProjectGeneratorRevision()) throw buildSourceStale('generator', 'Generator changed after code capture.');
-          if (prepared.revision !== this.blocklyService.captureBuildSnapshot().revision) {
-            throw buildSourceStale('blocks', 'Blockly source changed after code capture.');
-          }
-        };
+        const assertFresh = this.captureBuildSourceGuard(workspace, projectPath, prepared.revision);
         return { code: prepared.code, projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
           sourceWorkspace: prepared.sourceWorkspace, assertFresh,
           blockSourceMappings: this.createBlockSourceMappings(
@@ -399,6 +384,24 @@ export class _BuilderService {
       }, false, isCancelled),
       detail,
     );
+  }
+
+  /** Save-only view changes do not change the captured build revision. */
+  private captureBuildSourceGuard(workspace: BlocklyService['workspace'], projectPath: string, revision: number): () => void {
+    const runtimeRevision = getActiveProjectGeneratorRevision();
+    const dataSession = projectDataRuntime.getSessionToken(), pageId = this.blocklyService.getActivePageId();
+    return () => {
+      if (projectPath !== this.projectService.currentProjectPath || dataSession !== projectDataRuntime.getSessionToken()) {
+        throw buildSourceStale('project', 'Project changed after code capture.');
+      }
+      if (workspace !== this.blocklyService.workspace) throw buildSourceStale('workspace', 'Workspace changed after code capture.');
+      if (this.blocklyService.isWorkspaceEditBlocked()) throw buildSourceStale('busy', 'Workspace is unavailable for source verification.');
+      if (pageId !== this.blocklyService.getActivePageId()) throw buildSourceStale('page', 'Active page changed after code capture.');
+      if (runtimeRevision !== getActiveProjectGeneratorRevision()) throw buildSourceStale('generator', 'Generator changed after code capture.');
+      if (revision !== this.blocklyService.captureBuildSnapshot().revision) {
+        throw buildSourceStale('blocks', 'Blockly source changed after code capture.');
+      }
+    };
   }
 
   private appendPreprocessErrorOutput(value: unknown): void {
@@ -1147,6 +1150,7 @@ export class _BuilderService {
     isCancelled: () => boolean,
     captureExecution?: (execution: ResolvedBuildExecution) => void,
     backend?: 'local' | 'cloud',
+    captureSourceGuard?: (assertFresh: () => void | Promise<void>) => void,
   ): Promise<boolean> {
     const projectPath = this.projectService.currentProjectPath;
     const settingsKey = this.compileSettingsKey();
@@ -1159,7 +1163,8 @@ export class _BuilderService {
     if (!cloud && !verifyLocal) return false;
     const boardModule = await this.projectService.getBoardModule();
     if (isCancelled() || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
-    return this.runWithInteractiveProjectCode(this.blocklyService.workspace, async (prepared, assertCurrent) => {
+    const workspace = this.blocklyService.workspace;
+    return this.runWithInteractiveProjectCode(workspace, async (prepared, assertCurrent) => {
       assertCurrent();
       // Pure read: do not publish headers/macros or acquire a build workspace
       // merely to decide whether to upload an existing firmware.
@@ -1186,6 +1191,10 @@ export class _BuilderService {
         throw new Error('Upload build configuration changed.');
       }
       if (execution) captureExecution?.(execution);
+      if (reusable && captureSourceGuard) {
+        const assertFresh = this.captureBuildSourceGuard(workspace, projectPath, prepared.revision);
+        captureSourceGuard(() => this.blocklyService.readAfterWorkspaceEdit(assertFresh));
+      }
       return reusable === true;
     }, false, isCancelled);
   }

@@ -885,7 +885,7 @@ class CloudBuildBroker {
       record.buildSource = publishCloudBuildSource(record, previous.directory, previous.manifest.jobId);
     } catch { return null; } // Missing/corrupt/unavailable output falls back to a real build.
     finally { lease?.release(); }
-    this.active.set(record.root, { ...previous, config: retainedBuildConfig(record.config), settings: record.settings,
+    this.active.set(record.root, { ...previous, requestId: record.requestId, config: retainedBuildConfig(record.config), settings: record.settings,
       activationId: record.activationId, controller: new AbortController(), profile: record.profile,
       ciPreparation: record.ciPreparation, inputLimits: record.inputLimits });
     this.progress(record, { stage: 'complete', progress: 100, reused: true });
@@ -921,9 +921,18 @@ class CloudBuildBroker {
     })();
     return record.cancelPromise;
   }
-  async cancel(sender, requestId) {
+  async cancel(sender, requestId, { discardCompletedArtifact = false } = {}) {
+    // 手动转本地可能与云结果发布同时到达。只撤销原请求发布的烧录权限。
+    const generation = discardCompletedArtifact ? this.owner(sender).generation : undefined;
+    const completed = generation === undefined ? undefined : [...this.active.values()].find(artifact =>
+      artifact.requestId === requestId && artifact.sender === sender && artifact.generation === generation);
+    if (completed) {
+      completed.controller.abort(abortFault());
+      this.active.delete(completed.root);
+      this.collectArtifacts(completed.root, undefined, usesIsolatedArtifacts(completed.config));
+    }
     const record = this.requests.get(requestId);
-    if (!record || record.sender !== sender) return false;
+    if (!record || record.sender !== sender || (discardCompletedArtifact && record.generation !== generation)) return !!completed;
     record.controller.abort(abortFault());
     await this.cancelRemote(record).catch(() => {});
     return true;
@@ -1033,7 +1042,8 @@ class CloudBuildBroker {
         record.buildSource = publishCloudBuildSource(record, published);
         // 已验证产物的复用和烧录权限只保存在当前进程内，不额外写入无读取方的磁盘指针。
         const config = retainedBuildConfig(record.config);
-        this.active.set(record.root, { root: record.root, sender: record.sender, generation: record.generation, activationId: record.activationId,
+        this.active.set(record.root, { root: record.root, requestId: record.requestId,
+          sender: record.sender, generation: record.generation, activationId: record.activationId,
           config, settings: record.settings, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
           uploadPlan: record.uploadPlan, ciPreparation: record.ciPreparation, inputLimits: record.inputLimits,
           gatewayUrl: gatewayUrl(record.settings.gatewayUrl).url,
