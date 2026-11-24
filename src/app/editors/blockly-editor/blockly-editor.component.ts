@@ -285,10 +285,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   async loadProject(projectPath, assertCurrent: () => void = () => {}) {
-    // Ctrl/Cmd+R enters this route directly, before AppComponent's async init
-    // completes. Capture dependency settings only after the shared local config
-    // is loaded; warm project opens reuse the same resolved promise.
-    await this.configService.init();
+    // A direct renderer refresh can reach this route before stored cloud
+    // preferences and their login state have settled.
+    await this.configService.initializeProjectCompileBackend();
     assertCurrent();
     const session = this.projectService.getProjectDependencySession(projectPath);
     const assertSession = () => {

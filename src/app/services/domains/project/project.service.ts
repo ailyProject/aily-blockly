@@ -4069,7 +4069,10 @@ export class ProjectService {
       this.message.error(this.translate.instant('PROJECT.MODE_UNKNOWN'));
       return false;
     }
-    if (mode === this.configService.getPreferredChatAgentRuntimeMode()) return true;
+    if (mode === this.configService.getPreferredChatAgentRuntimeMode()) {
+      await this.configService.initializeProjectCompileBackend();
+      return true;
+    }
 
     const application = getProjectApplicationName(mode);
     let installed = false;

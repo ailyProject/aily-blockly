@@ -964,15 +964,20 @@ export class BlocklyLiveOperationBridgeService {
     }
     if (payload.operation === 'project_load_status') {
       const path = payload.path || this.projectService.currentProjectPath;
+      const buildPreparation = {
+        dependenciesPreparing: this.projectService.isProjectDependencyPreparationInProgress(path),
+        compileBackend: this.projectService.isCloudBuild(path) ? 'cloud' : 'local',
+      };
       if (this.projectService.getProjectMode(path) === 'coder') {
         const opened = this.projectService.coderProjects.some(project => this.normalizePath(project.path) === this.normalizePath(path));
         const ready = opened && this.coderRuntime.getSession(path).editorReady;
-        return { ok: opened, operation: payload.operation, project: path, state: ready ? 'loaded' : opened ? 'loading' : 'default', ready };
+        return { ok: opened, operation: payload.operation, project: path, state: ready ? 'loaded' : opened ? 'loading' : 'default', ready, ...buildPreparation };
       }
       return {
         ok: true,
         operation: 'project_load_status',
         ...this.projectService.getBlocklyProjectLoadStatus(payload.path || undefined),
+        ...buildPreparation,
       };
     }
     if (payload.operation === 'app_info') {

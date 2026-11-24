@@ -128,6 +128,14 @@ export class ConfigService {
   getCompileBackend(): CompileBackend {
     return this.canUseCloudCompilation ? getCompileBackend(this.data) : 'local';
   }
+  async initializeProjectCompileBackend(): Promise<void> {
+    await this.init();
+    if (getCompileBackend(this.data) !== 'cloud'
+      || !isCloudCompilationSupported(this.data?.region, this.data?.build_flavor)) return;
+    const auth = this.authService.getAuthInitializationState();
+    if (auth === 'idle' || auth === 'checking') await this.authService.initializeAuth();
+  }
+
   getCloudBuildSettings(): CloudBuildSettings { return getCloudBuildSettings(this.data); }
   getCompileSettingsKey(): string {
     return JSON.stringify([getCompileSettingsKey(this.data), this.getCompileBackend(), this.compileSettingsGeneration]);

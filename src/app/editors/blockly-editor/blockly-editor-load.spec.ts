@@ -396,7 +396,7 @@ describe('Blockly dependency preparation cancellation', () => {
       const component: any = Object.create(BlocklyEditorComponent.prototype);
       let initialized!: () => void;
       const session = { signal: new AbortController().signal };
-      component.configService = { init: () => new Promise<void>(resolve => { initialized = resolve; }) };
+      component.configService = { initializeProjectCompileBackend: () => new Promise<void>(resolve => { initialized = resolve; }) };
       component.projectService = {
         getProjectDependencySession: jasmine.createSpy('session').and.returnValue(session),
         assertProjectDependencySession: () => {},

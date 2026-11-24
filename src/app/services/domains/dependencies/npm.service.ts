@@ -1955,7 +1955,7 @@ export class NpmService {
     await this.installPackage(tool, this.translate.instant('NPM.TYPE_TOOL'), tool?.version);
   }
 
-  /** Prepare only the exact uploader package, outside the shared AppData npm graph. */
+  /** Prepare the exact tool requested by cloud compilation or upload, outside the shared AppData npm graph. */
   async installCloudUploadTool(tool: { name: string; version: string }, session?: ProjectDependencySession): Promise<void> {
     this.assertDependencySession(session);
     if (!tool || !/^@aily-project\/tool-[A-Za-z0-9_.-]+$/.test(tool.name || '')
@@ -1968,13 +1968,15 @@ export class NpmService {
   /** Keep editor dependency declarations intact without reifying the AppData root graph. */
   private async installIsolatedCloudPackage(tool: { name: string; version: string }, session?: ProjectDependencySession, registry = ''): Promise<void> {
     this.assertDependencySession(session);
-    if (window['platform']?.type !== 'win32') throw new Error('Cloud package installation requires Windows.');
     if (!tool || !this.isValidNpmPackageName(tool.name)
         || typeof tool.version !== 'string' || !tool.version.trim()
         || /["%\x00\r\n]/.test(tool.version)) throw new Error('Invalid cloud dependency declaration.');
     const appDataPath = window['path'].getAppDataPath();
     if (typeof appDataPath !== 'string' || !appDataPath || /["\x00\r\n]/.test(appDataPath)) throw new Error('Invalid cloud uploader package path.');
-    const packagePath = `${appDataPath}/node_modules/${tool.name}/package.json`;
+    const windows = window['platform']?.type === 'win32';
+    const prefix = windows ? appDataPath : `${appDataPath}/.aily-cloud-tools`;
+    const packageBase = windows ? prefix : `${prefix}/lib`;
+    const packagePath = `${packageBase}/node_modules/${tool.name}/package.json`;
     let rebuild = false;
     if (window['path'].isExists(packagePath)) {
       try {
@@ -1983,9 +1985,9 @@ export class NpmService {
       } catch { /* Reinstall a missing or unreadable wrapper using its declaration. */ }
     }
     const operation = rebuild ? 'rebuild' : 'install';
-    // Windows global prefix still uses AppData/node_modules. Its npm graph does
-    // not reify SDK/compiler dependencies declared by AppData/package.json.
-    const cmd = appendScopedNpmRegistry(`npm ${operation} "${tool.name}@${tool.version}" --global --prefix "${appDataPath}" --foreground-scripts`, registry);
+    // The global graph keeps cloud tool installation separate from any SDK or
+    // compiler in the local project or AppData dependency graph.
+    const cmd = appendScopedNpmRegistry(`npm ${operation} "${tool.name}@${tool.version}" --global --prefix "${prefix}" --foreground-scripts`, registry);
     try {
       this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALLING_TITLE'),

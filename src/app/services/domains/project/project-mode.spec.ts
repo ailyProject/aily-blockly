@@ -14,6 +14,7 @@ describe('project mode boundaries', () => {
       getCompileSettingsKey: () => 'local',
       data: { recentlyProjects: [coder, blockly] },
       init: jasmine.createSpy('init').and.resolveTo(),
+      initializeProjectCompileBackend: jasmine.createSpy('compile backend initialization').and.resolveTo(),
       getPreferredChatAgentRuntimeMode: () => mode,
       getApplicationName: () => 'aily',
       getWebUrl: () => 'https://yiyu.pro',
