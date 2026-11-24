@@ -199,8 +199,10 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       } else throw new Error('Unknown cloud build operation.');
       return { ok: true, result };
     } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
+      ...(Number.isInteger(error.httpStatus) ? { httpStatus: error.httpStatus } : {}),
       ...(error.code === 'BUILD_SOURCE_STALE' && error.sourceReason ? { sourceReason: error.sourceReason } : {}),
       ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
+      ...(error.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(error.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
       ...(typeof error.logComplete === 'boolean' ? { logComplete: error.logComplete } : {}) } }; }
   };

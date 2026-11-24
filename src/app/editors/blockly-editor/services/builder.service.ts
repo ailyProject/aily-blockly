@@ -39,7 +39,7 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
-import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { runCloudBuildWithProgress, cloudBuildProgressPresentation, isCloudBuildServiceFailure, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 import {
@@ -1480,6 +1480,30 @@ export class _BuilderService {
     this.buildCancellation = cancellation;
     const requestLog = await createProjectBuildLog(requestedProjectPath, requestId);
     this.activeBuildLog = requestLog;
+    const canAutomaticallySwitch = !backendOperation.isNested && graphSemanticRevision === undefined;
+    let automaticallySwitched = false;
+    const maySwitchAfterFailure = (error: unknown) => cloudBuild && canAutomaticallySwitch && !automaticallySwitched
+      && isCloudBuildServiceFailure(error);
+    const switchToLocal = async (error?: unknown) => {
+      if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
+      if (!projectCurrent() || requestedProjectPath !== this.projectService.currentProjectPath) {
+        throw buildSourceStale('project', 'Build project changed before switching to local compilation.');
+      }
+      if (requestedSettingsKey !== this.compileSettingsKey()) {
+        throw buildSourceStale('settings', 'Build settings changed before switching to local compilation.');
+      }
+      if (error) {
+        automaticallySwitched = true;
+        requestLog.append(`Cloud compilation service failure; continuing locally: ${(error as Error).message || String(error)}\n`);
+      }
+      backendOperation.useLocal();
+      cloudBuild = false;
+      this.safeUpdateNotice({ title: this.t('PREPARING_TITLE'),
+        text: this.translate.instant('CLOUD_BUILD.PREPARING_LOCAL'), state: 'doing', progress: 0,
+        setTimeout: 0, stop: () => this.cancel(requestId) });
+      await this.npmService.prepareLocalCompileBackend(requestedProjectPath,
+        () => cancellation.signal.aborted, () => this.cancel(requestId));
+    };
     const unavailableCloudSource = () => ({ version: 1, kind: 'cloud-build-source', status: 'unavailable',
       project: requestedProjectPath, buildRequestId: requestLog.requestId, reason: 'build-not-completed' });
     let cloudBuildSnapshot: BuildSnapshot | undefined;
@@ -1512,7 +1536,11 @@ export class _BuilderService {
             () => cancellation.signal.aborted, () => this.cancel(requestId));
         }
         if (this.configService.getCompileBackend() === 'cloud') {
-          await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted);
+          try { await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted); }
+          catch (error) {
+            if (!maySwitchAfterFailure(error)) throw error;
+            await switchToLocal(error);
+          }
           if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()
             || requestedProjectPath !== this.projectService.currentProjectPath) throw new Error('Build configuration changed or was cancelled.');
           cloudBuild = this.isCloudBuild();
@@ -1593,7 +1621,12 @@ export class _BuilderService {
             await this.npmService.ensureCloudLibrarySources(projectPath);
             // Restore selected/default cloud pins before generating code and
             // capturing the generator revision. Opening Upload must be idempotent.
-            await this.projectService.getBoardConfigMenu({ requireCloudTarget: true });
+            try { await this.projectService.getBoardConfigMenu({ requireCloudTarget: true }); }
+            catch (error) {
+              if (!maySwitchAfterFailure(error)) throw error;
+              assertPackage(); assertBoard();
+              await switchToLocal(error);
+            }
           }
           if (!cloudBuild) await this.waitForAilyBuilderReady();
           assertPackage(); assertBoard();
@@ -1661,14 +1694,11 @@ export class _BuilderService {
                 cloudBuildSnapshot = state.buildSnapshot;
               } catch (error) {
                 cloudBuildSnapshot = error?.buildSnapshot;
-                if (error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
+                const automatic = !buildConfig.recordProjectDelivery && maySwitchAfterFailure(error);
+                if (!automatic && error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
                 assertCurrent();
-                backendOperation.useLocal();
-                cloudBuild = false;
-                this.safeUpdateNotice({ title: this.t('PREPARING_TITLE'),
-                  text: this.translate.instant('CLOUD_BUILD.PREPARING_LOCAL'), state: 'doing', progress: 0,
-                  setTimeout: 0, stop: () => this.cancel(requestId) });
-                await this.npmService.prepareLocalCompileBackend(projectPath, () => cancellation.signal.aborted, () => this.cancel(requestId));
+                await switchToLocal(automatic ? error : undefined);
+                if (automatic) allowCloudSwitch = false;
                 await this.waitForAilyBuilderReady();
                 assertCurrent();
               }
@@ -2118,10 +2148,15 @@ export class _BuilderService {
               this.buildPromiseReject = reject;
               backendOperation.useCloud();
               cloudBuild = true;
-              cloudBuild = await this.npmService.prepareCloudCompileBackend(projectPath, () => cancellation.signal.aborted);
+              try { cloudBuild = await this.npmService.prepareCloudCompileBackend(projectPath, () => cancellation.signal.aborted); }
+              catch (error) {
+                if (!maySwitchAfterFailure(error)) throw error;
+                assertCurrent();
+                await switchToLocal(error);
+              }
               assertCurrent();
               if (!cloudBuild) {
-                backendOperation.useLocal();
+                if (!backendOperation.local) backendOperation.useLocal();
                 allowCloudSwitch = false;
               }
             }

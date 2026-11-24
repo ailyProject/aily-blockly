@@ -4476,6 +4476,7 @@ export class ProjectService {
     const session = this.getProjectDependencySession(projectPath);
     const operations = this.localBuildOperations ??= new Map();
     let operation = operations.get(session);
+    const isNested = !!operation;
     if (!operation) { operation = { local: false, owners: 0 }; operations.set(session, operation); }
     operation.owners++;
     let released = false;
@@ -4484,6 +4485,7 @@ export class ProjectService {
       this.assertProjectDependencySession(session);
     };
     return {
+      isNested,
       get local() { return operation.local; },
       useLocal: () => { guard(); operation.local = true; },
       useCloud: () => {
@@ -4563,6 +4565,11 @@ export class ProjectService {
     }
     // 以接口支持字段为准；HTTP、超时和协议错误由主进程保留，不作为不支持。
     const unsupported = support.supported === false;
+    if (unsupported && support.reason === 'offline') {
+      this.boardCompileBackends?.delete(projectPath);
+      throw Object.assign(new Error(`${this.translate.instant('PROJECT.CLOUD_BOARD_OFFLINE')} (${boardModule}@${boardVersion})`),
+        { code: 'CLOUD_BOARD_OFFLINE' });
+    }
     (this.boardCompileBackends ??= new Map()).set(projectPath, { settingsKey, boardModule, boardVersion, cloud: !unsupported });
     if (unsupported) throw this.unsupportedCloudBoard(boardModule, boardVersion);
     return 'cloud';

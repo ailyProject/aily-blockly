@@ -39,7 +39,7 @@ function fixture(t, respond, options = {}) {
   return { run, events, broker, sender, config };
 }
 
-const failed = { status: 'failed', lastSeq: 2, error: { code: 'COMPILE_ERROR', message: 'Compiler exited with code 1' } };
+const failed = { jobId: 'job', status: 'failed', lastSeq: 2, error: { code: 'COMPILE_ERROR', message: 'Compiler exited with code 1' } };
 
 test('terminal failure drains delayed and paged logs before releasing the task', async t => {
   let calls = 0;
@@ -64,6 +64,50 @@ test('log transport failure keeps the original compiler failure and does not ret
   });
   await assert.rejects(f.run(), { code: 'COMPILE_ERROR', message: failed.error.message, logComplete: false });
   assert.ok(calls <= 2);
+});
+
+for (const status of ['cancelled', 'cancelling']) {
+  test(`an ambiguous cloud submission only permits fallback after a terminal cancel response: ${status}`, async t => {
+    const f = fixture(t, async () => {});
+    let submissions = 0;
+    f.broker.request = async (_settings, endpoint) => {
+      if (endpoint.endsWith('/cancel')) return { jobId: 'job', status };
+      assert.equal(endpoint, '/api/v1/build/jobs');
+      if (++submissions === 1) throw Object.assign(protocol.error('gateway_closing', 'Gateway unavailable'), { httpStatus: 503 });
+      return { jobId: 'job' };
+    };
+    await assert.rejects(f.run(), error => {
+      assert.equal(error.code, 'gateway_closing');
+      assert.equal(error.httpStatus, 503);
+      assert.equal(error.remoteCleanupConfirmed, status === 'cancelling' ? false : undefined);
+      return true;
+    });
+    assert.equal(submissions, 2);
+    assert.equal(f.broker.requests.size, 0);
+  });
+}
+
+for (const jobId of ['job', 'other-job']) {
+  test(`a terminal worker failure must belong to the submitted job: ${jobId}`, async t => {
+    const error = { code: 'node_restarted', message: 'Compiler node restarted' };
+    const f = fixture(t, async endpoint => endpoint.includes('/logs?') ? { logs: [] }
+      : { jobId, status: 'failed', lastSeq: 0, error });
+    await assert.rejects(f.run(), failure => {
+      assert.equal(failure.code, error.code);
+      assert.equal(failure.remoteCleanupConfirmed, jobId === 'job' ? undefined : false);
+      return true;
+    });
+  });
+}
+
+test('preserves a confirmed server response through retrying status polling', async t => {
+  const f = fixture(t, async () => {}, { deadlineMs: 50 });
+  f.broker.request = async (_settings, endpoint) => {
+    if (endpoint === '/api/v1/build/jobs') return { jobId: 'job' };
+    if (endpoint.endsWith('/cancel')) return { jobId: 'job', status: 'cancelled' };
+    throw Object.assign(protocol.error('GATEWAY_HTTP_ERROR', 'Gateway unavailable'), { httpStatus: 502 });
+  };
+  await assert.rejects(f.run(), { code: 'GATEWAY_HTTP_ERROR', httpStatus: 502 });
 });
 
 test('cancellation interrupts a terminal log drain and releases request ownership', async t => {

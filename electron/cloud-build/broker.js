@@ -42,6 +42,7 @@ function gatewayUrl(value) {
   return { url: url.toString().replace(/\/$/u, ''), local };
 }
 const abortFault = () => protocol.error('CANCELLED', 'Cloud build cancelled.');
+const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled', 'timed_out']);
 const staleSource = (sourceReason, message) => Object.assign(protocol.error('BUILD_SOURCE_STALE', message), { sourceReason });
 const AUTH_USER = Symbol('cloud-build-user');
 const CLIENT_INPUT_METRICS = ['captureMs', 'identityMs', 'manifestPrepareMs', 'manifestResolveMs', 'blobUploadMs', 'commitMs', 'encodingMs',
@@ -738,6 +739,7 @@ class CloudBuildBroker {
         const statusStarted = performance.now();
         try {
           status = await this.request(record.settings, `/api/v1/build/jobs/${record.jobId}${cursor}`, undefined, record.controller.signal);
+          record.lastStatusServerFailure = undefined;
           const unchanged = status.stateVersion === observedVersion && status.lastSeq === observedSeq;
           // 代理忽略等待参数或网关等待容量不足时，退回普通轮询，防止高频空转。
           if (canWait && unchanged && performance.now() - statusStarted < waitBudget / 2) statusWaiting = false;
@@ -752,9 +754,11 @@ class CloudBuildBroker {
             statusWaiting = false; delay = this.activePollIntervalMs ?? this.pollIntervalMs; continue;
           }
           if (record.controller.signal.aborted || (error.httpStatus && error.httpStatus < 500 && error.httpStatus !== 429)) throw error;
+          record.lastStatusServerFailure = error.httpStatus >= 500 && error.httpStatus < 600 ? error : undefined;
           delay = Math.min(Math.max(delay, this.pollIntervalMs) * 2, 60000); this.progress(record, { stage: 'reconnecting' }); continue;
         }
         record.attempt = status.attempt;
+        record.remoteTerminal = status.jobId === record.jobId && terminalJobStates.has(status.status);
         this.progress(record, { stage: status.stage || status.status, progress: status.progress ?? status.stageProgress ?? 0, status: status.status, attempt: status.attempt });
         pullLogs(status.lastSeq);
         if (['succeeded', 'failed', 'timed_out'].includes(status.status)) {
@@ -779,7 +783,7 @@ class CloudBuildBroker {
             await this.assertCurrent(record);
             this.progress(record, { stage: 'preparing', previousJobId: record.jobId });
             record.previousCIJobId = record.jobId;
-            record.jobId = undefined; record.posted = false; record.postBody = undefined;
+            record.jobId = undefined; record.posted = false; record.postBody = undefined; record.remoteTerminal = false;
             record.selectedProfileDigest = undefined;
             record.submissionRequestId = 'ci-' + crypto.randomUUID();
             if (record.targetCandidates) record.targetCandidates = new Map([...record.targetCandidates]
@@ -800,10 +804,16 @@ class CloudBuildBroker {
       }
     } catch (error) {
       if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
-      await this.cancelRemote(record).catch(() => {});
-      const failure = error.cleanupConfirmed === false ? error
+      const stopped = await this.cancelRemote(record).catch(() => undefined);
+      let failure = error.cleanupConfirmed === false ? error
         : record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
-      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete });
+      if (failure.code === 'BUILD_TIMEOUT' && record.lastStatusServerFailure) failure = record.lastStatusServerFailure;
+      // A successful cancel HTTP response may only say "cancelling". Keep that
+      // distinct from a confirmed terminal job when the renderer considers a fallback.
+      const remoteCleanupConfirmed = !record.posted || record.remoteTerminal
+        || (stopped?.jobId === record.jobId && terminalJobStates.has(stopped?.status));
+      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete,
+        ...(remoteCleanupConfirmed ? {} : { remoteCleanupConfirmed: false }) });
     } finally {
       clearTimeout(deadline);
       try { if (typeof releasePowerSaveBlocker === 'function') releasePowerSaveBlocker(); }
