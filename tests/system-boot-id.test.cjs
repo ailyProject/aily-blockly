@@ -37,6 +37,30 @@ for (const platform of ['darwin', 'linux', 'win32']) {
   }
 }
 
+test('a Windows timeout can be retried by a subsequent request after a bounded cooldown', () => {
+  let calls = 0, now = 5000;
+  const local = createRequire(filename);
+  const context = { module: { exports: {} }, process: { platform: 'win32', env: { SystemRoot: 'C:\\Windows' } },
+    require: name => name === 'node:perf_hooks' ? { performance: { now: () => now } } : name === 'node:child_process' ? {
+      execFileSync: (_command, _args, options) => {
+        assert.equal(options.timeout, 3000);
+        if (++calls === 1) throw Object.assign(new Error('Timed out'), { code: 'ETIMEDOUT' });
+        return uuid;
+      },
+    } : local(name),
+  };
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+  const { getSystemBootId } = context.module.exports;
+  assert.equal(getSystemBootId(), null);
+  assert.equal(getSystemBootId(), null);
+  assert.equal(calls, 1);
+  now += 2000;
+  assert.equal(getSystemBootId(), `win32:${uuid}`);
+  now += 10000;
+  assert.equal(getSystemBootId(), `win32:${uuid}`);
+  assert.equal(calls, 2);
+});
+
 test('independent processes read the same actual kernel boot identity', () => {
   const { getSystemBootId, isSystemBootId } = require(filename);
   const current = getSystemBootId();

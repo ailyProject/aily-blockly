@@ -1,7 +1,8 @@
-import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
+import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationProtocolVersion, assertGenerationRequest, readGenerationApplyValidation, readMergedAuthorSources } from './abs-generation-protocol';
 import { serializeAbsFailure } from './abs-diagnostics';
 import { AbsSyncError } from './abs-state';
 import { readAbsBlockStateRequest } from './abs-block-state';
+import { assertProgramDriftShape } from './abs-program-drift';
 
 // Only obsolete remote writes are retired. Native UI editing is unrelated to this boundary.
 const retiredWrites = new Set(['abi_add', 'abi_delete', 'abi_connect', 'abi_set_field', 'abi_move']);
@@ -33,7 +34,21 @@ export function rejectAbsLiveRequest(operation: string, input: Record<string, an
     }
     if (operation === 'blocks_set_state') { readAbsBlockStateRequest(input); return null; }
     if (!generationOperations.has(operation)) return null;
+    if (operation === 'abs_recovery' && ['recover_project', 'cancel_project'].includes(input['action'])) {
+      assertGenerationProtocolVersion(input);
+      if (typeof input['requestId'] !== 'string' || !/^[A-Za-z0-9_-]{8,96}$/.test(input['requestId'])) {
+        throw new AbsSyncError('ABS_REQUEST_INVALID', 'A valid original project recovery requestId is required.',
+          undefined, [], { reason: 'invalid-request-id' });
+      }
+      return null;
+    }
     assertGenerationRequest(input);
+    if (operation === 'abs_recovery' && input['action'] === 'candidate_capture') readMergedAuthorSources(input['mergedAuthorSources']);
+    if (operation === 'abs_recovery' && input['action'] === 'reconcile_program') {
+      if (Object.keys(input).some(key => !['version', 'requestId', 'action', 'observation'].includes(key)))
+        throw new AbsSyncError('ABS_REQUEST_INVALID', 'Program reconciliation accepts only its exact observation.');
+      assertProgramDriftShape(input['observation']);
+    }
     if (operation === 'abs_projection') {
       assertGenerationProjectionRequest(input);
       throw new AbsSyncError('ABS_PROTOCOL_REQUIRED', 'Legacy projection is retired; capture the current Working view using the current tools.',

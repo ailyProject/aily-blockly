@@ -1,12 +1,15 @@
 'use strict';
 const { test } = require('node:test');
+const { EventEmitter } = require('node:events');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { CloudBuildBroker } = require('../../electron/cloud-build/broker');
+const { registerCloudBuildHandlers } = require('../../electron/cloud-build/ipc');
 const protocol = require('../../electron/cloud-build/protocol');
+const { captureBuildSource } = require('../../child/scripts/build-source-capture');
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-reuse-')));
@@ -68,6 +71,96 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(await f.broker.reusable(f.sender, f.config, f.profile.profileDigest), true);
   assert.equal(f.events.at(-1).reused, true);
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
+});
+
+test('backend switches and saved pan/zoom keep a verified download available for upload', async t => {
+  const f = fixture(t);
+  const abi = path.join(f.root, 'project.abi');
+  const page = { id: 'main', blocks: [{ type: 'example' }] };
+  const doc = { pages: [{ ...page, viewState: { scale: 1, scrollX: 0, scrollY: 0 } }] };
+  fs.writeFileSync(abi, JSON.stringify(doc));
+  // The live editor supplies its build snapshot with page viewState excluded.
+  f.config.sourceCapture = captureBuildSource(f.config, { documentText: JSON.stringify({ pages: [page] }),
+    pageId: 'main', revision: 1, runtimeRevision: 1 });
+  // Exercise the actual IPC backend transition and broker. Only the gateway
+  // fixture and final device operation are substituted.
+  for (const name of ['capabilities', 'targets', 'request', 'uploadSnapshot']) {
+    t.mock.method(CloudBuildBroker.prototype, name, f.broker[name]);
+  }
+  t.mock.method(globalThis, 'fetch', f.broker.fetch);
+  const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: {}, isDestroyed: () => false, send() {} });
+  let handler, uploadedDirectory;
+  const controller = registerCloudBuildHandlers({
+    ipcMain: { handle: (_channel, callback) => { handler = callback; } },
+    getOwner: () => ({ generation: 1 }), getGatewaySettings: () => f.settings,
+    getRegion: () => 'cn', buildFlavor: 'cn', backend: 'cloud', getRuntimeRoot: () => f.root,
+    querySource: async () => {
+      const result = await f.broker.querySource();
+      result.source.workspace = f.config.sourceCapture.workspace;
+      return result;
+    },
+    uploadArtifact: async (record, _request, { assertCurrent }) => {
+      await assertCurrent();
+      uploadedDirectory = record.directory;
+      return true;
+    },
+  });
+  t.after(() => controller.shutdown());
+  const invoke = action => handler({ sender, senderFrame: sender.mainFrame }, {
+    action, requestId: 'user-action', projectPath: f.root, config: f.config, profileDigest: f.profile.profileDigest,
+  });
+  assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: false });
+  const compiled = await invoke('compile');
+  assert.equal(compiled.ok, true, JSON.stringify(compiled));
+  await controller.setBackend('local');
+  doc.pages[0].viewState = { scale: 2, scrollX: -120, scrollY: 40 };
+  fs.writeFileSync(abi, JSON.stringify(doc, null, 2));
+  assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: true });
+  assert.deepEqual(await invoke('reusable'), { ok: true, result: true });
+  assert.deepEqual(await invoke('upload'), { ok: true, result: true });
+  assert.equal(uploadedDirectory, compiled.result.artifactPath);
+  assert.equal((await invoke('compile')).error.code, 'CLOUD_BUILD_DISABLED');
+  fs.writeFileSync(path.join(f.root, 'src/header.h'), '#define VALUE 2');
+  assert.deepEqual(await invoke('reusable'), { ok: true, result: false });
+  assert.equal((await invoke('upload')).error.code, 'BUILD_SOURCE_STALE');
+  await controller.invalidateAuthentication();
+  assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: false });
+  assert.equal(f.jobs, 1);
+  assert.equal(f.uploads, 1);
+});
+
+test('cloud receipt distinguishes an unsaved capture and the next saved reuse of the same source', async t => {
+  const f = fixture(t), abi = path.join(f.root, 'project.abi');
+  f.config.sourceCapture = captureBuildSource(f.config, {
+    documentText: '{"value":"B"}', revision: 2, runtimeRevision: 1, pageId: 'main',
+  });
+  const query = f.broker.querySource;
+  f.broker.querySource = async (...args) => {
+    const answer = await query(...args);
+    answer.source.workspace = f.config.sourceCapture.workspace;
+    return answer;
+  };
+  const saving = (text, savedMatch) => {
+    fs.writeFileSync(abi, text);
+    f.config.savedBuildComparison = { savedAbiHash: `sha256:${protocol.sha256(text)}`, savedMatch };
+  };
+  saving('saved A', 'different');
+  const first = await f.run();
+  const expected = { version: 1, buildRequestId: 'run-1', inputDigest: first.inputDigest,
+    sourceSha256: protocol.sha256(f.config.code), documentSha256: protocol.sha256('{"value":"B"}'), workspaceRevision: 2,
+    savedAbiHash: `sha256:${protocol.sha256('saved A')}`, savedMatch: 'different' };
+  assert.deepEqual(first.buildSnapshot, expected);
+  assert.equal(first.buildSource.abiHash, expected.savedAbiHash);
+  saving('saved B', 'matched');
+  const second = await f.run();
+  assert.equal(second.reused, true);
+  assert.equal(f.jobs, 1);
+  assert.deepEqual(second.buildSnapshot, { ...expected, buildRequestId: 'run-2',
+    savedAbiHash: `sha256:${protocol.sha256('saved B')}`, savedMatch: 'matched' });
+  assert.deepEqual(first.buildSnapshot, expected);
+  fs.writeFileSync(abi, 'external edit');
+  const third = await f.run();
+  assert.equal(third.buildSnapshot.savedMatch, 'unknown');
 });
 
 test('cloud artifact consumption records uploader delegation before entering the native consumer', async t => {
@@ -160,6 +253,23 @@ test('source changed during the final owner check rejects the cached result', as
   f.broker.querySource = async (...args) => { if (verifying) fs.writeFileSync(path.join(f.root, 'src/header.h'), '#define VALUE 3'); return originalSource(...args); };
   await assert.rejects(f.run(), { code: 'BUILD_SOURCE_STALE' });
   assert.equal(f.jobs, 1); assert.equal(f.broker.active.size, 0);
+});
+
+test('cloud compile refuses a block edit after submission and reports the specific cause', async t => {
+  const f = fixture(t);
+  f.config.sourceCapture = captureBuildSource(f.config, {
+    documentText: '{"blocks":[]}', revision: 1, runtimeRevision: 1, pageId: 'main',
+  });
+  const query = f.broker.querySource;
+  f.broker.querySource = async (...args) => {
+    const answer = await query(...args);
+    const workspace = f.config.sourceCapture.workspace;
+    answer.source.workspace = f.jobs ? { ...workspace, documentSha256: protocol.sha256('edited'), revision: 2 } : workspace;
+    return answer;
+  };
+  await assert.rejects(f.run(), { code: 'BUILD_SOURCE_STALE', sourceReason: 'blocks' });
+  assert.equal(f.jobs, 1);
+  assert.equal(f.broker.active.size, 0);
 });
 
 test('a same-version npm library edit invalidates reuse', async t => {

@@ -4,6 +4,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createHash } = require('crypto');
+const { spawn } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 const versions = require('../../electron/subapp-version-store');
 const {
   createSubappManager,
@@ -17,9 +19,36 @@ const {
 const { npmTarball, portableSubappTarball } = require('./fixtures/npm-tarball-fixture');
 const http = require('node:http');
 const { acquireInstallLock } = require('../../electron/subapp-install-lock');
+const { createSubappLaunchReservations } = require('../../electron/subapp-launch-reservations');
+const { isRetiredUninstallName, runSubappVersionCleanup } = require('../../electron/subapp-version-cleanup');
+const { verifyBlocklyChatRuntime } = require('../../electron/blockly-chat-compatibility');
 
 const ID = 'aily-chat';
 const PACKAGE = '@aily-project/subapp-aily-chat';
+const compatibility = {
+  version: 1,
+  blocklyAbs: { generation: 2, absSchema: 2, workingCandidateVersion: 1, publicMapSchemas: [1, 2], legacyDraftTakeover: 1 },
+};
+const sha256 = value => createHash('sha256').update(value).digest('hex');
+
+function compatibleChatArchive(version, { tampered = false, declaration = compatibility, ui = 'updated Chat' } = {}) {
+  const files = {
+    'package.json': JSON.stringify({
+      name: PACKAGE, version, main: 'server/index.js',
+      aily: { uiIndex: 'ui/index.html' },
+      ailySubapp: { id: ID, compatibility: declaration },
+      ailyPortable: { version: 1, format: 'js' },
+    }),
+    'server/index.js': 'module.exports=1', 'runtime/agent/index.js': 'module.exports=2',
+    'ui/index.html': ui, 'i18n/en.json': '{}', 'vendor/runtime.js': 'module.exports=3',
+  };
+  const inputs = { 'index.js': sha256('source') };
+  const outputs = Object.fromEntries(Object.entries(files).map(([file, content]) => [file, sha256(content)]));
+  const fingerprint = { inputHash: sha256(JSON.stringify(inputs)), outputHash: sha256(JSON.stringify(outputs)) };
+  files['runtime/build-evidence.json'] = JSON.stringify({ version: 1, ...fingerprint, inputs, outputs });
+  if (tampered) files['runtime/agent/index.js'] = 'tampered';
+  return { archive: npmTarball(files), fingerprint };
+}
 
 function integrity(buffer) {
   return `sha512-${createHash('sha512').update(buffer).digest('base64')}`;
@@ -51,7 +80,7 @@ function writeRunnablePackage(packageRoot, version, options = {}) {
       'aily-blockly-mcp': 'runtime/mcp/cli.js',
     },
     aily: { uiIndex: 'ui/index.html' },
-    ailySubapp: { id: ID },
+    ailySubapp: { id: options.id || ID },
     ...(options.portable === false ? {} : {
       ailyPortable: { version: 1, platforms: ['darwin', 'win32', 'linux'], architectures: ['arm64', 'x64'] },
     }),
@@ -111,6 +140,440 @@ function fixture(t, options = {}) {
     manager: createSubappManager(managerOptions),
   };
 }
+
+test('Blockly launch replaces an old same-version Chat with a verified artifact without switching the shared selection', async t => {
+  const version = '0.1.53';
+  const originalDeclaration = structuredClone(compatibility);
+  delete originalDeclaration.blocklyAbs.legacyDraftTakeover;
+  const original = compatibleChatArchive(version, { declaration: originalDeclaration });
+  const f = fixture(t, { version, archive: original.archive });
+  await f.manager.install({ id: ID });
+  const selected = readInstalledState(f.rootDir, f.entry);
+  const active = fs.readFileSync(versions.activePath(f.rootDir, f.entry), 'utf8');
+  const compatible = compatibleChatArchive(version);
+  const entry = catalogEntry(version, compatible.archive);
+  let network = 0;
+  let downloads = 0;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    fetchImpl: async () => {
+      network++;
+      return { ok: true, text: async () => JSON.stringify({ [ID]: entry }) };
+    },
+    downloadFile: async (_url, destination) => {
+      downloads++;
+      fs.writeFileSync(destination, compatible.archive);
+    },
+  });
+
+  const replacement = await manager.prepareLaunch({ id: ID, deferPreparedUpdate: true });
+  replacement.release();
+  assert.equal(replacement.config.version, selected.installedVersion);
+  assert.deepEqual(replacement.config.blocklyChatFingerprint, compatible.fingerprint);
+  assert.notEqual(replacement.config.packagePath, selected.packagePath);
+  assert.equal(replacement.config.env.AILY_SUBAPP_INSTALL_ROOT, f.rootDir);
+  assert.equal(replacement.config.env.AILY_SUBAPP_SOURCE, 'blockly-compatibility');
+  assert.equal(fs.readFileSync(versions.activePath(f.rootDir, f.entry), 'utf8'), active);
+  assert.equal(readInstalledState(f.rootDir, f.entry).packagePath, selected.packagePath);
+  assert.equal(downloads, 1);
+  assert.equal(network, 1);
+
+  const cached = await manager.prepareLaunch({ id: ID });
+  cached.release();
+  assert.equal(cached.config.packagePath, replacement.config.packagePath);
+  assert.equal(network, 1);
+  assert.equal(downloads, 1);
+  assert.ok(f.calls.every(call => call.args[0] !== 'install'));
+});
+
+test('Blockly Chat must attest draft takeover and an unchanged portable payload', async t => {
+  const noTakeover = { ...compatibility, blocklyAbs: { ...compatibility.blocklyAbs, legacyDraftTakeover: 0 } };
+  for (const options of [{ declaration: noTakeover }, { tampered: true }]) {
+    await t.test(JSON.stringify(options), async t => {
+      const version = '0.1.53';
+      const { archive } = compatibleChatArchive(version, options);
+      const f = fixture(t, { version, archive, managerOptions: { requireBlocklyChatCompatibility: true } });
+      writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), version);
+      await assert.rejects(f.manager.prepareLaunch({ id: ID }), { code: 'BLOCKLY_CHAT_INCOMPATIBLE' });
+      assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, version);
+    });
+  }
+});
+
+test('Blockly uses its verified fallback across restarts without rewriting a linked development catalog', async t => {
+  const version = '0.1.53';
+  const compatible = compatibleChatArchive(version);
+  const f = fixture(t, { version, archive: compatible.archive });
+  const link = packagePathFor(f.rootDir, PACKAGE);
+  const oldSource = path.join(f.temporary, 'prior Chat');
+  writeRunnablePackage(oldSource, version);
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(oldSource, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const catalogPath = path.join(f.rootDir, 'subapp-index.json');
+  const content = JSON.stringify({ [ID]: catalogEntry(version, Buffer.from('prior artifact')), dev: true });
+  fs.writeFileSync(catalogPath, content);
+
+  const options = { ...f.managerOptions, requireBlocklyChatCompatibility: true };
+  const online = await createSubappManager(options).prepareLaunch({ id: ID });
+  online.release();
+  const offline = await createSubappManager({
+    ...options,
+    fetchImpl: async () => { throw new Error('offline'); },
+  }).prepareLaunch({ id: ID });
+  offline.release();
+  assert.equal(offline.config.packagePath, online.config.packagePath);
+  assert.deepEqual(offline.config.blocklyChatFingerprint, compatible.fingerprint);
+  assert.equal(fs.readFileSync(catalogPath, 'utf8'), content);
+  assert.equal(fs.realpathSync(link), fs.realpathSync(oldSource));
+  assert.equal(f.downloads.length, 1);
+});
+
+test('a source development host launches the selected compatible Chat link without downloading a release', async t => {
+  const f = fixture(t, { version: '0.1.53', managerOptions: {
+    requireBlocklyChatCompatibility: true, allowBlocklyChatDevelopment: true,
+  } });
+  const entry = { ...f.entry, version: '0.1.53-dev' };
+  const candidate = versions.createCandidate(f.rootDir, entry);
+  writeRunnablePackage(candidate.source, entry.version);
+  const manifestPath = path.join(candidate.source, 'package.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, ailySubapp: { compatibility } }));
+  const development = await versions.publishCandidate(f.rootDir, entry, candidate, { installMode: 'development' });
+  versions.activate(f.rootDir, entry, development, { mode: 'pinned' });
+
+  const launch = await f.manager.prepareLaunch({ id: ID });
+  launch.release();
+  assert.equal(launch.config.version, entry.version);
+  assert.deepEqual(launch.config.blocklyChatFingerprint, { development: true });
+  assert.equal(f.downloads.length, 0);
+  const releaseHost = createSubappManager({ ...f.managerOptions, allowBlocklyChatDevelopment: false });
+  await assert.rejects(releaseHost.prepareLaunch({ id: ID }), { code: 'BLOCKLY_CHAT_INCOMPATIBLE' });
+});
+
+test('Blockly uses a verified newer prepared Chat only when idle and keeps it pinned across windows', async t => {
+  const currentVersion = '0.1.53';
+  const nextVersion = '0.1.54';
+  const current = compatibleChatArchive(currentVersion);
+  const next = compatibleChatArchive(nextVersion);
+  const f = fixture(t, { version: currentVersion, archive: current.archive });
+  await f.manager.install({ id: ID });
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const active = fs.readFileSync(activePath, 'utf8');
+  const target = catalogEntry(nextVersion, next.archive);
+  let running = null;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    getRunningSubappConfig: () => running,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: target }) }),
+    downloadFile: async (_url, destination) => fs.writeFileSync(destination, next.archive),
+  });
+  await manager.list({ refresh: true });
+  await manager.downloadUpdate({ id: ID });
+  const selected = async (options = {}) => {
+    const launch = await manager.prepareLaunch({ id: ID, ...options });
+    launch.release();
+    return launch.config;
+  };
+
+  const deferred = await selected({ deferPreparedUpdate: true });
+  assert.equal(deferred.version, currentVersion);
+  assert.deepEqual(deferred.blocklyChatFingerprint, current.fingerprint);
+  running = deferred;
+  assert.equal((await selected()).version, currentVersion);
+
+  running = null;
+  const upgraded = await selected();
+  assert.equal(upgraded.version, nextVersion);
+  assert.deepEqual(upgraded.blocklyChatFingerprint, next.fingerprint);
+  assert.equal(upgraded.env.AILY_SUBAPP_SOURCE, 'blockly-compatibility');
+  running = upgraded;
+  assert.deepEqual(await selected({ deferPreparedUpdate: true }), upgraded);
+  assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+});
+
+test('Blockly advances a compatible fallback after ordinary background staging without touching the shared selector', async t => {
+  const version = '0.1.53';
+  const f = fixture(t, { version });
+  await f.manager.install({ id: ID });
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const active = fs.readFileSync(activePath, 'utf8');
+  const fallback = compatibleChatArchive(version);
+  const upgrade = compatibleChatArchive('0.1.54');
+  let target = catalogEntry(version, fallback.archive);
+  let archive = fallback.archive;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: target }) }),
+    downloadFile: async (_url, destination) => fs.writeFileSync(destination, archive),
+  });
+  const select = async options => {
+    const launch = await manager.prepareLaunch({ id: ID, ...options });
+    launch.release();
+    return launch.config;
+  };
+  assert.deepEqual((await select()).blocklyChatFingerprint, fallback.fingerprint);
+
+  target = catalogEntry('0.1.54', upgrade.archive);
+  archive = upgrade.archive;
+  await manager.list({ refresh: true });
+  await manager.downloadUpdate({ id: ID });
+  assert.deepEqual((await select({ deferPreparedUpdate: true })).blocklyChatFingerprint, fallback.fingerprint);
+  assert.deepEqual((await select()).blocklyChatFingerprint, upgrade.fingerprint);
+  assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+});
+
+test('Blockly stages a changed same-version compatibility digest behind the verified fallback', async t => {
+  const version = '0.1.53';
+  const f = fixture(t, { version });
+  await f.manager.install({ id: ID });
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const active = fs.readFileSync(activePath, 'utf8');
+  const fallback = compatibleChatArchive(version);
+  const rebuilt = compatibleChatArchive(version, { ui: 'second compatible Chat' });
+  let target = catalogEntry(version, fallback.archive, { compatibility });
+  let archive = fallback.archive;
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: target }) }),
+    downloadFile: async (_url, destination) => fs.writeFileSync(destination, archive),
+  });
+  const select = async () => {
+    const launch = await manager.prepareLaunch({ id: ID });
+    launch.release();
+    return launch.config.blocklyChatFingerprint;
+  };
+  assert.deepEqual(await select(), fallback.fingerprint);
+
+  target = catalogEntry(version, rebuilt.archive, { compatibility });
+  archive = rebuilt.archive;
+  await manager.list({ refresh: true });
+  assert.deepEqual(await select(), fallback.fingerprint);
+  const deadline = Date.now() + 5000;
+  let selected;
+  do {
+    await new Promise(resolve => setTimeout(resolve, 40));
+    selected = await select();
+  } while (selected.outputHash !== rebuilt.fingerprint.outputHash && Date.now() < deadline);
+  assert.deepEqual(selected, rebuilt.fingerprint);
+  assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+});
+
+for (const installedCompatible of [false, true]) {
+  test(`Blockly refreshes a same-version Chat from a registry-backed catalog (compatible install: ${installedCompatible})`, async t => {
+    const version = '0.1.53';
+    const fallback = compatibleChatArchive(version);
+    const rebuilt = compatibleChatArchive(version, { ui: 'rebuilt without a catalog tarball digest' });
+    const f = fixture(t, { version, ...(installedCompatible ? { archive: fallback.archive } : {}) });
+    await f.manager.install({ id: ID });
+    const { dist: _distribution, ...entry } = catalogEntry(version, fallback.archive, { compatibility });
+    const activePath = versions.activePath(f.rootDir, f.entry);
+    const active = fs.readFileSync(activePath, 'utf8');
+    let archive = fallback.archive;
+    let running = null;
+    let lookups = 0;
+    let downloads = 0;
+    const manager = createSubappManager({
+      ...f.managerOptions,
+      requireBlocklyChatCompatibility: true,
+      getRunningSubappConfig: () => running,
+      fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: entry }) }),
+      runNpm: async args => {
+        assert.deepEqual(args, ['view', `${PACKAGE}@${version}`, 'dist', '--json']);
+        lookups++;
+        return { stdout: JSON.stringify(catalogEntry(version, archive).dist) };
+      },
+      downloadFile: async (_url, destination) => {
+        downloads++;
+        fs.writeFileSync(destination, archive);
+      },
+    });
+    const select = async () => {
+      const launch = await manager.prepareLaunch({ id: ID });
+      launch.release();
+      return launch.config;
+    };
+
+    running = await select();
+    assert.deepEqual(running.blocklyChatFingerprint, fallback.fingerprint);
+    const initialLookups = lookups;
+    const initialDownloads = downloads;
+    await select();
+    assert.equal(lookups, initialLookups);
+
+    archive = rebuilt.archive;
+    await manager.list({ refresh: true });
+    assert.deepEqual(await select(), running);
+    running = null;
+    const deadline = Date.now() + 2500;
+    let selected;
+    do {
+      selected = await select();
+      if (selected.blocklyChatFingerprint.outputHash === rebuilt.fingerprint.outputHash) break;
+      await new Promise(resolve => setTimeout(resolve, 35));
+    } while (Date.now() < deadline);
+    assert.deepEqual(selected.blocklyChatFingerprint, rebuilt.fingerprint);
+    assert.equal(lookups, initialLookups + 1);
+    assert.equal(downloads, initialDownloads + 1);
+    assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+
+    // The private package stays available with the same on-disk catalog offline.
+    const offline = createSubappManager({
+      ...f.managerOptions,
+      requireBlocklyChatCompatibility: true,
+      fetchImpl: async () => { throw new Error('offline'); },
+      runNpm: async () => { assert.fail('A cached catalog should not probe the registry'); },
+    });
+    const launch = await offline.prepareLaunch({ id: ID });
+    launch.release();
+    assert.deepEqual(launch.config.blocklyChatFingerprint, rebuilt.fingerprint);
+
+    if (installedCompatible) {
+      const installedLater = compatibleChatArchive(version, { ui: 'manually reinstalled shared Chat' });
+      const installer = createSubappManager({
+        ...f.managerOptions,
+        fetchImpl: async () => ({
+          ok: true,
+          text: async () => JSON.stringify({ [ID]: catalogEntry(version, installedLater.archive) }),
+        }),
+        downloadFile: async (_url, destination) => fs.writeFileSync(destination, installedLater.archive),
+      });
+      await installer.list({ refresh: true });
+      await installer.reinstall({ id: ID });
+      const afterReinstall = await offline.prepareLaunch({ id: ID });
+      afterReinstall.release();
+      assert.deepEqual(afterReinstall.config.blocklyChatFingerprint, installedLater.fingerprint);
+    }
+  });
+}
+
+test('Blockly refreshes Chat without opening it and ignores late catalog or registry results', { timeout: 7000 }, async t => {
+  const version = '0.1.53';
+  const shared = compatibleChatArchive(version);
+  const older = compatibleChatArchive(version, { ui: 'older background Chat' });
+  const latest = compatibleChatArchive(version, { ui: 'latest background Chat' });
+  const f = fixture(t, { version, archive: shared.archive });
+  await f.manager.install({ id: ID });
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const active = fs.readFileSync(activePath, 'utf8');
+  const index = name => {
+    const { dist: _distribution, ...entry } = catalogEntry(version, shared.archive, {
+      compatibility, app: { name, enabled: true },
+    });
+    return { ok: true, text: async () => JSON.stringify({ [ID]: entry }) };
+  };
+  const olderRegistry = Promise.withResolvers();
+  const oldCatalog = Promise.withResolvers();
+  const registryStarted = Promise.withResolvers();
+  const oldCatalogStarted = Promise.withResolvers();
+  t.after(() => {
+    olderRegistry.resolve();
+    oldCatalog.resolve();
+  });
+  let catalogCalls = 0;
+  let registryCalls = 0;
+  const downloads = [];
+  const manager = createSubappManager({
+    ...f.managerOptions,
+    requireBlocklyChatCompatibility: true,
+    fetchImpl: async () => {
+      switch (++catalogCalls) {
+        case 1: return index('First');
+        case 2:
+          oldCatalogStarted.resolve();
+          await oldCatalog.promise;
+          return index('Stale');
+        default: return index('Latest');
+      }
+    },
+    runNpm: async () => {
+      let update = latest;
+      if (++registryCalls === 1) {
+        registryStarted.resolve();
+        await olderRegistry.promise;
+        update = older;
+      }
+      const { integrity } = catalogEntry(version, update.archive).dist;
+      return { stdout: JSON.stringify({ tarball: `https://packages.example.test/${integrity}.tgz`, integrity }) };
+    },
+    downloadFile: async (url, file) => {
+      downloads.push(url);
+      fs.writeFileSync(file, latest.archive);
+    },
+  });
+  const select = async () => {
+    const launch = await manager.prepareLaunch({ id: ID });
+    launch.release();
+    return launch.config.blocklyChatFingerprint;
+  };
+
+  await manager.list({ refresh: true });
+  await registryStarted.promise;
+  assert.deepEqual(await select(), shared.fingerprint);
+  const late = manager.list({ refresh: true });
+  await oldCatalogStarted.promise;
+  const fresh = await manager.list({ refresh: true });
+  assert.equal(fresh.apps[0].name, 'Latest');
+  const deadline = Date.now() + 2500;
+  let selected;
+  do {
+    selected = await select();
+    if (selected.outputHash === latest.fingerprint.outputHash) break;
+    await new Promise(resolve => setTimeout(resolve, 35));
+  } while (Date.now() < deadline);
+  assert.deepEqual(selected, latest.fingerprint);
+  oldCatalog.resolve();
+  assert.equal((await late).apps[0].name, 'Latest');
+  olderRegistry.resolve();
+  assert.deepEqual(await select(), latest.fingerprint);
+  assert.equal(registryCalls, 2);
+  assert.equal(downloads.length, 1);
+  assert.equal(fs.readFileSync(activePath, 'utf8'), active);
+});
+
+test('Blockly Chat distinguishes a live compatibility mismatch from unavailable evidence', async () => {
+  const { fingerprint } = compatibleChatArchive('0.1.53');
+  const health = { ok: true, state: 'ready', compatibility, buildEvidence: { version: 1, ...fingerprint } };
+  const url = 'http://127.0.0.1:3234/';
+  const response = body => async (target, options) => {
+    assert.equal(target.href, `${url}health`);
+    assert.equal(options.redirect, 'error');
+    return { ok: true, json: async () => body };
+  };
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response(health)), 'verified');
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response({ ...health, compatibility: undefined })), 'incompatible');
+  const development = { development: true };
+  const devHealth = { ...health, buildEvidence: null };
+  assert.equal(await verifyBlocklyChatRuntime(url, development, response(devHealth)), 'unavailable');
+  assert.equal(await verifyBlocklyChatRuntime(url, development, response(devHealth), { allowDevelopment: true }), 'verified');
+  assert.equal(await verifyBlocklyChatRuntime(url, development, response({ ...devHealth, compatibility: undefined }),
+    { allowDevelopment: true }), 'incompatible');
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response({
+    ...health, buildEvidence: { ...health.buildEvidence, outputHash: 'a'.repeat(64) },
+  })), 'incompatible');
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, response({ ...health, state: 'starting' })), 'unavailable');
+  assert.equal(await verifyBlocklyChatRuntime('http://192.0.2.5:3234/', fingerprint, response(health)), 'unavailable');
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, async () => { throw new Error('timed out'); }), 'unavailable');
+
+  let attempts = 0;
+  const intermittent = async (...args) => {
+    if (++attempts === 1) throw new Error('timed out');
+    return response(health)(...args);
+  };
+  assert.equal(await verifyBlocklyChatRuntime(url, fingerprint, intermittent, { retryUnavailable: true }), 'verified');
+  assert.equal(attempts, 2);
+  attempts = 0;
+  const intermittentDevelopment = async (...args) => {
+    if (++attempts === 1) return response({ ...devHealth, state: 'starting' })(...args);
+    return response(devHealth)(...args);
+  };
+  assert.equal(await verifyBlocklyChatRuntime(url, development, intermittentDevelopment,
+    { allowDevelopment: true, retryUnavailable: true }), 'verified');
+  assert.equal(attempts, 2);
+});
 
 test('Agent repair keeps the installed version even when the catalog has a newer release', async t => {
   const oldVersion = '0.1.32';
@@ -351,13 +814,186 @@ test('a prepared update survives selection contention and can activate on retry'
   const f = fixture(t, { managerOptions: { lockTimeoutMs: 100 } });
   writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
   await f.manager.downloadUpdate({ id: ID });
-  const release = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  const release = acquireInstallLock(versions.selectionLockPath(f.rootDir, f.entry));
   try {
     await assert.rejects(f.manager.installUpdate({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
     assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, '0.1.32');
   } finally { release(); }
   await f.manager.installUpdate({ id: ID });
   assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+});
+
+test('wall clock adjustment does not expire a legitimate selection wait', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 600 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const release = acquireInstallLock(versions.selectionLockPath(f.rootDir, f.entry));
+  const now = Date.now;
+  let offset = 0;
+  const clock = t.mock.method(Date, 'now', () => now() + offset);
+  const jumping = setTimeout(() => { offset = 10 * 60 * 1000; }, 25);
+  const releasing = setTimeout(release, 180);
+  try {
+    const started = await f.manager.prepareLaunch({ id: ID });
+    started.release();
+    assert.equal(started.config.version, '0.1.32');
+  } finally {
+    clearTimeout(jumping);
+    clearTimeout(releasing);
+    clock.mock.restore();
+    release();
+  }
+});
+
+function launchOwner() {
+  return Object.assign(new EventEmitter(), { isDestroyed: () => false });
+}
+
+function launchCommand(config) {
+  return {
+    command: 'node', cwd: config.packagePath,
+    args: [path.join(config.packagePath, config.entry)],
+    env: { AILY_CHILD_TOOL_ID: config.id },
+  };
+}
+
+test('a live renderer which drops the launch handshake cannot strand the real selection lock', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 400 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const launches = createSubappLaunchReservations({ dispatchTimeoutMs: 25 });
+  const owner = launchOwner();
+  const retryOwner = launchOwner();
+  const select = signal => f.manager.prepareLaunch({ id: ID }, signal);
+  const abandoned = await launches.prepare(owner, ID, select);
+  const selectionLock = versions.selectionLockPath(f.rootDir, f.entry);
+  const free = acquireInstallLock(selectionLock);
+  assert.equal(typeof free, 'function');
+  free();
+
+  const retry = await launches.prepare(retryOwner, ID, select);
+  try {
+    assert.equal(retry.config.version, '0.1.32');
+    assert.throws(() => launches.bindCommand(abandoned.token, owner, 'late', launchCommand(abandoned.config)),
+      { code: 'SUBAPP_LAUNCH_EXPIRED' });
+    assert.equal(owner.listenerCount('destroyed'), 0);
+    const binding = launches.bindCommand(retry.token, retryOwner, 'fresh', launchCommand(retry.config));
+    await binding.waitForDispatch();
+    assert.equal(acquireInstallLock(selectionLock), null);
+    binding.spawned();
+    const released = acquireInstallLock(selectionLock);
+    assert.equal(typeof released, 'function');
+    released();
+  } finally { launches.finish(retry.token, retryOwner); }
+});
+
+test('a second host restores the verified active version after a process dies mid-replacement', { timeout: 10000 }, async t => {
+  const f = fixture(t);
+  await f.manager.install({ id: ID });
+  const first = readInstalledState(f.rootDir, f.entry);
+  const crashingHost = spawn(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { randomUUID } = require('node:crypto');
+    const { acquireInstallLock } = require(process.argv[1]);
+    const [dir, selection, preparation] = process.argv.slice(2);
+    const ownsPreparation = acquireInstallLock(preparation);
+    const ownsSelection = acquireInstallLock(selection);
+    if (!ownsPreparation || !ownsSelection) throw Error('test host could not acquire locks');
+    fs.renameSync(dir, path.join(path.dirname(dir), '.replaced-' + path.basename(dir) + '-' + randomUUID()));
+    process.stdout.write('moved\\n');
+    setInterval(() => {}, 1000);
+  `, require.resolve('../../electron/subapp-install-lock'), path.dirname(first.packagePath),
+  versions.selectionLockPath(f.rootDir, f.entry), path.join(f.rootDir, 'store', '.locks', versions.storeKeyForPackage(PACKAGE))],
+  { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const exited = new Promise(resolve => crashingHost.once('exit', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      crashingHost.once('error', reject);
+      crashingHost.once('exit', code => reject(new Error(`Replacement host exited prematurely (${code})`)));
+      crashingHost.stdout.once('data', () => resolve());
+    });
+    assert.equal(fs.existsSync(first.packagePath), false);
+  } finally {
+    crashingHost.kill('SIGKILL');
+    await exited;
+  }
+  const newHost = createSubappManager(f.managerOptions);
+  const selected = await newHost.prepareLaunch({ id: ID });
+  assert.equal(selected.config.version, first.installedVersion);
+  assert.equal(selected.config.packagePath, first.packagePath);
+  assert.equal(typeof selected.lockForDispatch, 'function');
+  const release = await selected.lockForDispatch();
+  release();
+  assert.equal(f.downloads.length, 1);
+});
+
+test('a spawned but unready runtime frees selection for another host and its update', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 200 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  await f.manager.downloadUpdate({ id: ID });
+  const launches = createSubappLaunchReservations();
+  const owner = launchOwner();
+  const select = signal => f.manager.prepareLaunch({ id: ID, deferPreparedUpdate: true }, signal);
+  const started = await launches.prepare(owner, ID, select);
+  let stopped = 0;
+  const command = launchCommand(started.config);
+  assert.throws(() => launches.bindCommand(started.token, launchOwner(), 'unowned', command),
+    { code: 'SUBAPP_LAUNCH_EXPIRED' });
+  const binding = launches.bindCommand(started.token, owner, 'starting', command, () => { stopped++; });
+  binding.spawned();
+  // The renderer has sent neither ready registration nor finish. A separate
+  // manager must still be able to switch the active locator to a new generation.
+  const other = createSubappManager(f.managerOptions);
+  await other.installUpdate({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+  assert.ok(fs.existsSync(command.args[0]));
+
+  const nextOwner = launchOwner();
+  let entered = false;
+  const next = launches.prepare(nextOwner, ID, signal => { entered = true; return select(signal); });
+  assert.equal(entered, false, 'windows still serialize startup of the same tool');
+  owner.emit('render-process-gone');
+  assert.equal(stopped, 1);
+  const registration = { toolId: ID, streamId: 'starting', hostInfo: { packagePath: command.cwd } };
+  assert.throws(() => launches.checkRegistration(started.token, owner, registration), { code: 'SUBAPP_LAUNCH_EXPIRED' });
+  const replacement = await next;
+  launches.finish(replacement.token, nextOwner);
+});
+
+test('navigation while requesting selection cannot leave a lock or return a launch token', { timeout: 5000 }, async t => {
+  const f = fixture(t);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const launches = createSubappLaunchReservations();
+  const owner = launchOwner();
+  const abandoned = launches.prepare(owner, ID, async signal => {
+    const selection = await f.manager.prepareLaunch({ id: ID }, signal);
+    owner.emit('did-start-navigation', {}, 'file:///next', false, true);
+    return selection;
+  });
+  await assert.rejects(abandoned, { code: 'SUBAPP_LAUNCH_OWNER_CLOSED' });
+  const next = await f.manager.prepareLaunch({ id: ID });
+  next.release();
+});
+
+test('a live renderer which abandons a spawned runtime cannot register it later', { timeout: 5000 }, async t => {
+  const f = fixture(t);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const launches = createSubappLaunchReservations({ runtimeGraceMs: 20 });
+  const owner = launchOwner();
+  const prepared = await launches.prepare(owner, ID, async signal => {
+    const result = await f.manager.prepareLaunch({ id: ID }, signal);
+    return { ...result, config: { ...result.config, startupTimeoutMs: 20 } };
+  });
+  let finishStop;
+  const stopped = new Promise(resolve => { finishStop = resolve; });
+  launches.bindCommand(prepared.token, owner, 'abandoned', launchCommand(prepared.config), finishStop).spawned();
+  const retryOwner = launchOwner();
+  const retry = launches.prepare(retryOwner, ID, signal => f.manager.prepareLaunch({ id: ID }, signal));
+  await stopped;
+  const registration = { toolId: ID, streamId: 'abandoned', hostInfo: { packagePath: prepared.config.packagePath } };
+  assert.throws(() => launches.checkRegistration(prepared.token, owner, registration), { code: 'SUBAPP_LAUNCH_EXPIRED' });
+  const next = await retry;
+  launches.finish(next.token, retryOwner);
+  assert.equal(next.config.version, '0.1.32');
 });
 
 test('unconfirmed npm termination retains only its package guard until the process closes', { timeout: 10000 }, async t => {
@@ -392,7 +1028,7 @@ test('unconfirmed npm termination retains only its package guard until the proce
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
 });
 
-test('a slow uninstall does not block another app and closes a registration that races preflight', { timeout: 5000 }, async t => {
+test('a slow uninstall fences new launches without blocking another app', { timeout: 5000 }, async t => {
   let unblock, reportMarked, calls = 0;
   const blocked = new Promise(resolve => { unblock = resolve; });
   const marked = new Promise(resolve => { reportMarked = resolve; });
@@ -419,18 +1055,33 @@ test('a slow uninstall does not block another app and closes a registration that
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
 });
 
-test('a Windows-style deletion failure remains retryable in a new manager and never strands the global lock', { timeout: 5000 }, async t => {
+test('uninstall protects a starting process which appeared before the uninstall marker', async t => {
+  let stops = 0;
+  const f = fixture(t, { managerOptions: {
+    forceStopChildToolByCatalogId: async () => { stops++; return { success: true }; },
+    listChildToolHolders: () => stops >= 2 ? [{ pid: 43210, source: 'child-tool-startup' }] : [],
+    listBusyHolders: async () => [],
+  } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  await assert.rejects(f.manager.uninstall({ id: ID }), error => error.requiresForceClose === true);
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.ok(fs.existsSync(path.join(legacy, 'package.json')));
+});
+
+test('a Windows-style first detach failure preserves the installation and leaves the selection lock free', { timeout: 5000 }, async t => {
   const f = fixture(t, { managerOptions: { platform: 'win32', listBusyHolders: async () => [], sleep: async () => {} } });
   const legacy = packagePathFor(f.rootDir, PACKAGE);
   writeRunnablePackage(legacy, '0.1.32');
-  const rm = fs.promises.rm;
-  const mock = t.mock.method(fs.promises, 'rm', async (target, options) => {
-    if (target === legacy) throw Object.assign(new Error('EPERM unlink busy'), { code: 'EPERM' });
-    return rm(target, options);
+  const rename = fs.promises.rename;
+  const mock = t.mock.method(fs.promises, 'rename', async (source, destination) => {
+    if (source === legacy) throw Object.assign(new Error('EPERM rename busy'), { code: 'EPERM' });
+    return rename(source, destination);
   });
   await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'EBUSY' });
-  assert.equal(versions.isUninstalling(f.rootDir, f.entry), true);
-  const free = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, '0.1.32');
+  const free = acquireInstallLock(versions.selectionLockPath(f.rootDir, f.entry));
   assert.equal(typeof free, 'function'); free();
   mock.mock.restore();
   await createSubappManager(f.managerOptions).uninstall({ id: ID });
@@ -566,6 +1217,165 @@ test('portable install downloads and extracts directly to A without npm or chang
   assert.ok(fs.existsSync(path.join(f.rootDir, 'store', '.locks', 'subapp-aily-chat')));
   assert.equal(fs.readdirSync(path.join(f.rootDir, 'store', '.locks')).some(name => name.includes('@')), false);
   assert.equal(fs.readFileSync(path.join(f.rootDir, 'package.json'), 'utf8'), rootManifest);
+});
+
+test('background cleanup waits for process inventory and releases obsolete versions silently', async t => {
+  const id = 'fixture-tool';
+  const entry = catalogEntry('0.1.33', Buffer.from('fixture-tool'), {
+    id,
+    package: '@aily-project/subapp-fixture-tool',
+    namespace: 'FIXTURE_TOOL',
+    titleKey: 'FIXTURE_TOOL.NAME',
+  });
+  const events = [];
+  const probes = [];
+  let otherHostRunning = true;
+  let hostChecks = 0;
+  let inventory = 'unavailable';
+  const f = fixture(t, { managerOptions: {
+    backgroundVersionCleanup: true,
+    versionCleanupDelayMs: 0,
+    versionCleanupRetryMs: 20,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [id]: entry }) }),
+    onChanged: event => events.push(event),
+    onProgress: event => events.push(event),
+    canMutateSharedTree: () => {
+      hostChecks += 1;
+      return !otherHostRunning;
+    },
+    hasProcessesUsingPath: async directory => {
+      probes.push(directory);
+      if (inventory === 'unavailable') throw new Error('process inventory unavailable');
+      return inventory === 'busy' && path.basename(directory) === '0.1.30';
+    },
+  } });
+  const releases = new Map();
+  for (const version of ['0.1.29', '0.1.30', '0.1.31', '0.1.32', entry.version]) {
+    const release = { ...entry, version };
+    const candidate = versions.createCandidate(f.rootDir, release);
+    writeRunnablePackage(candidate.source, version, { name: entry.package, id });
+    const ready = await versions.publishCandidate(f.rootDir, release, candidate);
+    releases.set(version, ready.project);
+    if (version === '0.1.32' || version === entry.version) versions.activate(f.rootDir, release, ready);
+  }
+  const parent = path.dirname(releases.get(entry.version));
+  const activePath = versions.activePath(f.rootDir, entry);
+  const active = fs.readFileSync(activePath);
+  const waitFor = async (predicate, message) => {
+    const deadline = performance.now() + 3000;
+    while (!predicate() && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(predicate(), message);
+  };
+
+  const catalog = await f.manager.list({ refresh: true });
+  assert.equal(catalog.apps[0].installedVersion, entry.version);
+  await waitFor(() => hostChecks > 0, 'background cleanup should check other hosts');
+  assert.deepEqual(probes, []);
+  otherHostRunning = false;
+  await waitFor(() => probes.length > 0, 'background cleanup should check process inventory');
+  for (const directory of releases.values()) assert.ok(fs.existsSync(directory));
+
+  inventory = 'busy';
+  await waitFor(() => !fs.existsSync(releases.get('0.1.29')), 'the unused version should be reclaimed');
+  assert.ok(fs.existsSync(releases.get('0.1.30')), 'the occupied version should remain');
+
+  inventory = 'idle';
+  await waitFor(() => !fs.existsSync(releases.get('0.1.30'))
+    && !fs.readdirSync(parent).some(name => name.startsWith('.retired-')), 'cleanup should finish after release');
+  assert.deepEqual(fs.readdirSync(parent).sort(), ['0.1.31', '0.1.32', '0.1.33', 'active.json']);
+  assert.deepEqual(fs.readFileSync(activePath), active);
+  assert.deepEqual(events, []);
+  assert.deepEqual(f.downloads, []);
+  assert.deepEqual(f.calls, []);
+});
+
+test('stalled cleanup inventory times out without blocking either foreground session or update', { timeout: 10000 }, async t => {
+  const otherId = 'fixture-tool';
+  const otherPackage = '@aily-project/subapp-fixture-tool';
+  const otherVersion = '0.1.33';
+  const otherArchive = portableSubappTarball({ packageName: otherPackage, version: otherVersion, id: otherId });
+  const other = catalogEntry(otherVersion, otherArchive, {
+    id: otherId, package: otherPackage, namespace: 'FIXTURE_TOOL', titleKey: 'FIXTURE_TOOL.NAME',
+  });
+  const cleanupStarted = Promise.withResolvers();
+  const cleanupRetried = Promise.withResolvers();
+  const stalled = Promise.withResolvers();
+  const progress = [];
+  let checks = 0;
+  const f = fixture(t, { version: '0.1.34', managerOptions: {
+    backgroundVersionCleanup: true,
+    versionCleanupDelayMs: 0,
+    versionCleanupRetryMs: 20,
+    versionCleanupTimeoutMs: 2500,
+    lockTimeoutMs: 250,
+    downloadFile: async (url, destination) => {
+      fs.writeFileSync(destination, url === other.dist.tarball ? otherArchive : f.archive);
+    },
+    onProgress: event => progress.push(event),
+    hasProcessesUsingPath: async directory => {
+      if (path.basename(directory) !== '0.1.30') return true;
+      checks += 1;
+      if (checks === 1) {
+        cleanupStarted.resolve(directory);
+        return stalled.promise;
+      }
+      cleanupRetried.resolve();
+      throw new Error('inventory is still unavailable');
+    },
+  } });
+  const publish = async (entry, version) => {
+    const release = { ...entry, version };
+    const candidate = versions.createCandidate(f.rootDir, release);
+    writeRunnablePackage(candidate.source, version, { name: entry.package, id: entry.id });
+    return versions.publishCandidate(f.rootDir, release, candidate);
+  };
+  for (const version of ['0.1.30', '0.1.31', '0.1.32', '0.1.33']) {
+    const ready = await publish(f.entry, version);
+    if (version === '0.1.32' || version === '0.1.33') versions.activate(f.rootDir, f.entry, ready);
+  }
+  versions.activate(f.rootDir, other, await publish(other, '0.1.32'));
+  fs.writeFileSync(path.join(f.rootDir, 'subapp-index.json'), JSON.stringify({ [ID]: f.entry, [otherId]: other }));
+
+  const launches = createSubappLaunchReservations();
+  const verifyLaunch = async (id, version) => {
+    const owner = launchOwner();
+    const selection = await launches.prepare(owner, id, signal => f.manager.prepareLaunch({ id }, signal));
+    const { token, config } = selection;
+    try {
+      assert.equal(config.version, version);
+      const command = launchCommand(config);
+      assert.ok(fs.existsSync(command.args[0]));
+      launches.bindCommand(token, owner, id, command).spawned();
+      launches.checkRegistration(token, owner, {
+        toolId: id, streamId: id, hostInfo: { packagePath: config.packagePath },
+      })();
+    } finally { launches.finish(token, owner); }
+  };
+
+  try {
+    await f.manager.list({ strategy: 'cache-only' });
+    const oldest = await cleanupStarted.promise;
+    const lockRoot = path.join(f.rootDir, 'store', '.locks');
+    for (const directory of [lockRoot, path.join(lockRoot, versions.storeKeyForPackage(PACKAGE))]) {
+      const release = acquireInstallLock(directory);
+      assert.ok(release, `cleanup must leave ${directory} free`);
+      release();
+    }
+    await verifyLaunch(ID, '0.1.33');
+    await verifyLaunch(otherId, '0.1.32');
+    await f.manager.update({ id: ID });
+    await f.manager.update({ id: otherId });
+    await verifyLaunch(ID, f.entry.version);
+    await verifyLaunch(otherId, otherVersion);
+    assert.deepEqual(new Set(progress.filter(event => event.phase === 'complete').map(event => event.id)), new Set([ID, otherId]));
+    assert.ok(progress.every(event => event.action === 'update' && event.phase !== 'error'));
+    assert.equal(checks, 1, 'foreground operations should complete before cleanup retries');
+
+    await cleanupRetried.promise;
+    assert.ok(fs.existsSync(oldest), 'unverified inventory must leave the obsolete release intact');
+  } finally {
+    stalled.resolve(true);
+  }
 });
 
 test('background update preserves an old running process and activates A only after it closes', async (t) => {
@@ -1383,4 +2193,147 @@ test('feedback distinguishes selected installed Chat from an older running runti
   assert.equal(chat.runningVersion, '0.1.30');
   assert.equal(chat.runningSource, 'portable');
   assert.equal(f.calls.length, 0);
+});
+
+test('a stalled private staging cleanup leaves launch, update failure and uninstall independent', { timeout: 5000 }, async t => {
+  const url = await transferServer(t, (_request, response) => { response.writeHead(503); response.end(); });
+  const f = fixture(t, { managerOptions: { downloadFile: undefined, listBusyHolders: async () => [] } });
+  f.entry.dist.tarball = url;
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+
+  const cleanupStarted = Promise.withResolvers();
+  const releaseCleanup = Promise.withResolvers();
+  const cleanupEnded = Promise.withResolvers();
+  const rm = fs.promises.rm;
+  t.mock.method(fs.promises, 'rm', async (target, options) => {
+    if (!path.basename(target).startsWith('.staging-')) return rm(target, options);
+    cleanupStarted.resolve();
+    await releaseCleanup.promise;
+    try { return await rm(target, options); } finally { cleanupEnded.resolve(); }
+  });
+
+  const failed = assert.rejects(f.manager.downloadUpdate({ id: ID }), /HTTP 503/);
+  await cleanupStarted.promise;
+  try {
+    await failed;
+    const launch = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(launch.config.version, '0.1.32'); launch.release();
+    await f.manager.uninstall({ id: ID });
+    assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+  } finally {
+    releaseCleanup.resolve();
+    await cleanupEnded.promise;
+  }
+});
+
+test('uninstall bounds its join with a download that does not acknowledge cancellation', { timeout: 5000 }, async t => {
+  const downloadStarted = Promise.withResolvers();
+  const releaseDownload = Promise.withResolvers();
+  const f = fixture(t, { managerOptions: {
+    lockTimeoutMs: 60, listBusyHolders: async () => [],
+    downloadFile: async (_url, _destination, _progress, { signal }) => {
+      downloadStarted.resolve();
+      await releaseDownload.promise;
+      signal.throwIfAborted();
+    },
+  } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const cancelled = assert.rejects(f.manager.downloadUpdate({ id: ID }), { code: 'SUBAPP_CANCELLED' });
+  await downloadStarted.promise;
+  try {
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+    assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+    const launch = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(launch.config.version, '0.1.32'); launch.release();
+  } finally {
+    releaseDownload.resolve();
+    await cancelled;
+  }
+  await f.manager.uninstall({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('an interrupted uninstall can replace a malformed marker and finish explicitly', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  versions.beginUninstall(f.rootDir, f.entry);
+  const marker = path.join(f.rootDir, 'store', '.uninstalling', `${versions.storeKeyForPackage(PACKAGE)}.json`);
+  fs.writeFileSync(marker, '{interrupted');
+
+  assert.equal(readInstalledState(f.rootDir, f.entry).uninstalling, true);
+  await f.manager.uninstall({ id: ID });
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(legacy), false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), true);
+});
+
+test('a timed-out uninstall keeps its write guard until the late detach has completed', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: {
+    lockTimeoutMs: 60, uninstallCleanupTimeoutMs: 60, listBusyHolders: async () => [],
+  } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const finishRename = Promise.withResolvers();
+  const rename = fs.promises.rename;
+  t.mock.method(fs.promises, 'rename', async (source, destination) => {
+    if (source === legacy) await finishRename.promise;
+    return rename(source, destination);
+  });
+
+  try {
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_UNINSTALL_CLEANUP_TIMEOUT' });
+    assert.equal(readInstalledState(f.rootDir, f.entry).uninstalling, true);
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+  } finally {
+    finishRename.resolve();
+  }
+  const retry = createSubappManager({ ...f.managerOptions, lockTimeoutMs: 1000 });
+  await retry.uninstall({ id: ID });
+  assert.equal(fs.existsSync(legacy), false);
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+});
+
+test('partial detach can resume and a new cleanup worker removes the detached trees independently', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  await f.manager.install({ id: ID });
+  const store = path.join(f.rootDir, 'store', versions.storeKeyForPackage(PACKAGE));
+  const update = path.join(f.updateRootDir, ID);
+  fs.mkdirSync(update, { recursive: true });
+
+  const rename = fs.promises.rename;
+  const mock = t.mock.method(fs.promises, 'rename', async (source, destination) => {
+    if (source === legacy) throw Object.assign(new Error('EPERM rename busy'), { code: 'EPERM' });
+    return rename(source, destination);
+  });
+  await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'EBUSY' });
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), true);
+  assert.equal(fs.existsSync(store), false);
+  assert.equal(fs.existsSync(legacy), true);
+  mock.mock.restore();
+
+  await createSubappManager(f.managerOptions).uninstall({ id: ID });
+  const targets = [legacy, store, update];
+  const findDetached = target => fs.readdirSync(path.dirname(target)).filter(name => isRetiredUninstallName(target, name));
+  assert.ok(targets.every(target => !fs.existsSync(target) && findDetached(target).length === 1));
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  const retry = await runSubappVersionCleanup(f.rootDir, f.entry, { updateRootDir: f.updateRootDir, isBusy: () => false });
+  assert.equal(retry, false);
+  assert.ok(targets.every(target => findDetached(target).length === 0));
+});
+
+test('explicit reinstall completes an interrupted uninstall before selecting the replacement', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  versions.beginUninstall(f.rootDir, f.entry);
+
+  await f.manager.reinstall({ id: ID });
+  assert.equal(fs.existsSync(legacy), false);
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), false);
+  const launch = await f.manager.prepareLaunch({ id: ID });
+  assert.equal(launch.config.version, f.entry.version); launch.release();
 });

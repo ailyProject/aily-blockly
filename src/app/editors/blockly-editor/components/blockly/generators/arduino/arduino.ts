@@ -1,6 +1,8 @@
 import * as Blockly from 'blockly';
 import { cppStringLiteral } from './cpp-string-literal';
 import { applyArduinoEntrypointBlockMappings } from './arduino-entrypoint-mapping';
+import { ArduinoModelSymbols, type ArduinoModelSymbolDeclarations, type ArduinoModelSymbolOptions,
+  type ArduinoModelReference, type ArduinoModelIdentity, type ArduinoModelSymbolLocalScope } from './arduino-model-symbols';
 
 export enum Order {
   ATOMIC = 0, // 0 "" ...
@@ -124,6 +126,37 @@ export function normalizeArduinoGeneratedCode(value: unknown): string {
 export class ArduinoGenerator extends Blockly.CodeGenerator {
   codeDict = {};
   private generatedArtifacts = new Map<string, ArduinoGeneratedArtifact>();
+  private readonly modelSymbols = new ArduinoModelSymbols(model => this.hasLocalModelBinding(model));
+
+  registerModelSymbolDeclarations(key: string, resolve: ArduinoModelSymbolDeclarations): void {
+    this.modelSymbols.registerDeclarations(key, resolve);
+  }
+
+  registerModelSymbolLocalScope(key: string, resolve: ArduinoModelSymbolLocalScope): void {
+    this.modelSymbols.registerLocalScope(key, resolve);
+  }
+
+  getModelSymbol(nameOrId: string, type: string, options?: ArduinoModelSymbolOptions): string {
+    return this.modelSymbols.symbol(nameOrId, type, options);
+  }
+
+  getModelSymbolReference(modelOrId: ArduinoModelReference | string, options?: ArduinoModelSymbolOptions): string | undefined {
+    return this.modelSymbols.reference(modelOrId, options);
+  }
+
+  private hasLocalModelBinding(model: ArduinoModelIdentity): boolean {
+    let block: Blockly.Block | null | undefined = this._statementFrames[this._statementFrames.length - 1]?.block;
+    const visited = new Set<Blockly.Block>();
+    while (block && !visited.has(block)) {
+      visited.add(block);
+      if (this.modelSymbols.hasLocalScope(block, model)) return true;
+      const native = block as Blockly.Block & { getProcedureDef?: () => unknown };
+      const definition = typeof native.getProcedureDef === 'function' ? native.getProcedureDef() : undefined;
+      if (model.getType() === '' && Array.isArray(definition) && Array.isArray(definition[1]) && definition[1].includes(model.getName())) return true;
+      block = block.getSurroundParent();
+    }
+    return false;
+  }
 
   // ==================== Block-to-Code 追踪系统 ====================
   /** 当前正在生成代码的 block id 栈（支持嵌套） */
@@ -176,6 +209,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
    * @param workspace Workspace to generate code from.
    */
   override init(workspace: Blockly.Workspace) {
+    this.modelSymbols.reset();
     super.init(workspace);
 
     if (!this.nameDB_) {
@@ -187,6 +221,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     this.nameDB_.setVariableMap(workspace.getVariableMap());
     this.nameDB_.populateVariables(workspace);
     this.nameDB_.populateProcedures(workspace);
+    this.modelSymbols.begin(workspace, this.nameDB_);
 
     const defvars = [];
     // Add developer variables (not created or named by the user).

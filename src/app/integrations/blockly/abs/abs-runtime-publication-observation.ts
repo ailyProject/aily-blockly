@@ -3,6 +3,7 @@ import { AbsOperationJournal, type AbsUnpublishedDocumentSave } from './abs-oper
 import { openAbsHostStorage } from './abs-host-storage';
 import { absJson } from './abs-identity-map';
 import { AbsSyncError } from './abs-state';
+import type { AbsSyncStoragePort } from './abs-baseline-store';
 import type { NativeSaveObservation, NativeSaveOperationRef } from './abs-native-save-protocol';
 
 export interface RuntimePublicationObservation {
@@ -13,8 +14,8 @@ export interface RuntimePublicationObservation {
 /** Activation may need source facts before the old Working document can load
  * against its correct environment. No GUI instance or program replay is used. */
 export async function observeRuntimePublication(path: string, ref: NativeSaveOperationRef,
-  guard: () => void): Promise<RuntimePublicationObservation> {
-  const port = await openAbsHostStorage(path, guard), project = port.attachment?.root ?? path;
+  guard: () => void, storage?: AbsSyncStoragePort): Promise<RuntimePublicationObservation> {
+  const port = storage ?? await openAbsHostStorage(path, guard), project = port.attachment?.root ?? path;
   const observation = await new AbsApplicationJournal(port, project).observeNativeSave(ref.request, guard);
   if ('ref' in observation && observation.ref && absJson(observation.ref) !== absJson(ref)) {
     throw new AbsSyncError('ABS_NATIVE_SAVE_REQUEST_CONFLICT', 'The environment refers to a different original source publication.');

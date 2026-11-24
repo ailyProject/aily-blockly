@@ -10,8 +10,10 @@ const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
-const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
-const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
+const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, materializeEspSrModel } = require('./blockly-upload-state');
+const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
+const { recordFor, startBuildExecution, finishBuildExecution, validateSharedBuildLaunch,
+    confirmSharedBuildInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild, retainSharedBuildSource } = require('./build-execution-workspace');
 const { captureBlocklyCompileSource } = require('./compile-source');
 
 // 简单的日志工具
@@ -56,6 +58,10 @@ async function main() {
     let config;
     try {
         config = readBuildRequest(configPath);
+        if (config.execution?.layout === 'shared') {
+            config = validateSharedBuildLaunch(configPath, config.currentProjectPath, 'compile');
+            assertSharedBuildSupervisor(config);
+        }
     } catch (error) {
         logger.error('Failed to read config file:', error);
         process.exit(1);
@@ -79,11 +85,13 @@ async function main() {
         if (config.execution) recordFor(config);
         workspace = acquireBuildWorkspace(currentProjectPath, 'compile');
         startBuildExecution(config, workspace);
+        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+        if (isAilyCode) invalidateCoderUploadState(currentProjectPath);
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
         invalidateBuildDelivery(currentProjectPath);
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
         // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
-        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
         if (!isAilyCode) invalidateBlocklyUploadState(currentProjectPath);
         const tempPath = isAilyCode
             ? ailyCodeProject.resolveCompileWorkspacePath(currentProjectPath)
@@ -153,10 +161,12 @@ async function main() {
         await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
         workspace.assertOwned();
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         const materializedSource = !isAilyCode ? captureBlocklyCompileSource(config, compileSourcePath) : undefined;
+        if (materializedSource) retainSharedBuildSource(config, materializedSource);
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
-        const uploadInputs = !isAilyCode ? captureBlocklyUploadInputs(config) : null;
+        const uploadInputs = isAilyCode ? captureCoderUploadInputs(config) : captureBlocklyUploadInputs(config);
 
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
@@ -256,6 +266,7 @@ async function main() {
         const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
+            confirmSharedBuildInputs(config);
             if (materializedSource) captureBlocklyCompileSource(config, compileSourcePath, materializedSource);
             if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
@@ -268,6 +279,8 @@ async function main() {
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
+                confirmSharedBuildInputs(config);
+                materializeEspSrModel(preprocessCachePath, buildPath, { shared: config.execution?.layout === 'shared' });
                 if (projectSnapshot) {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);
                     await reportBuildDelivery(config, receipt);
@@ -308,10 +321,14 @@ async function main() {
             throw new Error(`编译进程异常退出，退出码: ${exitCode}`);
         }
 
+        if (isAilyCode) publishCoderUploadState(config, uploadInputs);
         logger.log('编译完成');
 
     } catch (error) {
         logger.error(`[ERROR] ${error.message}`);
+        if (!workspace && config.execution?.layout === 'shared') {
+            settleUnstartedSharedBuild(currentProjectPath, config.execution, error);
+        }
         process.exitCode = 1;
     } finally {
         // Only the acquiring host releases, after preprocess/compiler close and
@@ -322,7 +339,7 @@ async function main() {
             finishBuildExecution(config, false);
             throw error;
         }
-        finishBuildExecution(config, !!workspace && process.exitCode !== 1);
+        if (workspace || config.execution?.layout !== 'shared') finishBuildExecution(config, !!workspace && process.exitCode !== 1);
     }
 }
 

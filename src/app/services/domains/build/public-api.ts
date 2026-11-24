@@ -9,6 +9,8 @@ export * from './probe-rs.service';
 
 export type { BuildCheckpoint } from './build-result-snapshot';
 export { persistBuildResult } from './build-result-snapshot';
-export { capturedBuildInput, readPreparedBuildInput, requirePreparedBuildExecution, type BuildInput } from './build-input';
+export { capturedBuildInput, isSharedBuildExecution, readPreparedBuildInput, requirePreparedBuildExecution, type BuildInput,
+  type ResolvedBuildExecution, type SharedBuildExecution } from './build-input';
+export type { BuildSnapshot } from './build-snapshot';
 export { buildCancelledResult, isBuildCancelled } from './build-cancellation';
 export { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogReference } from './project-build-log';

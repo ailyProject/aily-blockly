@@ -104,6 +104,11 @@
       border-left: 5px solid #5eb1ff;
     }
 
+    &.focused {
+      outline: 1px solid var(--aily-text-secondary);
+      outline-offset: -1px;
+    }
+
     .date {
       grid-column: 1;
       grid-row: 1 / span 2;

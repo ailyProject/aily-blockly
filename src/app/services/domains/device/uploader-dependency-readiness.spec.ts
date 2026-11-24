@@ -1,3 +1,4 @@
+import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
 import { UploaderService } from './uploader.service';
 
 describe('Coder upload dependency preflight', () => {
@@ -11,6 +12,7 @@ describe('Coder upload dependency preflight', () => {
       currentProjectPath: '/project',
       isAilyCodeProject: () => true,
       beginCoderOperation: jasmine.createSpy('beginOperation').and.returnValue(finish),
+      ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true),
     };
     uploader.configService = { isCoderProduct: () => true };
     uploader.npmService = { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo() };
@@ -18,17 +20,33 @@ describe('Coder upload dependency preflight', () => {
     uploader.uploadCurrentProject = jasmine.createSpy('upload').and.resolveTo({ state: 'done' });
   });
 
-  it('waits for dependency checks before touching the port or dispatching upload', async () => {
+  it('waits for dependency checks before touching the port or dispatching upload', fakeAsync(() => {
     let checked!: () => void;
     uploader.npmService.assertCoderDependenciesReady.and.returnValue(new Promise<void>(resolve => { checked = resolve; }));
     const pending = uploader.upload();
-    expect(uploader.npmService.assertCoderDependenciesReady).toHaveBeenCalledOnceWith('/project');
+    flushMicrotasks();
+    expect(uploader.npmService.assertCoderDependenciesReady).toHaveBeenCalledOnceWith('/project', 'firmware-upload');
     expect(uploader.projectService.beginCoderOperation).not.toHaveBeenCalled();
     expect(uploader.uploadCurrentProject).not.toHaveBeenCalled();
     checked();
-    expect(await pending).toEqual({ state: 'done' });
+    let result: any;
+    pending.then((value: any) => { result = value; });
+    flushMicrotasks();
+    expect(result).toEqual({ state: 'done' });
     expect(uploader.uploadCurrentProject).toHaveBeenCalledTimes(1);
     expect(finish).toHaveBeenCalledTimes(1);
+  }));
+
+  it('requests a board before dependency checks, dispatch or serial-port release', async () => {
+    uploader.projectService.ensureCoderBoardSelected.and.resolveTo(false);
+    uploader.coderExecution = { upload: jasmine.createSpy('runtimeUpload') };
+    expect(await uploader.upload()).toEqual({ state: 'warn',
+      text: '请先选择开发板，再编译或上传 Arduino 工程。', buildOutcome: 'not-started' });
+    expect(uploader.projectService.ensureCoderBoardSelected).toHaveBeenCalledOnceWith('/project');
+    expect(uploader.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+    expect(uploader.projectService.beginCoderOperation).not.toHaveBeenCalled();
+    expect(uploader.coderExecution.upload).not.toHaveBeenCalled();
+    expect(uploader.uploadCurrentProject).not.toHaveBeenCalled();
   });
 
   it('blocks flashing on a failed disk check even when build artifacts already exist', async () => {
@@ -51,6 +69,7 @@ describe('Coder upload dependency preflight', () => {
     uploader.npmService.assertCoderDependenciesReady.and.rejectWith(new Error('must not run'));
     expect(await uploader.upload()).toEqual({ state: 'done' });
     expect(uploader.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+    expect(uploader.projectService.ensureCoderBoardSelected).not.toHaveBeenCalled();
     expect(uploader.uploadCurrentProject).toHaveBeenCalledTimes(1);
   });
 });

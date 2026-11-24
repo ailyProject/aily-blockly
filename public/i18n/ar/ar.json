@@ -369,7 +369,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "التجميع السحابي",
             "CLOUD_COMPILATION_DESC": "التجميع في السحابة، والرفع إلى اللوحة على هذا الكمبيوتر. يتم فحص الخدمة عند التفعيل.",
-            "CLOUD_PRO_REQUIRED": "سجّل الدخول بحساب Pro للاستخدام",
+            "CLOUD_LOGIN_REQUIRED": "سجّل الدخول لاستخدام التجميع السحابي",
             "CLOUD_ENABLE_CHECKING": "جارٍ فحص خدمة التجميع السحابي…",
             "CLOUD_ENABLE_SUCCESS": "تم تفعيل التجميع السحابي.",
             "CLOUD_ENABLE_FAILED": "تعذر التفعيل. تحقق من الخدمة وحاول مجددًا.",
@@ -447,6 +447,7 @@
         },
         "BOARD": {
             "SEARCH": "بحث عن لوحة",
+            "CLEAR_SEARCH": "مسح البحث",
             "READ_DOC": "قراءة الوثائق",
             "ADD_BOARD": "إضافة لوحة",
             "DEV": "تطوير",
@@ -1010,6 +1011,8 @@
             "PROCESS_START_FAILED": "فشل بدء عملية البناء",
             "INCOMPLETE": "لم يكتمل البناء",
             "FAILED_WITH_TIME": "فشل البناء (الوقت: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "تعذر على أداة البناء تحميل مكتبة تشغيل Python. راجع سجل البناء.",
+            "TOOL_LOAD_XTENSA_CONFIG": "تعذر على المترجم تحميل إعدادات شريحة Xtensa. راجع سجل البناء.",
             "ABNORMAL_END_TITLE": "انتهى البناء بشكل غير طبيعي",
             "ABNORMAL_END_WITH_TIME": "انتهت عملية البناء بشكل غير طبيعي (الوقت: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "اكتمل البناء",

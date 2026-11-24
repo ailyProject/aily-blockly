@@ -46,7 +46,7 @@ describe('complete ABS project state', () => {
     const current = await projection(), body = splitAbsState(current.abs).program;
     const index = indexAbsAbi(current.workspace);
     const blocks = new Map(current.map.nodes.map(node => [node.astPath, index.get(node.blockId)!]));
-    const legacy = await encodeAbsState(body, current.document, blocks, current.contracts, current.workspace, true);
+    const legacy = await encodeAbsState(body, current.document, blocks, current.contracts, current.workspace, 1);
     expect(JSON.parse(splitAbsState(current.abs).state!).version).toBe(2);
     expect(Array.isArray(JSON.parse(splitAbsState(current.abs).state!).nodes)).toBeTrue();
     const decoded = await decodeAbsState(legacy);

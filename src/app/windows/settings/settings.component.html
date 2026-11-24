@@ -152,7 +152,7 @@
           </div>
           }
 
-          <!-- 云编译仅在非欧洲区的 Windows 显示，网关地址与签名身份由桌面主进程维护。 -->
+          <!-- 网关地址与签名身份由桌面主进程维护。 -->
           @if (showCloudCompilation) {
           <div id="SETTINGS.SECTIONS.COMPILATION" class="section">
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.COMPILATION' | translate }}</h2>
@@ -160,7 +160,7 @@
               <div class="item cloud-build-item">
                 <label for="cloud-compilation-enabled">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION' | translate }}:<span class="cloud-build-alpha">Alpha</span></label>
                 <span class="cloud-build-switch" [class.cloud-build-switch-disabled]="!canUseCloudCompilation"
-                  nz-tooltip [nzTooltipTitle]="canUseCloudCompilation ? null : ('SETTINGS.FIELDS.CLOUD_PRO_REQUIRED' | translate)">
+                  nz-tooltip [nzTooltipTitle]="canUseCloudCompilation ? null : ('SETTINGS.FIELDS.CLOUD_LOGIN_REQUIRED' | translate)">
                   <nz-switch nzId="cloud-compilation-enabled" [ngModel]="cloudCompilationEnabled" [nzControl]="true"
                     [nzLoading]="cloudConnectionChecking || cloudConnectionSaving" [nzDisabled]="applying || !canUseCloudCompilation"
                     (click)="onCloudCompilationChange(!cloudCompilationEnabled)"

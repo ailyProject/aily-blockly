@@ -1,4 +1,5 @@
 import { absJson } from './abs-json';
+import { resolveAbsFieldValue, type AbsFieldDefinition } from './abs-field-values';
 import { indexAbsBlockActivity } from './abs-block-activity';
 import { walkAbsRawSyntax, type AbsRawNode } from './abs-syntax-binding';
 import { readAbsSyntax } from './abs-syntax';
@@ -20,12 +21,19 @@ export function inactiveAbsSyntax(roots: readonly AbsSyntaxNode[]): ReadonlySet<
   return inactive;
 }
 
-export function samePreservedAbsCall(before: AbsSyntaxNode, after: AbsSyntaxNode): boolean {
-  const call = (node: AbsSyntaxNode) => ({ type: node.type, disabled: node.disabled,
-    fields: Object.fromEntries(Object.entries(node.fields).map(([name, token]) => [name, { value: token.value, ...(token.reference ? { reference: token.reference } : {}) }])),
+export function samePreservedAbsCall(before: AbsSyntaxNode, after: AbsSyntaxNode,
+  fields?: Readonly<Record<string, AbsFieldDefinition>>): boolean {
+  const call = (node: AbsSyntaxNode, peer: AbsSyntaxNode) => ({ type: node.type, disabled: node.disabled,
+    fields: Object.fromEntries(Object.entries(node.fields).map(([name, token]) => {
+      const definition = fields?.[name];
+      // A published dropdown may store a numeric-looking option as a string.
+      const value = definition?.type === 'field_dropdown' && !definition.symbol && !token.reference
+        && token.value !== peer.fields[name]?.value ? resolveAbsFieldValue(token, definition) : token.value;
+      return [name, { value, ...(token.reference ? { reference: token.reference } : {}) }];
+    })),
     extra: Object.hasOwn(node, 'extraState') ? [node.extraState] : [],
   });
-  return absJson(call(before)) === absJson(call(after));
+  return absJson(call(before, after)) === absJson(call(after, before));
 }
 
 /** Only this call's scalar fields configure its own retained instance. Inputs

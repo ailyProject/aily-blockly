@@ -29,6 +29,7 @@ export interface BlocklyLibraryRuntimeRebuildInput {
   runtimeSignature: string;
   previousRuntimeSignature?: string;
   retainedDocument?: unknown;
+  assertOwner?: () => void;
 }
 
 /**
@@ -39,6 +40,7 @@ export interface BlocklyLibraryRuntimeRebuildInput {
  * depending on application presentation or sibling domains.
  */
 export interface ProjectApplicationPort {
+  openCoderBoardSelector(projectPath: string): Promise<void>;
   updateFooterState(state: ProjectFooterState): void;
   closeTerminal(): void;
   closeConnectionGraphWindows(): Promise<boolean>;
@@ -62,7 +64,7 @@ export interface ProjectApplicationPort {
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
   captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
-  prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[]): Promise<{
+  prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[], signal?: AbortSignal): Promise<{
     document: unknown;
     usedLibraries?: string[];
     release(): void;
@@ -76,12 +78,14 @@ export interface ProjectApplicationPort {
   hasBlocklyRuntimeRecovery?(projectPath: string): boolean;
   recoverBlocklyRuntimeInPlace?(projectPath: string, signal?: AbortSignal): Promise<{ ready: boolean; cancelled?: boolean; code?: string; message?: string }>;
   acknowledgeBlocklyRecoveryDiscard?(projectPath: string): Promise<void>;
-  prepareBlocklyRecoveryDiscard?(projectPath: string): Promise<{ commit(): Promise<void>; dispose(): void }>;
+  prepareBlocklyRecoveryDiscard?(projectPath: string, mode?: 'discard' | 'reload'): Promise<{
+    commit(): Promise<void>; dispose(): void; preserveRecovery?: true;
+  }>;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
   /** Host-owned callback only, admitted by the existing durable document publisher. */
   publishBlocklyEnvironmentMutation?(projectPath: string, mutate: (publication: unknown) => Promise<any>, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome>;
-  settleEnvironmentBeforeOpen?(projectPath: string, assertCurrent: () => void): Promise<void>;
+  settleEnvironmentBeforeOpen?(projectPath: string, assertCurrent: () => void, startupSignal?: AbortSignal): Promise<void>;
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean>;
   materializeCoderProjectLibraries(projectPath: string): Promise<void>;
 }

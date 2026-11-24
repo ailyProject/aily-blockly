@@ -1,6 +1,24 @@
+export const CODER_BOARD_REQUIRED_MESSAGE = '请先选择开发板，再编译或上传 Arduino 工程。';
+
 /** Arduino sources stay in their original directory; Coder caches stay in sketch/. */
 export function coderSourceDirectory(manifest: { arduinoSketch?: unknown }): string {
   return manifest?.arduinoSketch === true ? '.' : 'sketch';
+}
+
+/** Install the OS launch file while preserving existing Coder project data byte for byte. */
+export function ensureCoderProjectFile(root: string): void {
+  const fs = window['fs'];
+  const projectFile = window['path'].join(root, 'project.aci');
+  if (!fs.existsSync(projectFile)) {
+    try {
+      fs.writeFileSync(projectFile, '', { flag: 'wx' });
+      return;
+    } catch (error) {
+      // Another creator may have won the race. The preload can drop error codes.
+      if (!fs.existsSync(projectFile)) throw error;
+    }
+  }
+  if (!fs.lstatSync(projectFile)._isFile) throw new Error(`Coder 项目的 project.aci 必须是普通文件：${projectFile}`);
 }
 
 export function normalizeProjectOpenPath(value: string): string {

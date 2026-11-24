@@ -32,6 +32,7 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
       toolbox: { kind: 'categoryToolbox', contents: [] }, applyToolboxSortOrderToContents() {},
       _workspace: live, projectDocumentSchemaVersion: 3, documentMetadata: {}, generatorRuntime: runtime,
       projectRevision: new BlocklyProjectRevision(), workspaceEditGate: new BlocklyWorkspaceEditGate(),
+      buildCodePreparation: new BlocklyProjectCodePreparation(),
       projectCodePreparation: new BlocklyProjectCodePreparation(), projectOperations: new SerialOperationQueue(),
       pageReferenceContracts: new AbsReferenceContractCache(), declarativeBlocks: new BlocklyDeclarativeBlockCatalog(),
       libraryLoadQueue: Promise.resolve(), libraryLoadEpoch: 0, rebuildingLibraryRuntime: false,

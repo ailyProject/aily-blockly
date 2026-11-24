@@ -2,13 +2,15 @@ import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store';
 import { assertGenerationValidation, generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
+import { acceptedSourceMatches } from './abs-workspace-mode';
 import { AbsSyncError, type AbsProjection } from './abs-state';
 export type { NativeSaveResultFacts } from './abs-native-save-protocol';
 import { NativeSavePublications } from './abs-native-save-publication';
 import { nativeSaveCapability } from './abs-native-save-protocol';
 import type { NativeSaveIdentity, NativeSaveOperationRef, NativeSaveStageInput, NativeSaveResultFacts } from './abs-native-save-protocol';
 import type { AbsSyncStorageAccess } from './abs-baseline-store';
-import type { AbsOperationSnapshot } from './abs-operation-journal';
+import { AbsOperationJournal, restoredApplicationKey, type AbsOperationSnapshot } from './abs-operation-journal';
+import { applicationRequestKey, observedApplicationAdmission, OriginalRequestAdmissions } from './original-request-admission';
 
 const stageKey = (id: string) => `recoveries/application-${id}.json`;
 const proofKey = (id: string) => `recoveries/application-commit-${id}.json`;
@@ -71,7 +73,7 @@ export class AbsApplicationJournal {
         throw fail('Only the original physical application writer can seal its rollback.');
       }
       const requestId = snapshot.application!.requestId;
-      const indexText = await storage.read(`recoveries/request-${(await hashAbsText(requestId)).slice(7)}.json`);
+      const indexText = await storage.read(await applicationRequestKey(requestId));
       const index = indexText === null ? null : JSON.parse(indexText);
       if (index?.version !== 1 || index.project !== this.project || index.operationId !== operationId
         || index.requestId !== requestId || index.snapshotHash !== pointer.hash) throw fail('The original application request changed.');
@@ -138,7 +140,7 @@ export class AbsApplicationJournal {
     const abi = await store.readDerivedAbi(binding.generation);
     if (absJson(await generationEvidence(committed.projection, abi)) !== absJson(record.outcome.evidence)) return false;
     if (currentPointer !== null && await hashAbsText(currentPointer) === committed.pointerHash
-      && (disk.abi !== abi || disk.abs !== committed.projection.abs || disk.map !== absMapJson(committed.projection.map))) return false;
+      && !await store.matchesAcceptedDisk({ projection: committed.projection, abi }, disk)) return false;
     await this.port.withLock(async storage => {
       assertCurrent();
       if (absJson(await store.captureDisk(storage)) !== absJson(disk)
@@ -150,16 +152,42 @@ export class AbsApplicationJournal {
     return true;
   }
 
-  async observe(requestId: string, assertCurrent: () => void): Promise<{ projection?: AbsProjection; result: any }> {
-    const indexText = await this.port.read(`recoveries/request-${(await hashAbsText(requestId)).slice(7)}.json`);
-    const unknown = (code: string) => ({ result: { ok: false, operation: 'abs_apply', project: this.project, code,
-      publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false } } });
+  async observe(requestId: string, assertCurrent: () => void, originalTargetPid?: number): Promise<{ projection?: AbsProjection; result: any }> {
+    const admission = await new OriginalRequestAdmissions(this.port, this.project).observe({ operation: 'abs_apply', requestId });
+    if (admission) {
+      assertCurrent();
+      if (originalTargetPid !== undefined && admission.executor.hostPid !== originalTargetPid)
+        throw fail('The rejection belongs to a different original executor.');
+      return { result: observedApplicationAdmission(admission) };
+    }
+    const indexText = await this.port.read(await applicationRequestKey(requestId));
+    const unknown = async (code: string, operationId?: string) => {
+      const operations = new AbsOperationJournal(this.port, this.project);
+      const recovery = originalTargetPid === undefined && operationId && await this.port.read(restoredApplicationKey(operationId)) !== null
+        ? await operations.inspectRestoredApplication(requestId, assertCurrent) : null;
+      const writer = !recovery && operationId ? await operations.observeApplicationWriterSettlement(requestId, assertCurrent, originalTargetPid) : null;
+      return { result: { ok: false, operation: 'abs_apply', project: this.project, code: writer ? 'ABS_APPLY_WRITER_RELEASED' : code,
+        publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false },
+        ...(recovery ? { currentDocumentRecovery: recovery } : {}), ...(writer ? { writerObservation: writer } : {}) } };
+    };
     if (indexText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN');
     const index = JSON.parse(indexText);
     if (index.version !== 1 || index.project !== this.project || index.requestId !== requestId || !/^[a-f0-9-]{36}$/.test(index.operationId)) throw fail('Invalid original application request index.');
     const snapshotText = await this.port.read(`recoveries/operation-${index.operationId}.json`);
     if (snapshotText === null || await hashAbsText(snapshotText) !== index.snapshotHash) throw fail('Original operation snapshot changed.');
-    const snapshot = JSON.parse(snapshotText), recordedFinalText = await this.port.read(resultKey(index.operationId));
+    const snapshot = JSON.parse(snapshotText);
+    let publicationObservation;
+    if (originalTargetPid !== undefined) {
+      const { attachment, executor } = nativeSaveCapability(snapshot), reader = nativeSaveCapability(this.port);
+      if (snapshot.version !== 1 || snapshot.kind !== 'abs-apply' || snapshot.id !== index.operationId
+        || snapshot.project !== this.project || executor.hostPid !== originalTargetPid
+        || absJson(attachment) !== absJson(reader.attachment)) throw fail('The application belongs to a different original executor or physical project.');
+      publicationObservation = { version: 1, durable: true, requestId, operation: 'abs_apply', operationId: index.operationId,
+        attachment, executor, observer: { hostPid: reader.executor.hostPid }, current: false };
+    }
+    const historical = (result: any) => publicationObservation ? { ...result, publicationObservation,
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } } : result;
+    const recordedFinalText = await this.port.read(resultKey(index.operationId));
     if (recordedFinalText !== null && JSON.parse(recordedFinalText).kind === 'rolled-back') {
       this.assertRollbackSnapshot(snapshot, index.operationId);
       const context = nativeSaveCapability(this.port), final = JSON.parse(recordedFinalText), pointer = JSON.parse(final.operationPointer);
@@ -178,14 +206,14 @@ export class AbsApplicationJournal {
         || final.outcome?.application?.requestId !== requestId || final.outcome?.requiresReload !== false
         || final.outcome?.candidateApplied !== false || typeof final.outcome?.code !== 'string') throw fail('The original rollback terminal result changed.');
       assertCurrent();
-      return { result: { ...final.outcome, receipt: { ...snapshot.application.validation, rollback: { version: 1,
+      return { result: historical({ ...final.outcome, receipt: { ...snapshot.application.validation, rollback: { version: 1,
         operationId: index.operationId, snapshotHash: index.snapshotHash, recordHash: await hashAbsText(recordedFinalText),
         documentHash: final.documentHash, operationPointerHash: await hashAbsText(final.operationPointer), saved,
         attachment: snapshot.attachment, executor: snapshot.executor } },
-        applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } } };
+        applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } }) };
     }
     const stagedText = await this.port.read(stageKey(index.operationId));
-    if (stagedText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN');
+    if (stagedText === null) return unknown('ABS_APPLY_OBSERVATION_UNKNOWN', index.operationId);
     const staged = JSON.parse(stagedText), validation = staged.validation, binding = staged.outcome?.evidence?.binding;
     if (snapshot.application?.requestId !== requestId || absJson(snapshot.application.validation) !== absJson(validation)
       || validation.requestId !== requestId || validation.candidate.hash !== snapshot.candidate?.hash
@@ -198,26 +226,22 @@ export class AbsApplicationJournal {
       // Read-only observation in the acknowledgement gap. Restart recovery
       // seals this evidence durably before admitting another document writer.
       const currentStore = new AbsBaselineStore(this.port, binding.scope), committed = await this.ancestor(currentStore, binding.generation);
-      if (!committed) return unknown('ABS_APPLY_OBSERVATION_PENDING');
+      if (!committed) return unknown('ABS_APPLY_OBSERVATION_PENDING', index.operationId);
       const committedPointer = await this.port.read('committed.json');
       const currentDisk = await currentStore.captureDisk();
       const historicalAbi = await currentStore.readDerivedAbi(binding.generation);
       if (absJson(await generationEvidence(committed.projection, historicalAbi)) !== absJson(staged.outcome.evidence)
         || await this.port.read('committed.json') !== committedPointer) return unknown('ABS_APPLY_OBSERVATION_PENDING');
       if (committedPointer !== null && await hashAbsText(committedPointer) === committed.pointerHash
-        && (currentDisk.abi !== historicalAbi || currentDisk.abs !== committed.projection.abs || currentDisk.map !== absMapJson(committed.projection.map))) return unknown('ABS_APPLY_OBSERVATION_PENDING');
+        && !await currentStore.matchesAcceptedDisk({ projection: committed.projection, abi: historicalAbi }, currentDisk)) return unknown('ABS_APPLY_OBSERVATION_PENDING');
       proof = { project: this.project, operationId: index.operationId, stageHash: await hashAbsText(stagedText), committedHash: committed.pointerHash };
     }
     if (proof.stageHash !== await hashAbsText(stagedText) || proof.project !== this.project || proof.operationId !== index.operationId) throw fail('Original committed result proof changed.');
     const store = new AbsBaselineStore(this.port, binding.scope), projection = await store.load(binding.generation);
     const abi = await store.readDerivedAbi(binding.generation);
     if (absJson(await generationEvidence(projection, abi)) !== absJson(staged.outcome.evidence)) throw fail('Original saved document readback differs from its result.');
-    const disk = await store.captureDisk(), pointer = await this.port.read('committed.json');
-    const current = pointer !== null && await hashAbsText(pointer) === proof.committedHash && disk.abi === abi
-      && disk.abs === projection.abs && disk.map === absMapJson(projection.map) && await this.port.read('prepared.json') === null;
-    assertCurrent();
     let outcome = staged.outcome;
-    const finalText = await this.port.read(resultKey(index.operationId));
+    const finalText = recordedFinalText ?? await this.port.read(resultKey(index.operationId));
     if (finalText !== null) {
       const final = JSON.parse(finalText);
       if (final.version !== 1 || final.project !== this.project || final.operationId !== index.operationId
@@ -226,11 +250,38 @@ export class AbsApplicationJournal {
         || absJson(final.outcome?.historyBase ?? null) !== absJson(outcome.historyBase ?? null)) throw fail('The original final result differs from the committed source.');
       outcome = final.outcome;
     }
-    return { projection, result: { ...outcome, ok: true, operation: 'abs_apply', project: this.project,
+    let unreadableMirror = false;
+    const currentFiles = { read: async (key: string) => {
+      try { return await this.port.read(key); }
+      catch (error) {
+        if (proofText === null || finalText === null || (error as { code?: string })?.code !== 'ABS_STORAGE_ENCODING_INVALID'
+          || (key !== 'project.abs' && key !== 'project.abs.map.json')) throw error;
+        unreadableMirror = true;
+        return null;
+      }
+    } };
+    // A damaged current mirror cannot change the sealed original result.
+    // Read ABI independently so other storage failures still surface.
+    const disk = await store.captureDisk(currentFiles), pointer = await this.port.read('committed.json');
+    const acceptedSource = unreadableMirror ? undefined : await store.acceptedSourceProof(binding.generation, currentFiles, true);
+    const pointerHash = pointer === null ? null : await hashAbsText(pointer);
+    const current = !unreadableMirror && pointerHash !== null && pointerHash === proof.committedHash && disk.abi === abi
+      && await store.matchesAcceptedDisk({ projection, abi }, disk)
+      && (await store.workspaceMode() === 'project-v1'
+        ? acceptedSourceMatches(acceptedSource, binding, this.port.attachment) && acceptedSource.committedHash === pointerHash
+        : disk.abs === projection.abs)
+      && await this.port.read('committed.json') === pointer
+      && await this.port.read('prepared.json') === null;
+    assertCurrent();
+    if (!unreadableMirror && acceptedSource) outcome = { ...outcome, acceptedSource,
+      publication: { ...outcome.publication,
+        ...(finalText === null ? { absMirrored: disk.abs === projection.abs, acceptedSource }
+          : outcome.publication.acceptedSource ? { acceptedSource } : {}) } };
+    return { projection, result: historical({ ...outcome, ok: true, operation: 'abs_apply', project: this.project,
       receipt: { ...validation, output: outcome.evidence, appliedRevision: outcome.appliedRevision,
         ...(outcome.historyBase ? { historyBase: { hash: outcome.historyBase.hash, inputAbsHash: outcome.historyBase.inputAbsHash } } : {}),
         validation: { ok: true, scope: 'complete-generation' } },
-      applicationObservation: { version: 1, requestId, current } } };
+      applicationObservation: { version: 1, requestId, current } }) };
   }
 
   private async ancestor(store: AbsBaselineStore, generation: string) {

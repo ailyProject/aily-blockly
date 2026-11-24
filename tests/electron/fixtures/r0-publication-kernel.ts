@@ -3,6 +3,13 @@
 export { AbsBaselineStore, absBaselineKey } from '../../../src/app/integrations/blockly/abs/abs-baseline-store';
 export { AbsOperationJournal } from '../../../src/app/integrations/blockly/abs/abs-operation-journal';
 export { AbsApplicationJournal } from '../../../src/app/integrations/blockly/abs/abs-application-journal';
+export { OriginalRequestAdmissions } from '../../../src/app/integrations/blockly/abs/original-request-admission';
+export { nativeSaveIdentity } from '../../../src/app/integrations/blockly/abs/abs-native-save-result';
+export { blockStatePublicationIdentity, nativeSaveIndexKey, nativeSaveSettlementKey } from '../../../src/app/integrations/blockly/abs/abs-native-save-protocol';
+export { observeNativePublication } from '../../../src/app/integrations/blockly/abs/abs-native-save-observation';
+export { settleOriginalBoardEnvironment } from '../../../src/app/integrations/blockly/environment-settlement';
+export { recoverAbsProjectOperation } from '../../../src/app/integrations/blockly/abs/abs-project-restart';
+export { recoverAbsBaseline } from '../../../src/app/integrations/blockly/abs/abs-baseline-recovery';
 export { absJson, hashAbsText, createAbsProjection } from '../../../src/app/integrations/blockly/abs/abs-identity-map';
 export { generationEvidence } from '../../../src/app/integrations/blockly/abs/abs-generation-protocol';
 export { ProjectSaveReceipts } from '../../../src/app/services/domains/project/project-save-receipts';

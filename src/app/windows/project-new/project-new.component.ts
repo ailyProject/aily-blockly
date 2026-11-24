@@ -20,8 +20,8 @@ import { NzRadioModule } from 'ng-zorro-antd/radio';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { UiService } from '@core/app-shell/public-api';
 import { CloudService } from '../../tools/cloud-space/services/cloud.service';
-import { firstValueFrom, Subject } from 'rxjs';
-import { debounceTime, takeUntil } from 'rxjs/operators';
+import { firstValueFrom, Subject, Subscription } from 'rxjs';
+import { debounceTime, filter, takeUntil } from 'rxjs/operators';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import type { NewProjectData } from '../../types/project-new';
 import {
@@ -55,7 +55,9 @@ export class ProjectNewComponent implements OnDestroy {
   @ViewChild('boardSearchInput') boardSearchInput?: ElementRef<HTMLInputElement>;
 
   private destroy$ = new Subject<void>();
-  private searchSubject = new Subject<string>();
+  private searchSubject = new Subject<void>();
+  private appliedKeyword = '';
+  private templateRequest?: Subscription;
 
   currentStep = 0;
 
@@ -63,7 +65,7 @@ export class ProjectNewComponent implements OnDestroy {
   isLoadingTemplates = false;
   selectedTemplateName = '';
 
-  currentBoard: any = null;
+  currentBoard: BoardInfo | null = null;
   newProjectData: NewProjectData = {
     name: '',
     path: '',
@@ -113,6 +115,15 @@ export class ProjectNewComponent implements OnDestroy {
     return this.configService.isCoderProduct();
   }
 
+  get isBoardSearchPending(): boolean {
+    return this.keyword !== this.appliedKeyword;
+  }
+
+  get canUseSelectedBoard(): boolean {
+    const board = this.currentBoard;
+    return !this.isBoardSearchPending && !!board?.name && !board.disabled && board.state !== 'todo';
+  }
+
   @HostListener('document:keydown', ['$event'])
   onGlobalKeydown(event: KeyboardEvent): void {
     if (this.currentStep !== 0) {
@@ -139,8 +150,9 @@ export class ProjectNewComponent implements OnDestroy {
   ) {
     this.searchSubject.pipe(
       debounceTime(200),
+      filter(() => this.isBoardSearchPending),
       takeUntil(this.destroy$),
-    ).subscribe(keyword => this.doSearch(keyword));
+    ).subscribe(() => this.refreshBoardListForCurrentFilters());
 
     // 语言切换后重新应用开发板 nickname/description 本地化字段
     this.translate.onLangChange.pipe(takeUntil(this.destroy$)).subscribe(() => {
@@ -151,6 +163,7 @@ export class ProjectNewComponent implements OnDestroy {
   ngOnDestroy() {
     this.destroy$.next();
     this.destroy$.complete();
+    this.templateRequest?.unsubscribe();
   }
 
   get selectedTemplate(): ProjectCreationTemplateSelection | null {
@@ -234,19 +247,12 @@ export class ProjectNewComponent implements OnDestroy {
   }
 
   private refreshBoardListForCurrentFilters(): void {
-    if (this.keyword) {
-      this.doSearch(this.keyword);
-      return;
-    }
-
-    this.boardList = this.applyLocalization(
+    const localizedList = this.applyLocalization(
       this.filterBoardsForCategory(JSON.parse(JSON.stringify(this._boardList)))
     );
-    if (this.boardList.length > 0) {
-      this.selectBoard(this.boardList[0]);
-    } else {
-      this.currentBoard = null;
-    }
+    this.boardList = this.keyword ? filterAndRankBoards(localizedList, this.keyword) : localizedList;
+    this.appliedKeyword = this.keyword;
+    this.selectBoard(this.boardList[0] ?? null);
     this.cd.detectChanges();
   }
 
@@ -273,6 +279,9 @@ export class ProjectNewComponent implements OnDestroy {
 
   /** 根据顶部所选类别创建对应类型项目 */
   async onCreateProject(): Promise<void> {
+    if (this.currentStep !== 1 || !this.canUseSelectedBoard) {
+      return;
+    }
     if (this.coderEnabled && this.selectedProjectCategory === 'coder') {
       await this.createAilyCodeProject();
       return;
@@ -290,63 +299,47 @@ export class ProjectNewComponent implements OnDestroy {
     return _array;
   }
 
-  search(keyword = this.keyword) {
+  search(keyword: string): void {
     this.keyword = keyword;
-    this.searchSubject.next(keyword);
+    this.searchSubject.next();
   }
 
-  private doSearch(keyword: string) {
-    const localizedList = this.applyLocalization(
-      this.filterBoardsForCategory(JSON.parse(JSON.stringify(this._boardList)))
-    );
-    this.boardList = keyword
-      ? filterAndRankBoards(localizedList, keyword)
-      : localizedList;
-
-    if (this.boardList.length > 0) {
-      this.selectBoard(this.boardList[0]);
-    } else {
-      this.currentBoard = null;
-    }
-    this.cd.detectChanges();
+  clearBoardSearch(): void {
+    this.keyword = '';
+    this.refreshBoardListForCurrentFilters();
+    this.boardSearchInput?.nativeElement.focus();
   }
 
-  selectBoard(boardInfo: BoardInfo) {
-    // if (boardInfo.disabled) return;
+  selectBoard(boardInfo: BoardInfo | null): void {
     this.currentBoard = boardInfo;
-    this.newProjectData.board.name = boardInfo.name;
-    this.newProjectData.board.nickname = boardInfo._nickname || boardInfo.nickname;
-    this.newProjectData.board.version = boardInfo.version;
-    if (this.selectedProjectCategory === 'coder') {
+    this.newProjectData.board.name = boardInfo?.name ?? '';
+    this.newProjectData.board.nickname = boardInfo?._nickname || boardInfo?.nickname || '';
+    this.newProjectData.board.version = boardInfo?.version ?? '';
+    this.boardVersionList = [];
+    if (!boardInfo) {
+      delete this.newProjectData.devmode;
+    } else if (this.selectedProjectCategory === 'coder') {
       this.newProjectData.devmode = 'arduino';
     } else {
       this.newProjectData.devmode = normalizeBoardModes(boardInfo)[0] || 'arduino';
     }
-    if (this.selectedProjectCategory === 'blockly') {
-      this.loadMyTemplates(boardInfo.name);
-    } else {
-      this.myTemplateList = [];
-      this.selectedTemplateName = '';
+    this.loadMyTemplates(boardInfo?.name ?? '');
+    if (this.currentStep === 1) {
+      void this.loadBoardVersions();
     }
   }
 
-  loadMyTemplates(boardName: string) {
-    if (this.selectedProjectCategory !== 'blockly') {
-      this.myTemplateList = [];
-      this.selectedTemplateName = '';
-      this.isLoadingTemplates = false;
-      return;
-    }
+  private loadMyTemplates(boardName: string): void {
+    this.templateRequest?.unsubscribe();
     this.myTemplateList = [];
     this.selectedTemplateName = '';
-    if (!boardName?.trim()) {
+    if (this.selectedProjectCategory !== 'blockly' || !boardName.trim()) {
       this.isLoadingTemplates = false;
-      this.cd.detectChanges();
       return;
     }
 
     this.isLoadingTemplates = true;
-    this.cloudService.getMyTemplates(1, 20, boardName).subscribe({
+    this.templateRequest = this.cloudService.getMyTemplates(1, 20, boardName).subscribe({
       next: (res) => {
         if (res?.status === 200 && Array.isArray(res?.data?.list)) {
           this.myTemplateList = res.data.list;
@@ -368,15 +361,32 @@ export class ProjectNewComponent implements OnDestroy {
   }
 
   // 可用版本列表
-  boardVersionList: any[] = [];
-  async nextStep() {
+  boardVersionList: string[] = [];
+  async nextStep(): Promise<void> {
+    if (this.currentStep !== 0 || !this.canUseSelectedBoard) {
+      return;
+    }
+    this.currentStep = 1;
+    await this.loadBoardVersions();
+  }
+
+  private async loadBoardVersions(): Promise<void> {
+    const board = this.currentBoard;
+    if (!board || !this.canUseSelectedBoard) {
+      return;
+    }
     this.boardVersionList = [this.newProjectData.board.version];
-    this.currentStep = this.currentStep + 1;
-    // 项目尚未创建，按所选板的 mode 决定从 Linux 还是默认 Arduino npm 来源查询版本。
-    this.boardVersionList = (await this.npmService.getPackageVersionList(
-      this.newProjectData.board.name,
-      this.configService.getNpmRegistryForBoard(this.currentBoard),
-    )).reverse();
+    try {
+      const versions = await this.npmService.getPackageVersionList(
+        board.name,
+        this.configService.getNpmRegistryForBoard(board),
+      );
+      if (this.currentStep === 1 && this.currentBoard === board && versions?.length) {
+        this.boardVersionList = versions.reverse();
+      }
+    } catch {
+      // 查询失败时仍可使用板卡清单提供的版本。
+    }
   }
 
   async selectFolder() {
@@ -512,5 +522,6 @@ export interface BoardInfo {
   "url": string,
   "brand": string,
   "disabled": boolean, // 是否禁用
+  "state"?: string,
   "type"?: string, // 开发板类型/核心架构 (如 esp32:esp32, arduino:avr, etc)
 }

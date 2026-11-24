@@ -1,32 +1,28 @@
 import { BuilderService } from '@domain/build/public-api';
 import { isBuildCancelled } from '@domain/build/public-api';
 import type { HostToolResult } from './host-tool-result';
+import type { BuildLocalFallbackControl } from '../../utils/cloud-build-progress.utils';
 
 export async function runProjectBuild(
   builderService: BuilderService,
-  input: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string },
+  input: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string; localFallback?: BuildLocalFallbackControl },
   projectPath: string,
 ): Promise<HostToolResult> {
   try {
-    if (input.clearCache) await builderService.clearBuildCache(projectPath);
-    if (input.preprocessOnly) {
-      builderService.triggerPreprocess('host_live_operation');
-      return {
-        is_error: false,
-        content: JSON.stringify({
-          success: true,
-          message: '预编译已触发；该操作异步执行。',
-        }),
-      };
-    }
-
-    const result = await builderService.build(undefined, { source: 'ai', requestId: input.requestId });
+    const result = await builderService.build(undefined, {
+      source: 'ai',
+      ...(input.preprocessOnly ? { preprocessOnly: true } : {}),
+      requestId: input.requestId,
+      expectedProjectPath: projectPath,
+      clearCache: input.clearCache,
+      ...(input.localFallback ? { localFallback: input.localFallback } : {}),
+    });
     return {
       is_error: false,
       metadata: { buildResult: result },
       content: JSON.stringify({
         success: true,
-        message: '编译成功。',
+        message: input.preprocessOnly ? '预处理成功。' : '编译成功。',
       }),
     };
   } catch (error: any) {
@@ -39,13 +35,24 @@ export async function runProjectBuild(
         content: JSON.stringify({ success: false, ...cancelled }),
       };
     }
+    const staleSource = buildResult?.code === 'BUILD_SOURCE_STALE' ? buildResult : error;
+    const failureCode = staleSource?.code ?? buildResult?.code;
+    const sourceFailure = {
+      ...(typeof failureCode === 'string' ? { code: failureCode } : {}),
+      ...(failureCode === 'BUILD_SOURCE_STALE' ? { sourceReason: staleSource.sourceReason } : {}),
+    };
+    const operation = input.preprocessOnly ? '预处理' : '编译';
+    const status = error?.buildOutcome === 'not-started' ? '未开始'
+      : input.preprocessOnly && error?.buildOutcome === 'unknown' ? '结果未确认' : '失败';
     return {
       is_error: true,
-      metadata: { buildOutcome: error?.buildOutcome,
-        buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr, buildLog: error?.buildLog } },
+      metadata: { buildOutcome: error?.buildOutcome, ...sourceFailure,
+        buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr,
+          buildLog: error?.buildLog, ...(error?.buildHistory ? { buildHistory: error.buildHistory } : {}) } },
       content: JSON.stringify({
         success: false,
-        message: `${error?.buildOutcome === 'not-started' ? '编译未开始' : '编译失败'}: ${buildResult?.text || error?.message || String(error)}`,
+        ...sourceFailure,
+        message: `${operation}${status}: ${buildResult?.text || error?.message || String(error)}`,
       }),
     };
   }

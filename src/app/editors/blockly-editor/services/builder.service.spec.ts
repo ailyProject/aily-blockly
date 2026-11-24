@@ -59,6 +59,26 @@ describe('BuilderService isolated derived outputs', () => {
     expect(publish.calls.mostRecent().args[0]).toBe(config.currentProjectPath);
     expect(service.projectService.currentPackageData).toBe(current);
   });
+  it('shows an exact current shared build result without rewriting the author manifest', async () => {
+    const config = execution();
+    config.currentProjectPath = 'D:/logical';
+    Object.assign(config.execution, { layout: 'shared' });
+    service.activeExecutionConfig = config;
+    window['builder'].inspectBuildExecution = inspect('completed');
+    await service.saveBuildInfo('D:/logical', 'success', '1', 'a'.repeat(64), true, { config });
+    expect(publish).not.toHaveBeenCalled();
+    expect(service.projectService.currentPackageData.buildInfo.lastBuildStatus).toBe('success');
+  });
+  it('launches the original immutable shared request file and rejects a missing capture', async () => {
+    const config = {
+      currentProjectPath: 'D:/logical',
+      execution: { layout: 'shared' },
+      configFilePath: 'D:/logical/.aily/build-executions/id/config.json',
+    };
+    await expectAsync(service.writeCompileRequest(config)).toBeResolvedTo(config.configFilePath);
+    await expectAsync(service.writeCompileRequest({ ...config, configFilePath: undefined }))
+      .toBeRejectedWithError('The original shared build request file is unavailable.');
+  });
   it('rejects another execution returned for the same request instead of publishing root metadata', async () => {
     window['builder'].inspectBuildExecution = inspect('completed', 'newer-execution');
     await expectAsync(service.saveBuildInfo('D:/logical', 'success', '1', 'a'.repeat(64), true, { config: execution() }))
@@ -96,6 +116,15 @@ describe('BuilderService isolated derived outputs', () => {
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
   });
+  it('publishes the cloud startup preview when the host confirms protected disk recovery', async () => {
+    const prepared = startup();
+    service.configService.getCompileBackend = () => 'cloud'; service.projectService.isCloudBuild = () => true;
+    window['builder'].requiresIsolatedBuildRecovery = jasmine.createSpy('requiresRecovery').and.resolveTo(true);
+    window['builder'].publishArduinoGeneratedCode.and.throwError('BUILD_WORKSPACE_RECOVERY_REQUIRED: orphaned owner');
+    expect(await service.generateAndWriteProjectSourceInBackground(() => false)).toBeTrue();
+    expect(service.blocklyService.publishPreparedCodeView).toHaveBeenCalledOnceWith(prepared.code, prepared.blockCodeMapText);
+    expect(window['builder'].requiresIsolatedBuildRecovery).toHaveBeenCalledOnceWith('D:/logical');
+  });
   for (const cloud of [false, true]) it(`preserves ${cloud ? 'cloud' : 'legacy host'} startup artifact publication`, async () => {
     const prepared = startup();
     if (cloud) {
@@ -108,6 +137,24 @@ describe('BuilderService isolated derived outputs', () => {
 });
 
 describe('BuilderService background preprocess ownership', () => {
+  it('lets protected foreground work continue while a private preprocess stop is unconfirmed', async () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    const unsubscribe = jasmine.createSpy('unsubscribe');
+    let finish!: (value: boolean) => void;
+    service.cmdService = { kill: jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { finish = resolve; })) };
+    service.preprocessProcess = { unsubscribe };
+    service.preprocessStreamId = 'private-original';
+    service.isolatedPreprocessStreamId = 'private-original';
+    service.preprocessRunGeneration = 1;
+    await service.stopPreprocess();
+    expect(service.isPreprocessing()).toBeFalse();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('private-original');
+    service.preprocessStreamId = 'new-owner';
+    finish(false);
+    await Promise.resolve();
+    expect(service.preprocessStreamId).toBe('new-owner');
+  });
   it('reports an unconfirmed stop instead of treating false as successful cleanup', async () => {
     const service = Object.create(_BuilderService.prototype) as any;
     service.preprocessProcess = { unsubscribe: jasmine.createSpy('unsubscribe') };
@@ -227,24 +274,34 @@ describe('BuilderService background preprocess ownership', () => {
       service.destroy();
     }));
 
-    it('a private background execution uses its own captured inputs and supervisor path', fakeAsync(() => {
-      const service = backgroundBuilder(), previousBridge = window['builder'];
-      const captured = { code: 'void setup() {}', projectMacros: [], generatedArtifacts: [],
-        sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' }, assertFresh: () => {} };
-      service.generateWorkspaceBuildSnapshotForPreprocess = async () => captured;
-      service.writeCompileRequest = jasmine.createSpy('request').and.resolveTo('/private/request.json');
-      const prepare = jasmine.createSpy('prepare').and.callFake(async config => ({ ...config, currentProjectPath: '/private/execution', execution: { operation: 'preprocess' } }));
-      const abandon = jasmine.createSpy('abandon').and.resolveTo(true);
-      window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: prepare, abandonPreparedPreprocess: abandon };
-      try {
-        service.init(); service.blocklyService.dependencySubject.next('changed'); tick(500);
-        expect(prepare).toHaveBeenCalledOnceWith(jasmine.objectContaining({ generatedArtifacts: [], projectMacros: [] }), captured.sourceWorkspace, 'preprocess');
-        expect(service.writeCompileRequest).toHaveBeenCalledOnceWith(jasmine.objectContaining({ currentProjectPath: '/private/execution' }));
-        expect(service.cmdService.spawn.calls.mostRecent().args[2].buildWorkspace).toBe('/private/execution');
-        service.backgroundOutput.complete(); tick(); service.destroy(); tick();
-        expect(abandon).not.toHaveBeenCalled();
-      } finally { window['builder'] = previousBridge; }
-    }));
+    for (const layout of ['private', 'shared'] as const) {
+      it(`a ${layout} background execution launches the prepared request with the expected shell profile`, fakeAsync(() => {
+        const service = backgroundBuilder(), previousBridge = window['builder'];
+        const projectPath = layout === 'shared' ? service.projectService.currentProjectPath : '/private/execution';
+        const requestPath = `${projectPath}/request.json`;
+        const captured = { code: 'void setup() {}', projectMacros: [], generatedArtifacts: [],
+          sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' }, assertFresh: () => {} };
+        service.generateWorkspaceBuildSnapshotForPreprocess = async () => captured;
+        service.writeCompileRequest = jasmine.createSpy('request').and.resolveTo(requestPath);
+        const prepare = jasmine.createSpy('prepare').and.callFake(async config => ({
+          ...config, currentProjectPath: projectPath, execution: { operation: 'preprocess', layout }
+        }));
+        const abandon = jasmine.createSpy('abandon').and.resolveTo(true);
+        window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: prepare, abandonPreparedPreprocess: abandon };
+        try {
+          service.init(); service.blocklyService.dependencySubject.next('changed'); tick(500);
+          expect(prepare).toHaveBeenCalledOnceWith(jasmine.objectContaining({ generatedArtifacts: [], projectMacros: [] }), captured.sourceWorkspace, 'preprocess');
+          expect(service.writeCompileRequest).toHaveBeenCalledOnceWith(jasmine.objectContaining({ currentProjectPath: projectPath }));
+          expect(service.cmdService.spawn).toHaveBeenCalledOnceWith(
+            'node', ['/child/scripts/preprocess.js', requestPath],
+            jasmine.objectContaining({ buildWorkspace: projectPath }), true
+          );
+          expect(service.cmdService.spawn.calls.mostRecent().args[2].shellProfile).toBe(layout === 'shared' ? false : undefined);
+          service.backgroundOutput.complete(); tick(); service.destroy(); tick();
+          expect(abandon).not.toHaveBeenCalled();
+        } finally { window['builder'] = previousBridge; }
+      }));
+    }
 
     for (const phase of ['stale capture', 'configuration write failure', 'closing before spawn']) {
       it(`relinquishes its exact private preparation on ${phase}`, fakeAsync(() => {
@@ -287,6 +344,34 @@ describe('BuilderService background preprocess ownership', () => {
       expect(service.appendCompileLog).not.toHaveBeenCalled();
       expect(service.preprocessProcess).toBeNull(); expect(service.preprocessStreamId).toBeNull();
       service.destroy();
+    }));
+
+    for (const ownershipReleased of [true, false]) it(`observes native preprocess close after an unconfirmed save stop (released=${ownershipReleased})`, fakeAsync(() => {
+      const service = backgroundBuilder(); service.init();
+      service.blocklyService.dependencySubject.next('changed'); tick(500);
+      const subscription = service.preprocessProcess;
+      const streamId = service.preprocessStreamId;
+      service.cmdService.kill.and.resolveTo(false);
+      let stopFailure: Error | undefined;
+      service.pauseBackgroundPreprocessForSave('D:/owned').catch((error: Error) => { stopFailure = error; });
+      tick();
+      expect(stopFailure?.message).toContain('未确认停止');
+      expect(service.isPreprocessing()).toBeTrue();
+      expect(subscription.closed).toBeFalse();
+
+      service.backgroundOutput.next({ type: 'stdout', data: '[ERROR] obsolete diagnostics' });
+      service.backgroundOutput.next({ type: 'close', code: 0, ownershipReleased });
+      service.backgroundOutput.complete();
+      let drained = false;
+      service.waitForPreprocessDrain('D:/owned', () => false, 'upload', 20).then(() => { drained = true; }, () => {});
+      tick(20);
+      expect(drained).toBe(ownershipReleased);
+      expect(service.preprocessError).toBeNull();
+      expect(service.preprocessProcess).toBeNull();
+      expect(service.preprocessStreamId).toBe(ownershipReleased ? null : streamId);
+      expect(service.cmdService.kill).toHaveBeenCalledTimes(1);
+      service.cmdService.kill.and.resolveTo(true);
+      service.destroy(); tick();
     }));
 
     it('installation invalidates background results without terminating their registered process', fakeAsync(() => {
@@ -531,7 +616,7 @@ describe('BuilderService background preprocess ownership', () => {
     ]]);
     const prepared = { code: 'void setup() {}\n', artifacts: null, revision: 1, blockCodeMapText: JSON.stringify([...generatedMap]) };
     service.blocklyService.isWorkspaceEditBlocked = () => false;
-    service.blocklyService.getProjectPersistenceRevision = () => 1;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 1 });
     service.blocklyService.getActivePageId = () => 'main';
     service.blocklyService.publishPreparedCodeView = jasmine.createSpy('publishPreparedCodeView');
     service.blocklyService.runWithBackgroundProjectCode = async operation => { await operation(prepared, () => undefined); return true; };
@@ -555,9 +640,9 @@ describe('BuilderService background preprocess ownership', () => {
     service.blocklyService.getActivePageId = () => 'other';
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
     service.blocklyService.getActivePageId = () => 'main';
-    service.blocklyService.getProjectPersistenceRevision = () => 2;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
-    service.blocklyService.getProjectPersistenceRevision = () => 1;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: 1 });
     service.projectService.currentProjectPath = 'D:/another-project';
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
     expect(service.blocklyService.publishPreparedCodeView).toHaveBeenCalledWith(prepared.code, prepared.blockCodeMapText);
@@ -693,7 +778,7 @@ describe('BuilderService non-interrupting code capture', () => {
     service.runBuilderPreprocessPhase = (_tag, task) => task();
     service.writeTextFileAtomic = jasmine.createSpy('write').and.resolveTo();
     let revision = 1;
-    service.blocklyService.getProjectPersistenceRevision = () => revision;
+    service.blocklyService.captureBuildSnapshot = () => ({ revision: revision });
     service.blocklyService.publishPreparedCodeView = jasmine.createSpy('preview');
     service.blocklyService.runWithBackgroundProjectCode.and.callFake(async operation => {
       await operation({ code: 'print("latest")', artifacts: null, revision }, () => undefined); return true;

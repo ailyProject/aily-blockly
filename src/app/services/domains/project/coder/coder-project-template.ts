@@ -98,7 +98,8 @@ interface CoderTemplatePathApi {
   isExists(path: string): boolean;
 }
 
-interface CoderTemplateFsApi {
+interface CoderTemplateFsApi extends CoderTemplateReadApi {
+  copyCoderTemplateDirectory(source: string, destination: string): void;
   copySync(source: string, destination: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean }): void;
   writeFileSync(path: string, content: string): void;
@@ -121,17 +122,22 @@ export function resolveCoderTemplatePath(
   return pathApi.isExists(legacyPath) ? legacyPath : canonicalPath;
 }
 
+interface CoderProjectCreationTemplate {
+  packagePath: string;
+  sourceDirectory?: string;
+}
+
 export function resolveCoderProjectCreationTemplate(
   boardPackagePath: string,
   pathApi: CoderTemplatePathApi,
-): { templatePath: string; useDefaultSource: boolean } {
+): CoderProjectCreationTemplate {
   const coderTemplatePath = resolveCoderTemplatePath(boardPackagePath, pathApi);
-  if (pathApi.isExists(coderTemplatePath)) {
-    return { templatePath: coderTemplatePath, useDefaultSource: false };
-  }
+  const coderPackagePath = pathApi.join(coderTemplatePath, 'package.json');
   return {
-    templatePath: pathApi.join(boardPackagePath, 'template'),
-    useDefaultSource: true,
+    packagePath: pathApi.isExists(coderPackagePath)
+      ? coderPackagePath
+      : pathApi.join(boardPackagePath, 'template', 'package.json'),
+    sourceDirectory: pathApi.isExists(coderTemplatePath) ? coderTemplatePath : undefined,
   };
 }
 
@@ -151,7 +157,7 @@ export function findReusableCoderBoardTemplate(
   board: { name: string; version: string },
   pathApi: CoderTemplatePathApi,
   fsApi: CoderTemplateReadApi,
-): ReturnType<typeof resolveCoderProjectCreationTemplate> | undefined {
+): CoderProjectCreationTemplate | undefined {
   const version = String(board.version || '').trim();
   if (!valid(version)) return undefined;
 
@@ -162,13 +168,8 @@ export function findReusableCoderBoardTemplate(
     if (!readTemplateManifest(pathApi.join(boardPackagePath, 'board.json'), fsApi)) return undefined;
 
     const template = resolveCoderProjectCreationTemplate(boardPackagePath, pathApi);
-    if (!fsApi.lstatSync(template.templatePath)._isDirectory) return undefined;
-    if (!readTemplateManifest(pathApi.join(template.templatePath, 'package.json'), fsApi)) return undefined;
-    if (!template.useDefaultSource) {
-      const sourcePath = pathApi.join(template.templatePath, 'project.aci');
-      if (!fsApi.lstatSync(sourcePath)._isFile) return undefined;
-      fsApi.readFileSync(sourcePath);
-    }
+    if (template.sourceDirectory && !fsApi.lstatSync(template.sourceDirectory)._isDirectory) return undefined;
+    if (!readTemplateManifest(template.packagePath, fsApi)) return undefined;
     return template;
   } catch {
     return undefined;
@@ -176,36 +177,59 @@ export function findReusableCoderBoardTemplate(
 }
 
 /**
- * `template_arduino/project.aci` is Arduino source text, not the Coder project
- * configuration. Copy it to the persistent Coder source workspace as main.cpp;
- * all project configuration remains in the copied package.json. When the board
- * package has no Coder template directory, the caller may use its Blockly
- * package.json as the configuration base and request the default Arduino source.
+ * Copy the dedicated template, then fill in any missing Arduino entry source.
+ * Older board packages may still supply the entry's contents in project.aci.
  */
 export function copyCoderArduinoTemplate(
-  templatePath: string,
+  template: CoderProjectCreationTemplate,
   projectPath: string,
   pathApi: CoderTemplatePathApi,
   fsApi: CoderTemplateFsApi,
-  options: { useDefaultSource?: boolean } = {},
-): void {
-  const templatePackagePath = pathApi.join(templatePath, 'package.json');
-  const templateSourcePath = pathApi.join(templatePath, 'project.aci');
-  if (!pathApi.isExists(templatePackagePath)) {
-    throw new Error(`Coder 板卡模板缺少 package.json: ${templatePackagePath}`);
+): string {
+  const manifest = pathApi.isExists(template.packagePath) && readTemplateManifest(template.packagePath, fsApi);
+  if (!manifest) {
+    throw new Error(`Coder 板卡模板缺少有效的 package.json: ${template.packagePath}`);
   }
-  if (!options.useDefaultSource && !pathApi.isExists(templateSourcePath)) {
-    throw new Error(`Coder 板卡模板缺少 project.aci: ${templateSourcePath}`);
+
+  const { entry: declaredEntry = CODER_SOURCE_ENTRY } = manifest;
+  const entry = typeof declaredEntry === 'string' ? declaredEntry.replace(/\\/g, '/') : '';
+  const entryParts = entry.split('/');
+  if (!/\.(ino|cpp)$/i.test(entry) || /[<>:"|?*\x00-\x1f]/.test(entry)
+    || entryParts.some(part => !part || part.trim() !== part || part.endsWith('.'))) {
+    throw new Error(`Coder 板卡模板的 entry 必须是工程源码目录内的 .ino 或 .cpp 相对路径: ${template.packagePath}`);
+  }
+
+  if (template.sourceDirectory) {
+    if (typeof fsApi.copyCoderTemplateDirectory !== 'function') {
+      throw new Error('Coder 板卡模板复制需要更新后的 Electron 宿主，请完整重启应用');
+    }
+    fsApi.copyCoderTemplateDirectory(template.sourceDirectory, projectPath);
   }
 
   const sketchRoot = pathApi.join(projectPath, 'sketch');
-  const sourcePath = pathApi.join(sketchRoot, 'src', 'main.cpp');
-  fsApi.mkdirSync(pathApi.join(sketchRoot, 'src'), { recursive: true });
+  const sourceRoot = manifest['arduinoSketch'] === true ? projectPath : sketchRoot;
+  const sourcePath = pathApi.join(sourceRoot, ...entryParts);
   fsApi.mkdirSync(pathApi.join(sketchRoot, 'libraries'), { recursive: true });
-  fsApi.copySync(templatePackagePath, pathApi.join(projectPath, 'package.json'));
-  if (options.useDefaultSource) {
-    fsApi.writeFileSync(sourcePath, DEFAULT_CODER_ARDUINO_SOURCE);
-  } else {
-    fsApi.copySync(templateSourcePath, sourcePath);
+  fsApi.writeFileSync(pathApi.join(projectPath, 'package.json'), JSON.stringify(manifest, null, 2));
+  if (pathApi.isExists(sourcePath)) {
+    if (!fsApi.lstatSync(sourcePath)._isFile) {
+      throw new Error(`Coder 板卡模板的编译入口必须是文件: ${entry}`);
+    }
+    return entry;
   }
+
+  const sourceDirectory = entryParts.slice(0, -1);
+  if (sourceDirectory.length) {
+    fsApi.mkdirSync(pathApi.join(sourceRoot, ...sourceDirectory), { recursive: true });
+  }
+  const legacySource = template.sourceDirectory && pathApi.join(template.sourceDirectory, 'project.aci');
+  if (legacySource && pathApi.isExists(legacySource)) {
+    if (!fsApi.lstatSync(legacySource)._isFile) {
+      throw new Error(`Coder 板卡模板的 project.aci 必须是文件: ${legacySource}`);
+    }
+    fsApi.copySync(legacySource, sourcePath);
+  } else {
+    fsApi.writeFileSync(sourcePath, DEFAULT_CODER_ARDUINO_SOURCE);
+  }
+  return entry;
 }

@@ -1,16 +1,40 @@
 const path = require('node:path');
+const fs = require('node:fs');
+const { rootAttachment } = require('./project-file-lock-owner');
 
-const parameterScopedProjects = new Set(['project_fork_status', 'project_recovery_open', 'project_save_status', 'project_publication_status']);
+const parameterScopedProjects = new Set([
+  'project_fork_status', 'project_recovery_open', 'project_save_status', 'project_publication_status',
+  'project_board_environment_settle', 'project_navigation_status', 'abs_admission_status',
+]);
 
 /** Recovery observation names its protected source in params.project. The
  * currently active canvas may already be the recovered target, so using it as
  * an implicit path would change the request rather than route it. Explicit
  * caller paths remain intact for the renderer's normal exact-project check. */
-function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve) {
-  const parameterScoped = parameterScopedProjects.has(operation);
+function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve, params) {
+  const stateObservation = operation === 'abs_recovery' && params?.action === 'observe_state';
+  const retireLock = operation === 'abs_recovery' && ['retire_empty_project_lock', 'retire_project_file_lock'].includes(params?.action);
+  const recoveryControl = retireLock || operation === 'abs_recovery' && params?.action === 'cancel_project';
+  const parameterScoped = stateObservation || recoveryControl || parameterScopedProjects.has(operation);
+  const explicitPath = (stateObservation || recoveryControl || operation === 'abs_admission_status')
+    && !path.isAbsolute(requestedPath || '') ? '' : requestedPath;
+  const project = explicitPath ? resolve(explicitPath) : parameterScoped ? '' : (currentProject || '');
+  const originalPublication = isOriginalPublicationRequest(operation, params);
+  const attachment = originalPublication || retireLock ? originalPublicationAttachment(project, currentProject) : undefined;
   return {
-    path: requestedPath ? resolve(requestedPath) : parameterScoped ? '' : (currentProject || ''),
+    path: project,
     parameterScoped,
+    ...(originalPublication ? { originalPublication: true } : {}),
+    ...(attachment ? { originalAdmissionAttachment: attachment } : {}),
+  };
+}
+
+function routeProjectReload(requestedPath, currentProject, scoped, resolve = path.resolve) {
+  const target = requestedPath ? resolve(requestedPath) : currentProject;
+  return {
+    path: target,
+    operation: scoped || (currentProject && resolve(currentProject) === target) ? 'project_reload' : 'project_open',
+    canFallbackToOpen: !scoped,
   };
 }
 
@@ -27,4 +51,21 @@ function projectLifecycleRequestRejection(snapshot, rendererGeneration) {
     message: 'The project lifecycle context changed before dispatch; observe this host again.' };
 }
 
-module.exports = { routeLiveOperationProject, projectLifecycleRequestRejection };
+/** The renderer may settle a refusal after navigation, but only on the
+ * physical project the main process verified while routing the command. */
+function originalPublicationAttachment(requested, active) {
+  if (!requested || !active) return undefined;
+  try {
+    const original = fs.realpathSync.native(requested), current = fs.realpathSync.native(active);
+    const compare = value => process.platform === 'win32' ? value.toLowerCase() : value;
+    if (compare(original) === compare(current)) return rootAttachment(original);
+  } catch { /* No original attachment is proven. */ }
+}
+
+function isOriginalPublicationRequest(operation, params) {
+  return operation === 'abs_apply' && params?.version === 2
+    || operation === 'blocks_set_state' && params?.version === 2 && params.action === 'update'
+    || ['project_save', 'blocks_tidy'].includes(operation) && params?.saveRequest?.version === 2;
+}
+
+module.exports = { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection };

@@ -2,7 +2,7 @@ import { AbsPrecheckFailure } from './abs-precheck';
 import { AbsComposeFailure } from './abs-compose';
 import { Injectable } from '@angular/core';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
-import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
+import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation, readMergedAuthorSources } from './abs-generation-protocol';
 import { AbsSyncError } from './abs-state';
 import { absJson } from './abs-identity-map';
 import { serializeAbsFailure } from './abs-diagnostics';
@@ -20,6 +20,17 @@ export class AbsGenerationToolsService {
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
   captureMediaImportTarget(target: MediaImportTarget) { return this.sync.captureMediaImportTarget(target); }
   observeApplication(requestId: string) { return this.sync.observeApplication(requestId); }
+  async workspaceMigration(operation: 'prepare' | 'select', input: Record<string, any>) {
+    try {
+      if (operation === 'prepare') {
+        if (input['version'] !== 1 || input['action'] !== 'prepare_workspace_migration'
+          || Object.keys(input).some(key => !['version', 'action'].includes(key)))
+          throw new AbsSyncError('ABS_REQUEST_INVALID', 'Migration preparation requires version 1 and its runtime action.');
+        return await this.sync.prepareWorkspaceModeMigration();
+      }
+      return await this.sync.migrateWorkspaceMode(input);
+    } catch (error) { return { ok: false, operation: operation === 'prepare' ? 'abs_protocol' : 'abs_workspace_migrate', ...serializeAbsFailure(error) }; }
+  }
 
   async candidateBackup(project: string, input: Record<string, any>, assertCurrent: () => void) {
     try {
@@ -39,8 +50,8 @@ export class AbsGenerationToolsService {
     this.sync.assertNativeRecoveryRequest(input['token'], input['requestId']);
   }
 
-  async blockState(input: Record<string, unknown>) {
-    try { return { ...await this.sync.setBlockState(input), operation: 'blocks_set_state' }; }
+  async blockState(input: Record<string, unknown>, markWriter?: () => void) {
+    try { return { ...await (markWriter ? this.sync.setBlockState(input, markWriter) : this.sync.setBlockState(input)), operation: 'blocks_set_state' }; }
     catch (error) {
       return { ok: false, operation: 'blocks_set_state', ...serializeAbsFailure(error),
         ...(error instanceof AbsApplicationFailure ? { publication: { status: 'NOT_COMMITTED' },
@@ -49,6 +60,22 @@ export class AbsGenerationToolsService {
         ...((error as any)?.application ? { application: (error as any).application } : {}),
         ...((error as any)?.projectSaved !== undefined ? { projectSaved: (error as any).projectSaved,
           generatedCodePublished: (error as any).generatedCodePublished === true, partial: (error as any).partial === true } : {}) };
+    }
+  }
+
+  async observeBlockState(path: string | undefined, input: Record<string, unknown>, viewRevision?: () => number) {
+    const operation = 'abs_recovery';
+    try {
+      assertGenerationRequest(input);
+      const pid = input['originalTargetPid'];
+      if (input['action'] !== 'observe_state' || typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid < 1
+        || Object.keys(input).some(key => !['version', 'requestId', 'action', 'state', 'originalTargetPid'].includes(key))) {
+        throw new AbsSyncError('ABS_REQUEST_INVALID', 'State observation requires the exact original request and executor.');
+      }
+      return { receipt: { version: 2, requestId: input['requestId'], action: 'observe_state' },
+        ...await this.sync.observeBlockState(input['state'], pid, path, viewRevision) };
+    } catch (error) {
+      return { ok: false, operation, project: path, candidateApplied: false, ...serializeAbsFailure(error) };
     }
   }
 
@@ -62,7 +89,8 @@ export class AbsGenerationToolsService {
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,
     activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string,
-    archiveContext?: { project: string; assertCurrent: () => void; prepareRuntime?: () => Promise<void> }) {
+    execution?: { archive?: { assertCurrent: () => void; prepareRuntime?: () => Promise<void> }; markApplyWriter?: () => void }) {
+    if (operation === 'abs_recovery' && input['action'] === 'observe_state') return this.observeBlockState(requestedProject, input);
     const rejected = rejectAbsLiveRequest(operation, input);
     if (rejected) return rejected;
     let applyStarted = false;
@@ -72,9 +100,10 @@ export class AbsGenerationToolsService {
       assertGenerationRequest(params);
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
-        if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false,
-          capture: await this.sync.captureWorkingCandidate() };
-        if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false,
+        const historySourceEncoding = 'abs-tail-v1';
+        if (params['action'] === 'candidate_capture') return { ...reply, ok: true, candidateApplied: false, historySourceEncoding,
+          capture: await this.sync.captureWorkingCandidate(readMergedAuthorSources(params['mergedAuthorSources']), params['view'] === 'canvas') };
+        if (params['action'] === 'candidate_legacy_capture') return { ...reply, ok: true, candidateApplied: false, historySourceEncoding,
           capture: await this.sync.captureLegacyCandidate(params['legacy']) };
         if (params['originalTargetPid'] !== undefined
           && (!Number.isSafeInteger(params['originalTargetPid']) || params['originalTargetPid'] < 1)) {
@@ -82,9 +111,17 @@ export class AbsGenerationToolsService {
         }
         if (params['action'] === 'history_inspect') return { ...reply, ...await this.sync.inspectHistoryProgram() };
         if (params['action'] === 'restore_program_map') return { ...reply, ...await this.sync.restoreProgramMap(params['observation']) };
+        if (params['action'] === 'reconcile_program') {
+          const result = await this.sync.reconcileProgramDrift(params['observation']);
+          return { ...reply, ...result, project: result.evidence?.binding.scope.projectKey ?? requestedProject,
+            ok: result.publication.status === 'COMMITTED' && result.requiresReload === false && !!result.evidence,
+            authority: 'workspace', candidateApplied: false,
+            receipt: { ...reply.receipt, authority: 'workspace', output: result.evidence,
+              recoveryArchive: result.recoveryArchive, candidateApplied: false } };
+        }
         if (params['action'] === 'history_publish') return { ...reply, ...await this.sync.publishHistoryProgram(params) };
-        if (params['action'] === 'history_observe') return { ...reply, ...await this.sync.observeHistoryProgram(params, params['originalTargetPid']) };
-        if (params['action'] === 'observe_state') return { ...reply, ...await this.sync.observeBlockState(params['state'], params['originalTargetPid']) };
+        if (params['action'] === 'history_observe') return { ...reply,
+          ...await this.sync.observeHistoryProgram(params, params['originalTargetPid'], requestedProject) };
         if (params['action'] === 'history_begin') return { ...reply, ok: true, ...await this.sync.beginHistoryNavigation() };
         if (['history_seal', 'history_release'].includes(params['action']) && typeof params['token'] === 'string') {
           if (params['action'] === 'history_seal') await this.sync.sealHistoryNavigation(params['token']);
@@ -165,9 +202,9 @@ export class AbsGenerationToolsService {
       if (operation === 'abs_validate') {
         assertGenerationCandidate(params);
         if (params['workingCandidate']) params = await this.sync.bindWorkingCandidate(source, params as any);
-        if (archiveContext) {
-          await archiveContext.prepareRuntime?.();
-          archiveContext.assertCurrent();
+        if (execution?.archive) {
+          await execution.archive.prepareRuntime?.();
+          execution.archive.assertCurrent();
         }
         const { syntaxAdvice, ...prepared } = await this.sync.validateGeneration(source, params as any);
         return { ok: true, operation, project: prepared.base.scope.projectKey, syntaxAdvice,
@@ -175,8 +212,8 @@ export class AbsGenerationToolsService {
       }
       if (operation !== 'abs_apply') throw new AbsSyncError('ABS_REQUEST_INVALID', 'Unknown ABS generation operation.');
       const validation = readGenerationApplyValidation(params);
-      applyStarted = true;
-      const result = await this.sync.applyGeneration(source, validation.base.generation, { chunk: params['chunk'] === true, onProgress }, validation);
+      const result = await this.sync.applyGeneration(source, validation.base.generation, { chunk: params['chunk'] === true, onProgress }, validation,
+        () => { execution?.markApplyWriter?.(); applyStarted = true; });
       const ok = result.publication.status === 'COMMITTED' && !result.requiresReload && result.appliedRevision !== undefined && !!result.evidence;
       return { ...result, ok, operation, project: validation.base.scope.projectKey,
         ...(ok ? { receipt: { ...validation, output: result.evidence,

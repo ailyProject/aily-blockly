@@ -49,6 +49,10 @@ npm run build
 
 所有打包入口共用 `afterPack` hook，按目标平台和架构从同一缓存准备资源到产物的 `resources/child`。下载或校验失败会终止打包，安装包继续内置工具。`npm run build:coder` 额外下载编辑器的 `.tgz` 和 `.json` 配对文件；Coder 开发与打包共用这套编辑器资源。
 
+Windows x64 打包还会在 `beforePack` 自动编译原生进程运行时。Windows 构建机需安装 Visual Studio Build Tools 的“使用 C++ 的桌面开发”组件；GitHub Windows runner 使用已有 MSVC。首次构建由锁定的 `node-gyp` 准备并校验 Node-API 头文件，也可用 `NODE_INCLUDE_DIR` 指定已有头文件。手动准备命令为 `npm run prepare:windows-process`。
+
+新产物生成到 `.aily/windows-process-runtime/x64`，打包只采用这些新文件，不覆盖或复用仓库里的开发预编译文件。`afterPack` 检查源码/构建配方指纹、SHA-256、PE 架构和 ASAR 解包标记；在 Windows 构建机还会使用打包后的 Electron 加载原生模块、启动并回收真实任务树。任一环节失败都会中止打包。macOS 打包跳过该编译，也不携带这些 Windows 原生文件。
+
 当前 macOS 仅支持 ARM64；打包可使用 `npm run build -- --mac --arm64`。现有 `build:mac`（同时包含 x64）及 `build:mac:universal` 在缺少对应资源时会失败。
 
 

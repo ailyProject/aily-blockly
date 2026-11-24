@@ -9,7 +9,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
-import { ProjectService } from '@domain/project/public-api';
+import { BoardAuthPromptService, ProjectService } from '@domain/project/public-api';
 import { BuilderService } from '../code-editor/services/builder.service';
 import { BuilderService as TopBuilderService } from '@domain/build/public-api';
 import { UploaderService } from '@domain/device/public-api';
@@ -185,6 +185,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (changes['active'] && this.active) {
       this.aiCoderDiffBridge.setWorkspaceRoot(this.projectPath);
       this.aiCoderDiffBridge.registerEmbed(this.coderEmbedFrame?.nativeElement?.contentWindow ?? null);
+      if (this.coderEmbedWorkspaceRoot) void this.promptLoginForAuthRequiredBoard(this.coderEmbedWorkspaceRoot);
       requestAnimationFrame(() => this.requestCoderEmbedLayoutRefresh());
     }
   }
@@ -287,6 +288,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private buildOutputsWatchDebounce?: ReturnType<typeof setTimeout>;
   /** 只允许最近一次异步 host-context 解析结果写入 iframe，避免空旧快照覆盖完整目录。 */
   private coderHostContextGeneration = 0;
+  private boardAuthPromptGeneration?: number;
   private coderInitialContextFrame: Window | null = null;
   private coderInitialContextRoot = '';
 
@@ -314,6 +316,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     private readonly elementRef: ElementRef<HTMLElement>,
     private readonly codeSuggestionHostBridge: CodeSuggestionHostBridgeService,
     private readonly coderRuntime: CoderProjectRuntimeService,
+    private readonly boardAuthPrompt: BoardAuthPromptService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -496,7 +499,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   /**
-   * 先 loadProject 设置 currentProjectPath，再安装依赖；最后启动 iframe（避免 installBoardDeps 读错工程路径）。
+   * 恢复已保存的工程后启动编辑器，后续依赖准备与 iframe 启动并行。
    */
   private async bootstrap(projectPath: string, historyRestored = false) {
     const generation = ++this.coderBootstrapGeneration;
@@ -527,11 +530,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         void runtimePreparation?.catch(() => {}); // initCoderEmbed owns error presentation.
         // Reopening (including a renderer refresh / Chat history restore) uses
         // the saved manifest. Reify also repairs an unsaved uninstall on restart.
-        await this.projectService.discardLibraryChanges(resolved, true, historyRestored);
+        const installError = await this.projectService.discardLibraryChanges(resolved, true, historyRestored, true);
         if (!isCurrent()) return;
         await this.loadProject(resolved, session);
         if (!isCurrent()) return;
-        const dependencies = this.ensureNpmDepsWithRetry(resolved, session);
+        const dependencies = installError === undefined ? this.ensureNpmDepsWithRetry(resolved, session) : undefined;
+        if (installError !== undefined) this.showCoderDependencyInstallFailure(resolved, session, installError);
         try {
           await this.initCoderEmbed(resolved, false, session, runtimePreparation);
           if (!isCurrent()) return;
@@ -697,11 +701,72 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.projectService.stateSubject.next('loaded');
     // 依赖已存在时尽早同步，供 Header 串口/开发板菜单使用
     await this.syncBoardConfigForHeader(session);
+    void this.promptLoginForAuthRequiredBoard(projectPath, session);
   }
 
   /** 与 Blockly loadProject 一致：写入 ProjectService.currentBoardConfig */
   private async syncBoardConfigForHeader(session = this.dependencySession): Promise<void> {
     await this.projectService.syncCurrentBoardConfig(session);
+  }
+
+  private async promptLoginForAuthRequiredBoard(projectPath: string, session = this.dependencySession): Promise<void> {
+    const generation = this.coderBootstrapGeneration;
+    const isCurrent = () => this.active && this.coderBootstrapGeneration === generation
+      && this.boardAuthPromptGeneration !== generation && this.isCurrentCoderWorkspace(projectPath, session);
+    if (!isCurrent()) return;
+
+    try {
+      const boardModule = await this.projectService.getBoardModule();
+      if (!boardModule || !isCurrent()) return;
+      const boardPackage = await this.projectService.getBoardPackageJson(boardModule);
+      if (!isCurrent()) return;
+      await this.boardAuthPrompt.promptIfRequired(boardPackage, () => {
+        if (!isCurrent()) return false;
+        this.boardAuthPromptGeneration = generation;
+        return true;
+      });
+    } catch (error) {
+      if (isCurrent()) console.warn('[CodeEditorPro] Failed to check board authentication requirement:', error);
+    }
+  }
+
+  private showCoderDependencyInstallFailure(projectPath: string, session: ProjectDependencySession, detail: string): void {
+    this.projectService.setProjectDependencyResult(session, false);
+    this.coderRuntime.getSession(projectPath).notice.update({
+      title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+      text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+      detail, state: 'error', sendToLog: true,
+      onRetry: () => {
+        if (!this.isCurrentCoderWorkspace(projectPath, session)
+          || this.projectService.isProjectDependencyPreparationInProgress(projectPath)) return;
+        void this.retryCoderDependencyInstall(projectPath, session);
+      },
+    });
+  }
+
+  private async retryCoderDependencyInstall(projectPath: string, session: ProjectDependencySession): Promise<void> {
+    try {
+      await this.projectService.runProjectDependencyTask(session, async () => {
+        const notice = this.coderRuntime.getSession(projectPath).notice;
+        notice.update({
+          title: this.translate.instant('NPM.INSTALLING_TITLE'),
+          text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+          state: 'doing', showProgress: false,
+        });
+        const installError = await this.projectService.discardLibraryChanges(projectPath, true, false, true);
+        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+        if (installError !== undefined) {
+          this.showCoderDependencyInstallFailure(projectPath, session, installError);
+          return;
+        }
+        notice.clear();
+        await this.ensureNpmDepsWithRetry(projectPath, session);
+      });
+    } catch (error) {
+      if (this.isCurrentCoderWorkspace(projectPath, session)) {
+        this.showCoderDependencyInstallFailure(projectPath, session, error instanceof Error ? error.message : String(error));
+      }
+    }
   }
 
   /**
@@ -712,6 +777,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       await this.syncBoardConfigForHeader(session);
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+      void this.promptLoginForAuthRequiredBoard(projectPath, session);
       await this.writeCoderEmbedHints(projectPath, session);
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       await this.pushAilyCoderHostContext(projectPath, session);
@@ -723,6 +789,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         await this.npmService.ensureProjectAndBoardDeps(projectPath, {
           onRetryInstall: () => void run(),
           onBoardDepsSettled: refreshEmbedAfterDeps,
+          onRetryLocally: () => {
+            if (this.isCurrentCoderWorkspace(projectPath, session)) return this.topBuilderService.buildCoderLocally(projectPath);
+          },
         }, session);
       } catch (error) {
         if (this.isCurrentCoderWorkspace(projectPath, session)) console.error('install board dependencies error', error);
@@ -2396,6 +2465,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         }
         case 'nativeFsWriteBinary': {
           const abs = this.assertPathInsideCoderEmbedRoot(String(payload['path']));
+          const expectedManifest = payload['expectedManifestBase64'];
+          if (typeof expectedManifest === 'string' && fsAny['readFileAsBase64'](abs) !== expectedManifest) {
+            throw new Error('package.json 的磁盘内容已变化，请先保存或放弃相关更改，再更新编译入口。');
+          }
           fsAny['writeBase64File'](abs, String(payload['base64'] ?? ''));
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
           break;

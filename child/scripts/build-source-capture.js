@@ -12,6 +12,8 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const location = filename => hash(process.platform === 'win32' ? filename.toLowerCase() : filename);
 const state = stat => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+const generatedLimit = 128 * 1024 * 1024;
+const isGeneratedBuildHeader = name => HEADER.test(name);
 
 function sourceManifest(bytes) {
     const manifest = JSON.parse(bytes.toString('utf8'));
@@ -43,6 +45,71 @@ function workspaceRecord(value) {
         runtimeRevision: value.runtimeRevision, pageId: value.pageId };
 }
 
+function generatedArtifacts(value, caseInsensitive) {
+    if (value === undefined) return undefined;
+    const artifacts = value ?? [];
+    if (!Array.isArray(artifacts) || artifacts.length > 256) fail('Invalid captured generated artifacts.');
+    const seen = new Set();
+    let size = 0;
+    return artifacts.map(artifact => {
+        const { fileName, content } = artifact ?? {};
+        if (typeof fileName !== 'string' || !HEADER.test(fileName) || typeof content !== 'string') fail('Invalid captured generated artifact.');
+        const key = caseInsensitive ? fileName.toLowerCase() : fileName;
+        if (seen.has(key) || (size += Buffer.byteLength(content)) > generatedLimit) fail('Generated artifact exceeds its capture boundary.');
+        seen.add(key);
+        return { fileName, content };
+    }).sort((a, b) => a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0);
+}
+
+/** A shared build stages captured declarations only in its temporary sketch. */
+function sharedGeneratedArtifacts(config) {
+    return config.execution?.layout === 'shared'
+        ? generatedArtifacts(config.generatedArtifacts, process.platform === 'win32') : undefined;
+}
+
+function isolatedCloudGeneratorInputs(config) {
+    const artifacts = generatedArtifacts(config.generatedArtifacts ?? undefined, true);
+    const effects = config.projectMacros;
+    if (effects === undefined) return { artifacts };
+    if (!Array.isArray(effects) || effects.length > 512) fail('Invalid captured generator macros.');
+    const seen = new Set();
+    const projectMacros = effects.map(effect => {
+        const { name, value } = effect ?? {};
+        if (typeof name !== 'string' || !/^[A-Za-z_]\w{0,127}$/u.test(name) || seen.has(name)
+            || (value !== null && (typeof value !== 'string' || value.length > 4096 || /[\r\n\0]/u.test(value)
+                || (value !== name && !value.startsWith(`${name}=`))))) fail('Invalid captured generator macro.');
+        seen.add(name);
+        return { name, value };
+    });
+    return { artifacts, projectMacros };
+}
+
+function mergeGeneratorInputs(pkg, config) {
+    if (config.projectMacros !== undefined) {
+        const macros = new Map();
+        for (const item of pkg.MACROS || []) { const value = String(Array.isArray(item) ? item[0] : item).trim(); if (value) macros.set(value.split('=')[0], value); }
+        for (const [name, value] of Object.entries(pkg.ailyGeneratorMacros || {})) if (macros.get(name) === value) macros.delete(name);
+        const owned = Object.create(null);
+        for (const { name, value } of [...config.projectMacros].sort((a, b) => a.name.localeCompare(b.name))) {
+            macros.delete(name); if (value !== null) { macros.set(name, value); owned[name] = value; }
+        }
+        pkg.MACROS = [...macros.values()].map(value => [value]); pkg.ailyGeneratorMacros = owned;
+    }
+}
+
+function confirmSharedGeneratedArtifacts(config, root) {
+    const artifacts = sharedGeneratedArtifacts(config);
+    if (!artifacts) return;
+    const names = fs.readdirSync(root).filter(name => HEADER.test(name)).sort();
+    if (names.length !== artifacts.length || artifacts.some(({ fileName }, index) => fileName !== names[index])) {
+        fail('Materialized generated declaration names changed.');
+    }
+    for (const { fileName, content } of artifacts) {
+        const expected = Buffer.from(content);
+        if (!read(root, fileName, expected.length).equals(expected)) fail('Materialized generated declaration bytes changed.');
+    }
+}
+
 /** A bounded capture of request/configuration/generated files, not a complete
  * source tree or authenticated memory revision. No writes, locks or IPC here.
  */
@@ -56,6 +123,8 @@ function record(config, workspace) {
     const mode = project.isAilyCodeProjectRoot(root) ? 'coder' : 'blockly';
     const board = fs.realpathSync(path.join(root, 'node_modules', config.boardModule));
     const headers = [];
+    const cloud = mode === 'blockly' && config.isolatedCloudBuild === true ? isolatedCloudGeneratorInputs(config) : undefined;
+    const artifacts = cloud ? cloud.artifacts : sharedGeneratedArtifacts(config);
     let generatedBytes = 0;
     if (mode === 'coder') {
         if (workspace) fail('Coder cannot claim a Blockly workspace revision.');
@@ -63,11 +132,15 @@ function record(config, workspace) {
         if (entry.startsWith('../') || path.isAbsolute(entry) || read(root, entry, 128 * 1024 * 1024).toString('utf8') !== config.code) {
             fail('Coder entry differs from the captured request; save and build again.');
         }
+    } else if (artifacts) {
+        for (const { fileName, content } of artifacts) {
+            headers.push({ name: fileName, sizeBytes: Buffer.byteLength(content), sha256: hash(content) });
+        }
     } else if (fs.existsSync(path.join(root, 'src'))) {
         if (fs.lstatSync(path.join(root, 'src')).isSymbolicLink()) fail('Generated source directory is linked.');
         for (const name of fs.readdirSync(path.join(root, 'src')).filter(name => HEADER.test(name)).sort()) {
             if (headers.length >= 256) fail('Generated header count exceeds budget.');
-            const bytes = read(root, `src/${name}`, 128 * 1024 * 1024 - generatedBytes);
+            const bytes = read(root, `src/${name}`, generatedLimit - generatedBytes);
             generatedBytes += bytes.length;
             headers.push({ name, sizeBytes: bytes.length, sha256: hash(bytes) });
         }
@@ -77,6 +150,7 @@ function record(config, workspace) {
         boardModule: config.boardModule, boardLocationSha256: location(board),
         boardJsonSha256: hash(read(board, 'board.json')), boardPackageSha256: hash(read(board, 'package.json')),
         generatedHeadersSha256: hash(JSON.stringify(headers)), generatedHeaderCount: headers.length,
+        ...(cloud ? { isolatedCloudBuild: true, ...(cloud.projectMacros ? { generatorMacrosSha256: hash(JSON.stringify(cloud.projectMacros)) } : {}) } : {}),
         ...(workspace ? { workspace } : {}) };
     return { ...body, digest: hash(JSON.stringify(body)) };
 }
@@ -106,4 +180,5 @@ function confirmBuildSource(config) {
     return current;
 }
 
-module.exports = { captureBuildSource, confirmBuildSource, sourceManifest };
+module.exports = { captureBuildSource, confirmBuildSource, sourceManifest, isGeneratedBuildHeader,
+    sharedGeneratedArtifacts, confirmSharedGeneratedArtifacts, isolatedCloudGeneratorInputs, mergeGeneratorInputs };

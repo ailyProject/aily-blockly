@@ -56,6 +56,16 @@ export function isBuildWorkspaceRecoveryRequiredError(error: unknown): boolean {
   return hasBuildWorkspaceErrorCode(error, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
 }
 
+/** Background preview can continue when the host confirms this workspace can build in isolation. */
+export async function canDeferGeneratedArtifactRecovery(projectPath: string, error: unknown): Promise<boolean> {
+  if (!isBuildWorkspaceRecoveryRequiredError(error)) return false;
+  try {
+    return await window['builder']?.requiresIsolatedBuildRecovery?.(projectPath) === true;
+  } catch {
+    return false;
+  }
+}
+
 function hasBuildWorkspaceErrorCode(error: unknown, expected: string): boolean {
   const code = error && typeof error === 'object' && 'code' in error
     ? String((error as { code?: unknown }).code ?? '')

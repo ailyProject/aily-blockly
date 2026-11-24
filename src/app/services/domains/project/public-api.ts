@@ -1,5 +1,6 @@
 export * from './coder/coder-board-resolution';
-export { coderSourceDirectory } from './coder/arduino-sketch';
+export { BoardAuthPromptService } from './board-auth-prompt.service';
+export { coderSourceDirectory, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 export * from './coder/coder-project-create-operation';
 export * from './coder/coder-project-template';
 export * from './project-data/blockly-project-data-adapter';

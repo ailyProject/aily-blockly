@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/integrations/coder/coder-board-selection.spec.ts",
+    "../src/app/integrations/coder/coder-project-runtime.service.spec.ts",
+    "../src/app/main-window/components/header/header-compile.spec.ts",
+    "../src/app/services/domains/device/uploader-dependency-readiness.spec.ts",
+    "../src/app/services/domains/build/coder-build-info.service.spec.ts",
+    "../src/app/services/domains/project/coder/coder-project-template.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

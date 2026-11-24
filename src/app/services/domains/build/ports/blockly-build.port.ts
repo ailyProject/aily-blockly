@@ -1,16 +1,22 @@
 import { InjectionToken } from '@angular/core';
 import type { BuildCheckpoint } from '../build-result-snapshot';
 import type { ProjectBuildLogReference } from '../project-build-log';
+import type { BuildSnapshot } from '../build-snapshot';
+import type { BuildLocalFallbackControl } from '../../../../utils/cloud-build-progress.utils';
 
 export interface BlocklyBuildInput {
   projectPath: string;
   graphSemanticRevision?: string;
   requestId?: string;
+  preprocessOnly?: boolean;
+  clearCache?: boolean;
+  localFallback?: BuildLocalFallbackControl;
 }
 
 export interface BlocklyBuildOutcome {
   success: boolean;
-  result: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference };
+  result: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference;
+    buildSource?: Record<string, unknown>; buildSnapshot?: BuildSnapshot };
   checkpoint: BuildCheckpoint;
 }
 

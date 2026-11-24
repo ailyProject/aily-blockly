@@ -9,7 +9,7 @@ describe('Uploader command lifecycle during project close', () => {
   let output: Subject<any>;
 
   beforeEach(() => {
-    original = { path: window['path'], fs: window['fs'] };
+    original = { path: window['path'], fs: window['fs'], builder: window['builder'], cloudBuild: window['cloudBuild'] };
     window['path'] = {
       join: (...parts: string[]) => parts.join('/'),
       basename: (path: string) => path.split('/').pop(),
@@ -29,6 +29,7 @@ describe('Uploader command lifecycle during project close', () => {
       beginBuildBackendOperation: () => ({ local: false, release() {} }),
       isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', isProjectTransitionInProgress: () => false,
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'upload-opening' }),
       isAilyCodeProject: () => false, getBuildPath: async () => '/project/build',
       getBoardJson: async () => ({ name: 'board', uploadParam: 'flash' }),
       getBoardModule: async () => 'board', isCdcOnBootEnabledForProject: async () => false,
@@ -37,6 +38,7 @@ describe('Uploader command lifecycle during project close', () => {
     service.translate = { instant: (key: string) => key };
     service.serialService = { currentPort: 'COM1', currentPortInfo: { type: 'serial' } };
     service._builderService = { passed: true, lastCode: 'code', currentProjectPath: '/project',
+      getCurrentBuildPath: () => service.projectService.getBuildPath(),
       isPreprocessing: () => false, waitForUploadPreprocess: async () => {}, canReuseBuildForUpload: async () => true };
     service.blocklyService = { runWithPreparedProjectCode: async () => 'code' };
     service.workflowService = { startUpload: () => true, finishUpload: jasmine.createSpy('finishUpload') };
@@ -305,11 +307,72 @@ describe('Uploader command lifecycle during project close', () => {
     expect(service.workflowService.finishUpload).toHaveBeenCalledWith(false, jasmine.any(String));
   }));
 
+  for (const editor of ['Blockly', 'Coder']) {
+    for (const [lastBuild, selected, valid] of [
+      ['local', 'cloud', true],
+      ['cloud', 'local', true],
+      ['local', 'cloud', false],
+    ] as const) {
+      it(`${editor} uploads after a separate ${lastBuild} build (preference=${selected}, reusable=${valid})`, fakeAsync(() => {
+        const operation = {
+          local: false,
+          useLocal() { this.local = true; },
+          useCloud() { this.local = false; },
+          release() { this.local = false; },
+        };
+        Object.assign(service.projectService, {
+          beginBuildBackendOperation: () => operation,
+          isCloudBuild: () => selected === 'cloud' && !operation.local,
+          isAilyCodeProject: () => editor === 'Coder',
+          assertProjectDependencySession() {},
+        });
+        window['builder'] = { canReuseBlocklyUpload: async () => true, canReuseCoderUpload: async () => true };
+        service.prepareCloudUploader = jasmine.createSpy('prepareCloudUploader').and.resolveTo('legacy');
+        service.uploadCloudResult = jasmine.createSpy('uploadCloudResult').and.resolveTo({ state: 'done' });
+
+        let origin: 'local' | 'cloud' = lastBuild;
+        window['cloudBuild'] = {
+          hasArtifact: async () => origin === 'cloud',
+          artifactPath: async () => '/verified-cloud-artifact',
+        };
+        let rebuilt = false;
+        const builder = editor === 'Blockly' ? service._builderService : (service.hostBuilderService = {});
+        const checked: string[] = [];
+        builder.canReuseBuildForUpload = async (_a, _b, backend = service.projectService.isCloudBuild() ? 'cloud' : 'local') => {
+          checked.push(backend);
+          return backend === origin && (valid || rebuilt);
+        };
+        builder.build = jasmine.createSpy('build').and.callFake(async () => {
+          expect(service.projectService.isCloudBuild()).toBe(selected === 'cloud');
+          rebuilt = true;
+          origin = selected;
+          return { state: 'done' };
+        });
+        const writeConfig = spyOn(window['fs'], 'writeFileSync');
+
+        const { outcome } = startProgressUpload();
+        output.complete();
+        flushMicrotasks();
+
+        expect(outcome.result?.state).toBe('done');
+        expect(checked[0]).toBe(lastBuild);
+        expect(builder.build).toHaveBeenCalledTimes(valid ? 0 : 1);
+        const useLocalFirmware = (valid ? lastBuild : selected) === 'local';
+        expect(service.cmdService.spawn).toHaveBeenCalledTimes(useLocalFirmware ? 1 : 0);
+        expect(service.uploadCloudResult).toHaveBeenCalledTimes(useLocalFirmware ? 0 : 1);
+        if (useLocalFirmware) {
+          expect(JSON.parse(writeConfig.calls.mostRecent().args[1] as string).buildPath).toBe('/project/build');
+        }
+        expect(service.projectService.isCloudBuild()).toBe(selected === 'cloud');
+      }));
+    }
+  }
+
   it('stops the local upload process after its cloud prerequisite was switched to local', fakeAsync(() => {
     const operation = { local: false, release: jasmine.createSpy('release') };
     Object.assign(service.projectService, {
       beginBuildBackendOperation: () => operation, isCloudBuild: () => !operation.local,
-      getProjectDependencySession: () => ({}), assertProjectDependencySession() {},
+      assertProjectDependencySession() {},
     });
     service._builderService.canReuseBuildForUpload = async () => operation.local;
     service._builderService.build = async () => { operation.local = true; return { state: 'done' }; };
@@ -338,11 +401,12 @@ describe('Uploader command lifecycle during project close', () => {
       let result: any;
       start().then(value => { result = value; });
       flushMicrotasks();
+      const scope = { projectPath: '/project', projectSessionId: 'upload-opening' };
       if (mode === 'serial') {
         expect(service.cmdService.spawn).toHaveBeenCalledOnceWith('node', jasmine.any(Array),
-          { shellProfile: false, cwd: '/project' }, false);
+          { shellProfile: false, cwd: '/project', ...scope }, false);
       } else {
-        expect(service.cmdService.run).toHaveBeenCalledOnceWith(jasmine.any(String), '/project', false, false);
+        expect(service.cmdService.run).toHaveBeenCalledOnceWith(jasmine.any(String), '/project', false, false, scope);
       }
       output.complete();
       flushMicrotasks();

@@ -291,9 +291,15 @@ function getDownloadMirrorSources(updateInfo) {
   }
 
   const regions = config.regions || {};
-  const regionOrder = Array.isArray(strategy.mirror_region_order) && strategy.mirror_region_order.length > 0
-    ? strategy.mirror_region_order
-    : ['eu', 'cn'];
+  const currentRegion = process.env.AILY_REGION || config.region;
+  const defaultRegionOrder = currentRegion === 'cn' ? ['cn', 'eu'] : ['eu', 'cn'];
+  const configuredOrder = currentRegion === 'cn' || currentRegion === 'eu'
+    ? config.download_region_order?.[currentRegion]
+    : null;
+  const regionOrder = Array.isArray(configuredOrder) && configuredOrder.length > 0
+    && configuredOrder.every((key) => typeof key === 'string' && key.trim())
+    ? configuredOrder.map((key) => key.trim())
+    : defaultRegionOrder;
 
   const seenUrls = new Set();
   return regionOrder

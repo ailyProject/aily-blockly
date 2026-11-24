@@ -6,7 +6,7 @@ import { ProcessState, NoticeService } from '@core/app-shell/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
 import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
-import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { NpmService } from '../../../services/domains/dependencies/public-api';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
@@ -26,6 +26,7 @@ describe('Blockly compile and upload handoff', () => {
     const prepared = { code: 'compiled code', artifacts: [], projectMacros: [] };
     const project: any = { beginBuildBackendOperation: () => ({ local: false, release() {} }), isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', getBoardModule: async () => '@aily-project/board-test',
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'build-upload-opening' }),
       isAilyCodeProject: () => false, getBoardJson: async () => ({}), getBuildPath: async () => '/project/.build' };
     const workflow: any = { currentState: ProcessState.IDLE,
       // Stop at the device boundary; these tests never flash hardware.
@@ -46,7 +47,8 @@ describe('Blockly compile and upload handoff', () => {
       translate: { instant: (text: string) => text }, noticeService: { update() {} }, message: { warning() {} },
       cmdService: { kill() {} }, hostBuilderService: { build: jasmine.createSpy('coderBuild').and.resolveTo({}) } });
     window['fs'] = { existsSync: () => true };
-    window['builder'] = { canReuseBlocklyUpload: jasmine.createSpy('reuse').and.returnValue(true),
+    const compiledCode = prepared.code;
+    window['builder'] = { canReuseBlocklyUpload: jasmine.createSpy('reuse').and.callFake(config => config.code === compiledCode),
       publishArduinoGeneratedCode: jasmine.createSpy('publish').and.throwError('Upload checks must not publish files') };
     const run = () => uploader.upload().catch((error: any) => error);
     return { events, prepared, project, builder, uploader, run };
@@ -58,15 +60,66 @@ describe('Blockly compile and upload handoff', () => {
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
   });
 
+  it('uses a verified local execution after reopening the editor', async () => {
+    const f = uploadFixture();
+    Object.assign(f.builder, { passed: false, lastCode: '', currentProjectPath: '' });
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1,
+      resolveBuildExecution: () => ({ buildPath: '/private/.build' }) });
+    await f.run();
+    expect(f.events).toEqual(['upload']);
+    expect(window['builder'].canReuseBlocklyUpload).toHaveBeenCalledOnceWith(jasmine.objectContaining({ code: f.prepared.code }));
+  });
+
+  it('keeps the cloud upload route when a prior isolated local firmware remains available', async () => {
+    const f = uploadFixture();
+    const backend = { local: false, useLocal() { this.local = true; }, release() {} };
+    Object.assign(f.project, { beginBuildBackendOperation: () => backend,
+      isCloudBuild: () => !backend.local, assertProjectDependencySession() {} });
+    f.builder.configService.getCompileBackend = () => 'cloud';
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, sharedBuildExecutionVersion: 1,
+      requiresIsolatedBuildRecovery: async () => true,
+      resolveBuildExecution: jasmine.createSpy('resolveBuildExecution').and.returnValue({
+        isolatedRecovery: true, buildPath: '/private/.build',
+      }) });
+    f.builder.waitForUploadPreprocess = async () => {};
+    f.builder.canReuseBuildForUpload = jasmine.createSpy('reuseCloud').and.resolveTo(true);
+    f.uploader.prepareCloudUploader = jasmine.createSpy('cloudUploader').and.resolveTo('legacy');
+    window['cloudBuild'] = { artifactPath: async () => '/cloud/build' };
+
+    await f.run();
+    expect(f.events).toEqual(['upload']);
+    expect(f.uploader.prepareCloudUploader).toHaveBeenCalled();
+    expect(backend.local).toBeFalse();
+    expect(f.builder.build).not.toHaveBeenCalled();
+  });
+
   const firmware = {
     version: 1, executionId: '11111111-1111-4111-8111-111111111111',
     buildRequestId: 'prepared-build', inputDigest: 'a'.repeat(64), abiHash: 'sha256:' + 'b'.repeat(64),
   } as const;
 
-  function exposePreparedExecution(buildInput = firmware) {
+  it('passes the exact live-verified shared firmware to BLE even when a newer receipt points to the same directory', async () => {
+    const f = uploadFixture();
+    const selected = { ...firmware, layout: 'shared', logicalProjectPath: '/project', currentProjectPath: '/project',
+      buildPath: '/project/.build', preprocessPath: '/project/.temp/preprocess.json' };
+    const latest = { ...selected, executionId: '22222222-2222-4222-8222-222222222222', buildRequestId: 'another-build' };
+    const resolveExecution = jasmine.createSpy('resolveBuildExecution').and.callFake((_project, config) => config ? selected : latest);
+    Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, sharedBuildExecutionVersion: 1, resolveBuildExecution: resolveExecution });
+    f.uploader.serialService.currentPortInfo = { type: 'ble' };
+    f.uploader.uploaderBleService = { authorizeDevice: async () => {} };
+    f.uploader.workflowService.startUpload = () => true;
+    f.uploader.uploadByBle = jasmine.createSpy('uploadByBle').and.resolveTo({ state: 'done' });
+
+    expect(await f.run()).toEqual({ state: 'done' });
+    expect(resolveExecution).toHaveBeenCalledOnceWith('/project', jasmine.objectContaining({ code: f.prepared.code }));
+    expect(f.uploader.uploadByBle.calls.mostRecent().args[3]).toBe(selected);
+    expect(f.builder.build).not.toHaveBeenCalled();
+  });
+
+  function exposePreparedExecution(buildInput = firmware, isolatedRecovery = false) {
     const inspect = jasmine.createSpy('inspectBuildExecution').and.returnValue({
       ...firmware, status: 'completed', current: true, buildInput,
-      result: { buildRequestId: firmware.buildRequestId, inputDigest: firmware.inputDigest, buildPath: '/private/.build' },
+      result: { buildRequestId: firmware.buildRequestId, inputDigest: firmware.inputDigest, buildPath: '/private/.build', isolatedRecovery },
     });
     Object.assign(window['builder'], { isolatedBuildExecutionVersion: 1, inspectBuildExecution: inspect });
     return inspect;
@@ -101,7 +154,8 @@ describe('Blockly compile and upload handoff', () => {
     const bridge = Object.assign(Object.create(BlocklyLiveOperationBridgeService.prototype), {
       projectService: { currentProjectPath: '/project', isCloudBuild: () => false,
         captureCurrentProjectGuard: () => () => true, ensureBlocklyLibraryRuntimeReady: ensureReady },
-      blocklyEditor: { getProjectRevisionSnapshot: async () => ({ changed: false }) },
+      blocklyEditor: { hasUnsavedBuildChanges: jasmine.createSpy('hasUnsavedBuildChanges').and.resolveTo(false),
+        getProjectRevisionSnapshot: jasmine.createSpy('getProjectRevisionSnapshot').and.resolveTo({ changed: true }) },
       serialService: { getSerialPorts: async () => ports, selectSerialPort },
       uploaderService: { upload },
     });
@@ -130,10 +184,52 @@ describe('Blockly compile and upload handoff', () => {
     const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
     expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
       .toEqual(jasmine.objectContaining({ ok: true, preparedFirmware: firmware }));
+    expect(f.bridge.blocklyEditor.hasUnsavedBuildChanges).toHaveBeenCalledOnceWith();
+    expect(f.bridge.blocklyEditor.getProjectRevisionSnapshot).not.toHaveBeenCalled();
     expect(f.upload).toHaveBeenCalledOnceWith('/project', 'COM99', { preparedFirmware: firmware });
     f.upload.and.resolveTo({ state: 'warn' });
     expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
       .toEqual(jasmine.objectContaining({ ok: false, code: 'PREPARED_FIRMWARE_UPLOAD_UNCONFIRMED' }));
+  });
+
+  it('reuses cloud firmware with an unsaved canvas viewport', async () => {
+    const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+    f.bridge.projectService.isCloudBuild = () => true;
+    expect(await f.bridge.executeProjectUpload({ reuseCloudFirmware: true }))
+      .toEqual(jasmine.objectContaining({ ok: true, reuseCloudFirmware: true }));
+    expect(f.bridge.blocklyEditor.hasUnsavedBuildChanges).toHaveBeenCalledOnceWith();
+    expect(f.bridge.blocklyEditor.getProjectRevisionSnapshot).not.toHaveBeenCalled();
+    expect(f.upload).toHaveBeenCalledOnceWith('/project', 'COM99', { reuseCloudFirmware: true });
+  });
+
+  for (const mode of ['local', 'cloud']) {
+    it(`rejects an unsaved program edit before the strict ${mode} upload`, async () => {
+      const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+      const cloud = mode === 'cloud';
+      f.bridge.projectService.isCloudBuild = () => cloud;
+      f.bridge.blocklyEditor.hasUnsavedBuildChanges.and.resolveTo(true);
+      expect(await f.bridge.executeProjectUpload(cloud ? { reuseCloudFirmware: true } : { preparedFirmware: firmware }))
+        .toEqual(jasmine.objectContaining({ ok: false, code: 'BUILD_ARTIFACT_STALE' }));
+      expect(f.selectSerialPort).not.toHaveBeenCalled();
+      expect(f.upload).not.toHaveBeenCalled();
+    });
+  }
+
+  it('allows a prepared recovery firmware upload without changing the cloud preference', async () => {
+    const f = preparedUploadBridge([{ name: 'COM99', type: 'serial' }]);
+    const backend = { local: false, useLocal() { this.local = true; }, release() { this.local = false; } };
+    Object.assign(f.bridge.projectService, { isCloudBuild: () => !backend.local, beginBuildBackendOperation: () => backend });
+    window['builder'].requiresIsolatedBuildRecovery = async () => true;
+    await expectAsync(f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'PREPARED_FIRMWARE_UNAVAILABLE' }));
+    exposePreparedExecution(firmware, true);
+    f.upload.and.callFake(async () => {
+      expect(f.bridge.projectService.isCloudBuild()).toBeFalse();
+      return { state: 'done' };
+    });
+    expect(await f.bridge.executeProjectUpload({ preparedFirmware: firmware }))
+      .toEqual(jasmine.objectContaining({ ok: true, preparedFirmware: firmware }));
+    expect(f.bridge.projectService.isCloudBuild()).toBeTrue();
   });
 
   it('reports prepared firmware support and the active project build backend', async () => {
@@ -190,6 +286,38 @@ describe('Blockly compile and upload handoff', () => {
     });
   }
 
+  for (const portType of ['ble', 'network-ota']) {
+    it(`prepares and uses the signed cloud firmware for the selected ${portType} transport`, async () => {
+      const f = uploadFixture();
+      Object.assign(f.project, { isCloudBuild: () => true, assertProjectDependencySession() {} });
+      f.builder.canReuseBuildForUpload = async () => true;
+      f.uploader.serialService.currentPortInfo = { type: portType };
+      f.uploader.uploaderBleService = { authorizeDevice: async () => {} };
+      f.uploader.canUseWifiOta = async () => true;
+      f.uploader.workflowService.startUpload = () => true;
+      const upload = jasmine.createSpy('uploadOta').and.resolveTo({ state: 'done' });
+      f.uploader[portType === 'ble' ? 'uploadByBle' : 'uploadByNetworkOta'] = upload;
+      const artifactUploadInfo = jasmine.createSpy('artifactUploadInfo').and.resolveTo({ protocol: 'cloud-recipe', requirements: [] });
+      const prepareArtifactUpload = jasmine.createSpy('prepareArtifactUpload').and.callFake(async ({ requestId }) => ({
+        requestId, buildPath: '/verified/build', uploadArtifactInventory: { primary: 'sketch.bin' },
+      }));
+      const beginArtifactUploadRoute = jasmine.createSpy('beginArtifactUploadRoute').and.resolveTo(true);
+      window['path'] = { join: (...parts: string[]) => parts.join('/') };
+      window['cloudBuild'] = {
+        artifactUploadInfo, prepareArtifactUpload, beginArtifactUploadRoute,
+        artifactPath: async () => '/verified/build/sketch.bin', assertArtifactUpload: async () => true,
+        finishArtifactUpload: async () => true, onProgress: () => () => {},
+      };
+
+      expect(await f.uploader.upload({ projectPath: '/project', port: 'TEST-NO-DEVICE', reuseCloudFirmware: true }))
+        .toEqual({ state: 'done' });
+      expect(artifactUploadInfo).toHaveBeenCalledOnceWith({ projectPath: '/project', portType });
+      expect(prepareArtifactUpload).toHaveBeenCalledOnceWith(jasmine.objectContaining({ projectPath: '/project', portType }));
+      expect(upload).toHaveBeenCalledOnceWith('/verified/build', { type: portType }, undefined, undefined);
+      expect(beginArtifactUploadRoute.calls.count()).toBe(portType === 'ble' ? 1 : 0);
+    });
+  }
+
   for (const changed of ['code', 'inputs-or-firmware', 'config-reset']) {
     it(`rebuilds before upload after ${changed}`, async () => {
       const f = uploadFixture();
@@ -240,6 +368,31 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.builder.build).not.toHaveBeenCalled(); expect(window['builder'].canReuseBlocklyUpload).not.toHaveBeenCalled();
   });
 
+  for (const reusable of [true, false]) it(`uses the local Coder receipt before upload (reusable=${reusable})`, async () => {
+    const f = uploadFixture();
+    f.project.isAilyCodeProject = () => true;
+    window['builder'].canReuseCoderUpload = async () => true;
+    const check = jasmine.createSpy('checkCoderBuild').and.returnValues(Promise.resolve(reusable), Promise.resolve(true));
+    f.uploader.hostBuilderService.canReuseBuildForUpload = check;
+    await f.run();
+    expect(check).toHaveBeenCalledTimes(reusable ? 1 : 2);
+    expect(f.uploader.hostBuilderService.build).toHaveBeenCalledTimes(reusable ? 0 : 1);
+    expect(f.events).toEqual(['upload']);
+  });
+
+  for (const reusable of [true, false]) it(`prepares the new Coder settings session only on a firmware miss (reusable=${reusable})`, async () => {
+    const f = uploadFixture();
+    Object.assign(f.project, { isAilyCodeProject: () => true, isCoderProjectContext: true, getProjectDependencyStatus: () => 'idle' });
+    window['builder'].canReuseCoderUpload = async () => true;
+    f.uploader.hostBuilderService.canReuseBuildForUpload = jasmine.createSpy('verify').and.returnValues(reusable, true);
+    const prepare = jasmine.createSpy('prepare').and.resolveTo(true);
+    f.uploader.npmService = { ensureProjectAndBoardDeps: prepare };
+    await f.run();
+    expect(f.events).toEqual(['upload']);
+    expect(prepare).toHaveBeenCalledTimes(reusable ? 0 : 1);
+    if (!reusable) expect(prepare).toHaveBeenCalledBefore(f.uploader.hostBuilderService.build);
+  });
+
   for (const coder of [false, true]) it(`continues ${coder ? 'Coder' : 'Blockly'} upload with local firmware after a task-only switch`, async () => {
     const f = uploadFixture();
     const operation = { local: false, release: jasmine.createSpy('release') };
@@ -269,7 +422,9 @@ describe('Blockly compile and upload handoff', () => {
     ]);
     window['fs'] = { readFileSync: (file: string) => files.get(file),
       existsSync: (file: string) => files.has(file), mkdirSync() {},
+      lstatSync: () => ({ _isSymbolicLink: false }),
       writeFileSync: (file: string, content: string) => files.set(file, content),
+      appendFileSync: (file: string, content: string) => files.set(file, files.get(file)! + content),
       renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
       replaceProjectText: async (request: any, check: () => void) => {
         check(); const file = `${request.projectPath}/${request.fileName}`;
@@ -297,7 +452,8 @@ describe('Blockly compile and upload handoff', () => {
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
       platformService: { za7: '/tool' }, configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} }, translate: { instant: (x: string) => x },
       blocklyService: { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
-        getProjectPersistenceRevision: () => 1, publishPreparedCodeView() {} },
+        captureBuildSnapshot: () => ({ revision: 1 }), publishPreparedCodeView() {},
+        readAfterWorkspaceEdit: (read: () => unknown) => read() },
       runWithInteractiveProjectCode: async (_workspace: unknown, consume: any) => consume(prepared, () => {}),
       waitForOneIdleBoundary: async () => {}, runBuilderPreprocessPhase: (_tag: string, fn: any) => fn(),
       waitForAilyBuilderReady: async () => {}, writeCompileRequest: jasmine.createSpy('request').and.resolveTo('/request'),
@@ -308,8 +464,8 @@ describe('Blockly compile and upload handoff', () => {
       compileValidationService: { triggerAfterSuccessfulCompile() {} },
       appendCompileLog() {}, saveBuildInfo: async () => {}, handleCompileError() {},
     });
-    const start = async () => {
-      const result = service.build().catch((error: any) => error);
+    const start = async (requestId?: string, preparation = {}) => {
+      const result = service.build(undefined, requestId, {}, preparation).catch((error: any) => error);
       // Let asynchronous macro hashing/publication and request preparation finish.
       for (let n = 0; n < 100 && !service.cmdService.spawn.calls.count(); n++) {
         await new Promise(resolve => setTimeout(resolve, 1));
@@ -320,13 +476,69 @@ describe('Blockly compile and upload handoff', () => {
     return { service, files, command, start };
   }
 
+  it('builds and revalidates cloud firmware without publishing to a protected local workspace', async () => {
+    const f = compileFixture();
+    const manifest = f.files.get('/project/package.json');
+    Object.assign(window['builder'], {
+      isolatedBuildExecutionVersion: 1,
+      requiresIsolatedBuildRecovery: async () => true,
+      publishArduinoGeneratedCode: jasmine.createSpy('publish').and.throwError('Local build workspace is protected'),
+    });
+    f.service.projectService.isCloudBuild = () => true;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService.prepareCompileBackend = async () => {};
+    f.service.npmService.ensureCloudLibrarySources = async () => {};
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo');
+    f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.resolveTo({ state: 'done' });
+    const reusable = jasmine.createSpy('reusable').and.resolveTo(true);
+    window['cloudBuild'] = { reusable };
+
+    expect((await f.service.build()).state).toBe('done');
+    expect(f.service.runCloudCompilation).toHaveBeenCalledOnceWith(jasmine.objectContaining({ isolatedCloudBuild: true,
+      projectMacros: [{ name: 'WIDTH', value: 'WIDTH=320' }], sourceCapture: { digest: 'test' } }), 'board', jasmine.any(Function));
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
+    expect(f.files.get('/project/package.json')).toBe(manifest);
+    expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
+    expect(await f.service.canReuseBuildForUpload(() => false)).toBeTrue();
+    expect(reusable).toHaveBeenCalledOnceWith({ config: jasmine.objectContaining({ isolatedCloudBuild: true, generatedArtifacts: null }) });
+  });
+
+  for (const exitCode of [0, 1]) it(`uses a tool loading diagnostic only for a failed build (exit=${exitCode})`, async () => {
+    const f = compileFixture();
+    const requestId = 'tool-loading-original';
+    const code = 'TOOL_LOAD_PYTHON_DLL';
+    const diagnostic = '[AILY_TOOL_LOAD_FAILURE] ' + JSON.stringify({ version: 1, code, stage: 'objcopy' });
+    const nativeError = "[PYI-1:ERROR] Failed to load Python DLL 'python313.dll'";
+    f.service.handleCompileError = jasmine.createSpy('handleCompileError');
+    const { result } = await f.start(requestId);
+    f.command.next({ type: 'stderr', data: nativeError + '\n' + diagnostic.slice(0, 28) });
+    f.command.next({ type: 'stderr', data: diagnostic.slice(28) + '\nBuild terminated\n' });
+    f.command.next({ type: 'close', code: exitCode });
+    f.command.complete();
+
+    const settled = await result;
+    expect(settled.state).toBe(exitCode ? 'error' : 'done');
+    expect(settled.buildLog).toEqual(jasmine.objectContaining({ requestId, complete: true }));
+    expect(f.files.get(settled.buildLog.path)).toContain(diagnostic);
+    if (exitCode) {
+      expect(settled.text).toBe('BLOCKLY_EDITOR.BUILD.' + code);
+      expect(f.service.handleCompileError).toHaveBeenCalledOnceWith(settled.text, false, jasmine.stringContaining(nativeError));
+    } else expect(f.service.handleCompileError).not.toHaveBeenCalled();
+  });
+
   for (const early of [false, true]) it(`persists a cancelled Blockly request after cleanup and before releasing workflow (early=${early})`, async () => {
     const f = compileFixture();
-    let stopped!: (value: boolean) => void, prepared!: () => void;
+    let stopped!: (value: boolean) => void, prepared!: () => void, persisted!: () => void;
+    let persisting!: () => void;
+    const metadataStarted = new Promise<void>(resolve => { persisting = resolve; });
     f.service.workflowService.currentState = ProcessState.BUILDING;
     f.service.workflowService.finishBuild.and.callFake(() => { f.service.workflowService.currentState = ProcessState.ERROR; });
     f.service.ensureCancelState = () => {};
-    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.resolveTo();
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.callFake(() => new Promise<void>(resolve => {
+      persisted = resolve;
+      persisting();
+    }));
     f.service.cmdService.kill = jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
     if (early) f.service.npmService.ensureLocalCompilerDependencies = () => new Promise<void>(resolve => { prepared = resolve; });
     const result = f.service.build().catch((error: any) => error);
@@ -336,11 +548,89 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
     expect(f.service.workflowService.finishBuild).not.toHaveBeenCalled();
     if (early) prepared(); else stopped(true);
+    await metadataStarted;
+    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true,
+      { config: early ? undefined : f.service.activeExecutionConfig });
+    expect(f.service.workflowService.finishBuild).not.toHaveBeenCalled();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.BUILDING);
+    persisted();
     const completed = await result;
     expect(completed).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled', state: 'warn', retryable: false }));
-    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(f.service.passed).toBeFalse();
+  });
+
+  for (const terminal of ['completed', 'failed', 'mismatched', 'unconfirmed']) it(`a late Blockly Stop preserves the ${terminal} request and its log tail`, async () => {
+    const f = compileFixture();
+    const requestId = 'native-terminal-before-stop';
+    const { result } = await f.start(requestId);
+    const binding = { version: 1, id: 'native-execution', inputDigest: 'digest', buildRequestId: requestId };
+    const config = { ...f.service.activeExecutionConfig, execution: binding };
+    f.service.activeExecutionConfig = config;
+    const nativeReply = terminal === 'mismatched' ? { ...binding, status: 'cancelled', id: 'other-execution' }
+      : terminal === 'unconfirmed' ? undefined : { ...binding, status: terminal };
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancelBuildExecution').and.returnValue(nativeReply);
+    f.service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(true);
+    f.service.ensureCancelState = jasmine.createSpy('ensureCancelState');
+
+    f.service.cancel(requestId);
+    expect(window['builder'].cancelBuildExecution).toHaveBeenCalledOnceWith(config);
+    expect(f.service.buildCancellation.signal.aborted).toBeFalse();
+    expect(f.command.observed).toBeTrue();
+    expect(f.service.cmdService.kill).not.toHaveBeenCalled();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.BUILDING);
+    f.command.next({ type: 'stdout', data: 'final compiler output\n' });
+    f.command.next({ type: 'close', code: terminal === 'failed' ? 1 : 0 });
+    f.command.complete();
+    const settled = await result;
+    expect(settled.state).toBe(terminal === 'failed' ? 'error' : 'done');
+    expect(settled.code).not.toBe('BUILD_CANCELLED');
+    expect(settled.buildLog).toEqual(jasmine.objectContaining({ requestId, complete: true }));
+    expect(f.files.get(settled.buildLog.path)).toContain('final compiler output');
+    expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends an unconfirmed private build in the foreground without recording a fake cancellation', async () => {
+    const f = compileFixture();
+    const id = 'private-uncertain-original';
+    const { result } = await f.start(id);
+    expect(f.service.streamId).toBeTruthy();
+    const binding = { version: 1, id: 'original-execution', inputDigest: 'original-input',
+      buildRequestId: id, logicalProjectPath: '/project' };
+    f.service.activeExecutionConfig = { ...f.service.activeExecutionConfig, execution: binding,
+      currentProjectPath: '/project/.aily/build-executions/original-execution/project' };
+    window['builder'].isolatedBuildExecutionVersion = 1;
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancel').and.returnValue(undefined);
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.resolveTo(undefined);
+    f.service.cmdService.kill = jasmine.createSpy('kill');
+
+    f.service.cancel(id);
+    const stopped = await result;
+    expect(stopped).toEqual(jasmine.objectContaining({ buildOutcome: 'unknown', code: 'BUILD_OBSERVATION_UNCONFIRMED' }));
+    expect(f.service.cmdService.kill).not.toHaveBeenCalled();
+    expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
+    expect(f.service.activeBuildRequestId).toBeNull();
+    expect(f.service.workflowService.currentState).toBe(ProcessState.ERROR);
+    expect(f.command.observed).toBeFalse();
+  });
+
+  it('a confirmed native Blockly Stop aborts the matching request', async () => {
+    const f = compileFixture();
+    const requestId = 'native-cancelled-request';
+    const { result } = await f.start(requestId);
+    const binding = { version: 1, id: 'native-execution', inputDigest: 'digest', buildRequestId: requestId };
+    const config = { ...f.service.activeExecutionConfig, execution: binding };
+    f.service.activeExecutionConfig = config;
+    window['builder'].cancelBuildExecution = jasmine.createSpy('cancelBuildExecution').and.returnValue({ ...binding, status: 'cancelled' });
+    f.service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(true);
+    f.service.ensureCancelState = jasmine.createSpy('ensureCancelState');
+    const streamId = f.service.streamId;
+
+    f.service.cancel(requestId);
+    expect(window['builder'].cancelBuildExecution).toHaveBeenCalledOnceWith(config);
+    expect(f.service.buildCancellation.signal.aborted).toBeTrue();
+    expect(f.service.cmdService.kill).toHaveBeenCalledOnceWith(streamId);
+    expect(await result).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled' }));
   });
 
   for (const scenario of [
@@ -358,7 +648,10 @@ describe('Blockly compile and upload handoff', () => {
     const noticeService = new NoticeService(logService as any);
     noticeService.stateSubject.subscribe(notice => notices.push(notice));
     let listener: any, rejectRun!: (reason: unknown) => void;
-    window['cmd'] = { onData: (_id: string, callback: any) => { listener = callback; return () => { listener = undefined; }; },
+    window['cmd'] = { onData: (streamId: string, callback: any) => {
+      listener = (event: any) => callback({ ...event, streamId });
+      return () => { listener = undefined; };
+    },
       run: () => new Promise((_resolve, reject) => { rejectRun = reject; }) };
     const cmd = new CmdService(logService as any), spawn = cmd.spawn.bind(cmd);
     spyOn(cmd, 'spawn').and.callFake((command, args, options, silent) => spawn(command, args, options, scenario.silent || silent));
@@ -480,6 +773,15 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
   });
 
+  it('rejects the completed compiler result when a Blockly edit supersedes its captured inputs', async () => {
+    const f = compileFixture(), { result } = await f.start();
+    f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    expect(await result).toEqual(jasmine.objectContaining({ state: 'error', code: 'BUILD_SOURCE_STALE', sourceReason: 'blocks' }));
+    expect(f.service.passed).toBeFalse();
+    expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
+  });
+
   for (const metadataFailure of [false, true]) it(`restores cloud pins before capture and requires result metadata persistence (failure=${metadataFailure})`, async () => {
     const f = compileFixture();
     f.service.projectService.isCloudBuild = () => true;
@@ -534,7 +836,69 @@ describe('Blockly compile and upload handoff', () => {
     expect(operation.release).toHaveBeenCalledTimes(1);
   });
 
-  for (const ending of ['cloud', 'local', 'unsupported', 'cancel']) it(`keeps the same Blockly caller through a cloud/local round trip ending in ${ending}`, async () => {
+  for (const stage of ['board-support', 'target-profile', 'target-unavailable', 'cloud-run', 'changed', 'nested-upload', 'sdk-unsupported']) {
+    it(`reports Blockly cloud failure without starting local compilation: ${stage}`, async () => {
+      const f = compileFixture();
+      const operation = { local: false, isNested: stage === 'nested-upload', useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
+      f.service.projectService.beginBuildBackendOperation = () => operation;
+      f.service.projectService.isCloudBuild = () => !operation.local;
+      f.service.configService.getCompileBackend = () => 'cloud';
+      const offline = Object.assign(new Error('Gateway unavailable'), { code: 'gateway_closing', httpStatus: 503 });
+      Object.assign(f.service.npmService, {
+        prepareCompileBackend: async () => { if (stage === 'board-support') throw offline; },
+        ensureCloudLibrarySources: async () => {},
+        prepareLocalCompileBackend: jasmine.createSpy('prepareLocal').and.callFake(async () => {
+          expect(operation.local).toBeTrue();
+          expect(operation.release).not.toHaveBeenCalled();
+        }),
+      });
+      if (stage === 'target-profile') f.service.projectService.getBoardConfigMenu.and.rejectWith(offline);
+      if (stage === 'target-unavailable') {
+        f.service.projectService.getBoardConfigMenu.and.rejectWith(Object.assign(new Error('No matching cloud target'), { code: 'CLOUD_TARGET_UNAVAILABLE' }));
+      }
+      f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.callFake(async () => {
+        if (stage === 'changed') f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+        if (stage === 'sdk-unsupported') throw Object.assign(new Error('Unsupported SDK'), { code: 'CI_RESOURCE_UNSUPPORTED' });
+        throw offline;
+      });
+      let guard: (() => void) | undefined;
+      const { result } = await f.start('cloud-service-failure', { localFallback: {
+        recordCloudFailure: (error: unknown, check: () => void) => { if (canOfferLocalBuildFallback(error)) guard = check; },
+      } });
+      expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+      expect(f.service.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+      const completed = await result;
+      expect(completed.state).toBe('error');
+      expect(completed.buildLog.requestId).toBe('cloud-service-failure');
+      if (['board-support', 'target-profile', 'target-unavailable', 'cloud-run'].includes(stage)) expect(guard).not.toThrow();
+      else if (stage === 'changed') expect(guard).toThrowError(/canvas changed/);
+      else expect(guard).toBeUndefined();
+      if (stage === 'sdk-unsupported') expect(completed.code).toBe('CI_RESOURCE_UNSUPPORTED');
+      if (stage === 'target-unavailable') expect(completed.code).toBe('CLOUD_TARGET_UNAVAILABLE');
+      expect(operation.release).toHaveBeenCalledTimes(1);
+      expect(f.service.configService.getCompileBackend()).toBe('cloud');
+    });
+  }
+
+  it('uses local Blockly compilation only when the AI request carries a checked cloud receipt', async () => {
+    const f = compileFixture();
+    const operation = { local: false, isNested: false, useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
+    f.service.projectService.beginBuildBackendOperation = () => operation;
+    f.service.projectService.isCloudBuild = () => !operation.local;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService.prepareLocalCompileBackend = jasmine.createSpy('prepareLocal').and.resolveTo();
+    const assertCurrent = jasmine.createSpy('assertCurrent');
+    const { result } = await f.start('explicit-local', { localFallback: { local: { fromRequestId: 'original-cloud', assertCurrent } } });
+    expect(f.service.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
+    expect(assertCurrent).toHaveBeenCalledTimes(3);
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    const completed = await result;
+    expect(completed.state).toBe('done');
+    expect(completed.buildLog.requestId).toBe('explicit-local');
+    expect(f.files.get(completed.buildLog.path)).toContain('AI requested local compilation after cloud build original-cloud');
+  });
+
+  for (const ending of ['cloud', 'local', 'unsupported', 'outage', 'cancel']) it(`keeps the same Blockly caller through a cloud/local round trip ending in ${ending}`, async () => {
     const f = compileFixture();
     const operation = { local: false, useLocal() { this.local = true; }, useCloud() { this.local = false; }, release: jasmine.createSpy('release') };
     f.service.projectService.beginBuildBackendOperation = () => operation;
@@ -553,6 +917,7 @@ describe('Blockly compile and upload handoff', () => {
       getProjectDependencySession: () => ({ projectPath: '/project' }), assertProjectDependencySession() {},
       resolveCompileBackend: async () => {
         if (ending === 'unsupported') throw Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+        if (ending === 'outage') throw Object.assign(new Error('Cloud worker offline'), { code: 'CLOUD_BOARD_OFFLINE' });
         return 'cloud';
       },
     });
@@ -585,8 +950,8 @@ describe('Blockly compile and upload handoff', () => {
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
     const completed = await result;
-    expect(completed.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
-    expect(f.service.metrics.record.calls.allArgs()).toEqual(ending === 'cancel' || ending === 'unsupported'
+    expect(completed.state).toBe(ending === 'cancel' ? 'warn' : ['unsupported', 'outage'].includes(ending) ? 'error' : 'done');
+    expect(f.service.metrics.record.calls.allArgs()).toEqual(['cancel', 'unsupported', 'outage'].includes(ending)
       ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
     if (ending === 'unsupported') {
       expect(completed.text).toContain('Board no longer supports cloud builds');
@@ -594,7 +959,7 @@ describe('Blockly compile and upload handoff', () => {
       expect(operation.local).toBeFalse();
       expect(f.service.localSwitchAction).toBeUndefined();
     }
-    expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
+    expect(clouds).toBe(['cancel', 'unsupported', 'outage'].includes(ending) ? 1 : 2);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);
   });

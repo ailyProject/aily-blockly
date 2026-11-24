@@ -2,8 +2,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { randomUUID } = require('node:crypto');
 const { test, after } = require('node:test');
-const { openProjectSyncStorage } = require('../../electron/project-sync-storage');
+const { openProjectSyncStorage, openProjectSyncStorageBridge } = require('../../electron/project-sync-storage');
 const { replaceProjectText } = require('../../electron/project-file-writer');
 const { projectFileHash: hash } = require('../../electron/project-file-access');
 const roots = [];
@@ -12,6 +13,55 @@ const project = () => {
 };
 const guard = () => undefined;
 const request = root => ({ projectPath: root, fileName: 'project.abi', expectedHash: null, content: 'single writer' });
+
+test('a native candidate resolves immutable objects by digest in both tracking periods', async () => {
+  const root = project(), history = path.join(root, '.workspace-history'), store = await openProjectSyncStorage(root, guard);
+  for (const [dir, text] of [[history, 'original'], [path.join(history, 'native-history'), 'current']]) {
+    const digest = hash(text).slice(7), bucket = path.join(dir, 'objects', digest.slice(0, 2));
+    fs.mkdirSync(bucket, { recursive: true });
+    const file = path.join(bucket, digest + '.blob');
+    fs.writeFileSync(file, text);
+    assert.equal(await store.read('history-objects/' + digest), text);
+    fs.writeFileSync(file, 'different');
+    await assert.rejects(async () => store.read('history-objects/' + digest), { code: 'ABS_CANDIDATE_OBJECT_INVALID' });
+    if (dir === history) {
+      const next = path.join(history, 'native-history', 'objects', digest.slice(0, 2));
+      fs.mkdirSync(next, { recursive: true });
+      fs.writeFileSync(path.join(next, digest + '.blob'), text);
+      assert.equal(await store.read('history-objects/' + digest), text);
+    }
+  }
+});
+
+test('retire malformed ABS pointers without touching a draft, valid staging or a newer writer', async () => {
+  const root = project(), store = await openProjectSyncStorage(root, guard);
+  const sync = path.join(root, '.aily', 'abs-sync');
+  fs.mkdirSync(sync, { recursive: true });
+  const prepared = path.join(sync, 'prepared.json'), committed = path.join(sync, 'committed.json');
+  const broken = Buffer.from([0xff, 0xf9]), valid = JSON.stringify({ schemaVersion: 1, generation: 'retained', hash: hash('saved') });
+  fs.writeFileSync(path.join(root, 'project.abs'), 'an independent draft');
+  fs.writeFileSync(prepared, valid);
+  fs.writeFileSync(committed, broken);
+  await store.retireMalformedPointers(true);
+  assert.deepEqual(fs.readFileSync(committed), broken);
+  assert.equal(fs.readFileSync(prepared, 'utf8'), valid);
+  fs.writeFileSync(prepared, '{"cut":');
+  let recovery;
+  await store.withLock(async locked => {
+    recovery = store.retireMalformedPointers(true);
+    assert.equal(await locked.replace('prepared.json', hash('{"cut":'), valid), true);
+  });
+  await recovery;
+  assert.equal(fs.readFileSync(prepared, 'utf8'), valid);
+  assert.deepEqual(fs.readFileSync(committed), broken);
+  fs.writeFileSync(prepared, '{"cut":');
+  await store.retireMalformedPointers();
+  assert.equal(fs.existsSync(prepared), false);
+  assert.deepEqual(fs.readFileSync(committed), broken);
+  await store.retireMalformedPointers(true);
+  assert.equal(fs.existsSync(committed), false);
+  assert.equal(fs.readFileSync(path.join(root, 'project.abs'), 'utf8'), 'an independent draft');
+});
 
 test('operation snapshot and discovery metadata survive reopening with exact conditional writes', async () => {
   const root = project(); let store = await openProjectSyncStorage(root, guard);
@@ -38,6 +88,92 @@ after(() => { for (const root of roots) {
   assert.ok(path.basename(root).startsWith('aily-sync-storage-'));
   fs.rmSync(root, { recursive: true, force: true });
 } });
+
+test('old migration metadata does not gate program writes; a migration refusal still identifies its original writer', async () => {
+  const root = project(), store = await openProjectSyncStorage(root, guard);
+  const history = path.join(root, '.workspace-history');
+  const original = randomUUID(), indexed = randomUUID(), other = randomUUID();
+  const writerKey = id => `recoveries/application-writer-${hash(id).slice(7)}.json`;
+  const indexKey = id => `recoveries/request-${hash(id).slice(7)}.json`;
+  const receiptKey = id => `recoveries/admission-${hash('abs-apply\0' + id).slice(7)}.json`;
+  const context = { attachment: store.attachment, executor: store.executor };
+  const receipt = (id, changes = {}) => JSON.stringify({ version: 1, kind: 'not-started', operationId: randomUUID(),
+    project: store.attachment.root, request: { operation: 'abs_apply', requestId: id }, ...context,
+    code: 'ABS_WORKSPACE_MIGRATION_PENDING', message: 'Prepared workspace migration.', ...changes });
+  await store.withLock(async locked => {
+    for (const requestId of [original, indexed, other]) await locked.replace(writerKey(requestId), null, JSON.stringify({
+      version: 1, kind: 'validated-writer', project: store.attachment.root, requestId,
+      candidateHash: hash('original draft'), ...context,
+    }));
+    await locked.replace(indexKey(indexed), null, '{}');
+    await locked.replace('project.abi', null, 'accepted ABI');
+  });
+  fs.mkdirSync(history);
+  const migration = '{"executionMigration":{"phase":"prepared"}}';
+  fs.writeFileSync(path.join(history, 'workspace.json'), migration);
+  const body = receipt(original);
+  await store.withLock(async locked => {
+    const denied = (key, content) => assert.rejects(locked.replace(key, null, content), { code: 'ABS_ADMISSION_INVALID' });
+    assert.equal(await locked.replace('project.abs', null, 'current author'), true);
+    assert.equal(await locked.replace('operation.json', null, '{}'), true);
+    await denied(receiptKey(indexed), receipt(indexed));
+    await denied(receiptKey(other), body);
+    await denied(receiptKey(other), receipt(other, { executor: { ...store.executor, instanceId: randomUUID() } }));
+    const missingWriter = randomUUID();
+    await denied(receiptKey(missingWriter), receipt(missingWriter));
+    assert.equal(await locked.replace(receiptKey(original), null, body), true);
+    assert.equal(await locked.replace(receiptKey(original), null, receipt(original)), false);
+  });
+  assert.equal(await store.read(receiptKey(original)), body);
+  assert.equal(await store.read(receiptKey(other)), null);
+  assert.equal(await store.read('project.abi'), 'accepted ABI');
+  assert.equal(await store.read('history-workspace.json'), migration);
+});
+
+test('invalid UTF-8 is attributed to the specific private navigation journal', async () => {
+  const root = project(), invalid = Buffer.from([0x7b, 0xff, 0xfd]);
+  const sync = path.join(root, '.aily', 'abs-sync');
+  fs.mkdirSync(sync, { recursive: true });
+  const bridge = await openProjectSyncStorageBridge(root, guard);
+  for (const [key, file, code] of [
+    ['prepared.json', path.join(sync, 'prepared.json'), 'ABS_BASELINE_CORRUPT'],
+    ['operation.json', path.join(sync, 'operation.json'), 'ABS_OPERATION_CORRUPT'],
+    ['project.abi', path.join(root, 'project.abi'), 'ABS_STORAGE_ENCODING_INVALID'],
+  ]) {
+    fs.writeFileSync(file, invalid);
+    const reply = await bridge.readResult(key);
+    assert.equal(reply.ok, false);
+    assert.equal(reply.error.code, code);
+    assert.deepEqual(fs.readFileSync(file), invalid);
+  }
+});
+
+test('legacy mirror recovery preserves exact malformed bytes before replacement and leaves strict reads in place', async () => {
+  const root = project(), abi = '{"blocks":{}}', invalid = Buffer.from([0xef, 0xbb, 0xbf, 0xff, 0, 0x0d, 0x0a]);
+  fs.writeFileSync(path.join(root, 'project.abi'), abi);
+  fs.writeFileSync(path.join(root, 'project.abs'), invalid);
+  fs.writeFileSync(path.join(root, 'project.abs.map.json'), invalid);
+  const store = await openProjectSyncStorage(root, guard);
+  await assert.rejects(store.read('project.abs'), { code: 'ABS_STORAGE_ENCODING_INVALID' });
+  const expected = { abiHash: hash(abi), committedHash: null, operationHash: null };
+  await store.withLock(async locked => {
+    await locked.replace('prepared.json', null, 'live');
+    await assert.rejects(locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs', replacement: null }), { code: 'ABS_TRANSACTION_PENDING' });
+    await locked.replace('prepared.json', hash('live'), null);
+    await assert.rejects(locked.retireInvalidAbsMirror({ ...expected, abiHash: hash('other'), key: 'project.abs', replacement: null }), { code: 'ABS_DISK_CONFLICT' });
+    assert.equal(await locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs', replacement: 'verified projection' }), true);
+    assert.equal(await locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs.map.json', replacement: null }), true);
+    assert.equal(await locked.retireInvalidAbsMirror({ ...expected, key: 'project.abs', replacement: 'never replaced' }), false);
+  });
+  const suffix = `raw-${hash(invalid).slice(7)}.bin`;
+  for (const name of [`abs-${suffix}`, `map-${suffix}`]) {
+    assert.deepEqual(fs.readFileSync(path.join(root, '.aily', 'abs-sync', 'recoveries', name)), invalid);
+    await assert.rejects(store.read(`recoveries/${name}`), { code: 'ABS_STORAGE_KEY_INVALID' });
+  }
+  assert.equal(await store.read('project.abi'), abi);
+  assert.equal(await store.read('project.abs'), 'verified projection');
+  assert.equal(await store.read('project.abs.map.json'), null);
+});
 
 test('read-only open creates nothing; locked UTF-8 writes survive reopening the capability', async () => {
   const root = project(); const store = await openProjectSyncStorage(root, guard);
@@ -137,6 +273,48 @@ test('unawaited writes are revoked and drained before the shared lock is release
   await assert.rejects(pending, { code: 'ABS_STORAGE_SCOPE_CLOSED' });
   assert.equal(await store.read('project.abi'), null);
   assert.equal((await replaceProjectText(request(root), guard)).status, 'COMMITTED');
+});
+
+test('a revoked renderer with a lost settlement releases the lock after its admitted writes drain', async () => {
+  const root = project();
+  const entered = Promise.withResolvers(), started = Promise.withResolvers();
+  const drain = Promise.withResolvers(), revoked = Promise.withResolvers();
+  const files = { ...fs, promises: { ...fs.promises, async open(...args) {
+    const handle = await fs.promises.open(...args);
+    started.resolve();
+    await drain.promise;
+    return handle;
+  } } };
+  let current = true;
+  const old = await openProjectSyncStorageBridge(root, () => {
+    if (!current) {
+      revoked.resolve();
+      throw Object.assign(new Error('Original scope revoked'), { code: 'ORIGINAL_SCOPE_REVOKED' });
+    }
+  }, { files });
+  const next = await openProjectSyncStorageBridge(root, guard, { timeoutMs: 20 });
+  const compete = () => next.withLockResult((_locked, settle) => settle({ ok: true, value: 'new owner' }));
+  const original = old.withLockResult((locked, settle) => {
+    entered.resolve({ locked, settle, writing: locked.replaceResult('project.abi', null, 'old writer') });
+  });
+  const { locked, settle, writing } = await entered.promise;
+  try {
+    await started.promise;
+    assert.equal((await compete()).error.code, 'PROJECT_FILE_BUSY');
+    current = false;
+    await revoked.promise;
+    assert.equal((await compete()).error.code, 'PROJECT_FILE_BUSY');
+    drain.resolve();
+    assert.equal((await original).error.code, 'ORIGINAL_SCOPE_REVOKED');
+    assert.equal((await writing).error.code, 'ABS_STORAGE_SCOPE_CLOSED');
+    assert.deepEqual(await compete(), { ok: true, value: 'new owner' });
+    settle({ ok: true, value: 'old receipt' });
+    assert.equal((await locked.replaceResult('project.abi', null, 'late')).error.code, 'ABS_STORAGE_SCOPE_CLOSED');
+    assert.equal(fs.existsSync(path.join(root, 'project.abi')), false);
+  } finally {
+    drain.resolve();
+    settle({ ok: true, value: null });
+  }
 });
 
 test('rejects linked storage, hard-linked records, and invalid UTF-8 without rewriting them', async () => {

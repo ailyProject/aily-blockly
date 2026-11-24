@@ -1,6 +1,7 @@
 import { isBuildCancelled } from './build-cancellation';
 import type { ProjectBuildLogReference } from './project-build-log';
 import type { BuildInput } from './build-input';
+import type { BuildSnapshot } from './build-snapshot';
 
 export interface BuildCheckpoint {
   startedAt?: number;
@@ -21,6 +22,8 @@ export interface BuildResultSnapshot {
   buildRequestId?: string;
   buildLog?: ProjectBuildLogReference;
   buildInput?: BuildInput;
+  buildSource?: Record<string, unknown>;
+  buildSnapshot?: BuildSnapshot;
   code?: 'BUILD_CANCELLED';
   buildOutcome?: 'cancelled';
 }
@@ -29,8 +32,8 @@ export interface BuildResultSnapshot {
 export function persistBuildResult(
   projectPath: string,
   success: boolean,
-  result?: { state?: string; text?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput },
-  error?: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput },
+  result?: { state?: string; text?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput; buildSource?: Record<string, unknown>; buildSnapshot?: BuildSnapshot },
+  error?: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildInput?: BuildInput; buildSource?: Record<string, unknown>; buildSnapshot?: BuildSnapshot },
   checkpoint?: BuildCheckpoint,
   source: BuildResultSnapshot['source'] = 'system',
 ): void {
@@ -45,6 +48,8 @@ export function persistBuildResult(
     message: result?.text || error?.text || error?.message || '',
     fullStdErr: result?.fullStdErr || error?.fullStdErr || '',
     ...(result?.buildInput || error?.buildInput ? { buildInput: result?.buildInput || error?.buildInput } : {}),
+    ...(result?.buildSource || error?.buildSource ? { buildSource: result?.buildSource || error?.buildSource } : {}),
+    ...(result?.buildSnapshot || error?.buildSnapshot ? { buildSnapshot: result?.buildSnapshot || error?.buildSnapshot } : {}),
     ...(result?.buildLog || error?.buildLog ? {
       buildLog: result?.buildLog || error?.buildLog,
       buildRequestId: (result?.buildLog || error?.buildLog)!.requestId,

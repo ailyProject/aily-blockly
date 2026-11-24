@@ -3,7 +3,7 @@ import { Injectable, Injector } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { NoticeService, WorkflowService } from '@core/app-shell/public-api';
 import { CmdService, LogService } from '@core/platform/public-api';
-import { ProjectService, type CoderExecutionPort } from '@domain/project/public-api';
+import { ProjectService, CODER_BOARD_REQUIRED_MESSAGE, type CoderExecutionPort } from '@domain/project/public-api';
 import { BuilderService, CompileService, BUILD_APPLICATION_PORT } from '@domain/build/public-api';
 import { SerialService, UploaderService, DEVICE_APPLICATION_PORT, selectSerialPort } from '@domain/device/public-api';
 import { NpmService, DEPENDENCY_APPLICATION_PORT } from '@domain/dependencies/public-api';
@@ -115,7 +115,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     session.notice.stateSubject.subscribe(notice => {
       if (notice?.onRetryLocally) {
         const retry = notice.onRetryLocally;
-        const current = this.projects.captureCurrentProjectGuard();
+        const current = session.project.captureCurrentProjectGuard();
         notice = { ...notice, onRetryLocally: () => {
           if (!this.isActive(path) || !current() || session.busy) return;
           // The explicit retry repairs dependencies and must still participate
@@ -181,7 +181,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     }
   }
 
-  build(path: string, options: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string } = {}): Promise<any> {
+  build(path: string, options: NonNullable<Parameters<CoderExecutionPort['build']>[1]> = {}): Promise<any> {
     return this.run(path, 'build', async session => {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);
@@ -198,7 +198,10 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     return { session, ports, selection };
   }
 
-  upload(path: string, port?: string): Promise<any> {
+  async upload(path: string, port?: string): Promise<any> {
+    if (!await this.projects.ensureCoderBoardSelected(path)) {
+      return { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' };
+    }
     return this.run(path, 'upload', async session => {
       if (this.isActive(path)) this.capturePort(session);
       const uploader = session.injector.get(UploaderService);

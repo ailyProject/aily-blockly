@@ -21,7 +21,7 @@ describe('Coder concurrent process integration', () => {
   let runtime: CoderProjectRuntimeService;
   let project: any;
   let serial: any;
-  let commands: { command: string; output: Subject<any>; id: string }[];
+  let commands: { command: string; output: Subject<any>; id: string; projectSessionId?: string }[];
   let killed: string[];
   let originals: any;
   const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -43,7 +43,7 @@ describe('Coder concurrent process integration', () => {
     });
     spyOn(CmdService.prototype, 'spawn').and.callFake((file, args, options) => {
       const output = new Subject<any>(); const id = options!.streamId!;
-      commands.push({command: [file, ...args].join(' '), output, id}); return output;
+      commands.push({ command: [file, ...args].join(' '), output, id, projectSessionId: options?.projectSessionId }); return output;
     });
     spyOn(CmdService.prototype, 'kill').and.callFake(async (id: string) => { killed.push(id); return true; });
     const contexts = new Map<string, any>();
@@ -57,12 +57,15 @@ describe('Coder concurrent process integration', () => {
       isProjectTransitionInProgress: jasmine.createSpy('transition').and.returnValue(false),
       getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
       beginCoderOperation: () => () => {},
+      ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true),
       getCoderProjectContext(path: string) {
         if (!contexts.has(path)) contexts.set(path, {
           currentProjectPath: path, isCoderProjectContext: true,
+          getProjectDependencySession: () => ({ projectPath: path, projectSessionId: `opening:${path}` }),
           captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }),
           coderProjects: project.coderProjects, currentBoardConfig: {}, boardChangeSubject: new Subject(),
           isAilyCodeProject: () => true, beginCoderOperation: () => () => {},
+          ensureCoderBoardSelected: (path: string) => project.ensureCoderBoardSelected(path),
           syncCurrentBoardConfig: async () => true,
           ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
           getProjectDependencyBlockMessage: (path: string) => project.getProjectDependencyBlockMessage(path),
@@ -122,6 +125,21 @@ describe('Coder concurrent process integration', () => {
     const click = session.state.notice!.onRetryLocally!;
     project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
     await click(); expect(retry).not.toHaveBeenCalled();
+  });
+
+  it('allows a background dependency failure to retry locally after activating its project', async () => {
+    const session = runtime.getSession('/b');
+    const retry = jasmine.createSpy('retry').and.callFake(() => session.notice.update({ state: 'done' }));
+    project.getProjectDependencyBlockMessage.and.returnValue('dependency failure');
+    session.notice.update({ state: 'error', onRetry: () => {}, onRetryLocally: retry });
+    const click = session.state.notice!.onRetryLocally!;
+    await click();
+    expect(retry).not.toHaveBeenCalled();
+    project.currentProjectPath = '/b';
+    project.currentProjectPath$.next('/b');
+    await click();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(runtime.getState('/b').build).toBe('done');
   });
 
   it('does not start a build while board source/configuration is being synchronized', async () => {
@@ -201,6 +219,7 @@ describe('Coder concurrent process integration', () => {
     expect(commands.length).toBe(2);
     expect(commands[0].command).toContain('/a/.temp/compile-request-');
     expect(commands[1].command).toContain('/b/.temp/compile-request-');
+    expect(commands.map(command => command.projectSessionId)).toEqual(['opening:/a', 'opening:/b']);
     commands.forEach(started);
     project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
     runtime.cancel('/a', 'build');
@@ -212,6 +231,16 @@ describe('Coder concurrent process integration', () => {
     expect(commands.length).toBe(2);
     expect(runtime.getState('/a').build).toBe('warn');
     expect(runtime.getState('/b').build).toBe('done');
+  });
+
+  it('asks for a board before resolving a port or starting an upload session', async () => {
+    project.ensureCoderBoardSelected.and.resolveTo(false);
+    const resolve = spyOn(runtime, 'resolvePort');
+    expect(await runtime.upload('/a')).toEqual({ state: 'warn',
+      text: '请先选择开发板，再编译或上传 Arduino 工程。', buildOutcome: 'not-started' });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(commands).toEqual([]);
+    expect(runtime.getState('/a').upload).toBe('default');
   });
 
   it('lets separate devices upload concurrently, rejects a shared port, and releases the lease after failure', async () => {

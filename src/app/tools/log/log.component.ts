@@ -13,6 +13,7 @@ import { stripAnsi } from 'fancy-ansi';
 import { Subscription } from 'rxjs';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { ToolI18nService } from '@core/preferences/public-api';
+import type { NoticeLogTarget } from '@shared/public-api';
 
 @Component({
   selector: 'app-log',
@@ -36,6 +37,11 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   private readTimer: ReturnType<typeof setTimeout> | null = null;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly maxVisible = 5000;
+  private initialization?: Promise<void>;
+  private destroyed = false;
+  private revealVersion = 0;
+  private revealing = false;
+  private focusedLog?: NoticeLogTarget;
 
   // 滚动容器引用
   scrollElement = viewChild<ElementRef<HTMLDivElement>>('scrollElement');
@@ -59,6 +65,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   virtualizer = injectVirtualizer(() => ({
     scrollElement: this.scrollElement(),
     count: this.logCount(),
+    getItemKey: index => this.logList[index]?.seq ?? this.logList[index]?.mergeKey ?? this.logList[index]?.offset ?? index,
     estimateSize: () => 30,
     overscan: 5,
   }));
@@ -85,7 +92,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnInit() {
-    void this.initTool();
+    this.initialization = this.initTool();
   }
 
   private async initTool(): Promise<void> {
@@ -121,6 +128,81 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private scrollTimeoutId: any;
 
+  /** 打开通知对应的日志，并保留相邻输出作为上下文。 */
+  async reveal(target?: NoticeLogTarget): Promise<void> {
+    const request = ++this.revealVersion;
+    await this.initialization;
+    if (this.destroyed || request !== this.revealVersion) return;
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    if (this.scrollTimeoutId) clearTimeout(this.scrollTimeoutId);
+    this.logSearchKeyword = '';
+    this.showOnlyErrors = false;
+    this.focusedLog = target;
+    const version = ++this.readVersion;
+    this.revealing = true;
+    try {
+      let page = await this.logService.readPage({ mode: 'tail', limit: 500 });
+      if (version !== this.readVersion) return;
+      const nextOffset = page.nextOffset;
+      let entries = page.entries;
+      let index = target ? entries.findIndex(item => this.matchesTarget(item, target)) : -1;
+      // 目标可能已离开最近 500 条预览，逐页向前查找；内存窗口仍有界。
+      while (target && index < 0 && page.hasMore && page.beforeOffset > 0) {
+        const previousOffset = page.beforeOffset;
+        page = await this.logService.readPage({
+          mode: 'before', beforeOffset: previousOffset, generation: page.generation, limit: 500,
+        });
+        if (version !== this.readVersion) return;
+        if (page.reset) { await this.reloadTail(); return; }
+        entries = [...page.entries, ...entries].slice(0, this.maxVisible);
+        index = entries.findIndex(item => this.matchesTarget(item, target));
+        if (page.beforeOffset >= previousOffset) break;
+      }
+      if (target && index < 0) {
+        // 清空后旧通知不再有对应记录，正常显示当前日志，不重新写入旧错误。
+        this.focusedLog = undefined;
+        await this.reloadTail();
+        return;
+      }
+      this.generation = page.generation;
+      this.beforeOffset = page.beforeOffset;
+      this.nextOffset = nextOffset;
+      this.hasMoreHistory = page.hasMore;
+      this.logList = entries;
+      this.logCount.set(entries.length);
+      this.virtualizer.measure();
+      this.readErrorShown = false;
+      this.cdr.detectChanges();
+      if (index < 0) this.scrollToBottom();
+      else this.scrollToLog(index, version);
+    } catch (error) {
+      if (version === this.readVersion) this.reportReadError(error);
+    } finally {
+      if (version === this.readVersion) this.revealing = false;
+    }
+  }
+
+  private scrollToLog(index: number, version: number, attempt = 0): void {
+    this.scrollTimeoutId = setTimeout(() => {
+      if (version !== this.readVersion) return;
+      // 变高行首次进入视口后才获得真实高度，重新定位以消除估高及滚动补偿的偏移。
+      this.virtualizer.scrollToIndex(index, { align: 'start' });
+      if (attempt < 8) this.scrollToLog(index, version, attempt + 1);
+    }, 30);
+  }
+
+  private matchesTarget(item: LogOptions, target: NoticeLogTarget): boolean {
+    if (target.mergeKey) return item.mergeKey === target.mergeKey;
+    const detail = item.previewTruncated ? item.detail?.replace(/…$/, '') : item.detail;
+    return item.timestamp === target.timestamp && item.title === target.title
+      && (detail === target.detail || (!!detail && !!target.detail
+        && (detail.startsWith(target.detail) || target.detail.startsWith(detail))));
+  }
+
+  isFocusedLog(item: LogOptions): boolean {
+    return !!this.focusedLog && this.matchesTarget(item, this.focusedLog);
+  }
+
   private normalizeSearchText(value: unknown): string {
     return String(value ?? '').trim().toLowerCase();
   }
@@ -134,6 +216,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async reloadTail(): Promise<void> {
+    this.revealing = false;
     const version = ++this.readVersion;
     try {
       const page = await this.logService.readPage({ mode: 'tail', ...this.readOptions() });
@@ -167,6 +250,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async readNew(): Promise<void> {
+    if (this.revealing) { this.scheduleReadNew(); return; }
     if (this.readingNew) {
       this.pendingNew = true;
       return;
@@ -191,7 +275,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
           this.logList = [...this.logList, ...page.entries].slice(-this.maxVisible);
           this.logCount.set(this.logList.length);
           this.cdr.detectChanges();
-          if (shouldFollow && !this.normalizeSearchText(this.logSearchKeyword)) this.scrollToBottom();
+          if (shouldFollow && !this.focusedLog && !this.normalizeSearchText(this.logSearchKeyword)) this.scrollToBottom();
         }
         hasMore = page.hasMore && page.nextOffset > previousOffset;
       }
@@ -209,7 +293,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   onLogScroll(): void {
     const element = this.scrollElement()?.nativeElement;
-    if (element && element.scrollTop < 48 && this.hasMoreHistory && !this.readingOlder && this.logList.length < this.maxVisible) {
+    if (element && element.scrollTop < 48 && this.hasMoreHistory && !this.revealing && !this.readingOlder && this.logList.length < this.maxVisible) {
       void this.readOlder();
     }
   }
@@ -250,11 +334,13 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   onErrorFilterChange(showOnlyErrors: boolean) {
+    this.focusedLog = undefined;
     this.showOnlyErrors = showOnlyErrors;
     void this.reloadTail();
   }
 
   onLogSearchChange(keyword: string) {
+    this.focusedLog = undefined;
     this.logSearchKeyword = keyword || '';
     if (this.searchTimer) clearTimeout(this.searchTimer);
     this.searchTimer = setTimeout(() => {
@@ -280,6 +366,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   async clear() {
+    this.focusedLog = undefined;
     try {
       await this.logService.clear();
       this.logList = [];
@@ -293,6 +380,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
     if (this.clickTimeout) {
       clearTimeout(this.clickTimeout);
     }

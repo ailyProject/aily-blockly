@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const protocol = require('./protocol');
+const { nativeSerialInvocation } = require('./cloud-native-upload');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const exactVersion = value => typeof value === 'string' && /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/u.test(value);
 const fault = (code, message) => protocol.error(code, message);
@@ -34,7 +35,10 @@ function localDependencyPath(appDataPath, requirement) {
       || requirement.name !== '@aily-project/tool-' + requirement.id || !exactVersion(requirement.version)) {
     throw fault('UPLOAD_UNSUPPORTED', 'Cloud upload requires an exact uploader tool package.');
   }
-  const packageFile = path.join(appDataPath, 'node_modules', ...requirement.name.split('/'), 'package.json');
+  const packageName = requirement.name.split('/');
+  const isolated = path.join(appDataPath, '.aily-cloud-tools', 'lib', 'node_modules', ...packageName, 'package.json');
+  const packageFile = process.platform !== 'win32' && fs.existsSync(isolated) ? isolated
+    : path.join(appDataPath, 'node_modules', ...packageName, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(regular(packageFile), 'utf8'));
   if (pkg.name !== requirement.name || pkg.version !== requirement.version) throw fault('UPLOADER_MISSING', `Install ${requirement.name}@${requirement.version} for local upload.`);
   const base = path.join(appDataPath, 'tools');
@@ -87,14 +91,28 @@ function boardUploadConfig(record, request, staged, appDataPath) {
 }
 async function runCloudUpload(record, request, {staged,workspace,appDataPath,signal,onOutput=()=>{},assertCurrent,markDelegated,launch=spawn}={}) {
   verifyStagedUpload(record,staged); await assertCurrent(); signal.throwIfAborted();
-  const networkUpload=request.portType==='network-ota';
-  const config=networkUpload ? networkUploadConfig(record,request,staged) : boardUploadConfig(record,request,staged,appDataPath), configPath=path.join(workspace,'upload-config.json');
-  const metadata=JSON.parse(fs.readFileSync(staged.preprocessPath,'utf8'));
-  if(!networkUpload && config.portType!=='debugger' && !config.uploadParam)verifyRecipeFirmwarePaths(metadata.upload?.command,staged.buildPath);
-  fs.writeFileSync(configPath,JSON.stringify(config),{flag:'wx'});
+  const portType=request.portType||'serial';
+  if(staged.nativeUpload && staged.nativeUpload.transport!==portType){
+    throw fault('UPLOAD_INVALID','The selected device transport changed after preparing the cloud firmware.');
+  }
+  let invocation;
+  if(staged.nativeUpload?.serial){
+    const {requirement}=staged.nativeUpload.serial;
+    invocation=nativeSerialInvocation(staged,request.serialPort,localDependencyPath(appDataPath,requirement).directory);
+  }else{
+    const networkUpload=portType==='network-ota';
+    const config=networkUpload ? networkUploadConfig(record,request,staged) : boardUploadConfig(record,request,staged,appDataPath);
+    if(!networkUpload && config.portType!=='debugger' && !config.uploadParam){
+      const metadata=JSON.parse(fs.readFileSync(staged.preprocessPath,'utf8'));
+      verifyRecipeFirmwarePaths(metadata.upload?.command,staged.buildPath);
+    }
+    const configPath=path.join(workspace,'upload-config.json');
+    fs.writeFileSync(configPath,JSON.stringify(config),{flag:'wx',mode:0o600});
+    invocation={command:localNodeExecutable(),args:[path.join(childRoot,networkUpload?'scripts/network-ota-upload.js':'scripts/upload.js'),configPath]};
+  }
   markDelegated?.();
   return new Promise((resolve,reject) => {
-    const child=launch(localNodeExecutable(),[path.join(childRoot,networkUpload?'scripts/network-ota-upload.js':'scripts/upload.js'),configPath],{
+    const child=launch(invocation.command,invocation.args,{
       cwd:staged.buildPath,shell:false,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:localNodeEnvironment() });
     let stopping;
     const stop=() => { stopping ||= (async()=> {

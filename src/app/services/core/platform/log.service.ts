@@ -62,7 +62,7 @@ export class LogService {
     this.stateSubject.next({});
   }
 
-  update(opts: LogOptions): void {
+  update(opts: LogOptions): LogOptions | undefined {
     if (!opts.title && !opts.detail) return;
     const entry: LogOptions = {
       ...opts,
@@ -97,6 +97,7 @@ export class LogService {
       }
     }
     this.stateSubject.next(entry);
+    return cachedEntry;
   }
 
   async readPage(options: LogReadOptions = {}): Promise<LogPage> {

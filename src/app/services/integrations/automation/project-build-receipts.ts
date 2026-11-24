@@ -1,3 +1,5 @@
+import { canOfferLocalBuildFallback, type BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
+
 /** A build owns its Promise; a caller only owns a bounded observation of it. */
 export interface ProjectBuildRequest {
   version: 1;
@@ -18,7 +20,10 @@ interface BuildEntry {
   completedAt?: number;
   result?: Record<string, any>;
   waiters: Set<() => void>;
+  fallbackGuard?: () => void | Promise<void>;
 }
+
+type PersistedBuild = { state: ProjectBuildReceiptResponse['buildReceipt']['state']; result?: Record<string, any> };
 
 function fault(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: 'BUILD_RECEIPT_CONFLICT' });
@@ -39,27 +44,62 @@ export function readProjectBuildRequest(value: unknown): ProjectBuildRequest {
   return { version: 1, requestId: request.requestId, waitMs: request.waitMs ?? 0 };
 }
 
-/** Renderer-local, compile-only receipts. Refresh loses the receipt, never invents a result from old files. */
+/** Live replies retain the full result; original disk evidence survives renderer replacement. */
 export class ProjectBuildReceipts {
   private readonly entries = new Map<string, BuildEntry>();
 
-  constructor(private readonly retentionMs = 10 * 60_000, private readonly completedLimit = 32) {}
+  constructor(private readonly retentionMs = 10 * 60_000, private readonly completedLimit = 32,
+    private readonly readPersisted?: (project: string, requestId: string) => PersistedBuild | undefined) {}
 
   start(project: string, request: ProjectBuildRequest, signature: string,
-    run: () => Promise<Record<string, any>>): Promise<ProjectBuildReceiptResponse> {
+    run: (control: BuildLocalFallbackControl) => Promise<Record<string, any>>, fallbackFromRequestId?: string): Promise<ProjectBuildReceiptResponse> {
     this.prune();
     let entry = this.find(project, request.requestId);
     if (entry && entry.signature !== signature) throw fault('Build request ID already belongs to different compile options.');
     if (!entry) {
+      const original = this.readPersisted?.(project, request.requestId);
+      if (original) return Promise.resolve(this.response('project_build', project, request, original));
+      const fallback = fallbackFromRequestId === undefined ? undefined : this.find(project, fallbackFromRequestId);
+      if (fallbackFromRequestId !== undefined && (fallback?.completedAt === undefined || !fallback.fallbackGuard
+        || fallback.result?.['localFallback']?.fromRequestId !== fallbackFromRequestId)) {
+        throw Object.assign(new Error('No matching live cloud build failure permits this local compilation.'), { code: 'BUILD_FALLBACK_UNAVAILABLE' });
+      }
       entry = { project, signature, waiters: new Set() };
       this.entries.set(request.requestId, entry);
       const owned = entry;
-      void Promise.resolve().then(run).then(
-        result => { owned.result = result; },
-        error => { owned.result = { ok: false, operation: 'project_build', project,
-          code: error?.code, buildOutcome: error?.buildOutcome,
-          ...(error?.buildLog ? { buildLog: error.buildLog } : {}),
-          message: error instanceof Error ? error.message : String(error) }; },
+      const fallbackGuard = fallback?.fallbackGuard;
+      if (fallback) fallback.fallbackGuard = undefined;
+      const assertFallbackCurrent = async () => {
+        try { await fallbackGuard?.(); }
+        catch (error) {
+          throw Object.assign(new Error(error instanceof Error ? error.message : String(error)),
+            { code: 'BUILD_FALLBACK_UNAVAILABLE', buildOutcome: 'not-started' });
+        }
+      };
+      const control: BuildLocalFallbackControl = fallbackGuard
+        ? { local: { fromRequestId: fallbackFromRequestId!, assertCurrent: assertFallbackCurrent } }
+        : { recordCloudFailure: (error, guard) => { if (canOfferLocalBuildFallback(error)) owned.fallbackGuard = guard; } };
+      void Promise.resolve().then(async () => {
+        if (fallbackGuard) await assertFallbackCurrent();
+        return run(control);
+      }).then(
+        async result => {
+          owned.result = result;
+          if (result?.['ok'] === false && !['not-started', 'cancelled', 'unknown'].includes(result['buildOutcome']) && owned.fallbackGuard) {
+            try {
+              await owned.fallbackGuard();
+              owned.result = { ...result, localFallback: { fromRequestId: request.requestId } };
+            } catch { owned.fallbackGuard = undefined; }
+          } else owned.fallbackGuard = undefined;
+        },
+        error => {
+          owned.fallbackGuard = undefined;
+          owned.result = { ok: false, operation: 'project_build', project,
+            code: error?.code, buildOutcome: error?.buildOutcome ?? (fallbackGuard ? 'not-started' : undefined),
+            ...(error?.buildLog ? { buildLog: error.buildLog } : {}),
+            ...(error?.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
+            message: error instanceof Error ? error.message : String(error) };
+        },
       ).then(() => {
         owned.completedAt = Date.now();
         for (const finish of [...owned.waiters]) finish();
@@ -89,11 +129,18 @@ export class ProjectBuildReceipts {
         entry.waiters.add(finish);
       });
     }
-    return { ok: true, operation,
-      buildReceipt: { version: 1, requestId: request.requestId, project: entry?.project ?? project,
-        state: !entry ? 'unknown' : entry.completedAt === undefined ? 'running' : 'completed' },
-      ...(entry?.completedAt !== undefined ? { result: entry.result } : {}),
-    };
+    const recovered = !entry || entry.result?.['buildOutcome'] === 'unknown'
+      ? this.readPersisted?.(project, request.requestId) : undefined;
+    const observed = recovered ?? (entry
+      ? entry.completedAt === undefined ? { state: 'running' as const } : { state: 'completed' as const, result: entry.result }
+      : { state: 'unknown' as const });
+    return this.response(operation, entry?.project ?? project, request, observed);
+  }
+
+  private response(operation: ProjectBuildReceiptResponse['operation'], project: string, request: ProjectBuildRequest,
+    observed: PersistedBuild): ProjectBuildReceiptResponse {
+    return { ok: true, operation, buildReceipt: { version: 1, requestId: request.requestId, project, state: observed.state },
+      ...(observed.result ? { result: observed.result } : {}) };
   }
 
   private prune(): void {
@@ -105,4 +152,23 @@ export class ProjectBuildReceipts {
       if (entry.completedAt! < cutoff || excess > 0) { this.entries.delete(id); excess--; }
     }
   }
+}
+
+/** Project routing is checked by the caller. Native inspection binds the execution and current artifact separately. */
+export function readNativeBuildReceipt(project: string, requestId: string): PersistedBuild | undefined {
+  const value = window['builder']?.inspectBuildExecution?.(project, requestId);
+  if (value?.version !== 1 || value.buildRequestId !== requestId) return undefined;
+  if (value.status === 'running' && value.ownerState === 'live') return { state: 'running' };
+  if (!['completed', 'failed', 'cancelled', 'not-started'].includes(value.status)) return { state: 'unknown' };
+  const isPreprocess = value.operation === 'preprocess';
+  const operationName = isPreprocess ? '预处理' : '编译';
+  return { state: 'completed', result: { project, operation: 'project_build', ok: value.status === 'completed',
+    ...(isPreprocess ? { buildExecutionKind: 'preprocessing' } : {}),
+    ...(value.status === 'completed' && value.result && value.buildInput ? { buildInput: value.buildInput } : {}),
+    ...(value.buildSnapshot ? { buildSnapshot: value.buildSnapshot } : {}),
+    ...(value.buildHistory ? { buildHistory: value.buildHistory } : {}),
+    ...(value.buildLog ? { buildLog: value.buildLog } : {}),
+    ...(value.status === 'not-started' ? { buildOutcome: 'not-started', code: value.code, message: value.message } : {}),
+    ...(value.status === 'failed' ? { buildOutcome: 'failed', message: `原${operationName}失败。` } : {}),
+    ...(value.status === 'cancelled' ? { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', message: `原${operationName}已取消。` } : {}) } };
 }

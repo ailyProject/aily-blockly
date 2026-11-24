@@ -13,10 +13,12 @@ import {
   readProjectSaveRequest,
 } from '@domain/project/public-api';
 import { BuilderService, readPreparedBuildInput, requirePreparedBuildExecution } from '@domain/build/public-api';
+import type { BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { AiOperationRegistryService } from './ai-operation-registry.service';
 import { SubappAgentBridgeService } from '@integration/subapps/public-api';
-import { isAilyLibraryPackageName, isAilyScopedPackageName, requireProjectProgramPublication } from '@shared/public-api';
+import { isAilyLibraryPackageName, isAilyScopedPackageName, requireProjectProgramPublication,
+  type ProjectStorageAttachment } from '@shared/public-api';
 import { boardPublicationRequest } from '../../domains/project/project-board-publication-request';
 import {
   selectSerialPort,
@@ -26,26 +28,38 @@ import {
   UploaderService,
 } from '@domain/device/public-api';
 import { AbsGenerationToolsService } from '../../../integrations/blockly/abs/abs-generation-tools.service';
+import { readAbsBlockStateRequest, type AbsBlockStateUpdateRequest } from '../../../integrations/blockly/abs/abs-block-state';
 import { sameAbsProjectDirectory } from '../../../integrations/blockly/abs/abs-project-path';
 import { checkAbsDocumentation } from '../../../integrations/blockly/abs/abs-documentation';
-import { ABS_LIVE_PROTOCOL, absProtocolReply, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
+import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
+import { absWorkspaceProtocol } from '../../../integrations/blockly/abs/abs-workspace-protocol';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
-import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
+import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest } from './project-build-receipts';
 import { createProjectLifecycleAssertion, type ProjectLifecycleSnapshot } from './project-lifecycle-admission';
+import { ProjectCreateReceipts, readProjectCreateRequest, type ProjectCreateGuard } from './project-create-receipts';
+import { ProjectNavigationReceipts, readProjectNavigationRequest } from './project-navigation-receipts';
+import type { ProjectNavigationTransition } from '../../domains/project/project-navigation-transition';
 import { forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
 import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
 import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
-import { recoverAbsProjectOperation, settleAbsProjectTransaction } from '../../../integrations/blockly/abs/abs-project-restart';
+import { recoverAbsProjectOperation, settleAbsProjectOpen } from '../../../integrations/blockly/abs/abs-project-restart';
 import { AbsApplicationJournal } from '../../../integrations/blockly/abs/abs-application-journal';
 import { AbsOperationJournal } from '../../../integrations/blockly/abs/abs-operation-journal';
+import { absJson } from '../../../integrations/blockly/abs/abs-identity-map';
+import { applicationRequestKey, nativeSaveAdmissionIdentity, observedApplicationAdmission, OriginalRequestAdmissions, originalAdmissionOutcome,
+  type OriginalRequestAdmissionIdentity } from '../../../integrations/blockly/abs/original-request-admission';
+import { nativeSaveIdentity } from '../../../integrations/blockly/abs/abs-native-save-result';
+import { blockStatePublicationIdentity, blockStatePublicationReference } from '../../../integrations/blockly/abs/abs-native-save-protocol';
+import { observeNativePublication } from '../../../integrations/blockly/abs/abs-native-save-observation';
 import { inspectAbsBaselineRecovery, recoverAbsBaseline } from '../../../integrations/blockly/abs/abs-baseline-recovery';
 import { restoreAbsProjectCaches } from '../../../integrations/blockly/abs/abs-project-open';
 import { projectViewRecoveryFailure } from './project-view-recovery';
 import { importProjectMedia } from '../../../integrations/blockly/project-media-import';
 import { getBoardConfig, setBoardConfig } from '../../../integrations/blockly/board-config-operation';
 import { switchProjectBoard } from '../../../integrations/blockly/board-switch-operation';
+import { settleOriginalBoardEnvironment } from '../../../integrations/blockly/environment-settlement';
 import type { EditorOperationEvent } from '../../../integrations/blockly/editor-operation-event';
 import type { HostToolResult } from '../../../integrations/blockly/host-tool-result';
 import {
@@ -57,21 +71,32 @@ type BlocklyLiveOperationPayload = {
   requestId?: string;
   rendererGeneration?: number;
   lifecycle?: ProjectLifecycleSnapshot;
+  originalAdmissionAttachment?: ProjectStorageAttachment;
+  nativeSaveWriter?: { viewRevision: number; intentHash: string };
   path?: string;
   operation?: string;
   params?: Record<string, any>;
 };
 
 const PROJECT_MUTATIONS = new Set([
-  'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery',
+  'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery', 'abs_workspace_migrate',
   'library_history_navigation', 'library_runtime_sync', 'library_mutation_prepare', 'library_mutation_abort', 'set_board_config', 'project_save', 'blocks_tidy',
   'project_build', 'project_upload',
   'project_media_import',
 ]);
+const buildFallbackControl = Symbol('buildFallbackControl');
+type ProjectBuildParameters = Record<string, any> & { [buildFallbackControl]?: BuildLocalFallbackControl };
+const projectLockMaintenance = new Set(['retire_empty_project_lock', 'retire_project_file_lock']);
+const diskRecoveryObservations = new Set(['history_observe', 'read_draft']);
+
+function observesAbsDisk(payload: BlocklyLiveOperationPayload): boolean {
+  return payload.operation === 'abs_recovery' && diskRecoveryObservations.has(payload.params?.['action']);
+}
 
 // Backup/observation and environment-only operations are not program writers.
 function publishesProjectProgram(payload: BlocklyLiveOperationPayload): boolean {
   const { operation, params = {} } = payload;
+  if (operation === 'abs_protocol') return params['action'] === 'prepare_workspace_migration';
   if (['project_save', 'blocks_tidy', 'abs_apply', 'board_switch', 'set_board_config'].includes(operation || '')) return true;
   if (operation === 'abs_projection') return params['publish'] !== false;
   if (operation === 'blocks_set_state') return params['action'] !== 'inspect';
@@ -91,6 +116,9 @@ export class BlocklyLiveOperationBridgeService {
   private mutationSequence = 0;
   private buildReceipts?: ProjectBuildReceipts;
   private forkReceipts?: ProjectForkReceipts;
+  private createReceipts?: ProjectCreateReceipts;
+  private navigationReceipts?: ProjectNavigationReceipts;
+  private readonly pendingOriginalAdmissions = new Set<string>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -124,6 +152,10 @@ export class BlocklyLiveOperationBridgeService {
     ipcRenderer.on('cli-bridge:blockly-live-operation', (_event: unknown, payload: BlocklyLiveOperationPayload) => {
       void this.handleIpcPayload(ipcRenderer, payload);
     });
+    ipcRenderer.on('cli-bridge:project-navigation-stop', (_event: unknown, value: unknown) => {
+      const request = readProjectNavigationRequest(value, path => window['path'].isAbsolute(path));
+      if (request?.rendererGeneration === this.electronService.currentRendererGeneration) this.navigationReceipts?.stop(request);
+    });
     this.initialized = true;
   }
 
@@ -143,7 +175,20 @@ export class BlocklyLiveOperationBridgeService {
     }
 
     try {
+      const reportsCanvas = payload.operation === 'abs_apply'
+        || payload.operation === 'abs_recovery' && payload.params?.['action'] === 'candidate_capture';
+      const originalView = reportsCanvas ? this.canvasScope(payload) : undefined;
       const result = await this.ngZone.run(() => this.execute(payload));
+      if (originalView && result['ok'] === true) {
+        const observed = this.canvasScope(payload);
+        const workingRevision = payload.operation === 'abs_apply'
+          ? result['receipt']?.appliedRevision : result['capture']?.working?.revision;
+        if (typeof result['project'] === 'string'
+          && this.normalizePath(result['project']) === this.normalizePath(originalView.attachment.root)
+          && observed && absJson(observed) === absJson(originalView)
+          && Number.isSafeInteger(workingRevision) && workingRevision >= 0)
+          result['canvasVersion'] = { ...originalView, workingRevision };
+      }
       respond(result);
     } catch (error) {
       const original = error;
@@ -174,15 +219,44 @@ export class BlocklyLiveOperationBridgeService {
     // Deny legacy copy requests before allocating a receipt or destination.
     // File permission approval cannot authorize an internal recovery clone.
     if (payload.operation === 'project_fork') return forkProject(this.projectService, payload.path, payload.params || {});
+    if (payload.operation === 'project_canvas_status') return this.observeCanvasVersion(payload);
+    if (payload.operation === 'abs_admission_status') return this.observeApplicationAdmission(payload);
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_state')
+      return this.observeStatePublication(payload);
+    if (payload.operation === 'project_navigation_workspace_mode') return this.observeClosedWorkspaceMode(payload);
     const blocklyProgram = this.projectService.getProjectMode(payload.path || this.projectService.currentProjectPath) !== 'coder';
-    if (blocklyProgram && publishesProjectProgram(payload)) {
+    // Bind the original request before the live readiness and mutation gates.
+    // Invalid protocol messages cannot acquire an admission record.
+    const applyId = payload.operation === 'abs_apply' && payload.params?.['requestId'];
+    if (blocklyProgram && window['fs']?.projectSyncStorageVersion === 2
+      && typeof applyId === 'string' && payload.params?.['version'] === 2 && /^[A-Za-z0-9-]{16,80}$/.test(applyId)) {
+      const rejection = rejectAbsLiveRequest('abs_apply', payload.params);
+      if (rejection) return { ...rejection, project: this.projectService.currentProjectPath };
+      return this.executeApplyAdmission(payload, applyId);
+    }
+    const nativeSaveAdmission = blocklyProgram && window['fs']?.projectSyncStorageVersion === 2
+      && ['project_save', 'blocks_tidy'].includes(payload.operation || '') && payload.params?.['saveRequest']?.version === 2;
+    if (blocklyProgram && !nativeSaveAdmission && publishesProjectProgram(payload)) {
       try { requireProjectProgramPublication(); }
       catch (error) { return { ok: false, operation: payload.operation, commandDispatched: false,
         code: (error as any)?.code, message: error instanceof Error ? error.message : String(error) }; }
     }
+    if (blocklyProgram && payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update') {
+      let request: ReturnType<typeof readAbsBlockStateRequest>;
+      try {
+        request = readAbsBlockStateRequest(payload.params);
+      } catch (error) {
+        return { ...absPrecommitFailure('blocks_set_state', error), project: payload.path, commandDispatched: false };
+      }
+      if (request.action === 'update') return this.executeStateAdmission(payload, request);
+    }
     if (blocklyProgram && window['fs']?.nativeSaveReceiptVersion === 2 && ['project_save', 'blocks_tidy'].includes(payload.operation || '')
       && !Object.hasOwn(payload.params || {}, 'saveRequest')) return { ok: false, code: 'PROJECT_SAVE_PROTOCOL_UPGRADE_REQUIRED',
         operation: payload.operation, commandDispatched: false, message: 'A native save requires the matching original durable request.' };
+    if (payload.operation === 'project_board_environment_settle') return this.executeBoardEnvironmentSettlement(payload, blocklyProgram);
+    if (payload.operation === 'project_publication_prepare') return this.prepareOriginalSaveWriter(payload, blocklyProgram);
+    if (blocklyProgram && payload.nativeSaveWriter && ['set_board_config', 'board_switch'].includes(payload.operation || ''))
+      return this.executePreparedBoardPublication(payload);
     if (payload.operation === 'project_publication_status') {
       const params = payload.params || {}, project = params['project'] ?? payload.path;
       try {
@@ -212,9 +286,12 @@ export class BlocklyLiveOperationBridgeService {
         // Observation never creates a task, acquires a write lease, or redirects
         // an old request to whichever project happens to be active now.
         if (payload.operation === 'project_save_status') return await this.projectService.getProjectSaveReceipt(project, request);
-        return await this.projectService.startProjectSaveReceipt(project, request, () => request.version === 2
-          ? this.executeAdmittedOperation({ ...payload, path: project, params: {} }, request)
-          : this.executeAdmittedOperation({ ...payload, path: project, params: {} }));
+        const admitted = { ...payload, path: project, params: {} };
+        return await this.projectService.startProjectSaveReceipt(project, request, () => {
+          if (request.version !== 2) return this.executeAdmittedOperation(admitted);
+          if (!nativeSaveAdmission) return this.executeAdmittedOperation(admitted, request);
+          return this.executeSaveAdmission(admitted, project, request);
+        }, nativeSaveAdmission ? failure => this.executeSaveAdmission(admitted, project, request, failure) : undefined);
       } catch (error) {
         return { ok: false, operation: payload.operation, project, code: (error as any)?.code || 'PROJECT_SAVE_RECEIPT_FAILED',
           observation: { resultKnown: false, operationCancelled: false },
@@ -261,20 +338,365 @@ export class BlocklyLiveOperationBridgeService {
       try {
         const request = readProjectBuildRequest(payload.params?.['buildRequest']);
         if (!project) throw Object.assign(new Error('A build receipt requires its project path.'), { code: 'BUILD_RECEIPT_INVALID' });
-        const receipts = this.buildReceipts ??= new ProjectBuildReceipts();
-        if (payload.operation === 'project_build_status') return await receipts.status(project, request);
-        const params = { ...payload.params };
+        const receipts = this.buildReceipts ??= new ProjectBuildReceipts(undefined, undefined, (target, requestId) =>
+          this.normalizePath(target) === this.normalizePath(this.projectService.currentProjectPath)
+            ? readNativeBuildReceipt(target, requestId) : undefined);
+        const params: ProjectBuildParameters = { ...payload.params };
+        const hasFallback = Object.hasOwn(params, 'local_fallback_from_request_id');
+        if (payload.operation === 'project_build_status' && !hasFallback) return await receipts.status(project, request);
+        const fromRequestId = hasFallback ? readProjectBuildRequest({ version: 1, requestId: params['local_fallback_from_request_id'] }).requestId : undefined;
+        if (hasFallback && (payload.operation !== 'project_build' || params['preprocess_only'] === true
+          || params['clear_cache'] === true || request.requestId === fromRequestId)) {
+          throw Object.assign(new Error('A local fallback requires a new full compile request with its original cloud receipt.'), { code: 'BUILD_FALLBACK_UNAVAILABLE' });
+        }
         delete params['buildRequest'];
+        delete params['local_fallback_from_request_id'];
         params['buildLogRequestId'] = request.requestId;
-        const signature = JSON.stringify([params['preprocess_only'] === true, params['clear_cache'] === true]);
-        return await receipts.start(project, request, signature, () =>
-          this.executeAdmittedOperation({ ...payload, path: project, params }));
+        const signature = JSON.stringify([params['preprocess_only'] === true, params['clear_cache'] === true, fromRequestId]);
+        return await receipts.start(project, request, signature, control => {
+          if (control.local) params[buildFallbackControl] = control;
+          else if (params['preprocess_only'] !== true) {
+            const capture = () => window['fs']?.captureProjectAttachment?.(project) as ProjectStorageAttachment | undefined;
+            let attachment: ProjectStorageAttachment | undefined;
+            try { attachment = capture(); } catch { /* The original build can still run without a fallback receipt. */ }
+            if (attachment?.version === 1) params[buildFallbackControl] = {
+              recordCloudFailure: (error, assertSourceCurrent) => control.recordCloudFailure?.(error, async () => {
+                const checkAttachment = () => {
+                  if (JSON.stringify(capture()) !== JSON.stringify(attachment)) {
+                    throw Object.assign(new Error('The cloud build project is no longer the same physical project.'), { code: 'BUILD_FALLBACK_UNAVAILABLE' });
+                  }
+                };
+                checkAttachment();
+                await assertSourceCurrent();
+                checkAttachment();
+              }),
+            };
+          }
+          return this.executeAdmittedOperation({ ...payload, path: project, params });
+        }, fromRequestId);
       } catch (error) {
         return { ok: false, operation: payload.operation, project, code: (error as any)?.code, buildOutcome: 'not-started',
           message: error instanceof Error ? error.message : String(error) };
       }
     }
+    if (payload.operation === 'project_build' && Object.hasOwn(payload.params || {}, 'local_fallback_from_request_id')) {
+      return { ok: false, operation: payload.operation, buildOutcome: 'not-started', code: 'BUILD_FALLBACK_UNAVAILABLE',
+        message: 'Local fallback requires a new and original build receipt.' };
+    }
     return this.executeAdmittedOperation(payload);
+  }
+
+  private canvasScope(payload: BlocklyLiveOperationPayload) {
+    const project = this.projectService.currentProjectPath, rendererGeneration = payload.rendererGeneration;
+    const viewRevision = this.projectService.projectViewRevision;
+    if (!project || !payload.path || this.normalizePath(payload.path) !== this.normalizePath(project)
+      || typeof rendererGeneration !== 'number' || !Number.isSafeInteger(rendererGeneration) || rendererGeneration < 1
+      || rendererGeneration !== this.electronService.currentRendererGeneration
+      || !Number.isSafeInteger(viewRevision) || viewRevision < 0) return;
+    try {
+      const attachment: ProjectStorageAttachment | undefined = window['fs']?.captureProjectAttachment?.(project);
+      if (attachment?.version === 1) return { version: 1 as const, attachment, rendererGeneration, viewRevision };
+    } catch { /* The physical project is no longer verifiable. */ }
+  }
+
+  private observeCanvasVersion(payload: BlocklyLiveOperationPayload): Record<string, any> {
+    const params = payload.params ?? {}, probeId = params['probeId'];
+    const operation = 'project_canvas_status';
+    if (params['version'] !== 1 || typeof probeId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(probeId)
+      || Object.keys(params).some(key => key !== 'version' && key !== 'probeId'))
+      return { ok: false, operation, code: 'PROJECT_CANVAS_STATUS_INVALID' };
+    const unknown = { ok: false, operation, probeId, code: 'PROJECT_CANVAS_STATUS_UNKNOWN' };
+    try {
+      const before = this.canvasScope(payload), project = this.projectService.currentProjectPath;
+      if (!before || this.projectService.getProjectMode(project) !== 'blockly'
+        || !this.projectService.getBlocklyProjectLoadStatus(project).ready
+        || this.projectService.isProjectTransitionInProgress(project)) return unknown;
+      const workingRevision = this.blocklyEditor.readCanvasWorkingRevision();
+      if (typeof workingRevision !== 'number' || !Number.isSafeInteger(workingRevision) || workingRevision < 0
+        || absJson(this.canvasScope(payload) ?? null) !== absJson(before)) return unknown;
+      return { ok: true, operation, probeId, project, canvasVersion: { ...before, workingRevision } };
+    } catch { return unknown; }
+  }
+
+  private async admissionGuard(requested: string | undefined): Promise<{ project: string; guard: () => void } | undefined> {
+    const project = this.projectService.currentProjectPath;
+    if (!project) return;
+    const current = this.projectService.captureCurrentProjectGuard();
+    if (requested && !await sameAbsProjectDirectory(requested, project, window['fs']?.realpathAsync, window['platform']?.isWindows === true)) return;
+    if (!current()) return;
+    return { project, guard: () => {
+      if (!current()) throw Object.assign(new Error('The original request project changed during admission.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+    } };
+  }
+
+  private async observeClosedWorkspaceMode(payload: BlocklyLiveOperationPayload) {
+    const { operation, path: project, lifecycle, rendererGeneration } = payload;
+    if (!project || lifecycle?.sourceProject !== null || lifecycle.rendererGeneration !== rendererGeneration
+      || this.projectService.currentProjectPath || this.projectService.getProjectMode(project) !== 'blockly') {
+      return { ok: false, operation, code: 'PROJECT_LIFECYCLE_TARGET_UNCONFIRMED' };
+    }
+    const revision = this.projectService.projectViewRevision;
+    return absWorkspaceProtocol(project, { version: 1 }, () => {
+      if (this.projectService.currentProjectPath || this.projectService.projectViewRevision !== revision) {
+        throw Object.assign(new Error('The original closed project view changed.'), { code: 'PROJECT_LIFECYCLE_CONTEXT_CHANGED' });
+      }
+    });
+  }
+
+  /** Read the exact original application independently of the current canvas. */
+  private async observeApplicationAdmission(payload: BlocklyLiveOperationPayload) {
+    const project = payload.path, { version, requestId, originalTargetPid } = payload.params ?? {};
+    const unknown = { ok: false, operation: 'abs_apply', project, publication: { status: 'UNKNOWN' },
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false } };
+    if (typeof project !== 'string' || !window['path']?.isAbsolute(project) || version !== 2
+      || typeof requestId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(requestId)
+      || originalTargetPid !== undefined && (!Number.isSafeInteger(originalTargetPid) || originalTargetPid <= 0)
+      || Object.keys(payload.params ?? {}).some(key => !['version', 'requestId', 'originalTargetPid'].includes(key))) {
+      return { ...unknown, code: 'ABS_ADMISSION_STATUS_INVALID' };
+    }
+    try {
+      const port = await openAbsHostStorage(project, () => {});
+      const admissions = new OriginalRequestAdmissions(port, project);
+      const record = await admissions.observe({ operation: 'abs_apply', requestId });
+      if (record && (originalTargetPid === undefined || record.executor.hostPid === originalTargetPid))
+        return observedApplicationAdmission(record, port.executor);
+      if (!record && originalTargetPid !== undefined) {
+        if (await port.read(await applicationRequestKey(requestId)) !== null) {
+          const { result } = await new AbsApplicationJournal(port, project).observe(requestId, () => {}, originalTargetPid);
+          if (result.publicationObservation?.executor.hostPid === originalTargetPid
+            || result.writerObservation?.executor.hostPid === originalTargetPid) return result;
+        }
+        const writer = await admissions.observeExitedApplicationWriter(requestId, originalTargetPid);
+        if (writer) return { ...unknown, code: 'ABS_APPLY_WRITER_UNAVAILABLE',
+          writerObservation: { version: 1, ...writer, observer: { hostPid: port.executor?.hostPid ?? null } } };
+      }
+    } catch { /* Keep the result unknown without an exact original proof. */ }
+    return { ...unknown, code: 'ABS_APPLY_OBSERVATION_UNKNOWN' };
+  }
+
+  private async executeBoardEnvironmentSettlement(payload: BlocklyLiveOperationPayload, blocklyProgram: boolean) {
+    const params = payload.params || {}, project = payload.path, operation = 'project_board_environment_settle';
+    const hostPid = params['originalTargetPid'];
+    let requestId: string | undefined;
+    try {
+      const request = readProjectSaveRequest(params['saveRequest']);
+      requestId = request.requestId;
+      if (!blocklyProgram || request.version !== 2 || request.operation !== 'project_save' || !request.input
+        || !Number.isSafeInteger(hostPid) || hostPid < 1 || typeof project !== 'string' || !window['path']?.isAbsolute(project)
+        || Object.keys(params).some(key => !['saveRequest', 'originalTargetPid'].includes(key))) {
+        throw Object.assign(new Error('Board settlement requires an exact project and original publication.'),
+          { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
+      }
+      const scope = await this.admissionGuard(project);
+      if (!scope) throw Object.assign(new Error('The original board project is no longer open in this host.'),
+        { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+      const host = window['libraryDependencies'];
+      if (host?.environmentVersion !== 2 || typeof host.pendingEnvironment !== 'function' || typeof host.settleLinkedEnvironment !== 'function')
+        throw Object.assign(new Error('The matching linked dependency publisher is unavailable.'),
+          { code: 'LIBRARY_ENVIRONMENT_UNAVAILABLE' });
+      const io = await openAbsHostStorage(scope.project, scope.guard);
+      const identity = await nativeSaveIdentity(io.attachment?.root ?? scope.project, request);
+      const environmentStatus = await settleOriginalBoardEnvironment(io, scope.project, { request: identity, hostPid }, host, scope.guard);
+      return { ok: true, operation, project, requestId, environmentStatus };
+    } catch (error) {
+      return { ok: false, operation, project, requestId, environmentStatus: 'pending',
+        code: (error as any)?.code ?? 'LIBRARY_ENVIRONMENT_UNCERTAIN',
+        message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async executeApplyAdmission(payload: BlocklyLiveOperationPayload, requestId: string): Promise<Record<string, any>> {
+    const scope = await this.admissionGuard(payload.path);
+    const rejected = { ok: false, operation: 'abs_apply', code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+      message: 'The original application target is no longer open in this host.' };
+    const project = scope?.project ?? payload.path;
+    if (!project || (!scope && !payload.originalAdmissionAttachment)) return rejected;
+    const key = project + '\0' + requestId;
+    const pending = {
+      ok: false, operation: 'abs_apply', project, code: 'ABS_APPLY_OBSERVATION_PENDING',
+      publication: { status: 'UNKNOWN' }, message: 'Observe the original application; it is still settling.',
+    };
+    if (this.pendingOriginalAdmissions.has(key)) return pending;
+    this.pendingOriginalAdmissions.add(key);
+    try {
+      const { port, settlementGuard } = await this.openAdmissionStorage(payload, project, scope?.guard);
+      const identity = { operation: 'abs_apply' as const, requestId };
+      const admissions = new OriginalRequestAdmissions(port, project);
+      const priorAdmission = await admissions.observe(identity);
+      if (priorAdmission) return observedApplicationAdmission(priorAdmission);
+      try { await admissions.assertApplicationWriter(requestId, payload.params?.['validation']?.candidate?.hash, port); }
+      catch { return pending; }
+      if (await port.read(await applicationRequestKey(requestId)) !== null) {
+        return scope ? (await new AbsApplicationJournal(port, project).observe(requestId, scope.guard)).result : pending;
+      }
+      return await this.settleAdmissionFailure(admissions, identity, settlementGuard, markWriter => {
+        if (!scope) return Promise.resolve(rejected);
+        scope.guard();
+        try { requireProjectProgramPublication(); }
+        catch (error) { return Promise.resolve(absPrecommitFailure('abs_apply', error)); }
+        return this.executeAdmittedOperation({ ...payload, path: project }, undefined, () => { scope.guard(); markWriter(); });
+      });
+    } finally {
+      this.pendingOriginalAdmissions.delete(key);
+    }
+  }
+
+  private observeStatePublication(payload: BlocklyLiveOperationPayload) {
+    const path = payload.path;
+    if (typeof path !== 'string' || !window['path']?.isAbsolute(path)) {
+      return { ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID', candidateApplied: false };
+    }
+    return this.absGenerationTools.observeBlockState(path, payload.params ?? {}, () => this.projectService.projectViewRevision);
+  }
+
+  private async executeStateAdmission(payload: BlocklyLiveOperationPayload, request: AbsBlockStateUpdateRequest) {
+    const scope = await this.admissionGuard(payload.path);
+    const path = scope?.project ?? payload.path;
+    const refusal = { ok: false, operation: 'blocks_set_state', code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+      message: 'The original block state target is no longer open.' };
+    if (!path || !scope && !payload.originalAdmissionAttachment) return { ...refusal, commandDispatched: false };
+    const { port, settlementGuard } = await this.openAdmissionStorage(payload, path, scope?.guard);
+    const project = port.attachment?.root ?? path;
+    const nativeRequest = await blockStatePublicationIdentity(project, request);
+    const identity = nativeSaveAdmissionIdentity(nativeRequest)!;
+    const statePublication = blockStatePublicationReference(request, nativeRequest);
+    const key = project + '\0' + nativeRequest.requestId;
+    const pending = { ok: false, operation: 'blocks_set_state', project, statePublication,
+      code: 'ABS_BLOCK_STATE_PUBLICATION_PENDING', publication: { status: 'UNKNOWN' }, candidateApplied: false };
+    if (this.pendingOriginalAdmissions.has(key)) return pending;
+    this.pendingOriginalAdmissions.add(key);
+    try {
+      const admissions = new OriginalRequestAdmissions(port, project);
+      const read = () => observeNativePublication(port, project, nativeRequest, { originalTargetPid: port.executor?.hostPid ?? undefined });
+      const existing = await read();
+      if (existing) return { ...pending, ...existing, ...existing.result, operation: 'blocks_set_state' };
+      const result = await this.settleAdmissionFailure(admissions, identity, settlementGuard, async markWriter => {
+        if (!scope) return refusal;
+        scope.guard();
+        const writer = await admissions.reserveSave(nativeRequest, this.projectService.projectViewRevision, scope.guard);
+        if (!writer) return pending;
+        return this.executeAdmittedOperation({ ...payload, path }, undefined, () => { scope.guard(); markWriter(); });
+      });
+      if (result['admission']?.status !== 'NOT_STARTED') return result;
+      const observed = await read();
+      return observed
+        ? { ...pending, ...observed, ...observed.result, ...result, statePublication }
+        : pending;
+    } finally {
+      this.pendingOriginalAdmissions.delete(key);
+    }
+  }
+
+  private async executeSaveAdmission(payload: BlocklyLiveOperationPayload, path: string, request: ProjectSaveRequest,
+    refusal?: { code: string; message: string }) {
+    const scope = refusal ? undefined : await this.admissionGuard(path);
+    const rejected = { ok: false, operation: request.operation, ...(refusal ?? {
+      code: 'PROJECT_ADMISSION_CONTEXT_STALE', message: 'The original save target is no longer open in this host.' }) };
+    if (!scope && !payload.originalAdmissionAttachment) return rejected;
+    const project = scope?.project ?? path;
+    const { port, settlementGuard } = await this.openAdmissionStorage(payload, project, scope?.guard);
+    const root = port.attachment?.root ?? project;
+    const nativeRequest = await nativeSaveIdentity(root, request), identity = nativeSaveAdmissionIdentity(nativeRequest)!;
+    const admissions = new OriginalRequestAdmissions(port, root);
+    await admissions.assertSaveWriter(nativeRequest, port, payload.nativeSaveWriter);
+    if (payload.operation !== request.operation && (await admissions.observe(identity)
+      || await new AbsOperationJournal(port, root).findDocumentSave(nativeRequest, settlementGuard))) {
+      return this.projectService.observeProjectPublication(root, request, port.executor!.hostPid);
+    }
+    return this.settleAdmissionFailure(admissions, identity, settlementGuard, markWriter => {
+      if (!scope || payload.nativeSaveWriter && payload.nativeSaveWriter.viewRevision !== this.projectService.projectViewRevision)
+        return Promise.resolve(rejected);
+      scope.guard();
+      requireProjectProgramPublication();
+      return this.executeAdmittedOperation(payload, request, () => { scope.guard(); markWriter(); });
+    });
+  }
+
+  private async prepareOriginalSaveWriter(payload: BlocklyLiveOperationPayload, blocklyProgram: boolean) {
+    const operation = 'project_publication_prepare';
+    const params = payload.params || {}, path = payload.path;
+    try {
+      const request = readProjectSaveRequest(params['saveRequest']);
+      if (!blocklyProgram || request.version !== 2 || !path
+        || !window['path']?.isAbsolute(path) || !payload.originalAdmissionAttachment
+        || params['project'] !== undefined && this.normalizePath(params['project']) !== this.normalizePath(path)
+        || Object.keys(params).some(key => !['project', 'saveRequest'].includes(key)))
+        throw Object.assign(new Error('Preparing a save requires the exact original active project and native request.'), { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
+      const scope = await this.admissionGuard(path);
+      const revision = this.projectService.projectViewRevision;
+      const guard = () => {
+        if (!scope || this.projectService.projectViewRevision !== revision)
+          throw Object.assign(new Error('The original save canvas changed.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+        scope.guard();
+      };
+      guard();
+      requireProjectProgramPublication();
+      const port = await openAbsHostStorage(path, guard);
+      if (absJson(port.attachment) !== absJson(payload.originalAdmissionAttachment))
+        throw Object.assign(new Error('The original physical save target changed.'), { code: 'PROJECT_ADMISSION_ATTACHMENT_CHANGED' });
+      const project = port.attachment?.root ?? path;
+      const identity = await nativeSaveIdentity(project, request);
+      const saveWriter = await new OriginalRequestAdmissions(port, project).reserveSave(identity, revision, guard);
+      if (!saveWriter) return { ok: false, operation, project, code: 'PROJECT_SAVE_REQUEST_CONSUMED', commandDispatched: false };
+      return { ok: true, operation, project, saveWriter };
+    } catch (error) {
+      return { ok: false, operation, code: (error as any)?.code ?? 'PROJECT_SAVE_RECEIPT_FAILED',
+        commandDispatched: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async executePreparedBoardPublication(payload: BlocklyLiveOperationPayload) {
+    const path = payload.path, params = payload.params || {};
+    if (!path) return { ok: false, code: 'PROJECT_SAVE_RECEIPT_INVALID', commandDispatched: false };
+    const input = payload.operation === 'board_switch'
+      ? { kind: 'board-switch' as const, boardName: params['boardName'] }
+      : { kind: 'board-config' as const, configKey: params['config_key'], configValue: params['config_value'] };
+    const request = boardPublicationRequest(input, readProjectSaveRequest(params['saveRequest']));
+    const key = path + '\0' + request.requestId;
+    const pending = { ok: false, operation: payload.operation, project: path, code: 'PROJECT_SAVE_OBSERVATION_REQUIRED',
+      publication: { status: 'UNKNOWN' } };
+    if (this.pendingOriginalAdmissions.has(key)) return pending;
+    this.pendingOriginalAdmissions.add(key);
+    try {
+      return await this.executeSaveAdmission(payload, path, request);
+    } finally {
+      this.pendingOriginalAdmissions.delete(key);
+    }
+  }
+
+  private async openAdmissionStorage(payload: BlocklyLiveOperationPayload, project: string, activeGuard: (() => void) | undefined) {
+    // The main process supplies the original physical scope before forwarding
+    // the command. The native lock still guards that exact storage throughout
+    // settlement. Only the writer continues to require the active canvas.
+    const attachment = payload.originalAdmissionAttachment;
+    const settlementGuard = attachment ? () => undefined : activeGuard;
+    if (!settlementGuard) throw new Error('Original admission settlement requires a project guard.');
+    const port = await openAbsHostStorage(project, settlementGuard);
+    if (attachment && absJson(attachment) !== absJson(port.attachment)) throw Object.assign(
+      new Error('The original physical project changed before admission settlement.'),
+      { code: 'PROJECT_ADMISSION_ATTACHMENT_CHANGED' });
+    return { port, settlementGuard };
+  }
+
+  private async settleAdmissionFailure(admissions: OriginalRequestAdmissions, identity: OriginalRequestAdmissionIdentity,
+    guard: () => void, run: (markWriter: () => void) => Promise<Record<string, any>>) {
+    let writerReached = false, result: Record<string, any>;
+    try { result = await run(() => { guard(); writerReached = true; }); }
+    catch (error) {
+      if (writerReached) throw error;
+      result = { ok: false, code: (error as any)?.code, message: error instanceof Error ? error.message : String(error) };
+    }
+    // The ABS coordinator also reports prechecks inside apply as explicitly
+    // not-started. No other post-admission failure can acquire this proof.
+    const application = identity.operation === 'abs_apply';
+    if (result['ok'] !== false || writerReached && !(application && result['application']?.status === 'NOT_STARTED'
+      && result['publication']?.status === 'NOT_COMMITTED')) return result;
+    const code = result['code'] ?? result['reason'] ?? 'PROJECT_OPERATION_NOT_STARTED';
+    const message = result['message'] ?? 'The original operation was rejected before starting.';
+    const retained = await admissions.reject(identity, { code, message }, guard);
+    if (!retained) return { ok: false, operation: identity.operation, code: 'PROJECT_ADMISSION_OBSERVATION_REQUIRED',
+      message: 'The original operation has an execution record. Observe its result.' };
+    return { ...result, ...originalAdmissionOutcome(retained) };
   }
 
   /** A complete disk fork need not destroy an unserialisable source renderer.
@@ -381,25 +803,36 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeAdmittedOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest): Promise<Record<string, any>> {
+  private async executeAdmittedOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest,
+    markWriter?: () => void): Promise<Record<string, any>> {
     const rejection = rejectAbsLiveRequest(payload.operation || '', payload.params || {});
     if (rejection) return { ...rejection, project: this.projectService.currentProjectPath };
-    const execute = () => nativeSaveRequest ? this.executeOperation(payload, nativeSaveRequest) : this.executeOperation(payload);
+    const execute = () => markWriter ? this.executeOperation(payload, nativeSaveRequest, undefined, markWriter)
+      : nativeSaveRequest ? this.executeOperation(payload, nativeSaveRequest) : this.executeOperation(payload);
     // The coordinator consumes exact journal authority before invoking the
     // domain lifecycle gate. A generic mutation mask would block its own
     // reopen; all other recovery/writing operations retain their admission.
-    if (payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'release') return execute();
+    if (payload.operation === 'library_mutation_abort' || (payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'release')) return execute();
     const journalReopen = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'reopen';
     const recoveryInspection = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'inspect';
     const candidateBackup = payload.operation === 'abs_recovery'
       && ['preserve_candidate', 'read_candidate'].includes(payload.params?.['action']);
-    const runtimeRecovery = payload.operation === 'abs_recovery' && ['recover_runtime', 'recover_project', 'observe_apply'].includes(payload.params?.['action']);
+    const runtimeRecovery = payload.operation === 'abs_recovery'
+      && (['recover_runtime', 'recover_project', 'observe_apply', 'cancel_project'].includes(payload.params?.['action'])
+        || projectLockMaintenance.has(payload.params?.['action']));
     const recoveryPath = payload.path || this.projectService.currentProjectPath;
+    // A navigation can already own the target even though its editor failed or
+    // is still loading. Advertise only the verified on-disk engine in that case.
+    if (payload.operation === 'abs_protocol' && payload.params?.['action'] === 'prepare_workspace_migration'
+      && this.projectService.getProjectMode(recoveryPath) === 'blockly' && !this.getProjectRuntimeStatus(recoveryPath).ready) {
+      return this.observeDeferredWorkspacePreparation(payload);
+    }
     const recoveryDependencyReload = payload.operation === 'library_runtime_sync'
       && this.projectService.hasSavedRecoveryTarget?.(recoveryPath)
       && this.projectService.getBlocklyProjectLoadStatus(recoveryPath).ready === false;
-    if (journalReopen || recoveryInspection || candidateBackup || runtimeRecovery || recoveryDependencyReload || (!PROJECT_MUTATIONS.has(payload.operation || '')
-      && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update'))) return execute();
+    if (journalReopen || recoveryInspection || observesAbsDisk(payload) || candidateBackup || runtimeRecovery || recoveryDependencyReload || (!PROJECT_MUTATIONS.has(payload.operation || '')
+      && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update')
+      && !(payload.operation === 'abs_protocol' && payload.params?.['action'] === 'prepare_workspace_migration'))) return execute();
     const projectPath = payload.path || this.projectService.currentProjectPath;
     if (this.projectService.isProjectTransitionInProgress(projectPath)
       && !(this.projectService.isLibraryMutationInProgress(projectPath)
@@ -414,12 +847,72 @@ export class BlocklyLiveOperationBridgeService {
     finally { this.aiOperations.setActive(source, false); }
   }
 
+  private async observeDeferredWorkspacePreparation(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+    const input = payload.params || {};
+    if (input['version'] !== 1 || Object.keys(input).some(key => !['version', 'action'].includes(key))) {
+      return { ok: false, operation: 'abs_protocol', commandDispatched: false, code: 'ABS_REQUEST_INVALID',
+        message: 'Migration preparation requires version 1 and its runtime action.' };
+    }
+    const scope = await this.admissionGuard(payload.path);
+    if (!scope || this.projectService.getProjectMode(scope.project) !== 'blockly') {
+      return { ok: false, operation: 'abs_protocol', commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+        message: 'The original prepared workspace no longer belongs to the current project.' };
+    }
+    const reply = await absWorkspaceProtocol(scope.project, { version: 1 }, scope.guard);
+    return reply.ok && reply.protocol && 'workspaceMode' in reply.protocol && reply.protocol.workspaceMode === 'overlay-v1'
+      ? { ...reply, migrationDeferred: { version: 1, reason: 'editor-not-ready' } } : reply;
+  }
+
   private isOwnedLibraryHistorySync(payload: BlocklyLiveOperationPayload, projectPath: string): boolean {
     return payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'synchronize'
       && this.projectService.ownsLibraryHistoryNavigation(payload.params['token'], projectPath);
   }
 
-  private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async retireProjectLock(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+    const { path, params = {}, originalAdmissionAttachment } = payload;
+    const { version, action, requestId, attachment, marker } = params;
+    const result = { operation: 'abs_recovery', project: path };
+    const complete = action === 'retire_project_file_lock';
+    const allowed = ['version', 'action', 'requestId', 'attachment', 'marker'];
+    if (version !== 2 || !path || !window['path']?.isAbsolute(path)
+      || Object.keys(params).some(key => !allowed.includes(key)) || !attachment || !marker) {
+      return { ...result, ok: false, code: 'ABS_REQUEST_INVALID' };
+    }
+    const stale = () => Object.assign(new Error('The project no longer owns this lock recovery.'), { code: 'PROJECT_ADMISSION_CONTEXT_STALE' });
+    try {
+      const view = this.projectService.projectViewRevision, renderer = this.electronService.currentRendererGeneration;
+      const scope = await this.admissionGuard(path);
+      if (!scope || !originalAdmissionAttachment || this.projectService.getProjectMode(scope.project) !== 'blockly') throw stale();
+      const current = () => {
+        scope.guard();
+        if (this.projectService.projectViewRevision !== view || this.electronService.currentRendererGeneration !== renderer
+          || payload.rendererGeneration !== undefined && payload.rendererGeneration !== renderer
+          || this.projectService.isProjectTransitionInProgress(scope.project)) throw stale();
+      };
+      const port = await openAbsHostStorage(scope.project, current);
+      if (absJson(port.attachment) !== absJson(originalAdmissionAttachment)
+        || absJson(port.attachment) !== absJson(attachment)) throw stale();
+      const retire = complete ? port.retireProjectFileLock : port.retireEmptyProjectFileLock;
+      if (!retire) return { ...result, ok: false, code: 'PROJECT_LOCK_RECOVERY_UNSUPPORTED' };
+      const retired = await retire({ attachment, marker });
+      return { ...result, project: scope.project, ok: true, receipt: { version, action, requestId }, retired };
+    } catch (error) {
+      return { ...result, ok: false, code: (error as { code?: string })?.code ?? 'PROJECT_LOCK_RECOVERY_UNAVAILABLE' };
+    }
+  }
+
+  private async executeOperation(payload: BlocklyLiveOperationPayload, nativeSaveRequest?: ProjectSaveRequest, lifecycleOwner?: symbol,
+    markWriter?: () => void,
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>,
+    navigation?: { requestId: string; transition: ProjectNavigationTransition }): Promise<Record<string, any>> {
+    if (payload.operation === 'project_navigation_status'
+      || ['project_open', 'project_close'].includes(payload.operation || '') && Object.hasOwn(payload.params || {}, 'navigationRequest')) {
+      return this.executeProjectNavigationSettlement(payload);
+    }
+    if (payload.operation === 'project_create_status' || payload.operation === 'project_create_cancel'
+      || payload.operation === 'project_create' && Object.hasOwn(payload.params || {}, 'createRequest')) {
+      return this.executeProjectCreateSettlement(payload);
+    }
     if (payload.lifecycle !== undefined && lifecycleOwner === undefined
       && ['project_create', 'project_open', 'project_close', 'project_reload'].includes(payload.operation || '')) {
       const assertCurrent = createProjectLifecycleAssertion(payload.lifecycle,
@@ -462,7 +955,28 @@ export class BlocklyLiveOperationBridgeService {
         inProgress: this.absApplyInProgress,
       };
     }
-    const inspection = ['project_load_status', 'app_info', 'search_boards_libraries'].includes(payload.operation || '');
+    if (payload.operation === 'abs_recovery' && projectLockMaintenance.has(payload.params?.['action'])) {
+      return this.retireProjectLock(payload);
+    }
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'cancel_project') {
+      const { path, params } = payload;
+      if (params['version'] !== 2 || !path || !window['path']?.isAbsolute(path)
+        || Object.keys(params).some(key => !['version', 'action', 'requestId'].includes(key))) {
+        return { ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID' };
+      }
+      return this.projectService.cancelFailedBlocklyProject(path, params['requestId']);
+    }
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project' && payload.params?.['observe'] === true) {
+      const active = this.projectService.currentProjectPath, original = payload.path;
+      if (original && !window['path']?.isAbsolute(original)) return { ok: false, operation: 'abs_recovery', code: 'ABS_REQUEST_INVALID' };
+      const matches = original && active && await sameAbsProjectDirectory(original, active,
+        window['fs']?.realpathAsync, window['platform']?.isWindows === true);
+      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], true, undefined, undefined,
+        matches ? active : original);
+    }
+    const inspection = ['project_load_status', 'app_info', 'search_boards_libraries'].includes(payload.operation || '')
+      || payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_apply'
+      || observesAbsDisk(payload);
     const buildNotStarted = payload.operation === 'project_build' ? { buildOutcome: 'not-started' } : {};
     if (this.boardSwitchInProgress && !inspection) {
       return { ok: false, ...buildNotStarted, reason: 'board_switch_in_progress', message: '开发板正在切换，请等待当前操作完成。' };
@@ -474,22 +988,29 @@ export class BlocklyLiveOperationBridgeService {
       return forkProject(this.projectService, payload.path, payload.params || {});
     }
     if (payload.operation === 'project_open') {
-      return this.executeProjectOpen(payload.path || '', lifecycleOwner);
+      return onViewActivated ? this.executeProjectOpen(payload.path || '', lifecycleOwner, onViewActivated, navigation)
+        : this.executeProjectOpen(payload.path || '', lifecycleOwner);
     }
     if (payload.operation === 'project_close') {
-      return this.executeProjectClose(payload.path, lifecycleOwner);
+      return onViewActivated ? this.executeProjectClose(payload.path, lifecycleOwner, onViewActivated)
+        : this.executeProjectClose(payload.path, lifecycleOwner);
     }
     if (payload.operation === 'project_load_status') {
       const path = payload.path || this.projectService.currentProjectPath;
+      const buildPreparation = {
+        dependenciesPreparing: this.projectService.isProjectDependencyPreparationInProgress(path),
+        compileBackend: this.projectService.isCloudBuild(path) ? 'cloud' : 'local',
+      };
       if (this.projectService.getProjectMode(path) === 'coder') {
         const opened = this.projectService.coderProjects.some(project => this.normalizePath(project.path) === this.normalizePath(path));
         const ready = opened && this.coderRuntime.getSession(path).editorReady;
-        return { ok: opened, operation: payload.operation, project: path, state: ready ? 'loaded' : opened ? 'loading' : 'default', ready };
+        return { ok: opened, operation: payload.operation, project: path, state: ready ? 'loaded' : opened ? 'loading' : 'default', ready, ...buildPreparation };
       }
       return {
         ok: true,
         operation: 'project_load_status',
         ...this.projectService.getBlocklyProjectLoadStatus(payload.path || undefined),
+        ...buildPreparation,
       };
     }
     if (payload.operation === 'app_info') {
@@ -570,14 +1091,31 @@ export class BlocklyLiveOperationBridgeService {
       this.projectService.releaseLibraryHistoryNavigation(payload.params['token']);
       return { ok: true };
     }
+    if (payload.operation === 'library_mutation_abort') {
+      const current = this.projectService.currentProjectPath;
+      const matches = payload.path && current && await sameAbsProjectDirectory(payload.path, current,
+        window['fs']?.realpathAsync, window['platform']?.isWindows === true);
+      await this.projectService.abortLibraryMutation(payload.params?.['token'], payload.params?.['requestId'], matches ? current : payload.path);
+      return { ok: true, operation: payload.operation };
+    }
     const requestedProject = payload.path;
     const currentProject = this.projectService.currentProjectPath;
+    const recoveryView = this.projectService.projectViewRevision;
     if (!currentProject) {
       return { ok: false, ...buildNotStarted, message: '当前主程序未打开项目' };
     }
     const matchesProject = !requestedProject || await sameAbsProjectDirectory(requestedProject, currentProject,
       window['fs']?.realpathAsync, window['platform']?.isWindows === true);
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project'
+      && (recoveryView !== this.projectService.projectViewRevision || payload.rendererGeneration !== undefined
+        && payload.rendererGeneration !== this.electronService.currentRendererGeneration)) {
+      return { ok: false, operation: 'abs_recovery', project: currentProject, code: 'PROJECT_RECOVERY_CONTEXT_STALE' };
+    }
     if (!matchesProject || currentProject !== this.projectService.currentProjectPath) {
+      if (payload.operation === 'project_reload') return {
+        ok: false, operation: 'project_reload', code: 'PROJECT_RELOAD_TARGET_MISMATCH', commandDispatched: false,
+        message: 'Reload requires the currently open project. Use the project-open operation to switch projects.',
+      };
       return {
         ok: false,
         ...buildNotStarted,
@@ -588,11 +1126,13 @@ export class BlocklyLiveOperationBridgeService {
 
     // Static negotiation must remain reachable after failed loading. Its route
     // is still bound to this original project and its actual project mode.
-    if (payload.operation === 'abs_protocol') {
+    if (payload.operation === 'abs_protocol' && payload.params?.['action'] !== 'prepare_workspace_migration') {
       if (this.projectService.getProjectMode(currentProject) !== 'blockly') return {
         ok: false, operation: 'abs_protocol', project: currentProject, code: 'ABS_WORKING_CANDIDATE_UNSUPPORTED',
         message: 'This project is not a Blockly program.' };
-      return absProtocolReply(currentProject, payload.params || {});
+      return absWorkspaceProtocol(currentProject, payload.params || {}, () => {
+        if (this.projectService.currentProjectPath !== currentProject) throw new Error('The protocol project changed.');
+      });
     }
 
     // Dependency evidence is independent of native canvas readiness and never
@@ -624,18 +1164,14 @@ export class BlocklyLiveOperationBridgeService {
       } catch (error) { return { ok: false, operation: 'abs_apply', project: source, code: (error as any)?.code ?? 'ABS_APPLY_OBSERVATION_UNKNOWN',
         publication: { status: 'UNKNOWN' }, message: error instanceof Error ? error.message : String(error) }; }
     }
-    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project' && payload.params?.['observe'] === true) {
-      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], true);
-    }
     if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project'
       && this.getProjectRuntimeStatus(currentProject).ready) {
-      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], false, async () => {
-        const check = () => { if (this.projectService.currentProjectPath !== currentProject) throw new Error('The recovery project changed.'); };
+      return this.projectService.recoverFailedBlocklyProject(payload.params['requestId'], false, async check => {
         check();
         if (this.projectService.isProjectOpening || this.projectService.isProjectTransitionInProgress(currentProject)
           || this.aiOperations.hasBlocking(currentProject)) throw Object.assign(new Error('An active project owner must finish before recovery.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
         const port = await openAbsHostStorage(currentProject, check);
-        await settleAbsProjectTransaction(port, currentProject, check);
+        await settleAbsProjectOpen(port, currentProject, check);
         const operation = await new AbsOperationJournal(port, currentProject).inspect();
         if (operation) {
           const repaired = await recoverAbsBaseline(port, currentProject, check);
@@ -651,6 +1187,8 @@ export class BlocklyLiveOperationBridgeService {
     }
     if (payload.operation !== 'project_reload') {
       const isBlocklyProject = this.projectService.getProjectMode(this.projectService.currentProjectPath) !== 'coder';
+      // Exact archived drafts and original History receipts do not need the current canvas.
+      if (isBlocklyProject && observesAbsDisk(payload)) return this.executeAbsRecovery(payload.params ?? {});
       const loadStatus = this.getProjectRuntimeStatus(this.projectService.currentProjectPath);
       const editorReady = loadStatus.ready;
       if (!isBlocklyProject && this.isBlocklyWorkspaceOperation(payload.operation)) {
@@ -667,27 +1205,28 @@ export class BlocklyLiveOperationBridgeService {
       if (!editorReady) {
         if (isBlocklyProject && payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_project') {
           const params = payload.params || {};
-          if (params['observe'] === true) return this.projectService.recoverFailedBlocklyProject(params['requestId'], true);
           const source = this.projectService.currentProjectPath;
-          const check = () => {
-            if (this.projectService.currentProjectPath !== source || this.projectService.isProjectOpening
-              || this.projectService.isProjectTransitionInProgress(source) || this.aiOperations.hasBlocking(source)) {
-              throw Object.assign(new Error('The failed project changed or has an active owner.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
-            }
-          };
           try {
-            check();
-            const port = await openAbsHostStorage(source, check);
-            await settleAbsProjectTransaction(port, source, check);
-            const operation = await new AbsOperationJournal(port, source).inspect();
-            if (!operation) await recoverAbsProjectOperation(port, source, check);
-            if (await port.read('committed.json') !== null || await port.read('project.abs.map.json') !== null) {
-              const repaired = await recoverAbsBaseline(port, source, check);
-              if (repaired.changed && operation) await new AbsOperationJournal(port, source).reanchorSource(operation.id, check);
-              await restoreAbsProjectCaches(port, source, check);
-            }
-            if (operation) await recoverAbsProjectOperation(port, source, check);
-            return await this.projectService.recoverFailedBlocklyProject(params['requestId']);
+            return await this.projectService.recoverFailedBlocklyProject(params['requestId'], false, undefined, async assertCurrent => {
+              const check = () => {
+                assertCurrent();
+                if (this.projectService.isProjectOpening || this.projectService.isProjectTransitionInProgress(source)
+                  || this.aiOperations.hasBlocking(source)) {
+                  throw Object.assign(new Error('The failed project has an active owner.'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
+                }
+              };
+              check();
+              const port = await openAbsHostStorage(source, check);
+              await settleAbsProjectOpen(port, source, check);
+              const operation = await new AbsOperationJournal(port, source).inspect();
+              if (!operation) await recoverAbsProjectOperation(port, source, check);
+              if (await port.read('committed.json') !== null || await port.read('project.abs.map.json') !== null) {
+                const repaired = await recoverAbsBaseline(port, source, check);
+                if (repaired.changed && operation) await new AbsOperationJournal(port, source).reanchorSource(operation.id, check);
+                await restoreAbsProjectCaches(port, source, check);
+              }
+              if (operation) await recoverAbsProjectOperation(port, source, check);
+            });
           } catch (error) { return { ok: false, operation: payload.operation, project: source, recoveryState: 'failed',
             code: (error as any)?.code ?? 'PROJECT_RECOVERY_LOAD_FAILED', message: error instanceof Error ? error.message : String(error) }; }
         }
@@ -763,15 +1302,19 @@ export class BlocklyLiveOperationBridgeService {
         message: '库依赖正在更新，请等待运行时同步结束。' };
     }
     switch (payload.operation) {
+      case 'abs_protocol':
+        return this.absGenerationTools.workspaceMigration('prepare', payload.params || {});
+      case 'abs_workspace_migrate':
+        return this.runAbsOperation(() => this.absGenerationTools.workspaceMigration('select', payload.params || {}));
       case 'blocks_set_state':
         return payload.params?.['action'] === 'inspect'
           ? this.absGenerationTools.blockState(payload.params)
-          : this.runAbsOperation(() => this.absGenerationTools.blockState(payload.params || {}));
+          : this.runAbsOperation(() => this.absGenerationTools.blockState(payload.params || {}, markWriter));
       case 'project_media_import':
         return importProjectMedia(currentProject, payload.params as any, undefined,
           target => this.absGenerationTools.captureMediaImportTarget(target));
       case 'abs_apply':
-        return this.runAbsOperation(() => this.executeAbsApply(payload.params || {}));
+        return this.runAbsOperation(() => this.executeAbsApply(payload.params || {}, markWriter));
       case 'abs_projection':
         return this.executeAbsProjection(payload.params || {});
       case 'abs_validate':
@@ -800,12 +1343,11 @@ export class BlocklyLiveOperationBridgeService {
       }
       case 'library_mutation_prepare': {
         const params = payload.params || {};
-        const result = await this.projectService.beginLibraryMutation(params['packages'], params['savedHashes'], params['removedPackages']);
+        const request = (params['requestId'] !== undefined || params['expiresAt'] !== undefined)
+          ? { requestId: params['requestId'], expiresAt: params['expiresAt'] } : undefined;
+        const result = await this.projectService.beginLibraryMutation(params['packages'], params['savedHashes'], params['removedPackages'], request);
         return { ok: true, operation: payload.operation, project: currentProject, ...result };
       }
-      case 'library_mutation_abort':
-        await this.projectService.abortLibraryMutation(payload.params?.['token']);
-        return { ok: true, operation: payload.operation, project: currentProject };
       case 'library_runtime_sync':
         // The native rebuild owns its workspace edit lease. Discovery and
         // dependency waits must leave the existing canvas interactive.
@@ -813,12 +1355,14 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_abi_check':
         return this.executeProjectAbiCheck();
       case 'project_build':
-        return this.executeProjectBuild(payload.params || {});
+        return this.executeProjectBuild(payload.params || {}, currentProject);
       case 'get_board_config':
         return getBoardConfig(this.projectService, payload.params?.['section']);
       case 'board_switch':
+        markWriter?.();
         return this.executeBoardSwitch(payload.params || {});
       case 'set_board_config':
+        markWriter?.();
         return setBoardConfig(this.projectService, this.builderService, this.electronService, payload.params || {},
           this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder'
             ? project => this.coderRuntime.build(project, { preprocessOnly: true }) : undefined,
@@ -829,8 +1373,10 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_upload':
         return this.executeProjectUpload(payload.params || {});
       case 'blocks_tidy':
+        markWriter?.();
         return this.runBlockWritingOperation(() => this.executeBlocksTidy(nativeSaveRequest));
       case 'project_save':
+        markWriter?.();
         return this.runBlockWritingOperation(() => this.executeProjectSave(nativeSaveRequest));
       case 'project_reload':
         return this.executeProjectReload(lifecycleOwner);
@@ -872,6 +1418,8 @@ export class BlocklyLiveOperationBridgeService {
       'abs_projection',
       'abs_validate',
       'abs_recovery',
+      'abs_protocol',
+      'abs_workspace_migrate',
       'abs_capabilities',
       'abs_compose',
       'abs_precheck',
@@ -916,8 +1464,14 @@ export class BlocklyLiveOperationBridgeService {
       ok: true,
       operation: 'app_info',
       capabilities: { projectBuildReceipts: 1, projectForkReceipts: 1, projectRecoveryOpen: 1,
-        projectProgramPublication: 1, projectLifecycle: 1, projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1 },
+        projectProgramPublication: 1, projectLifecycle: 1, projectCreateSettlement: 1,
+        ...(typeof window['fs']?.captureProjectAttachment === 'function' && this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
+          ? { projectNavigationSettlement: 1, ...(window['projectLock']?.recordNavigation ? { projectNavigationRecovery: 1 } : {}) } : {}),
+        ...(window['projectLock']?.recordCreatedActive && this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
+          ? { projectCreateRecovery: 1 } : {}),
+        projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1 },
       lifecycle: { version: 1, sourceProject: this.projectService.currentProjectPath || null },
+      projectViewRevision: this.projectService.projectViewRevision,
       app: {
         name: this.configService.getApplicationName(),
         version: this.electronService.applicationVersion,
@@ -1058,16 +1612,17 @@ export class BlocklyLiveOperationBridgeService {
   private async executeAbsCandidateValidation(params: Record<string, any>) {
     const source = this.readAbsSource(params);
     const project = this.projectService.currentProjectPath;
+    const isCurrent = this.projectService.captureCurrentProjectGuard();
     let libraryRuntimeFingerprint: string | null = null;
-    const assertCurrent = () => { if (this.projectService.currentProjectPath !== project)
+    const assertCurrent = () => { if (!isCurrent())
       throw Object.assign(new Error('The candidate validation project changed.'), { code: 'ABS_CANDIDATE_ARCHIVE_CONTEXT_STALE' }); };
     const result = await this.absGenerationTools.execute('abs_validate', params, source, undefined, undefined, project,
-      { project, assertCurrent, prepareRuntime: async () => {
+      { archive: { assertCurrent, prepareRuntime: async () => {
         await this.projectService.ensureBlocklyLibraryRuntimeReady();
         libraryRuntimeFingerprint = await this.projectService.getBlocklyLibraryRuntimeFingerprint();
         if (!libraryRuntimeFingerprint) throw Object.assign(new Error('The current library runtime is not ready; the candidate was retained.'),
           { code: 'ABS_RUNTIME_NOT_READY' });
-      } });
+      } } });
 
     if (!result.ok) {
       this.retainNativeFailureRuntime(result, libraryRuntimeFingerprint!);
@@ -1078,7 +1633,18 @@ export class BlocklyLiveOperationBridgeService {
     if (changed) return { ...changed, project: this.projectService.currentProjectPath,
       ...((result as any).candidateArchive ? { candidateArchive: (result as any).candidateArchive } : {}) };
 
-    return { ...result, receipt: { ...(result as any).receipt, libraryRuntimeFingerprint } };
+    const reserveWriter = Boolean(params['workingCandidate'] && window['fs']?.projectSyncStorageVersion === 2);
+    if (reserveWriter) {
+      const receipt = (result as any).receipt;
+      try {
+        const port = await openAbsHostStorage(project, assertCurrent);
+        await new OriginalRequestAdmissions(port, project).reserveApplication(receipt.requestId, receipt.candidate.hash, assertCurrent);
+      } catch (error) {
+        return { ...absPrecommitFailure('abs_validate', error), project };
+      }
+    }
+    return { ...result, ...(reserveWriter ? { applicationWriterReserved: true } : {}),
+      receipt: { ...(result as any).receipt, libraryRuntimeFingerprint } };
   }
 
   private retainNativeFailureRuntime(result: Record<string, any>, fingerprint: string) {
@@ -1091,7 +1657,7 @@ export class BlocklyLiveOperationBridgeService {
     if (this.nativeRecoveryRuntime?.key !== key) this.nativeRecoveryRuntime = { key, fingerprint };
   }
 
-  private async executeAbsApply(params: Record<string, any>) {
+  private async executeAbsApply(params: Record<string, any>, markWriter?: () => void) {
     let source: string;
     try {
       const fingerprint = await this.projectService.getBlocklyLibraryRuntimeFingerprint();
@@ -1108,7 +1674,8 @@ export class BlocklyLiveOperationBridgeService {
     });
     progress('started');
     const result = await this.ngZone.runOutsideAngular(() => this.absGenerationTools.execute('abs_apply', params, source,
-      (blocks, batches) => progress('progress', `已装载 ${blocks} 个块，完成 ${batches} 批`)));
+      (blocks, batches) => progress('progress', `已装载 ${blocks} 个块，完成 ${batches} 批`), undefined, undefined,
+      { markApplyWriter: markWriter }));
     if (!result.ok) this.retainNativeFailureRuntime(result, params['validation'].libraryRuntimeFingerprint);
     progress(result.ok ? 'completed' : 'failed', result.ok ? 'ABS 已完成身份合并、完整读回及同代保存' : (result as any).message);
     return result; // The coordinator already saved ABI and prepared outputs. Never save or generate twice.
@@ -1294,15 +1861,145 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectNavigationSettlement(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+    const params = payload.params || {}, observing = payload.operation === 'project_navigation_status';
+    const path = window['path'], captureAttachment = window['fs']?.captureProjectAttachment;
+    const request = readProjectNavigationRequest(params['navigationRequest'], value => !!path?.isAbsolute(value));
+    const reopen = params['reopenFrom'] === undefined ? undefined
+      : readProjectNavigationRequest(params['reopenFrom'], value => !!path?.isAbsolute(value));
+    const sessionId: unknown = params['navigationSessionId'];
+    const hasSession = typeof sessionId === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(sessionId);
+    const reopenProof = params['reopenProof'];
+    const proofRequest = reopenProof === undefined ? undefined
+      : readProjectNavigationRequest(reopenProof?.navigationRequest, value => !!path?.isAbsolute(value));
+    const sameProject = (left: string, right: string) => {
+      const a = path.normalize(left), b = path.normalize(right);
+      return window['platform']?.isWindows ? a.toLowerCase() === b.toLowerCase() : a === b;
+    };
+    const originalPath = request?.operation === 'project_open' ? request.targetProject : request?.sourceProject;
+    if (!request || typeof captureAttachment !== 'function' || request.rendererGeneration !== payload.rendererGeneration
+      || request.rendererGeneration !== this.electronService.currentRendererGeneration
+      || Object.keys(params).some(key => key !== 'navigationRequest'
+        && (observing || !['reopenFrom', 'navigationSessionId', 'reopenProof'].includes(key)))
+      || sessionId !== undefined && !hasSession
+      || reopenProof !== undefined && (!hasSession || reopenProof?.sessionId !== sessionId || !proofRequest
+        || request.operation !== 'project_open' || request.sourceProject !== null || !proofRequest.sourceProject
+        || !sameProject(proofRequest.sourceProject, request.targetProject!)
+        || (reopen ? proofRequest.operation !== 'project_close' || proofRequest.requestId !== reopen.requestId
+          : proofRequest.operation !== 'project_open'))
+      || payload.path && (!originalPath || !sameProject(originalPath, payload.path))
+      || !observing && (this.configService.getPreferredChatAgentRuntimeMode() !== 'blockly'
+        || request.operation !== payload.operation || request.sourceProject !== payload.lifecycle?.sourceProject
+        || request.operation === 'project_open' && !payload.path)
+      || params['reopenFrom'] !== undefined && (!reopen || request.operation !== 'project_open' || request.sourceProject !== null
+        || reopen.operation !== 'project_close' || !reopenProof && reopen.rendererGeneration !== request.rendererGeneration)) {
+      return { ok: false, code: 'PROJECT_NAVIGATION_RECEIPT_SCOPE_INVALID', commandDispatched: false,
+        message: 'The navigation request must match the original renderer, operation, and project scope.' };
+    }
+    const receipts = this.navigationReceipts ??= new ProjectNavigationReceipts(
+      () => ({ project: this.projectService.currentProjectPath || null, revision: this.projectService.projectViewRevision }),
+      captureAttachment, sameProject);
+    if (observing) return receipts.observe(request);
+    const assertCurrent = createProjectLifecycleAssertion(payload.lifecycle,
+      () => this.projectService.currentProjectPath || null,
+      () => this.electronService.currentRendererGeneration, payload.rendererGeneration);
+    const admit = () => {
+      assertCurrent();
+      if (request.deadlineAt <= Date.now() || reopen && !reopenProof && !receipts.canReopenFrom(reopen, request.targetProject!)) {
+        const code = request.deadlineAt <= Date.now() ? 'PROJECT_NAVIGATION_EXPIRED' : 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED';
+        throw Object.assign(new Error('The original navigation scope is no longer current.'), { code, commandDispatched: false });
+      }
+    };
+    return receipts.start(request, (record, transition) => this.projectService.withProjectLifecycleAdmission(admit, async owner => {
+      if (reopenProof) {
+        const allowed = await window['projectLock']?.canReopenNavigation(reopenProof, request.targetProject!);
+        assertCurrent();
+        if (!allowed) return { ok: false, operation: request.operation, code: 'PROJECT_NAVIGATION_CLOSE_SUPERSEDED', commandDispatched: false };
+      }
+      receipts.captureSource(request);
+      return this.executeOperation({ ...payload, params: {} }, undefined, owner, undefined,
+        async (project, revision) => {
+          record({ project, revision });
+          if (!hasSession || !window['projectLock']?.recordNavigation) return;
+          const activation = receipts.observe(request).navigationReceipt.activation;
+          if (!activation) return;
+          try { await window['projectLock'].recordNavigation({ requestId: request.requestId, activation }); }
+          catch (error) { console.warn('The original navigation proof could not be recorded:', error); }
+        }, { requestId: request.requestId, transition });
+    }));
+  }
+
+  private async executeProjectCreateSettlement(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+    const params = payload.params || {};
+    const request = readProjectCreateRequest(params['createRequest']);
+    if (!request || request.rendererGeneration !== payload.rendererGeneration
+      || request.rendererGeneration !== this.electronService.currentRendererGeneration
+      || payload.operation !== 'project_create' && Object.keys(params).some(key => key !== 'createRequest')) {
+      return { ok: false, code: 'PROJECT_CREATE_RECEIPT_SCOPE_INVALID', commandDispatched: false,
+        message: 'Observe only the exact original creation in its renderer generation.' };
+    }
+    const captureAttachment = window['fs']?.captureProjectAttachment;
+    const receipts = this.createReceipts ??= new ProjectCreateReceipts(captureAttachment);
+    const isCurrentActivation = () => receipts.isActivationCurrent(request, this.projectService.currentProjectPath || '',
+      (a, b) => this.normalizePath(a) === this.normalizePath(b));
+    if (payload.operation !== 'project_create') {
+      const state = payload.operation === 'project_create_cancel' ? receipts.cancel(request) : receipts.observe(request);
+      const project = state.createReceipt.createdProject;
+      const activationCurrent = isCurrentActivation();
+      // The loopback discovery project must remain the actual active tab.
+      return { ok: true, operation: payload.operation, createReceipt: state.createReceipt, activationCurrent,
+        ...(activationCurrent && project ? { projectType: this.projectService.getProjectMode(project) } : {}),
+        result: state.createReceipt.state === 'unknown' ? undefined : state };
+    }
+    const assertCurrent = createProjectLifecycleAssertion(payload.lifecycle,
+      () => this.projectService.currentProjectPath || null,
+      () => this.electronService.currentRendererGeneration, payload.rendererGeneration);
+    const operationKey = JSON.stringify([(payload.lifecycle as { sourceProject?: string | null }).sourceProject,
+      ...['name', 'path', 'boardName', 'board', 'boardVersion', 'version', 'boardNickname', 'nickname',
+        'prefix', 'devmode', 'developmentMode', 'recoverySessionId'].map(key => params[key])]);
+    const recordCreatedActive = window['projectLock']?.recordCreatedActive;
+    const recoverySessionId = params['recoverySessionId'];
+    const recordActivation = typeof recordCreatedActive === 'function' && typeof recoverySessionId === 'string'
+      ? async (projectPath: string, attachment: ProjectStorageAttachment) => {
+          const recorded = await recordCreatedActive({ projectPath, request, recoverySessionId, attachment });
+          if (recorded?.ok !== true) console.warn('Original create navigation could not be recorded:', recorded);
+          return recorded?.ok === true;
+        }
+      : undefined;
+    const result = await receipts.run(request, async guard => {
+      assertCurrent();
+      return this.executeProjectCreate(params, undefined, guard, assertCurrent);
+    }, operationKey, recordActivation);
+    return { ...result, activationCurrent: result.createReceipt.activationCommitted && isCurrentActivation() };
+  }
+
+  private openCreatedProject(project: string, lifecycleOwner?: symbol, authority?: ProjectCreateGuard, assertSource?: () => void): Promise<boolean> {
+    if (!authority || !assertSource) return this.projectService.projectOpen(project,
+      { reason: 'chat-tool-create', interactive: false, lifecycleOwner });
+    authority.assertCurrent();
+    const check = () => { authority.assertCurrent(); assertSource(); };
+    return this.projectService.withProjectLifecycleAdmission(check, async owner => {
+      const opened = await this.projectService.projectOpen(project, {
+        reason: 'chat-tool-create', interactive: false, lifecycleOwner: owner,
+        createActivation: { signal: authority.signal, assertCurrent: check,
+          beginHandoff: authority.beginHandoff, recordActivation: authority.recordActivation, markActivated: authority.markActivated },
+      });
+      if (opened) authority.markActivated();
+      return opened;
+    }, authority.signal);
+  }
+
+  private async executeProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol,
+    authority?: ProjectCreateGuard, assertSource?: () => void): Promise<Record<string, any> & { ok: boolean }> {
     await this.configService.init();
+    authority?.assertCurrent();
     const mode = this.configService.getPreferredChatAgentRuntimeMode();
     const modeError = getProjectCreationModeError(mode, params);
     if (modeError) {
       return { ok: false, operation: 'project_create', reason: 'project_mode_mismatch', developmentMode: mode, message: modeError };
     }
     if (mode === 'coder') {
-      return this.executeCoderProjectCreate(params, lifecycleOwner);
+      return this.executeCoderProjectCreate(params, lifecycleOwner, authority, assertSource);
     }
 
     const requestedName = String(params['name'] || '').trim();
@@ -1331,15 +2028,19 @@ export class BlocklyLiveOperationBridgeService {
       ? window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'))
       : `${newProjectData.path.replace(/[\\/]+$/, '')}/${newProjectData.name.replace(/\s/g, '_')}`;
 
-    const created = await this.projectService.projectNew(
+    authority?.assertCurrent();
+    const creation = await this.projectService.projectNewWithResult(
       newProjectData,
-      { activationReason: 'chat-tool-create', ...(lifecycleOwner ? { deferActivation: true } : {}) },
+      { activationReason: 'chat-tool-create', ...(lifecycleOwner || authority ? { deferActivation: true } : {}),
+        ...(authority ? { createAuthority: authority } : {}) },
     );
+    const created = creation.ok;
+    const failure = creation.ok === false ? creation : undefined;
     let ok = created;
     let activationError: unknown;
-    if (created && lifecycleOwner) {
-      try { ok = await this.projectService.projectOpen(projectPath,
-        { reason: 'chat-tool-create', interactive: false, lifecycleOwner }); }
+    if (created && (lifecycleOwner || authority)) {
+      authority?.markCreated(projectPath);
+      try { ok = await this.openCreatedProject(projectPath, lifecycleOwner, authority, assertSource); }
       catch (error) { ok = false; activationError = error; }
     }
 
@@ -1348,13 +2049,17 @@ export class BlocklyLiveOperationBridgeService {
       operation: 'project_create',
       developmentMode: mode,
       projectType: mode,
-      project: created ? projectPath : null,
+      project: created ? projectPath : failure?.projectPath || null,
+      ...(failure ? { stage: failure.stage, error: failure.error,
+        ...(failure.npmExitCode === undefined ? {} : { npmExitCode: failure.npmExitCode }),
+        ...(failure.partialMutation ? { partialMutation: true } : {}) } : {}),
       ...(created && !ok ? { projectCreated: true, createdProject: projectPath,
+        stage: 'activation', partialMutation: true,
         activation: { completed: false, currentProject: this.projectService.currentProjectPath || null },
         code: (activationError as any)?.code || 'PROJECT_CREATE_ACTIVATION_FAILED' } : {}),
       message: ok ? `项目已创建并打开: ${projectPath}` : created
         ? (activationError instanceof Error ? activationError.message : activationError ? String(activationError) : '项目已创建，但未确认打开完成')
-        : '项目创建失败',
+        : failure?.error || '项目创建失败',
       name: newProjectData.name,
       path: newProjectData.path,
       board: {
@@ -1366,7 +2071,8 @@ export class BlocklyLiveOperationBridgeService {
     };
   }
 
-  private async executeCoderProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeCoderProjectCreate(params: Record<string, any>, lifecycleOwner?: symbol,
+    authority?: ProjectCreateGuard, assertSource?: () => void): Promise<Record<string, any> & { ok: boolean }> {
     const result = await executeCoderProjectCreateOperation(params, {
       normalizeBoardName: (value) => this.normalizeAilyBoardPackageName(value),
       getBoards: () => this.configService.getBoardListForSelector(),
@@ -1378,22 +2084,24 @@ export class BlocklyLiveOperationBridgeService {
         deferActivation: true,
         templateDirectory: 'template_arduino',
         activationReason: 'chat-tool-create',
+        ...(authority ? { createAuthority: authority } : {}),
       }),
-      openProject: (projectPath) => this.projectService.projectOpen(projectPath, {
-        reason: 'chat-tool-create',
-        lifecycleOwner,
-      }),
+      openProject: (projectPath) => {
+        authority?.markCreated(projectPath);
+        return this.openCreatedProject(projectPath, lifecycleOwner, authority, assertSource);
+      },
       recordBoardUsage: (boardName) => this.configService.recordBoardUsage(boardName),
     });
     return {
       ...result,
+      ok: result['ok'] === true,
       ...(result['ok'] === true && this.projectService.coderWorkspace
         ? { coderWorkspace: this.projectService.coderWorkspace }
         : {}),
     };
   }
 
-  private async executeCoderProjectOperation(path: string, operation: string, params: Record<string, any>): Promise<Record<string, any>> {
+  private async executeCoderProjectOperation(path: string, operation: string, params: ProjectBuildParameters): Promise<Record<string, any>> {
     try {
       if (operation === 'serial_ports_list') {
         const { session, ports, selection } = await this.coderRuntime.resolvePort(path, params['port']);
@@ -1410,20 +2118,28 @@ export class BlocklyLiveOperationBridgeService {
       const result = operation === 'project_upload'
         ? await this.coderRuntime.upload(path, params['port'])
         : await this.coderRuntime.build(path, { preprocessOnly: params['preprocess_only'] === true, clearCache: params['clear_cache'] === true,
-          requestId: params['buildLogRequestId'] });
+          requestId: params['buildLogRequestId'], ...(params[buildFallbackControl] ? { localFallback: params[buildFallbackControl] } : {}) });
       return { ok: true, operation, project: path, message: result?.text || '', result, ...(result?.buildLog ? { buildLog: result.buildLog } : {}) };
     } catch (error: any) {
-      return { ok: false, operation, project: path, buildOutcome: error?.buildOutcome,
+      return { ok: false, operation, project: path, buildOutcome: error?.buildOutcome, ...(error?.code ? { code: error.code } : {}),
         message: error?.text || error?.message || String(error), result: error?.result || error?.buildResult,
         ...(error?.buildLog || error?.buildResult?.buildLog ? { buildLog: error.buildLog || error.buildResult.buildLog } : {}) };
     }
   }
 
-  private async executeProjectBuild(params: Record<string, any>): Promise<Record<string, any>> {
+  private async executeProjectBuild(params: ProjectBuildParameters, projectPath = this.projectService.currentProjectPath): Promise<Record<string, any>> {
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const assertCurrent = () => {
+      if (this.projectService.currentProjectPath !== projectPath || !projectCurrent()) {
+        throw Object.assign(new Error('The requested Blockly build project is no longer active.'), { code: 'BUILD_SOURCE_STALE' });
+      }
+    };
     try {
-      await this.projectService.ensureBlocklyLibraryRuntimeReady(this.projectService.currentProjectPath);
+      assertCurrent();
+      await this.projectService.ensureBlocklyLibraryRuntimeReady(projectPath);
+      assertCurrent();
     } catch (error) {
-      return { ok: false, operation: 'project_build', project: this.projectService.currentProjectPath,
+      return { ok: false, operation: 'project_build', project: projectPath,
         buildOutcome: 'not-started', code: (error as any)?.code,
         message: error instanceof Error ? error.message : String(error) };
     }
@@ -1433,19 +2149,24 @@ export class BlocklyLiveOperationBridgeService {
         preprocessOnly: params['preprocess_only'] === true,
         clearCache: params['clear_cache'] === true,
         requestId: params['buildLogRequestId'],
+        localFallback: params[buildFallbackControl],
       },
-      this.projectService.currentProjectPath,
+      projectPath,
     );
     return {
       ok: toolResult.is_error !== true,
       operation: 'project_build',
-      project: this.projectService.currentProjectPath,
+      project: projectPath,
       message: this.extractToolContent(toolResult),
       metadata: toolResult.metadata,
       buildOutcome: toolResult.metadata?.['buildOutcome'],
       code: toolResult.metadata?.['code'],
+      ...(toolResult.metadata?.['sourceReason'] ? { sourceReason: toolResult.metadata['sourceReason'] } : {}),
       result: toolResult.metadata?.['buildResult'],
       ...(toolResult.metadata?.['buildResult']?.['buildInput'] ? { buildInput: toolResult.metadata['buildResult']['buildInput'] } : {}),
+      ...(toolResult.metadata?.['buildResult']?.['buildSource'] ? { buildSource: toolResult.metadata['buildResult']['buildSource'] } : {}),
+      ...(toolResult.metadata?.['buildResult']?.['buildSnapshot'] ? { buildSnapshot: toolResult.metadata['buildResult']['buildSnapshot'] } : {}),
+      ...(toolResult.metadata?.['buildResult']?.['buildHistory'] ? { buildHistory: toolResult.metadata['buildResult']['buildHistory'] } : {}),
       ...(toolResult.metadata?.['buildResult']?.['buildLog'] ? { buildLog: toolResult.metadata['buildResult']['buildLog'] } : {}),
       toolResult,
     };
@@ -1522,7 +2243,9 @@ export class BlocklyLiveOperationBridgeService {
     const options: FirmwareUploadOptions | undefined = firmware ? { preparedFirmware: firmware }
       : reuseCloud ? { reuseCloudFirmware: true } : undefined;
     const current = options ? this.projectService.captureCurrentProjectGuard() : undefined;
-    if (firmware && (this.projectService.isCloudBuild() || window['builder']?.isolatedBuildExecutionVersion !== 1)) {
+    const preparedInCloudProject = !!firmware && this.projectService.isCloudBuild();
+    if (firmware && (window['builder']?.isolatedBuildExecutionVersion !== 1
+      || (preparedInCloudProject && !await window['builder']?.requiresIsolatedBuildRecovery?.(project)))) {
       throw Object.assign(new Error('Prepared firmware upload requires an isolated local Blockly build.'),
         { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
     }
@@ -1530,14 +2253,25 @@ export class BlocklyLiveOperationBridgeService {
       throw Object.assign(new Error('Cloud firmware reuse requires the active Blockly cloud build backend.'),
         { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
     }
-    if (firmware) requirePreparedBuildExecution(project, firmware);
+    if (firmware && !requirePreparedBuildExecution(project, firmware).isolatedRecovery && preparedInCloudProject) {
+      throw Object.assign(new Error('Prepared firmware belongs to a different build backend.'),
+        { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
+    }
     await this.projectService.ensureBlocklyLibraryRuntimeReady(project);
     const requestedPort = typeof params['port'] === 'string' ? params['port'].trim() : undefined;
+    let recoveryBackend: ReturnType<ProjectService['beginBuildBackendOperation']> | undefined;
     try {
+      if (preparedInCloudProject) {
+        if (!current?.() || !this.projectService.isCloudBuild()) {
+          throw Object.assign(new Error('The active Blockly project changed before upload.'), { code: 'BUILD_ARTIFACT_STALE' });
+        }
+        recoveryBackend = this.projectService.beginBuildBackendOperation(project);
+        recoveryBackend.useLocal();
+      }
       const { ports, selection } = await this.getSerialPortSelection(requestedPort);
       if (options) {
-        const revision = await this.blocklyEditor.getProjectRevisionSnapshot();
-        if (!current?.() || revision.changed || this.projectService.isCloudBuild() !== reuseCloud) {
+        const changed = await this.blocklyEditor.hasUnsavedBuildChanges();
+        if (!current?.() || changed || this.projectService.isCloudBuild() !== reuseCloud) {
           throw Object.assign(new Error('The active Blockly project changed after compilation.'), { code: 'BUILD_ARTIFACT_STALE' });
         }
         if (firmware) requirePreparedBuildExecution(project, firmware);
@@ -1592,6 +2326,8 @@ export class BlocklyLiveOperationBridgeService {
         message: error?.text || error?.message || String(error),
         uploadResult: error?.result,
       };
+    } finally {
+      recoveryBackend?.release();
     }
   }
 
@@ -1700,7 +2436,9 @@ export class BlocklyLiveOperationBridgeService {
       ...(failure.projectSaved ? { recovery: 'The project source is saved; the reported generated-output or dependency stage remains incomplete. Continue recovery in this same project and observe the original save/build request when its result is uncertain. Keep the candidate and ownership records; do not create or ask the user to open another project.' } : {}) };
   }
 
-  private async executeProjectOpen(projectPath: string, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectOpen(projectPath: string, lifecycleOwner?: symbol,
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>,
+    navigation?: { requestId: string; transition: ProjectNavigationTransition }): Promise<Record<string, any>> {
     const requestedProject = String(projectPath || '').trim();
     if (!requestedProject) {
       return { ok: false, operation: 'project_open', message: '缺少项目路径' };
@@ -1748,9 +2486,11 @@ export class BlocklyLiveOperationBridgeService {
       === this.normalizePath(this.projectService.currentProjectPath);
     try {
       const opened = await this.projectService.projectOpen(requestedProject, {
-        lifecycleOwner,
+        ...(lifecycleOwner ? { lifecycleOwner } : {}),
         reason: sameProject ? 'chat-tool-reload' : 'chat-tool-open',
         interactive: false,
+        ...(onViewActivated ? { onViewActivated } : {}),
+        ...(navigation ? { navigation } : {}),
       });
       const loadStatus = this.projectService.getBlocklyProjectLoadStatus(requestedProject);
       const editorReady = this.electronService.exists(
@@ -1778,9 +2518,7 @@ export class BlocklyLiveOperationBridgeService {
           : {}),
       };
     } catch (error) {
-      const viewFailure = projectViewRecoveryFailure(error, requestedProject, { mode: developmentMode,
-        hasOpenView: !!this.projectService.currentProjectPath || !!this.projectService.coderProjects?.length,
-        hasSavedDocument: () => this.electronService.exists(this.electronService.pathJoin(requestedProject, 'project.abi')) });
+      const viewFailure = projectViewRecoveryFailure(error, requestedProject);
       if (viewFailure) return viewFailure;
       const loadStatus = this.projectService.getBlocklyProjectLoadStatus(requestedProject);
       return {
@@ -1795,7 +2533,8 @@ export class BlocklyLiveOperationBridgeService {
     }
   }
 
-  private async executeProjectClose(requestedPath?: string, lifecycleOwner?: symbol): Promise<Record<string, any>> {
+  private async executeProjectClose(requestedPath?: string, lifecycleOwner?: symbol,
+    onViewActivated?: (project: string | null, revision: number) => void | Promise<void>): Promise<Record<string, any>> {
     const projectPath = this.projectService.currentProjectPath;
     if (!projectPath) {
       return { ok: true, operation: 'project_close', project: null, message: '当前没有打开的项目' };
@@ -1807,7 +2546,7 @@ export class BlocklyLiveOperationBridgeService {
 
     const loadStatus = this.projectService.getBlocklyProjectLoadStatus(projectPath);
     let closed: boolean;
-    try { closed = await this.projectService.close({ save: true, lifecycleOwner }); }
+    try { closed = await this.projectService.close({ save: true, lifecycleOwner, ...(onViewActivated ? { onViewActivated } : {}) }); }
     catch (error) {
       return { ok: false, operation: 'project_close', project: projectPath, reason: 'project_close_failed',
         code: (error as any)?.code, message: error instanceof Error ? error.message : String(error), loadStatus };

@@ -417,7 +417,7 @@ export class SettingsComponent implements OnDestroy {
   private cloudAuthListenerCleanup?: () => void;
 
   get showCloudCompilation(): boolean {
-    return isCloudCompilationSupported(window['platform']?.type, this.configData?.region);
+    return isCloudCompilationSupported(this.configData?.region, this.configData?.build_flavor);
   }
   get canUseCloudCompilation(): boolean {
     return this.showCloudCompilation

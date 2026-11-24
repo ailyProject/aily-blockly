@@ -26,6 +26,7 @@ addEventListener('message', async ({ data }: MessageEvent) => {
     let value: any;
     if (data.method === 'init') {
       port = {
+        attachment: args[1],
         read: key => io('read', [key]),
         withLock: async operation => {
           const id = await io('lock');
@@ -35,7 +36,7 @@ addEventListener('message', async ({ data }: MessageEvent) => {
         },
       };
       scope = args[0]; store = new AbsBaselineStore(port, scope, true);
-    } else if (data.method === 'recoverLocation') value = await recoverAbsLocationMetadata(port, scope, () => {});
+    } else if (data.method === 'recoverLocation') value = await recoverAbsLocationMetadata(port, scope, () => {}, store);
     else if (data.method === 'projection') value = await createAbsProjection(args[0], args[1]);
     else if (data.method === 'commit') value = await store.commit(args[0], () => {},
       (text, hash, access) => io('commitAbi', [text, hash, (access as any).lock]));

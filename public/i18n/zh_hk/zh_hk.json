@@ -397,7 +397,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "雲端編譯",
             "CLOUD_COMPILATION_DESC": "在雲端編譯，燒錄仍在本機進行。開啟時自動檢查服務。",
-            "CLOUD_PRO_REQUIRED": "登入 Pro 帳戶後可用",
+            "CLOUD_LOGIN_REQUIRED": "登入後可使用雲端編譯",
             "CLOUD_ENABLE_CHECKING": "正在檢查雲端編譯服務…",
             "CLOUD_ENABLE_SUCCESS": "開啟成功",
             "CLOUD_ENABLE_FAILED": "開啟失敗，請稍後重試。",
@@ -475,6 +475,7 @@
         },
         "BOARD": {
             "SEARCH": "搜尋開發板",
+            "CLEAR_SEARCH": "清除搜尋",
             "READ_DOC": "閱讀文件",
             "ADD_BOARD": "新增開發板",
             "DEV": "dev",
@@ -1054,6 +1055,17 @@
             "CANCELLED_TITLE": "編譯已取消",
             "CANCELLED_WITH_TIME": "編譯已取消 (耗時: {{seconds}}s)",
             "FAILED_TITLE": "編譯失敗",
+            "SOURCE_STALE": {
+                "project": "專案已切換或重新載入，請重新編譯。",
+                "workspace": "積木工作區已更換或無法讀取，請重新編譯。",
+                "busy": "積木工作區暫時無法核對，請稍後重新編譯。",
+                "page": "目前積木頁面已切換，請重新編譯。",
+                "generator": "積木程式碼產生器已變更，請重新編譯。",
+                "blocks": "積木專案內容已變更，請重新編譯。",
+                "settings": "編譯設定已變更，請重新編譯。",
+                "inputs": "專案檔案、程式庫或開發板設定已變更，請重新編譯。",
+                "unknown": "編譯輸入已變更，請重新編譯。"
+            },
             "BUSY_SYSTEM": "系統繁忙",
             "BUSY_BUILDING": "編譯正在進行中",
             "BUSY_UPLOADING": "上傳正在進行中",
@@ -1087,6 +1099,8 @@
             "PROCESS_START_FAILED": "編譯進程啟動失敗",
             "INCOMPLETE": "編譯未完成",
             "FAILED_WITH_TIME": "編譯失敗 (耗時: {{seconds}}s)",
+            "TOOL_LOAD_PYTHON_DLL": "建置工具無法載入 Python 執行階段 DLL。請查看本次編譯日誌。",
+            "TOOL_LOAD_XTENSA_CONFIG": "編譯器無法載入 Xtensa 晶片設定。請查看本次編譯日誌。",
             "ABNORMAL_END_TITLE": "編譯異常結束",
             "ABNORMAL_END_WITH_TIME": "編譯進程異常結束 (耗時: {{seconds}}s)",
             "FIRMWARE_INFO_FALLBACK": "編譯完成",

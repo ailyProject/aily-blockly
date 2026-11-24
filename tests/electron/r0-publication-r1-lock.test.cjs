@@ -111,6 +111,96 @@ test('a real hard-killed owner is safely reclaimed without deleting live owner b
   } finally { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; } }
 });
 
+for (const cut of ['before-identity-write', 'after-identity-publish']) {
+  test('hard exit during complete writer marker publication is recoverable: ' + cut, async () => {
+    const directory = project(), marker = path.join(directory, '.aily', 'project-files.write.lock');
+    const child = fork(path.join(__dirname, 'fixtures/r0-publication-lock-worker.cjs'), [directory, cut],
+      { windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    const closed = new Promise(resolve => child.once('exit', resolve));
+    try {
+      const checkpoint = path.join(directory, 'lock-cut.json'), deadline = Date.now() + 10000;
+      while (!fs.existsSync(checkpoint) && child.exitCode === null && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      assert.ok(fs.existsSync(checkpoint), 'Owned worker did not reach ' + cut);
+      const { stage, pid } = JSON.parse(fs.readFileSync(checkpoint, 'utf8'));
+      assert.equal(pid, child.pid);
+      assert.notEqual(stage, marker);
+      assert.equal(path.dirname(stage), path.dirname(marker));
+      assert.ok(fs.lstatSync(stage).isFile());
+      if (cut === 'before-identity-write') {
+        assert.equal(fs.existsSync(marker), false);
+      } else {
+        const raw = fs.readFileSync(marker, 'utf8'), owner = JSON.parse(raw);
+        assert.equal(owner.pid, child.pid);
+        assert.equal(owner.version, 2);
+        assert.equal(fs.lstatSync(marker).nlink, 2);
+        assert.equal(raw, fs.readFileSync(stage, 'utf8'));
+        const liveProbe = await openProjectSyncStorage(directory, () => {}, { timeoutMs: 40 });
+        await assert.rejects(liveProbe.withLock(async () => assert.fail('A second writer entered')), { code: 'PROJECT_FILE_BUSY' });
+        assert.equal(fs.readFileSync(marker, 'utf8'), raw);
+      }
+      child.kill('SIGKILL');
+      await closed;
+      const storage = await openProjectSyncStorage(directory, () => {});
+      await storage.withLock(async access => {
+        assert.equal(fs.lstatSync(marker).nlink, 1);
+        assert.equal(JSON.parse(fs.readFileSync(marker, 'utf8')).pid, process.pid);
+        assert.equal(await access.read('project.abi'), null);
+        assert.equal(await access.replace('project.abi', null, 'independent new save'), true);
+      });
+      assert.equal(fs.existsSync(marker), false);
+      if (cut === 'after-identity-publish') assert.equal(fs.existsSync(stage), false);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; }
+    }
+  });
+}
+
+test('writer marker publication never replaces a live legacy marker installed at the exclusive operation', async () => {
+  const directory = project(), marker = path.join(directory, '.aily', 'project-files.write.lock');
+  const legacy = JSON.stringify({ pid: process.pid, token: 'authorized-legacy-writer' });
+  let attempts = 0;
+  const files = { ...fs, linkSync(source, target) {
+    assert.equal(target, marker);
+    if (!attempts++) fs.writeFileSync(marker, legacy, { flag: 'wx' });
+    return fs.linkSync(source, target);
+  } };
+  const storage = await openProjectSyncStorage(directory, () => {}, { files, timeoutMs: 30 });
+  await assert.rejects(storage.withLock(async () => assert.fail('Legacy writer was replaced')), { code: 'PROJECT_FILE_BUSY' });
+  assert.ok(attempts > 0);
+  assert.equal(fs.readFileSync(marker, 'utf8'), legacy);
+  assert.equal(fs.lstatSync(marker).nlink, 1);
+});
+
+test('only an exact publication staging alias can be recognized as part of a lock marker', async () => {
+  const directory = project(), metadata = path.join(directory, '.aily');
+  const marker = path.join(metadata, 'project-files.write.lock');
+  const alias = path.join(metadata, 'unrelated-owner-alias');
+  const token = '12345678-1234-1234-1234-123456789abc';
+  const stage = path.join(metadata, `.project-files.write.lock.${token}.tmp`);
+  const bytes = JSON.stringify({ version: 2, pid: process.pid, token, publication: 'exclusive-link-v1' });
+  fs.mkdirSync(metadata);
+  fs.writeFileSync(marker, bytes);
+  fs.linkSync(marker, alias);
+  fs.writeFileSync(stage, bytes);
+  const storage = await openProjectSyncStorage(directory, () => {}, { timeoutMs: 0 });
+  await assert.rejects(storage.withLock(async () => assert.fail('unexpected writer')), { code: 'PROJECT_FILE_LOCK_CHANGED' });
+  assert.notEqual(fs.lstatSync(marker).ino, fs.lstatSync(stage).ino);
+  assert.equal(fs.lstatSync(marker).nlink, 2);
+  for (const name of [marker, alias, stage]) assert.equal(fs.readFileSync(name, 'utf8'), bytes);
+});
+
+test('an ownerless legacy marker stays protected without a supported native handle proof', { skip: process.platform === 'win32' }, async () => {
+  const directory = project(), metadata = path.join(directory, '.aily');
+  const marker = path.join(metadata, 'project-files.write.lock');
+  fs.mkdirSync(metadata);
+  fs.writeFileSync(marker, '');
+  const storage = await openProjectSyncStorage(directory, () => {}, { timeoutMs: 0 });
+  await assert.rejects(storage.withLock(async () => assert.fail('unexpected writer')), { code: 'PROJECT_FILE_BUSY' });
+  assert.equal(fs.statSync(marker).size, 0);
+});
+
 test('cancelled writer still releases only its own marker and native lease', async () => {
   const directory = project(); let current = true;
   const storage = await openProjectSyncStorage(directory, () => {
@@ -128,9 +218,9 @@ test('cancelled writer still releases only its own marker and native lease', asy
 test('changed owner bytes remain protected even if the original writer fails during acquisition', async () => {
   const directory = project(), marker = path.join(directory, '.aily/project-files.write.lock');
   const foreign = '{"foreign":"do not delete this version"}';
-  const files = { ...fs, writeFileSync(target, ...args) {
-    fs.writeFileSync(target, ...args);
-    if (typeof target === 'number') fs.writeFileSync(marker, foreign);
+  const files = { ...fs, linkSync(source, destination) {
+    fs.linkSync(source, destination);
+    if (destination === marker) fs.writeFileSync(marker, foreign);
   } };
   const storage = await openProjectSyncStorage(directory, () => {}, { files });
   await assert.rejects(storage.withLock(async () => {}), { code: 'PROJECT_FILE_LOCK_CHANGED' });

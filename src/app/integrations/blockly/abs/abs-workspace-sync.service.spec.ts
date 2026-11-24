@@ -6,6 +6,8 @@ import 'blockly/blocks';
 import '../../../editors/blockly-editor/components/blockly/plugins/block-plus-minus/src/index.js';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { AbsBaselineStore, AbsSyncStoragePort, AbsSyncStorageAccess, absBaselineKey } from './abs-baseline-store';
+import { readWorkingCandidate } from './abs-working-candidate';
+import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { absJson, createAbsProjection, hashAbsText, indexAbsSyntax } from './abs-identity-map';
 import { parseAbsSyntax } from './abs-syntax';
 import { normalizeAbsSerializedWorkspace } from './abs-serialized-workspace';
@@ -19,6 +21,8 @@ import { SerialOperationQueue } from '@shared/public-api';
 import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { NATIVE_CANDIDATE_LIMITS } from '../../../editors/blockly-editor/services/blockly-native-budget';
 import { AbsGenerationToolsService } from './abs-generation-tools.service';
+import { absWorkspaceProtocol } from './abs-workspace-protocol';
+import { inspectEnvironmentSuccessor } from '../environment-settlement';
 import { BlocklyEditorAutomationAdapter } from '../blockly-editor-automation.adapter';
 import { BlocklyGeneratorRuntimeService } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { nativeReconciliationDefinition, nativeReconciliationSteps } from './abs-native-reconciliation.fixture';
@@ -42,6 +46,7 @@ describe('v2 actual workspace generation coordinator', () => {
   afterAll(() => { jasmine.DEFAULT_TIMEOUT_INTERVAL = originalTimeout; });
   let service: AbsWorkspaceSyncService, project: _ProjectService, editor: any;
   let disk: Map<string, string>, values: Map<string, any>;
+  let unreadableMirrors: Map<string, Uint8Array>, rawArchives: Map<string, Uint8Array>;
   let port: AbsSyncStoragePort, gate: BlocklyWorkspaceEditGate;
   let catalog: BlocklyDeclarativeBlockCatalog;
   let failWrite: string | undefined, loseCommitReply: boolean, held: boolean;
@@ -86,7 +91,11 @@ describe('v2 actual workspace generation coordinator', () => {
       this.appendValueInput('VALUE').setCheck('Number');
     } };
     disk = new Map(); values = new Map(); failWrite = undefined; loseCommitReply = false; held = false;
-    const read = async key => disk.get(key) ?? null;
+    unreadableMirrors = new Map(); rawArchives = new Map();
+    const read = async key => {
+      if (unreadableMirrors.has(key)) throw Object.assign(new Error('Unreadable UTF-8 mirror'), { code: 'ABS_STORAGE_ENCODING_INVALID' });
+      return disk.get(key) ?? null;
+    };
     const access: AbsSyncStorageAccess = {
       read, replace: async (key, expected, content) => {
         expect(held).toBeTrue();
@@ -94,6 +103,17 @@ describe('v2 actual workspace generation coordinator', () => {
         const before = await read(key);
         if ((before === null ? null : await hashAbsText(before)) !== expected) return false;
         if (content === null) disk.delete(key); else disk.set(key, content);
+        return true;
+      },
+      retireInvalidAbsMirror: async ({ key, abiHash, committedHash, operationHash, absHash, replacement }) => {
+        expect(held).toBeTrue();
+        const bytes = unreadableMirrors.get(key);
+        if (!bytes || disk.has('prepared.json')) return false;
+        const hash = (path: string) => disk.has(path) ? hashAbsText(disk.get(path)!) : null;
+        if (await hash('project.abi') !== abiHash || await hash('committed.json') !== committedHash
+          || await hash('operation.json') !== operationHash || absHash !== undefined && await hash('project.abs') !== absHash) return false;
+        rawArchives.set(key, bytes.slice()); unreadableMirrors.delete(key);
+        if (replacement === null) disk.delete(key); else disk.set(key, replacement);
         return true;
       },
     };
@@ -120,6 +140,9 @@ describe('v2 actual workspace generation coordinator', () => {
           read: async key => { assertCurrent(); const value = await locked.read(key); assertCurrent(); return value; },
           replace: async (key, expected, content) => {
             assertCurrent(); const value = await locked.replace(key, expected, content); assertCurrent(); return value;
+          },
+          retireInvalidAbsMirror: async request => {
+            assertCurrent(); const result = await locked.retireInvalidAbsMirror!(request); assertCurrent(); return result;
           },
         }, result => result.ok ? resolve(result.value) : reject(Object.assign(new Error(result.error.message), { code: result.error.code })));
       })) };
@@ -215,7 +238,8 @@ describe('v2 actual workspace generation coordinator', () => {
     if (Blockly.Extensions.isRegistered('native_commit_extension')) Blockly.Extensions.unregister('native_commit_extension');
   });
 
-  const retainWorkingCandidate = async (capture: any, source: string) => {
+  const retainWorkingCandidate = async (capture: any, source: string,
+    authored?: { source: string; edits: Array<{ start: number; end: number; text: string }>; replacements?: string[] }) => {
     const put = async (text: string) => {
       const hash = (await hashAbsText(text)).slice(7); disk.set(`history-objects/${hash}`, text);
       return { hash, bytes: new TextEncoder().encode(text).byteLength };
@@ -226,11 +250,21 @@ describe('v2 actual workspace generation coordinator', () => {
     const original: any = { version: 1, kind: 'agent', id, owner: { sessionId: 'actual-pi-session', intentAnchorId: 'user-entry-1' },
       project: { logicalId: (await hashAbsText(capture.attachment.root)).slice(7), attachment: capture.attachment },
       scope: capture.scope, base, source: base.abs, derivation: { kind: 'capture' }, intent: { anchorId: 'user-entry-1' } };
-    const origin = { version: 1 as const, id, revisionHash: (await put(absJson(original))).hash };
-    const start = capture.abs.indexOf('TEXT="before"');
+    let origin = { version: 1 as const, id, revisionHash: (await put(absJson(original))).hash };
+    if (authored && (authored.source !== capture.abs || authored.replacements?.length)) {
+      for (const replacement of [...(authored.replacements ?? []), authored.source]) {
+        const revision = absJson({ ...original, parent: origin, source: await put(replacement),
+          derivation: { kind: 'replace', mapping: 'unresolved' } });
+        origin = { ...origin, revisionHash: (await put(revision)).hash };
+      }
+    }
+    const initial = authored?.source ?? capture.abs;
+    const start = initial.indexOf('TEXT="before"');
     expect(start).toBeGreaterThanOrEqual(0);
-    const edits = [{ start, end: start + 'TEXT="before"'.length, text: 'TEXT="candidate A"' }];
-    expect(source).toBe(capture.abs.slice(0, start) + edits[0].text + capture.abs.slice(edits[0].end));
+    const edits = authored?.edits ?? [{ start, end: start + 'TEXT="before"'.length, text: 'TEXT="candidate A"' }];
+    let replay = initial;
+    for (const edit of [...edits].reverse()) replay = replay.slice(0, edit.start) + edit.text + replay.slice(edit.end);
+    expect(source).toBe(replay);
     const revision = { ...original, parent: origin, source: await put(source),
       derivation: { kind: 'splices', edits: await put(absJson(edits)) } };
     return { version: 1 as const, id, revisionHash: (await put(absJson(revision))).hash };
@@ -2615,6 +2649,19 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(editor.prepareProjectCode).not.toHaveBeenCalled();
   });
 
+  it('inspects a damaged map without acquiring a writer lock or running the repair', async () => {
+    await baseline();
+    const tools = new AbsGenerationToolsService(service);
+    disk.set('project.abs.map.json', '{broken sidecar');
+    const before = [...disk];
+    const lock = spyOn(port, 'withLock').and.rejectWith(Object.assign(new Error('new writer owns the lock'), { code: 'PROJECT_FILE_BUSY' }));
+    const result = await inspect(tools);
+    expect(result.ok).toBeTrue();
+    expect(result.diagnostics.issues).toContain('ABS_MAP_INVALID');
+    expect(lock).not.toHaveBeenCalled();
+    expect([...disk]).toEqual(before);
+  });
+
   it('does not mistake ABI JSON formatting for an external program edit', async () => {
     const { tools } = await wireBase();
     disk.set('project.abi', JSON.stringify(JSON.parse(disk.get('project.abi')!), null, 2));
@@ -3126,11 +3173,28 @@ describe('v2 actual workspace generation coordinator', () => {
   }
 
   it('an edit after validation cannot be saved away by apply', async () => {
-    const { tools, request, source } = await wireBase();
+    await baseline();
+    const tools = new AbsGenerationToolsService(service);
+    const capture = await service.captureWorkingCandidate();
+    const source = capture.abs.replace('TEXT="before"', 'TEXT="candidate A"');
+    const workingCandidate = await retainWorkingCandidate(capture, source);
+    const request = { version: 2, requestId: crypto.randomUUID(), workingCandidate, abs: source,
+      candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } };
     const validated: any = await tools.execute('abs_validate', request, source);
+    expect(validated.ok).withContext(JSON.stringify(validated)).toBeTrue();
+    const saved = disk.get('project.abi');
+    editor.prepareProjectCode.calls.reset();
     roots().setFieldValue('user edit after validation', 'TEXT');
-    const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: validated.receipt }, source);
-    expect(result.code).toBe('ABS_REVISION_STALE'); expect(roots().getFieldValue('TEXT')).toBe('user edit after validation');
+    // The live bridge adds its checked library fingerprint to the preparation receipt.
+    const validation = { ...validated.receipt, libraryRuntimeFingerprint: 'a'.repeat(64) };
+    const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, abs: source, validation }, source);
+    expect(result).toEqual(jasmine.objectContaining({
+      ok: false, code: 'ABS_DOCUMENT_MERGE_CONFLICT',
+      diagnostic: jasmine.objectContaining({ field: '/nodes/protected/value/fields/TEXT' }),
+      application: { status: 'NOT_STARTED' }, publication: { status: 'NOT_COMMITTED' },
+    }));
+    expect(roots().getFieldValue('TEXT')).toBe('user edit after validation');
+    expect(disk.get('project.abi')).toBe(saved);
     expect(editor.prepareProjectCode).not.toHaveBeenCalled();
   });
 
@@ -3664,59 +3728,121 @@ describe('v2 actual workspace generation coordinator', () => {
     expect((await inspect(tools)).diagnostics.status).toBe('ready');
   });
 
-  it('never offers rebinding for an unapplied source even when the map and project scope differ', async () => {
-    const { tools, source } = await wireBase();
-    project.currentProjectPath = 'D:/copied-project'; disk.set('project.abs', source); disk.set('project.abs.map.json', 'corrupt');
-    const before = [...disk], diagnosis = await inspect(tools);
-    expect(diagnosis.diagnostics.status).toBe('blocked'); expect(diagnosis.diagnostics.rebind).toBeUndefined();
-    expect(diagnosis.diagnostics.issues).toContain('ABS_SOURCE_CONFLICT');
-    expect((await rebind(tools, 'sha256:' + '0'.repeat(64))).code).toBe('ABS_REBIND_STALE'); expect([...disk]).toEqual(before);
-  });
-
-  it('offers a guarded repair with raw draft evidence for combined scope/map/source conflicts', async () => {
-    const { tools, source } = await wireBase();
-    project.currentProjectPath = 'D:/copied-project';
-    disk.set('project.abs', source); disk.set('project.abs.map.json', '{broken copied map');
-    const before = [...disk], diagnosis = await inspect(tools);
-    expect(diagnosis.diagnostics.issues).toContain('ABS_SCOPE_INVALID');
-    expect(diagnosis.diagnostics.issues).toContain('ABS_MAP_INVALID');
-    expect(diagnosis.diagnostics.issues).toContain('ABS_SOURCE_CONFLICT');
-    expect(diagnosis.diagnostics.rebind).toBeUndefined();
-    expect(diagnosis.diagnostics.draft).toEqual(jasmine.objectContaining({
-      hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength,
-    }));
-    expect(diagnosis.diagnostics.repair).toEqual(jasmine.objectContaining({ authority: 'workspace', token: jasmine.stringMatching(/^sha256:/) }));
-    expect([...disk]).toEqual(before);
-  });
-
-  it('repairs the copied conflict from the current canvas and retains the exact original draft/map/ABI', async () => {
-    const { tools, source } = await wireBase();
-    project.currentProjectPath = 'D:/copied-project';
-    disk.set('project.abs', source); disk.set('project.abs.map.json', '{broken copied map');
-    const oldAbi = disk.get('project.abi'), oldPointer = disk.get('committed.json');
-    const diagnosis = await inspect(tools);
-    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
-      action: 'repair', authority: 'workspace', token: diagnosis.diagnostics.repair?.token ?? 'sha256:' + '0'.repeat(64) });
+  const programDriftInput = async () => {
+    const capture = await service.captureWorkingCandidate();
+    const keys = ['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json', 'prepared.json'];
+    const hashes = await Promise.all(keys.map(key => disk.has(key) ? hashAbsText(disk.get(key)!) : null));
+    return { version: 1, attachment: capture.attachment, workingRevision: capture.working.revision,
+      expected: Object.fromEntries(['abiHash', 'absHash', 'mapHash', 'committedHash', 'preparedHash'].map((key, i) => [key, hashes[i]])) };
+  };
+  const seedProgramDrift = async () => {
+    disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+    const original = await baseline();
+    disk.set('project.abs', original.source.replace('TEXT="before"', 'TEXT="preserved external intent"'));
+    const abi = JSON.parse(disk.get('project.abi')!); abi.externalWriter = 'must not enter Working';
+    disk.set('project.abi', absJson(abi));
+    return { tools: new AbsGenerationToolsService(service), observation: await programDriftInput(), original };
+  };
+  for (const removed of ['project.abs', 'project.abi', 'project.abs.map.json']) {
+    it(`Native entry removal restores ${removed} from actual Working without loading raw siblings`, async () => {
+      const { tools } = await seedProgramDrift();
+      disk.delete(removed);
+      if (removed === 'project.abi') {
+        const diagnosis = await inspect(tools);
+        expect(diagnosis.diagnostics.repair).toBeUndefined();
+      }
+      const observation = await programDriftInput();
+      const before = { abi: disk.get('project.abi') ?? null, abs: disk.get('project.abs') ?? null,
+        map: disk.get('project.abs.map.json') ?? null };
+      const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+        action: 'reconcile_program', observation });
+      expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+      expect(result.publication.status).toBe('COMMITTED');
+      expect(result.candidateApplied).toBeFalse();
+      expect(result.requiresReload).toBeFalse();
+      expect(roots().getFieldValue('TEXT')).toBe('before');
+      expect(disk.get('project.abs')).toContain('TEXT="before"');
+      expect(disk.get('project.abi')).not.toContain('must not enter Working');
+      const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
+      expect(archive.disk).toEqual(before);
+      expect(archive.programDrift).toEqual(observation);
+      expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(disk.get('project.abs')!));
+    });
+  }
+  it('Native program drift repairs actual Working through tools admission and preserves every original mirror', async () => {
+    const { tools, observation } = await seedProgramDrift();
+    const before = { abi: disk.get('project.abi'), abs: disk.get('project.abs'), map: disk.get('project.abs.map.json') };
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
     expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
-    expect(result.publication?.status).toBe('COMMITTED');
-    expect(result.appliedRevision).toBeUndefined();
-    expect(result.receipt?.appliedRevision).toBeUndefined();
-    expect(result.candidateApplied).not.toBeTrue();
-    expect(result.receipt?.candidateApplied).not.toBeTrue();
-    expect(result.evidence?.binding.scope.projectKey).toBe('D:/copied-project');
-    if (!result.recoveryArchive) return;
-    const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
-    expect(archive.disk).toEqual({ abi: oldAbi, abs: source, map: '{broken copied map' });
-    expect(archive.committed.pointer).toBe(oldPointer);
-    const restored: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
-      action: 'read_repair', generation: result.publication.generation });
-    expect(restored.ok).toBeTrue(); expect(restored.draft.abs).toBe(source);
-    expect((await inspect(tools)).diagnostics.status).toBe('ready');
+    expect(result.candidateApplied).toBeFalse(); expect(result.receipt.appliedRevision).toBeUndefined();
     expect(roots().getFieldValue('TEXT')).toBe('before');
-    expect(result.abs).not.toBe(source);
-    expect(disk.get('project.abs')).toBe(result.abs);
-    expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(result.abs));
-    expect(restored.draft.abs).not.toBe(result.abs);
+    expect(disk.get('project.abs')).toContain('TEXT="before"');
+    expect(disk.get('project.abi')).not.toContain('must not enter Working');
+    const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
+    expect(archive.disk).toEqual(before); expect(archive.programDrift).toEqual(observation);
+    expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(disk.get('project.abs')!));
+    const retired: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'repair', authority: 'workspace', token: 'sha256:' + 'a'.repeat(64) });
+    expect(retired.code).toBe('ABS_PROTOCOL_REQUIRED');
+  });
+  it('Native program drift rejects stale Working revision or physical attachment without any program writes', async () => {
+    const { tools, observation: original } = await seedProgramDrift();
+    for (const changed of ['attachment', 'working']) {
+      const observation = JSON.parse(absJson(original));
+      if (changed === 'working') roots().setFieldValue('new native owner', 'TEXT');
+      else observation.attachment = { ...observation.attachment, identity: { ...observation.attachment.identity, ino: '999' } };
+      const before = [...disk];
+      const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+      expect(result.ok).toBeFalse(); expect(result.code).toBe('ABS_PROGRAM_DRIFT_STALE');
+      expect([...disk]).toEqual(before);
+    }
+  });
+  it('Native program drift rejects a later canonical writer and malformed witnesses before source replacement', async () => {
+    const { tools, observation } = await seedProgramDrift();
+    disk.set('project.abs', disk.get('project.abs')! + '\n# current independent writer');
+    let before = [...disk];
+    const stale: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+    expect(stale.code).toBe('ABS_PROGRAM_DRIFT_STALE'); expect([...disk]).toEqual(before);
+    before = [...disk];
+    const invalid: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program' });
+    expect(invalid.ok).toBeFalse(); expect(invalid.code).toBe('ABS_PROGRAM_DRIFT_STALE'); expect([...disk]).toEqual(before);
+  });
+  it('Native program drift interrupted after archival never replaces source or applies the external draft', async () => {
+    const { tools, observation } = await seedProgramDrift();
+    const before = ['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json'].map(key => [key, disk.get(key)]);
+    editor.prepareProjectCode.and.callFake(async () => { gate.reset(); throw new Error('user_stop'); });
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+    expect(result.ok).toBeFalse(); expect(result.candidateApplied).not.toBeTrue();
+    expect(['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json'].map(key => [key, disk.get(key)])).toEqual(before);
+    const archive = [...disk].filter(([key]) => /^recoveries\/[A-Za-z0-9_-]+\.json$/.test(key)).map(([, text]) => JSON.parse(text)).find(value => value.programDrift);
+    expect(archive.disk.abs).toContain('preserved external intent'); expect(roots().getFieldValue('TEXT')).toBe('before');
+  });
+  it('Native program drift resumes the exact committed Working request without replaying its application', async () => {
+    enableNative();
+    disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+    await baseline();
+    const capture = await service.captureWorkingCandidate(),
+      source = capture.abs.replace('TEXT="before"', 'TEXT="candidate A"'),
+      ref = await retainWorkingCandidate(capture, source),
+      request: any = { version: 2, requestId: crypto.randomUUID(), workingCandidate: ref,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } },
+      validation = await service.validateGeneration(source, await service.bindWorkingCandidate(source, request)),
+      applied = await service.applyGeneration(source, validation.base.generation, {}, validation);
+    expect(applied.publication.status).toBe('COMMITTED');
+    const original = await service.observeApplication(request.requestId);
+    const rawDraft = disk.get('project.abs')!.replace('TEXT="candidate A"', 'TEXT="preserved later requested edit"');
+    disk.set('project.abs', rawDraft);
+    const observation = { ...await programDriftInput(), sourceRef: ref, originalRequestId: request.requestId },
+      tools = new AbsGenerationToolsService(service),
+      result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'reconcile_program', observation });
+    expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+    expect(result.candidateApplied).toBeFalse();
+    const settled = await service.observeApplication(request.requestId);
+    expect(settled.receipt).toEqual(original.receipt);
+    expect(settled.applicationObservation.current).toBeFalse();
+    expect(roots().getFieldValue('TEXT')).toBe('candidate A');
+    const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
+    expect(archive.disk.abs).toBe(rawDraft); expect(archive.programDrift.originalRequestId).toBe(request.requestId);
+    expect(archive.programDrift.sourceRef).toEqual(ref);
   });
 
   it('R2 reuses a completed repair after a lost reply without rewriting the original archive', async () => {
@@ -4701,6 +4827,1130 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(result.ok).toBeFalse(); expect(result.application).toBe('UNKNOWN'); expect(result.requiresReload).toBeTrue();
       expect(root.getDisabledReasons().has('MANUALLY_DISABLED')).toBeTrue(); expect(root.isCollapsed()).toBeTrue();
       expect(roots()).toBe(root); expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(gate.blocked).toBeTrue();
+    });
+  });
+
+  describe('S4 default project authoring readiness', () => {
+    const savedCanvas = () => disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+    const foreignBaseline = async () => {
+      const foreign = { ...scope, projectKey: 'D:/original' }, store = new AbsBaselineStore(port, foreign);
+      const document = editor.captureProjectSnapshot().document, abi = absJson(document), generation = 's4-foreign';
+      const projection = await createAbsProjection(composeBlocklyPage(document, foreign.pageId), { document,
+        scope: foreign, generation, baselineRef: absBaselineKey(generation), savedAbiHash: await hashAbsText(abi) });
+      await store.stage({ projection, mode: 'import', abi, inputAbs: projection.abs, expected: await store.captureDisk() });
+      await store.commit(generation, () => {}, async (text, hash, storage) => {
+        expect(await storage.replace('project.abi', hash, text)).toBeTrue();
+      });
+      return { document, abi, generation, source: projection.abs };
+    };
+    it('bootstraps only a pristine saved canvas through the existing publisher before preparing migration', async () => {
+      savedCanvas(); const originalAbi = disk.get('project.abi'), root = roots();
+      const prepared = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue(); expect('migration' in prepared).toBeTrue();
+      expect('migrationDeferred' in prepared).toBeFalse();
+      const committed = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(committed).not.toBeNull(); expect(committed!.abi).toBe(disk.get('project.abi'));
+      expect(absJson(JSON.parse(disk.get('project.abi')!))).toBe(originalAbi); expect(disk.get('project.abs')).toContain('TEXT="before"');
+      expect(disk.has('workspace-mode.json')).toBeFalse();
+      expect(roots()).toBe(root); expect(root.isDeletable()).toBeFalse(); expect(root.data).toBe('opaque');
+      expect(gate.busy).toBeFalse();
+    });
+    it('regenerates a stale public map before the first verified workspace migration', async () => {
+      savedCanvas();
+      const original: any = await service.prepareWorkspaceModeMigration();
+      const map = disk.get('project.abs.map.json')!;
+      const oldMap = absJson({ ...JSON.parse(map), projectionVersion: 'abs-v2.preview.4' });
+      disk.set('project.abs.map.json', oldMap);
+      editor.prepareProjectCode.calls.reset();
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+
+      expect(prepared.migration).toEqual(original.migration);
+      expect(disk.get('project.abs.map.json')).toBe(map);
+      const retained = [...disk].find(([key]) => key.startsWith('recoveries/map-'));
+      expect(JSON.parse(retained![1]).map).toBe(oldMap);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('repairs a stale map without applying an independent local ABS draft', async () => {
+      savedCanvas();
+      await service.prepareWorkspaceModeMigration();
+      const originalMap = disk.get('project.abs.map.json'), abi = disk.get('project.abi');
+      const badMap = '{"olderMap":true}', draft = disk.get('project.abs')! + '\r\n# pending draft';
+      disk.set('project.abs.map.json', badMap); disk.set('project.abs', draft);
+      const prepared: any = await new AbsGenerationToolsService(service).workspaceMigration('prepare', { version: 1, action: 'prepare_workspace_migration' });
+      expect(prepared.ok).withContext(JSON.stringify(prepared)).toBeTrue();
+      expect(prepared.migration.host.author.hash).toBe(await hashAbsText(draft));
+      expect(disk.get('project.abs.map.json')).toBe(originalMap);
+      expect(disk.get('project.abs')).toBe(draft); expect(disk.get('project.abi')).toBe(abi);
+      expect([...disk].some(([key, value]) => key.startsWith('recoveries/map-') && JSON.parse(value).map === badMap)).toBeTrue();
+      expect(roots().getFieldValue('TEXT')).toBe('before');
+    });
+    for (const badMap of ['missing', 'invalid JSON', 'invalid UTF-8'] as const) {
+      it(`automatically prepares a copied project with a retained draft and ${badMap} map`, async () => {
+        const original = await foreignBaseline(), expected = disk.get(absBaselineKey(original.generation));
+        // An independently edited source need not parse to be preserved.
+        const draft = '\uFEFF' + original.source + '\r\ntext_print(\r\n';
+        disk.set('project.abs', draft);
+        const bytes = Uint8Array.of(0xc3, 0x28, 0xff);
+        if (badMap === 'missing') disk.delete('project.abs.map.json');
+        if (badMap === 'invalid JSON') disk.set('project.abs.map.json', '{broken copied map');
+        if (badMap === 'invalid UTF-8') unreadableMirrors.set('project.abs.map.json', bytes);
+        const tools = new AbsGenerationToolsService(service);
+        const prepared: any = await tools.workspaceMigration('prepare', { version: 1, action: 'prepare_workspace_migration' });
+        expect(prepared.ok).withContext(JSON.stringify(prepared)).toBeTrue();
+        const binding = prepared.migration.accepted.accepted;
+        expect(binding.scope).toEqual(scope); expect(binding.generation).not.toBe(original.generation);
+        const restored: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+          action: 'read_draft', generation: binding.generation });
+        expect(restored.ok).toBeTrue(); expect(restored.draft.abs).toBe(draft);
+        expect(restored.draft.hash).toBe(await hashAbsText(draft));
+        expect(restored.draft.baseGeneration).toBe(original.generation);
+        expect(disk.get(absBaselineKey(original.generation))).toBe(expected);
+        expect(disk.get('project.abi')).toBe(original.abi); expect(disk.get('project.abs')).toBe(original.source);
+        if (badMap === 'invalid UTF-8') expect(rawArchives.get('project.abs.map.json')).toEqual(bytes);
+        else expect([...disk].some(([key, value]) => key.startsWith('recoveries/map-')
+          && JSON.parse(value).map === (badMap === 'missing' ? null : '{broken copied map'))).toBeTrue();
+        const capture = await service.captureWorkingCandidate();
+        expect(capture.published?.scope).toEqual(scope); expect(capture.published?.absHash).toBe(await hashAbsText(original.source));
+        expect(roots().getFieldValue('TEXT')).toBe('before');
+      });
+    }
+    const rememberSavedCanvas = () => {
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, disk.get('project.abi')!, editor.captureProjectSnapshot().document);
+    };
+    for (const [key, background] of [['project.abs', false], ['project.abs.map.json', false], ['project.abs.map.json', true]] as const) {
+      it(`saves unsaved Working and retains invalid ${key} bytes (${background ? 'background' : 'foreground'})`, async () => {
+        savedCanvas(); await service.prepareWorkspaceModeMigration(); rememberSavedCanvas();
+        const bytes = Uint8Array.of(0xff, 0xc3, 0x28);
+        const draft = key === 'project.abs.map.json' && !background && disk.get('project.abs')! + '\r\n# unsaved ABS author';
+        if (draft) disk.set('project.abs', draft);
+        unreadableMirrors.set(key, bytes);
+        roots().setFieldValue('unsaved authorship', 'TEXT');
+        const request = { version: 2 as const, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' as const };
+        const saved = await project.save(scope.projectKey, request, background);
+        expect(saved.projectSaved).toBeTrue();
+        expect(rawArchives.get(key)).toEqual(bytes);
+        expect(JSON.parse(disk.get('project.abi')!).pages[0].content.blocks.blocks[0].fields.TEXT).toBe('unsaved authorship');
+        const receipt = await service.observeNativeSave(scope.projectKey, request);
+        expect(receipt?.saveReceipt.requestId).toBe(request.requestId);
+        expect(receipt?.saveReceipt.state).toBe('completed');
+        expect(receipt?.result?.['projectSaved']).toBeTrue();
+        if (draft) {
+          const generation = JSON.parse(disk.get('project.abs.map.json')!).generation;
+          expect((await service.readArchivedDraft(generation)).abs).toBe(draft);
+        }
+      });
+    }
+    for (const blocker of ['external ABI', 'prepared writer'] as const) {
+      it(`does not repair unreadable mirrors against a ${blocker}`, async () => {
+        savedCanvas(); await service.prepareWorkspaceModeMigration(); rememberSavedCanvas();
+        const key = 'project.abs.map.json', bytes = Uint8Array.of(0xff, 0xc3, 0x28);
+        unreadableMirrors.set(key, bytes);
+        if (blocker === 'external ABI') {
+          const outside = JSON.parse(disk.get('project.abi')!);
+          outside.pages[0].content.blocks.blocks[0].fields.TEXT = 'external change';
+          disk.set('project.abi', absJson(outside));
+        } else disk.set('prepared.json', 'original writer marker');
+        roots().setFieldValue('unsaved authorship', 'TEXT');
+        const before = [...disk];
+        const request = { version: 2 as const, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' as const };
+        await expectAsync(project.save(scope.projectKey, request)).toBeRejectedWith(jasmine.objectContaining({
+          code: blocker === 'external ABI' ? 'ABS_DUAL_EDIT_CONFLICT' : 'ABS_TRANSACTION_PENDING',
+        }));
+        expect([...disk]).toEqual(before); expect(unreadableMirrors.get(key)).toBe(bytes);
+        expect(rawArchives.size).toBe(0); expect(roots().getFieldValue('TEXT')).toBe('unsaved authorship');
+      });
+    }
+    it('uses the acknowledged native load when first migration sees the same legacy ABI bytes', async () => {
+      const loaded = editor.captureProjectSnapshot().document;
+      const legacy = absJson({ ...loaded, metadata: 'legacy normalized during load' });
+      disk.set('project.abi', legacy);
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, legacy, loaded);
+      spyOn(editor, 'normalizeProjectAbi').and.callFake(input => {
+        if (input.metadata === 'legacy normalized during load') throw new Error('Legacy disk identities require load conversion.');
+        return input;
+      });
+
+      const ready = await service.prepareWorkspaceModeMigration();
+      expect(ready.ok).toBeTrue();
+      expect('migration' in ready).toBeTrue();
+      const accepted = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(absJson(JSON.parse(accepted!.abi!))).toBe(absJson(loaded));
+      expect(disk.get('project.abi')).toBe(accepted!.abi!);
+      expect(disk.has('workspace-mode.json')).toBeFalse();
+    });
+    it('does not bootstrap a different Working view from an acknowledged legacy load', async () => {
+      const loaded = editor.captureProjectSnapshot().document, legacy = absJson({ ...loaded, metadata: 'legacy' });
+      disk.set('project.abi', legacy);
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, legacy, loaded);
+      roots().setFieldValue('unsaved after opening', 'TEXT');
+      const before = [...disk];
+      const reply: any = await service.prepareWorkspaceModeMigration();
+      expect(reply.migrationDeferred).toEqual({ version: 1, reason: 'saved-working-differs' });
+      expect([...disk]).toEqual(before);
+    });
+    it('defers a dirty canvas without changing an unbound ABS companion', async () => {
+      savedCanvas();
+      disk.set('project.abs', '# preserved original draft');
+      disk.set('project.abs.map.json', '{"old":"map"}');
+      roots().setFieldValue('unsaved current view', 'TEXT'); const before = [...disk];
+      const dirty = await service.prepareWorkspaceModeMigration();
+      expect((dirty as any).migrationDeferred).toEqual({ version: 1, reason: 'saved-working-differs' });
+      expect([...disk]).toEqual(before); expect(roots().getFieldValue('TEXT')).toBe('unsaved current view');
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(gate.busy).toBeFalse();
+    });
+    for (const variant of ['known mirror', 'old ABI hash', 'edited legacy ABS', 'only ABS', 'unknown companions'] as const) {
+      it(`establishes the first accepted generation from saved ABI with ${variant} retained as needed`, async () => {
+        savedCanvas();
+        const legacy = '# ABS Schema: 2\nroot(TEXT="before")\n';
+        const original = variant === 'known mirror' || variant === 'old ABI hash' ? legacy : legacy.replace('before', 'unsubmitted');
+        const map = variant === 'only ABS' ? null : variant === 'unknown companions' ? '{"unrecognized":"author map"}' : absJson({
+          schemaVersion: 1, absSchemaVersion: 2, projectionVersion: 'abs-v2.preview.4', generation: 'legacy',
+          baselineRef: absBaselineKey('legacy'), scope, baseAbsHash: await hashAbsText(legacy), nodes: [], symbols: [],
+          savedAbiHash: variant === 'old ABI hash' ? await hashAbsText('other ABI') : await hashAbsText(absJson(JSON.parse(disk.get('project.abi')!))),
+        });
+        disk.set('project.abs', original);
+        if (map !== null) disk.set('project.abs.map.json', map);
+        const prepared: any = await service.prepareWorkspaceModeMigration();
+        expect(prepared.ok).toBeTrue();
+        expect(prepared.migration).toBeDefined();
+        const store = new AbsBaselineStore(port, scope);
+        const accepted = await store.readCommittedSnapshot();
+        const generation = accepted!.projection.map.generation;
+        expect(disk.get('project.abs')).toContain('TEXT="before"');
+        expect(disk.get('project.abs')).not.toContain('unsubmitted');
+        expect(roots().getFieldValue('TEXT')).toBe('before');
+        if (variant === 'known mirror') {
+          await expectAsync(store.readArchivedDraft(generation)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DRAFT_ARCHIVE_MISSING' }));
+        } else {
+          const draft = await store.readArchivedDraft(generation);
+          expect(draft).toEqual(jasmine.objectContaining({ origin: 'legacy-mirrors', baseGeneration: null, abs: original }));
+          expect(prepared.draftArchive).toEqual(jasmine.objectContaining({ generation, hash: draft.hash, bytes: draft.bytes }));
+          expect(await service.inspectGeneration()).toEqual(jasmine.objectContaining({ draftArchive: prepared.draftArchive }));
+          expect(JSON.parse(disk.get(absBaselineKey(generation))!).inputMap).toBe(map);
+        }
+      });
+    }
+    it('rejects a legacy companion refresh against independently changed saved ABI', async () => {
+      savedCanvas();
+      const loaded = editor.captureProjectSnapshot().document;
+      const original = disk.get('project.abi')!;
+      window['fs'].readFileSync = () => disk.get('project.abi');
+      editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+      project.rememberLoadedProject(scope.projectKey, original, loaded);
+      const changed = JSON.parse(original);
+      changed.pages[0].content.blocks.blocks[0].fields.TEXT = 'different on disk';
+      disk.set('project.abi', absJson(changed));
+      disk.set('project.abs', 'unknown companion bytes');
+      const before = [...disk];
+      await expectAsync(service.exportGeneration()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DUAL_EDIT_CONFLICT' }));
+      expectProgramFilesUnchanged(before);
+      expect(roots().getFieldValue('TEXT')).toBe('before');
+    });
+    it('keeps verified readiness deferrals distinct from corrupt metadata and failed publications', async () => {
+      savedCanvas(); await baseline();
+      const store = new AbsBaselineStore(port, scope), current = (await store.readCommittedSnapshot())!;
+      const projection = await createAbsProjection(current.projection.workspace, { document: current.projection.document,
+        contracts: current.projection.contracts, generation: 's4-export-only', baselineRef: absBaselineKey('s4-export-only'),
+        scope, savedAbiHash: current.projection.map.savedAbiHash });
+      await store.stage({ projection, mode: 'export', abi: null, inputAbs: current.projection.abs, expected: await store.captureDisk() });
+      await store.commit('s4-export-only', () => {}, async () => { throw Error('An export must not write ABI'); });
+      const before = [...disk];
+      const unavailable = await service.prepareWorkspaceModeMigration();
+      expect((unavailable as any).migrationDeferred).toEqual({ version: 1, reason: 'saved-program-unavailable' });
+      expect([...disk]).toEqual(before);
+      disk.set('committed.json', '{"broken":true}'); const corrupt = [...disk];
+      await expectAsync(service.prepareWorkspaceModeMigration()).toBeRejected(); expect([...disk]).toEqual(corrupt);
+      disk.clear(); savedCanvas(); failWrite = 'prepared.json';
+      await expectAsync(service.prepareWorkspaceModeMigration()).toBeRejectedWithError('injected write failure');
+      expect(disk.has('workspace-mode.json')).toBeFalse(); expect(disk.has('project.abs')).toBeFalse();
+      expect(gate.busy).toBeFalse();
+    });
+    it('rebinds a verified moved project before its first proof and keeps the exact original draft', async () => {
+      const original = await foreignBaseline(), draft = '\uFEFF' + original.source + '\r\n# retained draft\r\n';
+      const originalGeneration = disk.get(absBaselineKey(original.generation));
+      disk.set('project.abs', draft);
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue(); expect(prepared.migrationDeferred).toBeUndefined();
+      const binding = prepared.migration.accepted.accepted;
+      expect(binding.scope).toEqual(scope); expect(binding.generation).not.toBe(original.generation);
+      expect(prepared.migration.host.expected.committedHash).toBe(await hashAbsText(disk.get('committed.json')!));
+      expect(prepared.migration.host.workingDocumentHash).toBe(await hashAbsText(absJson(original.document)));
+      const store = new AbsBaselineStore(port, scope), retained = await store.readArchivedDraft(binding.generation);
+      expect(retained.baseGeneration).toBe(original.generation); expect(retained.abs).toBe(draft);
+      expect(retained.hash).toBe(await hashAbsText(draft));
+      expect(disk.get(absBaselineKey(original.generation))).toBe(originalGeneration);
+      expect(disk.get('project.abi')).toBe(original.abi); expect(disk.has('workspace-mode.json')).toBeFalse();
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+
+      const after = [...disk];
+      expect(await service.prepareWorkspaceModeMigration()).toEqual(prepared);
+      expect([...disk]).toEqual(after);
+    });
+    it('restores an outdated public map in a copied project before rebinding the original generation', async () => {
+      const original = await foreignBaseline(), oldMap = absJson({ projectionVersion: 'abs-v2.preview.4', generation: 'overwritten' });
+      disk.set('project.abs.map.json', oldMap);
+      expect(await service.inspectGeneration()).toEqual(jasmine.objectContaining({
+        diagnostics: jasmine.objectContaining({ status: 'rebind-required' }),
+      }));
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue();
+      expect(prepared.migration.accepted.accepted.scope).toEqual(scope);
+      expect(prepared.migration.accepted.accepted.generation).not.toBe(original.generation);
+      expect(disk.get('project.abs')).toBe(original.source);
+      expect(disk.get('project.abi')).toBe(original.abi);
+      expect([...disk].filter(([key]) => key.startsWith('recoveries/map-')).some(([, value]) => JSON.parse(value).map === oldMap)).toBeTrue();
+    });
+    it('prepares a copied project-v1 without replaying engine selection or replacing its author draft', async () => {
+      const original = await foreignBaseline(), draft = '\uFEFF' + original.source + '\r\n# copied author draft\r\n';
+      const mode = absJson({ version: 1, mode: 'project-v1' });
+      disk.set('workspace-mode.json', mode); disk.set('project.abs', draft);
+      const unresolved = await absWorkspaceProtocol(scope.projectKey, { version: 1 }, () => {}, port);
+      expect((unresolved as any).code).toBe('ABS_WORKSPACE_MODE_UNINITIALIZED');
+
+      const prepared: any = await service.prepareWorkspaceModeMigration();
+      expect(prepared.ok).toBeTrue();
+      expect(prepared.protocol.workspaceModeBinding.accepted.scope).toEqual(scope);
+      expect(prepared.migration).toBeUndefined();
+      expect(disk.get('workspace-mode.json')).toBe(mode);
+      expect(disk.get('project.abi')).toBe(original.abi);
+      expect(disk.get('project.abs')).toBe(draft);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+
+      const after = [...disk];
+      const fromAlias = await absWorkspaceProtocol('D:/original-alias', { version: 1 }, () => {}, port);
+      expect(fromAlias).toEqual(prepared);
+      expect([...disk]).toEqual(after);
+    });
+    it('does not rebind a moved project with an unverified saved program or a prepared History migration', async () => {
+      const original = await foreignBaseline();
+      disk.set('project.abi', original.abi.replace('"TEXT":"before"', '"TEXT":"elsewhere"'));
+      const competing = [...disk];
+      await expectAsync(service.prepareWorkspaceModeMigration())
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_CONFLICT' }));
+      expect([...disk]).toEqual(competing);
+
+      disk.set('project.abi', original.abi);
+      disk.set('history-workspace.json', absJson({ executionMigration: { phase: 'prepared' } }));
+      const pending = [...disk];
+      await expectAsync(service.prepareWorkspaceModeMigration())
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_PENDING' }));
+      expect([...disk]).toEqual(pending);
+    });
+    it('leaves a newer author draft untouched when the migration observation changes before recovery', async () => {
+      const original = await foreignBaseline(), competing = original.source + '\n# concurrent author draft';
+      const expected = [...disk];
+      const fs = window['fs'], open = fs.openProjectSyncStorage.bind(fs);
+      let locks = 0;
+      fs.openProjectSyncStorage = async (path, check) => {
+        const access = await open(path, check);
+        return { ...access, withLock: operation => {
+          if (++locks === 2) disk.set('project.abs', competing);
+          return access.withLock(operation);
+        } };
+      };
+      await expectAsync(service.prepareWorkspaceModeMigration())
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_WORKSPACE_MIGRATION_OBSERVATION_STALE' }));
+      expect([...disk]).toEqual(expected.map(([key, text]) => [key, key === 'project.abs' ? competing : text]));
+    });
+  });
+
+  describe('project-v1 author tree', () => {
+    const select = () => disk.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
+    it('acknowledges an unchanged author-tree save without creating another immutable generation', async () => {
+      await baseline(); select();
+      const first = await service.exportGeneration({ save: true });
+      const before = [...disk.keys()].filter(key => key.startsWith('baselines/'));
+      const next = await service.exportGeneration({ save: true });
+      expect(next.reused).toBeTrue();
+      expect(next.publication.generation).toBe(first.publication.generation);
+      expect(next.publication.abiSaved).toBeFalse();
+      expect(next.publication.acceptedSource?.authorSource.pending).toBeFalse();
+      expect([...disk.keys()].filter(key => key.startsWith('baselines/'))).toEqual(before);
+    });
+    it('acknowledges an unchanged author-tree save with a separately retained draft', async () => {
+      await baseline(); select();
+      const draft = disk.get('project.abs')! + '\n# pending edit';
+      disk.set('project.abs', draft);
+      const saved = await service.exportGeneration({ save: true });
+      const next = await service.exportGeneration({ save: true });
+      expect(next.reused).toBeTrue();
+      expect(next.publication.generation).toBe(saved.publication.generation);
+      expect(next.publication.absMirrored).toBeFalse();
+      expect(next.publication.acceptedSource?.authorSource.pending).toBeTrue();
+      expect(disk.get('project.abs')).toBe(draft);
+      disk.set('project.abs', draft + ' after saving');
+      expect((await service.exportGeneration({ save: true })).reused).toBeFalsy();
+    });
+
+    it('publishes a merged canvas edit to the submitted primary ABS without consuming a later draft', async () => {
+      const base = await baseline(); select();
+      editor.workspace.getBlockById('child').setFieldValue('720', 'NUM');
+      await service.exportGeneration({ save: true });
+      const source = base.source.replace('TEXT="before"', 'TEXT="candidate"');
+      disk.set('project.abs', source);
+      const result = await priorityApply(base, source);
+      expect(result.publication.status).toBe('COMMITTED');
+      const merged = (await service.captureWorkingCandidate()).authorSource!.text!;
+      expect(merged).toContain('720');
+      expect(merged).toContain('TEXT="candidate"');
+      const later = merged.replace('720', '721');
+      disk.set('project.abs', later);
+      const read = await service.captureWorkingCandidate();
+      expect(read.authorSource!.text).toBe(later);
+      expect(read.abs).toContain('720');
+      expect(editor.workspace.getBlockById('child').getFieldValue('NUM')).toBe(720);
+    });
+    const captureWithUnchangedAuthorState = async (repeated = 0) => {
+      const replay = enableNative();
+      let options: [string, string][] = [['Port A', 'A'], ['Port B', 'B']];
+      Blockly.Blocks['abs_origin_port'] = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldDropdown(() => options), 'PORT');
+      } };
+      registeredTypes.push('abs_origin_port'); editor.workspace.newBlock('abs_origin_port', 'origin-port');
+      for (let index = 0; index < repeated; index++) {
+        const print = editor.workspace.newBlock('text_print', `repeat-print-${index}`);
+        const text = editor.workspace.newBlock('text', `repeat-text-${index}`); text.setFieldValue('same repeated message', 'TEXT');
+        print.getInput('TEXT').connection.connect(text.outputConnection);
+      }
+      const old = await baseline(); select();
+      options = [['Port A with pins', 'A'], ['Port B with pins', 'B']];
+      replay.steps.push({ kind: 'definitions', definitions: [
+        { type: 'abs_origin_port', message0: '%1', args0: [{ type: 'field_dropdown', name: 'PORT', options }] },
+        { type: 'text_print', message0: '%1', args0: [{ type: 'input_value', name: 'TEXT' }], previousStatement: null, nextStatement: null },
+        { type: 'text', message0: '%1', args0: [{ type: 'field_input', name: 'TEXT', text: '' }], output: 'String' },
+      ] }, { kind: 'script', label: 'state-origin-current-runtime', source: `
+        Arduino.forBlock.abs_origin_port = () => '';
+        Arduino.forBlock.text = block => [JSON.stringify(block.getFieldValue('TEXT')), 0];
+        Arduino.forBlock.text_print = block => 'print(' + Arduino.valueToCode(block, 'TEXT', 0) + ');\\n';
+      ` });
+      const capture = await service.captureWorkingCandidate(), author = old.source;
+      expect(capture.authorSource?.text).toBe(author);
+      expect(splitAbsState(capture.abs).program).toBe(splitAbsState(author).program);
+      expect(splitAbsState(capture.abs).state).not.toBe(splitAbsState(author).state);
+      const start = author.indexOf('\n# @project-state:'), text = '\ntext_print(TEXT=text(TEXT="verified state origin"))\n';
+      expect(start).toBeGreaterThan(0);
+      const source = author.slice(0, start) + text + author.slice(start);
+      const ref = await retainWorkingCandidate(capture, source, { source: author, edits: [{ start, end: start, text }] });
+      const request = async (candidate = ref, bytes = source) => service.bindWorkingCandidate(bytes, {
+        version: 2, requestId: crypto.randomUUID(), workingCandidate: candidate,
+        candidate: { hash: await hashAbsText(bytes), bytes: new TextEncoder().encode(bytes).byteLength },
+      } as any);
+      return { capture, author, source, ref, request };
+    };
+    it('S3 readonly state origin retains the exact accepted author through fresh dropdown labels and first print validate apply save', async () => {
+      const f = await captureWithUnchangedAuthorState();
+      // The project-v1 Pi editor publishes its authored bytes before apply.
+      disk.set('project.abs', f.source); const before = [...disk];
+      const validation = await service.validateGeneration(f.source, await f.request());
+      expect(validation.candidate.hash).toBe(await hashAbsText(f.source)); expect([...disk]).toEqual(before);
+      const applied = await service.applyGeneration(f.source, validation.base.generation, {}, validation);
+      expect(applied.publication.status).toBe('COMMITTED'); expect(applied.acceptedSource?.authorSource.pending).toBeFalse();
+      expect(disk.get('project.abs')).toBe(f.source);
+      const prints = editor.workspace.getAllBlocks(false).filter(block => block.type === 'text_print');
+      expect(prints.length).toBe(1); expect(prints[0].getInputTargetBlock('TEXT').getFieldValue('TEXT')).toBe('verified state origin');
+      expect(editor.workspace.getBlockById('origin-port').getFieldValue('PORT')).toBe('A');
+      expect(roots().isDeletable()).toBeFalse(); expect(roots().data).toBe('opaque');
+      const saved: any = await project.save(scope.projectKey); expect(saved.publication.status).toBe('COMMITTED');
+      const state = JSON.parse(splitAbsState((await service.inspectHistoryProgram()).abs).state!);
+      expect(state.contracts.fields['origin-port'].PORT.options[0]).toEqual(['Port A with pins', 'A']);
+      expect(validation.candidate.hash).toBe(await hashAbsText(f.source)); expect(gate.busy).toBeFalse();
+    });
+    it('S3 readonly state origin refuses altered state or unverifiable identity instead of trusting a replacement parent', async () => {
+      const f = await captureWithUnchangedAuthorState(), sourceState = splitAbsState(f.source).state!;
+      const changes = [
+        (state: any) => { state.contracts.fields['origin-port'].PORT.options[0][1] = 'forged-value'; },
+        (state: any) => { state.nodes[0].attributes.deletable = true; },
+      ];
+      for (const change of changes) {
+        const state = JSON.parse(sourceState); change(state);
+        const source = f.source.replace(sourceState, absJson(state));
+        const ref = await retainWorkingCandidate(f.capture, source, { source: f.author,
+          edits: [{ start: 0, end: f.author.length, text: source }] });
+        await expectAsync(service.validateGeneration(source, await f.request(ref, source)))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+      }
+      for (const published of [null, { ...f.capture.published, absHash: `sha256:${'f'.repeat(64)}` },
+        { ...f.capture.published, generation: 'missing-accepted-origin' }]) {
+        const ref = await retainWorkingCandidate({ ...f.capture, published }, f.source, { source: f.author,
+          edits: [{ start: 0, end: f.author.length, text: f.source }] });
+        await expectAsync(service.validateGeneration(f.source, await f.request(ref)))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+      }
+      const record = JSON.parse(disk.get(`history-objects/${f.ref.revisionHash}`)!), sourceKey = `history-objects/${record.source.hash}`;
+      const original = disk.get(sourceKey)!; disk.set(sourceKey, original + ' ');
+      await expectAsync(f.request()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_CANDIDATE_OBJECT_INVALID' }));
+      disk.set(sourceKey, original);
+      await expectAsync(f.request({ ...f.ref, revisionHash: 'f'.repeat(64) }))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_CANDIDATE_OBJECT_INVALID' }));
+      const request = await f.request(); request.candidate.hash = `sha256:${'e'.repeat(64)}`;
+      await expectAsync(service.validateGeneration(f.source, request)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_STALE' }));
+      expect(disk.get('project.abs')).toBe(f.author); expect(roots().getFieldValue('TEXT')).toBe('before'); expect(gate.busy).toBeFalse();
+    });
+    it('S3 source continuation bridges only verified state replacements before tracked edits with repeated calls', async () => {
+      const f = await captureWithUnchangedAuthorState(14), store = new AbsBaselineStore(port, scope);
+      const fixed = await readWorkingCandidate(f.ref, port, scope, f.source, store);
+      expect(fixed.sourceEdits).toBeDefined(); expect(fixed.readonlyStateOrigin).toBe(f.author);
+      const publishReplacement = async (source: string) => {
+        const record = JSON.parse(disk.get(`history-objects/${f.ref.revisionHash}`)!);
+        const sourceHash = (await hashAbsText(source)).slice(7); disk.set(`history-objects/${sourceHash}`, source);
+        const next = absJson({ ...record, parent: f.ref,
+          source: { hash: sourceHash, bytes: new TextEncoder().encode(source).byteLength }, derivation: { kind: 'replace', mapping: 'unresolved' } });
+        const revisionHash = (await hashAbsText(next)).slice(7); disk.set(`history-objects/${revisionHash}`, next);
+        return { ...f.ref, revisionHash };
+      };
+      const rewritten = f.source.replace('TEXT="before"', 'TEXT="untracked rewrite"'), rewrittenRef = await publishReplacement(rewritten);
+      expect((await readWorkingCandidate(rewrittenRef, port, scope, rewritten, store)).sourceEdits).toBeUndefined();
+      const omitted = f.source.replace('text_print(TEXT=text(TEXT="same repeated message"))', ''), omittedRef = await publishReplacement(omitted);
+      expect(omitted).not.toBe(f.source);
+      expect((await readWorkingCandidate(omittedRef, port, scope, omitted, store)).sourceEdits).toBeUndefined();
+      await expectAsync(service.validateGeneration(omitted, await f.request(omittedRef, omitted)))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DELETION_INTENT_REQUIRED' }));
+      disk.set('project.abs', f.source);
+      const validation = await service.validateGeneration(f.source, await f.request());
+      const applied = await service.applyGeneration(f.source, validation.base.generation, {}, validation);
+      expect(applied.publication.status).toBe('COMMITTED');
+      for (let index = 0; index < 14; index++) {
+        expect(editor.workspace.getBlockById(`repeat-print-${index}`)).not.toBeNull();
+        expect(editor.workspace.getBlockById(`repeat-text-${index}`).getFieldValue('TEXT')).toBe('same repeated message');
+      }
+      expect(editor.workspace.getAllBlocks(false).filter(block => block.type === 'text_print').length).toBe(15);
+      expect(disk.get('project.abs')).toBe(f.source); expect(gate.busy).toBeFalse();
+    });
+    it('imports program-only source after a separately accepted author input without merging it again', async () => {
+      const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
+      disk.set('project.abs', f.source);
+      const original = await service.validateGeneration(f.source, await f.request());
+      const first = await service.applyGeneration(f.source, original.base.generation, {}, original);
+      expect(first.publication.status).toBe('COMMITTED');
+      expect(await store.readAcceptedAuthorInput(first.evidence!.binding.generation)).toBe(f.source);
+      const capture = await service.captureWorkingCandidate();
+      expect(splitAbsState(capture.abs).state).not.toBe(splitAbsState(f.source).state);
+      const portable = splitAbsState(capture.abs).program.replace('verified state origin', 'new portable import');
+      expect(portable).toContain('new portable import');
+      const framed = await retainWorkingCandidate(capture, portable, { source: capture.abs,
+        edits: [{ start: 0, end: capture.abs.length, text: portable }] });
+      const record = JSON.parse(disk.get(`history-objects/${framed.revisionHash}`)!);
+      const replacement = absJson({ ...record, derivation: { kind: 'replace', mapping: 'unresolved' } });
+      const ref = { ...framed, revisionHash: (await hashAbsText(replacement)).slice(7) };
+      disk.set(`history-objects/${ref.revisionHash}`, replacement);
+
+      disk.set('project.abs', f.source.replace('verified state origin', 'another unapplied source'));
+      await expectAsync(service.validateGeneration(portable, await f.request(ref, portable)))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+      expect(disk.get('project.abs')).toContain('another unapplied source');
+
+      disk.set('project.abs', f.source);
+      const validation = await service.validateGeneration(portable, await f.request(ref, portable));
+      const imported = await service.applyGeneration(portable, validation.base.generation, {}, validation);
+      expect(imported.publication.status).toBe('COMMITTED');
+      const print = editor.workspace.getAllBlocks(false).find(block => block.type === 'text_print');
+      expect(print?.getInputTargetBlock('TEXT').getFieldValue('TEXT')).toBe('new portable import');
+    });
+    it('S3 source continuation accepts two consecutive authored inputs while each normalized output stays the only Working base', async () => {
+      const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
+      disk.set('project.abs', f.source);
+      const firstValidation = await service.validateGeneration(f.source, await f.request());
+      const first = await service.applyGeneration(f.source, firstValidation.base.generation, {}, firstValidation);
+      expect(first.publication.status).toBe('COMMITTED'); expect(await store.readAcceptedAuthorInput(first.evidence!.binding.generation)).toBe(f.source);
+      const firstPrint = editor.workspace.getAllBlocks(false).find(block => block.type === 'text_print')!.id;
+      const capture = await service.captureWorkingCandidate(), start = f.source.indexOf('\n# @project-state:');
+      expect(capture.published?.generation).toBe(first.evidence!.binding.generation);
+      expect(splitAbsState(capture.abs).state).not.toBe(splitAbsState(f.source).state);
+      const label = f.source.indexOf('verified state origin'), edits = [
+        { start: label, end: label + 'verified state origin'.length, text: 'first print edited' },
+        { start, end: start, text: '\ntext_print(TEXT=text(TEXT="second authored print"))\n' },
+      ];
+      let source = f.source; for (const edit of [...edits].reverse()) source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+      const stateStart = start + '\n# @project-state:'.length, lineEnd = f.source.indexOf('\n', stateStart), stateEnd = lineEnd < 0 ? f.source.length : lineEnd;
+      const variants = [
+        [...edits, { start: stateStart, end: stateEnd, text: splitAbsState(capture.abs).state! }],
+        [edits[0], { start, end: stateEnd, text: edits[1].text }],
+      ];
+      for (const trace of variants) {
+        let candidate = f.source; for (const edit of [...trace].reverse()) candidate = candidate.slice(0, edit.start) + edit.text + candidate.slice(edit.end);
+        const candidateRef = await retainWorkingCandidate(capture, candidate, { source: f.source, edits: trace });
+        expect((await readWorkingCandidate(candidateRef, port, scope, candidate, store)).sourceEdits).toBeDefined();
+      }
+      const ref = await retainWorkingCandidate(capture, source, { source: f.source, edits });
+      disk.set('project.abs', source);
+      const validation = await service.validateGeneration(source, await f.request(ref, source));
+      expect(validation.candidate.hash).toBe(await hashAbsText(source));
+      const second = await service.applyGeneration(source, validation.base.generation, {}, validation);
+      expect(second.publication.status).toBe('COMMITTED'); expect(second.evidence!.binding.generation).not.toBe(first.evidence!.binding.generation);
+      expect(editor.workspace.getBlockById(firstPrint).getInputTargetBlock('TEXT').getFieldValue('TEXT')).toBe('first print edited');
+      expect(editor.workspace.getAllBlocks(false).filter(block => block.type === 'text_print').length).toBe(2);
+      expect(await store.readAcceptedAuthorInput(second.evidence!.binding.generation)).toBe(source);
+      expect(disk.get('project.abs')).toBe(source);
+      const saved: any = await project.save(scope.projectKey); expect(saved.publication.status).toBe('COMMITTED');
+      const frozen = JSON.parse(disk.get(`history-objects/${ref.revisionHash}`)!);
+      expect(disk.get(`history-objects/${frozen.source.hash}`)).toBe(source);
+      expect(validation.workingCandidate).toEqual(ref); expect(validation.candidate.hash).toBe(await hashAbsText(source));
+      expect(gate.busy).toBeFalse();
+    });
+    it('continues tracked edits after structural and dropdown source normalization', async () => {
+      const replay = enableNative(), type = 'abs_author_conditional';
+      const conditional = { type, message0: '%1 %2', args0: [
+        { type: 'input_value', name: 'IF0' }, { type: 'input_statement', name: 'DO0' },
+      ], mutator: 'controls_if_mutator', previousStatement: null, nextStatement: null };
+      const settings = { type: 'abs_author_settings', message0: '%1', args0: [
+        { type: 'field_dropdown', name: 'RATE', options: [['Base', '115200'], ['Faster', '230400']] },
+      ] };
+      const reporter = { type: 'abs_author_value', message0: '', output: 'Number' };
+      for (const definition of [conditional, settings, reporter]) declare(definition);
+      replay.steps.push({ kind: 'definitions', definitions: [conditional, settings, reporter] }, {
+        kind: 'script', label: 'inferred structural provenance', source: `
+          Arduino.forBlock.abs_author_conditional = () => '';
+          Arduino.forBlock.abs_author_settings = () => '';
+          Arduino.forBlock.abs_author_value = () => ['7', 0];
+        `,
+      });
+      await baseline(); select();
+      const applyTracked = async (capture: Awaited<ReturnType<typeof service.captureWorkingCandidate>>, original: string,
+        edit: { start: number; end: number; text: string }) => {
+        const source = original.slice(0, edit.start) + edit.text + original.slice(edit.end);
+        const workingCandidate = await retainWorkingCandidate(capture, source, { source: original, edits: [edit] });
+        disk.set('project.abs', source);
+        const request = await service.bindWorkingCandidate(source, { version: 2, requestId: crypto.randomUUID(), workingCandidate,
+          candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } } as any);
+        const validation = await service.validateGeneration(source, request);
+        const result = await service.applyGeneration(source, validation.base.generation, {}, validation);
+        expect(result.publication.status).toBe('COMMITTED');
+        return source;
+      };
+      const initial = await service.captureWorkingCandidate(), state = initial.abs.indexOf('\n# @project-state:');
+      const author = await applyTracked(initial, initial.abs, { start: state, end: state, text: '\nabs_author_conditional()\n    @ELSE:\nabs_author_settings(115200)\n' });
+      const established = editor.workspace.getBlocksByType(type, false)[0];
+      expect(established.saveExtraState()).toEqual({ hasElse: true });
+      const successor = await service.captureWorkingCandidate();
+      expect(successor.abs).toContain('abs_author_conditional(null) @extra:{"hasElse":true}');
+      expect(successor.abs).toMatch(/abs_author_settings\((RATE=)?"115200"\)/);
+      const committed = (await new AbsBaselineStore(port, scope).inspectCommittedAncestor(successor.published!.generation))!.projection;
+      for (const changed of [
+        successor.abs.replace('@extra:{"hasElse":true}', '@extra:{"hasElse":false}'),
+        successor.abs.replace('abs_author_settings("115200")', 'abs_author_settings(230400)'),
+        successor.abs.replace('abs_author_conditional(null)', 'abs_author_conditional(UNKNOWN=null)'),
+      ]) {
+        expect(changed).not.toBe(successor.abs);
+        expect(acceptedInputEditProof(committed, changed)).toBeUndefined();
+      }
+      const replaced = /math_number\([^)]*\)/.exec(author)!;
+      const edited = await applyTracked(successor, author, {
+        start: replaced.index, end: replaced.index + replaced[0].length, text: 'abs_author_value()',
+      });
+      expect(disk.get('project.abs')).toBe(edited);
+      expect(roots().getInputTargetBlock('VALUE').type).toBe('abs_author_value');
+      expect(editor.workspace.getBlockById(established.id)?.saveExtraState()).toEqual({ hasElse: true });
+      expect(gate.busy).toBeFalse();
+    });
+    it('tracks deletions across accepted aliases, inherited protection and restored author source', async () => {
+      const replay = enableNative(), type = 'abs_alias_owner';
+      const definition = { type, message0: '%1', args0: [{ type: 'input_value', name: 'VALUE', check: 'Number' }] };
+      const number = { type: 'math_number', message0: '%1', args0: [{ type: 'field_number', name: 'NUM', value: 0 }], output: 'Number' };
+      declare(definition);
+      catalog.record(number, Blockly.Blocks['math_number']);
+      replay.steps.push({ kind: 'definitions', definitions: [definition, number] }, {
+        kind: 'script', label: 'shorthand owner', source: "Arduino.forBlock.abs_alias_owner = () => '';",
+      });
+      const store = new AbsBaselineStore(port, scope);
+      const request = async (source: string, workingCandidate: Awaited<ReturnType<typeof retainWorkingCandidate>>) =>
+        service.bindWorkingCandidate(source, { version: 2, requestId: crypto.randomUUID(), workingCandidate,
+          candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } } as any);
+      const apply = async (source: string, ref: Awaited<ReturnType<typeof retainWorkingCandidate>>) => {
+        disk.set('project.abs', source);
+        const validation = await service.validateGeneration(source, await request(source, ref));
+        const result = await service.applyGeneration(source, validation.base.generation, {}, validation);
+        expect(result.publication.status).toBe('COMMITTED');
+      };
+      await baseline(); select();
+      const initial = await service.captureWorkingCandidate(), state = initial.abs.indexOf('\n# @project-state:');
+      const alias = 'abs_alias_owner(number(7))', literal = 'abs_alias_owner(7)';
+      const text = `\n${alias}\n${literal}\n`;
+      const protection = / @protect:\{[^}]+\}/.exec(initial.abs)!;
+      const afterProtection = initial.abs.slice(protection.index + protection[0].length, state) + text;
+      const author = initial.abs.slice(0, protection.index) + afterProtection;
+      await apply(author, await retainWorkingCandidate(initial, author, {
+        source: initial.abs, edits: [{ start: protection.index, end: initial.abs.length, text: afterProtection }],
+      }));
+      const capture = await service.captureWorkingCandidate();
+      const committed = (await store.inspectCommittedAncestor(capture.published!.generation))!.projection;
+      expect(committed.abs).toContain(protection[0]);
+      expect(author).not.toContain('@protect:');
+      expect(acceptedInputEditProof(committed, author.replace(literal, `${literal} @protect:{"deletable":false}`))).toBeUndefined();
+      const byPath = committed.map.nodes.filter(node => node.blockType === type);
+      expect(byPath.length).toBe(2);
+      const retained = byPath[1].blockId;
+      const child = editor.workspace.getBlockById(retained)!.getInputTargetBlock('VALUE')!.id;
+      const changed = author.replace(alias, 'abs_alias_owner(number(9))');
+      expect(acceptedInputEditProof(committed, changed)).toBeUndefined();
+      const removeAlias = (source: string) => {
+        const start = source.indexOf('abs_alias_owner('), end = source.indexOf('\n', start) + 1;
+        const edit = { start, end, text: '' };
+        return { source: source.slice(0, start) + source.slice(end), trace: { source, edits: [edit] } };
+      };
+      const deletion = removeAlias(author), changedDeletion = removeAlias(changed);
+      expect(deletion.source).toBe(changedDeletion.source);
+      for (const [base, candidate] of [[{ ...capture, published: null }, deletion], [capture, changedDeletion]] as const) {
+        const ref = await retainWorkingCandidate(base, candidate.source, candidate.trace);
+        expect((await readWorkingCandidate(ref, port, scope, candidate.source, store)).sourceEditOrigin).toBeUndefined();
+        await expectAsync(service.validateGeneration(candidate.source, await request(candidate.source, ref)))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DELETION_INTENT_REQUIRED' }));
+      }
+      const ref = await retainWorkingCandidate(capture, deletion.source, deletion.trace);
+      const fixed = await readWorkingCandidate(ref, port, scope, deletion.source, store);
+      expect(fixed.sourceEditOrigin?.source).toBe(author);
+      expect(fixed.sourceEdits).toBeDefined();
+      const restoredRef = await retainWorkingCandidate(capture, deletion.source, { ...deletion.trace, replacements: [deletion.source] });
+      const restored = await readWorkingCandidate(restoredRef, port, scope, deletion.source, store);
+      expect(restored.sourceEditOrigin).toEqual(fixed.sourceEditOrigin);
+      expect(restored.sourceEdits).toEqual(fixed.sourceEdits);
+      await apply(deletion.source, restoredRef);
+      expect(editor.workspace.getBlockById(byPath[0].blockId)).toBeNull();
+      expect(editor.workspace.getBlockById(retained)?.getInputTargetBlock('VALUE')?.id).toBe(child);
+      expect(roots().isDeletable()).toBeFalse();
+      expect(disk.get('project.abs')).toBe(deletion.source); expect(gate.busy).toBeFalse();
+    });
+    it('S3 source continuation rejects uncommitted or noncandidate input and corrupted accepted author hashes', async () => {
+      const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
+      disk.set('project.abs', f.source);
+      const validation = await service.validateGeneration(f.source, await f.request());
+      const applied = await service.applyGeneration(f.source, validation.base.generation, {}, validation), generation = applied.evidence!.binding.generation;
+      expect(await store.readAcceptedAuthorInput(generation)).toBe(f.source);
+      const accepted = (await store.inspectCommittedAncestor(generation))!.projection;
+      expect(acceptedInputEditProof(accepted, f.source)).toBeDefined();
+      const program = splitAbsState(f.source).program, lines = program.split('\n'), root = lines.findIndex(line => line.startsWith('abs_sync_root(')),
+        portLine = lines.findIndex(line => line.startsWith('abs_origin_port('));
+      [lines[root], lines[portLine]] = [lines[portLine], lines[root]];
+      for (const changed of [f.source.replace('verified state origin', 'different value'),
+        f.source.replace('abs_origin_port(PORT=A)', 'abs_origin_port(PORT=B)'),
+        f.source.replace('\nabs_origin_port(PORT=A)', '\n    abs_origin_port(PORT=A)'),
+        f.source.replace(program, lines.join('\n'))]) {
+        expect(changed).not.toBe(f.source); expect(acceptedInputEditProof(accepted, changed)).toBeUndefined();
+      }
+      const key = absBaselineKey(generation), recordText = disk.get(key)!, record = JSON.parse(recordText), pointer = disk.get('committed.json')!;
+      disk.set('committed.json', record.previousPointer);
+      expect(await store.readAcceptedAuthorInput(generation)).toBeNull(); disk.set('committed.json', pointer);
+      const saved: any = await project.save(scope.projectKey);
+      expect(await store.readAcceptedAuthorInput(saved.evidence.binding.generation)).toBeNull();
+      record.authorSource.hash = `sha256:${'f'.repeat(64)}`; disk.set(key, absJson(record));
+      await expectAsync(store.readAcceptedAuthorInput(generation)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+      disk.set(key, recordText); expect(await store.readAcceptedAuthorInput(generation)).toBe(f.source);
+      expect(gate.busy).toBeFalse();
+    });
+    it('S3 History preserves both clean and dirty author bytes while only the accepted Working follows undo redo', async () => {
+      await baseline(); select();
+      const first: any = await project.save(scope.projectKey), sourceA = (await service.inspectHistoryProgram()).abs;
+      roots().setFieldValue('clean author C', 'TEXT');
+      const current: any = await project.save(scope.projectKey), sourceC = disk.get('project.abs')!;
+      expect(sourceC).toBe((await service.inspectHistoryProgram()).abs);
+      const tools = new AbsGenerationToolsService(service);
+      const request = async (base: string, source: string, expected: any) => ({
+        version: 2, requestId: `pub2-${crypto.randomUUID()}`, action: 'history_publish',
+        history: { id: crypto.randomUUID(), expected,
+          base: { source: base, hash: await hashAbsText(base), bytes: new TextEncoder().encode(base).byteLength },
+          candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength }, source },
+      });
+      const undo = await request(sourceC, sourceA, current.evidence.binding);
+      const restored: any = await tools.execute('abs_recovery', undo);
+      expect(restored.ok).toBeTrue(); expect(restored.result.publication.status).toBe('COMMITTED');
+      expect(roots().getFieldValue('TEXT')).toBe('before');
+      expect(disk.get('project.abs')).toBe(sourceC);
+      expect(restored.result.publication.absMirrored).toBeFalse();
+      expect(restored.result.acceptedSource.authorSource.hash).toBe(await hashAbsText(sourceC));
+      const acceptedA = (await service.inspectHistoryProgram()).abs;
+      expect(acceptedA).toContain('TEXT="before"'); expect(acceptedA).not.toBe(sourceC);
+      const authorD = sourceC + '\n# later independent dirty D'; disk.set('project.abs', authorD);
+      const redo = await request(sourceA, sourceC, restored.result.evidence.binding);
+      const reapplied: any = await tools.execute('abs_recovery', redo);
+      expect(reapplied.ok).toBeTrue(); expect(roots().getFieldValue('TEXT')).toBe('clean author C');
+      expect(disk.get('project.abs')).toBe(authorD); expect(reapplied.result.publication.absMirrored).toBeFalse();
+      expect(reapplied.result.acceptedSource.authorSource.hash).toBe(await hashAbsText(authorD));
+      expect(reapplied.result.evidence.binding.generation).not.toBe(first.evidence.binding.generation);
+      expect(gate.busy).toBeFalse();
+    });
+    it('S3 prepares migration without writes and selects only the same accepted program and Working document under its original lease', async () => {
+      await baseline();
+      const draft = disk.get('project.abs')! + '\n# pending author before migration'; disk.set('project.abs', draft);
+      const tools = new AbsGenerationToolsService(service), before = [...disk];
+      const prepared: any = await tools.workspaceMigration('prepare', { version: 1, action: 'prepare_workspace_migration' });
+      expect(prepared.ok).toBeTrue(); expect(prepared.protocol.workspaceMode).toBe('overlay-v1'); expect([...disk]).toEqual(before);
+      expect(prepared.migration.host.author.hash).toBe(await hashAbsText(draft));
+      expect(prepared.migration.accepted.accepted.generation).toBe(JSON.parse(disk.get('committed.json')!).generation);
+      const record = { ...prepared.migration, from: 'overlay-v1', to: 'project-v1', authorSnapshotId: 'a'.repeat(64),
+        overlaySnapshots: [], candidateRefs: {}, draftObjects: [], authorPlan: [], retiredTurns: [] };
+      const text = absJson(record), recordHash = (await hashAbsText(text)).slice(7); disk.set(`history-objects/${recordHash}`, text);
+      const selector = jasmine.createSpy('select').and.callFake(async (_path, input, guard) => {
+        expect(gate.busy).toBeTrue(); expect(guard()).toBeUndefined(); expect(input.recordHash).toBe(recordHash);
+        select(); return { ok: true, value: { version: 1, recordHash, from: 'overlay-v1', to: 'project-v1', selected: true, reused: false } };
+      });
+      window['fs'].selectProjectWorkspaceMode = selector;
+      roots().setFieldValue('new unsaved Working', 'TEXT');
+      const stale: any = await tools.workspaceMigration('select', { version: 1, recordHash });
+      expect(stale.ok).toBeFalse(); expect(stale.code).toBe('ABS_WORKSPACE_MIGRATION_OBSERVATION_STALE'); expect(selector).not.toHaveBeenCalled();
+      expect(disk.has('workspace-mode.json')).toBeFalse(); expect(disk.get('project.abs')).toBe(draft);
+      roots().setFieldValue('before', 'TEXT');
+      const migrated: any = await tools.workspaceMigration('select', { version: 1, recordHash });
+      expect(migrated.ok).toBeTrue(); expect(migrated.protocol.workspaceMode).toBe('project-v1');
+      expect(migrated.protocol.workspaceModeBinding.accepted).toEqual(record.accepted.accepted);
+      expect(migrated.migrationReceipt.recordHash).toBe(recordHash); expect(selector).toHaveBeenCalledTimes(1);
+      expect(disk.get('project.abs')).toBe(draft); expect(gate.busy).toBeFalse();
+    });
+    it('S3 recognizes a committed environment successor independently of an unapplied author draft', async () => {
+      await baseline(); select();
+      await project.save(scope.projectKey);
+      const draft = disk.get('project.abs')! + '\n# this author is not the saved program'; disk.set('project.abs', draft);
+      const before = [...disk], successor = await inspectEnvironmentSuccessor(port, scope.projectKey, () => {});
+      expect(successor?.kind).toBe('complete-published-successor'); expect(successor?.attachment).toEqual(port.attachment);
+      expect(successor?.saved.absHash).toBe(await hashAbsText(draft)); expect([...disk]).toEqual(before);
+    });
+    it('S3 serializes an environment runtime change and background save through one lease while preserving a dirty author', async () => {
+      await baseline(); select();
+      const draft = disk.get('project.abs')! + '\n# pending during environment and background save'; disk.set('project.abs', draft);
+      let entered: () => void, release: () => void;
+      const waiting = new Promise<void>(resolve => { entered = resolve; }), proceed = new Promise<void>(resolve => { release = resolve; });
+      const mutation = project.publishRuntimeMutation(scope.projectKey, async (lease, guard) => {
+        expect(gate.busy).toBeTrue(); expect(guard()).toBeUndefined(); entered(); await proceed;
+        guard(); lease.assertCurrent(); roots().setFieldValue('environment rebuilt Working', 'TEXT');
+      }, { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' });
+      await waiting;
+      const background = project.save(scope.projectKey, { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' }, true);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(disk.get('project.abs')).toBe(draft);
+      release();
+      const [environment, saved]: any[] = await Promise.all([mutation, background]);
+      expect(environment.publication.status).toBe('COMMITTED'); expect(saved.publication.status).toBe('COMMITTED');
+      expect(environment.acceptedSource.authorSource.pending).toBeTrue(); expect(saved.acceptedSource.authorSource.pending).toBeTrue();
+      expect(disk.get('project.abs')).toBe(draft); expect(roots().getFieldValue('TEXT')).toBe('environment rebuilt Working');
+      const accepted = (await service.inspectHistoryProgram()).abs;
+      expect(accepted).toContain('environment rebuilt Working'); expect(accepted).not.toBe(draft); expect(gate.busy).toBeFalse();
+    });
+    it('saves the current canvas even when the optional History index is damaged', async () => {
+      await baseline(); select();
+      disk.set('history-workspace.json', '{');
+      roots().setFieldValue('saved independently of History', 'TEXT');
+      const saved: any = await project.save(scope.projectKey,
+        { version: 2, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' }, true);
+      expect(saved.publication.status).toBe('COMMITTED');
+      expect(disk.get('project.abi')).toContain('saved independently of History');
+      expect(disk.get('history-workspace.json')).toBe('{');
+      expect(gate.busy).toBeFalse();
+    });
+    it('S3 publishes full History undo redo in the original Working while retaining the dirty author and observing exact IDs', async () => {
+      await baseline(); select();
+      const previousRecord = [...disk].find(([key]) => key.startsWith('baselines/'))!;
+      const migrated = await service.inspectHistoryProgram();
+      expect(migrated.acceptedSource?.binding).toEqual(migrated.evidence.binding);
+      expect(migrated.acceptedSource?.authorSource.pending).toBeFalse();
+      expect(disk.get(previousRecord[0])).toBe(previousRecord[1]);
+      const first: any = await project.save(scope.projectKey), sourceA = (await service.inspectHistoryProgram()).abs;
+      roots().setFieldValue('after history edit', 'TEXT');
+      const second: any = await project.save(scope.projectKey), sourceB = (await service.inspectHistoryProgram()).abs;
+      const draft = sourceB.replace('after history edit', 'unapplied author'); disk.set('project.abs', draft);
+      const tools = new AbsGenerationToolsService(service);
+      const inspect: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'history_inspect' });
+      expect(inspect.ok).toBeTrue(); expect(inspect.abs).toBe(sourceB); expect(inspect.abs).not.toBe(draft);
+      expect(inspect.acceptedSource?.binding).toEqual(second.evidence.binding);
+      expect(inspect.acceptedSource?.authorSource.hash).toBe(await hashAbsText(draft));
+      expect(inspect.acceptedSource?.authorSource.pending).toBeTrue();
+      const request = async (base: string, target: string, expected: any) => ({
+        version: 2, requestId: `pub2-${crypto.randomUUID()}`, action: 'history_publish',
+        history: { id: crypto.randomUUID(), expected,
+          base: { source: base, hash: await hashAbsText(base), bytes: new TextEncoder().encode(base).byteLength },
+          candidate: { hash: await hashAbsText(target), bytes: new TextEncoder().encode(target).byteLength }, source: target },
+      });
+      const load = spyOn(editor, 'loadProjectDocumentSettled').and.callThrough();
+      const undo = await request(sourceB, sourceA, second.evidence.binding);
+      const restored: any = await tools.execute('abs_recovery', undo);
+      expect(restored.ok).toBeTrue(); expect(restored.saveReceipt.state).toBe('completed');
+      expect(restored.result.publication.status).toBe('COMMITTED'); expect(roots().getFieldValue('TEXT')).toBe('before');
+      expect(disk.get('project.abs')).toBe(draft); expect(restored.result.acceptedSource.authorSource.pending).toBeTrue();
+      expect(restored.result.acceptedSource.binding).toEqual(restored.result.evidence.binding);
+      expect(restored.result.publication.absMirrored).toBeFalse();
+      const before = [...disk], generation = restored.result.evidence.binding.generation;
+      const observed: any = await tools.execute('abs_recovery', { ...undo, action: 'history_observe' });
+      const reused: any = await tools.execute('abs_recovery', undo);
+      expect(observed.saveReceipt.state).toBe('completed'); expect(reused.saveReceipt.state).toBe('completed');
+      expect(observed.result.evidence.binding.generation).toBe(generation); expect(reused.result.evidence.binding.generation).toBe(generation);
+      expect([...disk]).toEqual(before); expect(load).toHaveBeenCalledTimes(1);
+      const redo = await request(sourceA, sourceB, restored.result.evidence.binding);
+      const reapplied: any = await tools.execute('abs_recovery', redo);
+      expect(reapplied.ok).toBeTrue(); expect(roots().getFieldValue('TEXT')).toBe('after history edit');
+      expect(reapplied.result.publication.status).toBe('COMMITTED'); expect(disk.get('project.abs')).toBe(draft);
+      expect(reapplied.result.acceptedSource.authorSource.pending).toBeTrue();
+      expect(first.evidence.binding.generation).not.toBe(reapplied.result.evidence.binding.generation);
+      expect(gate.busy).toBeFalse();
+    });
+    it('leaves an unselected overlay project on its existing dirty-export protection', async () => {
+      await baseline();
+      const draft = disk.get('project.abs')! + '\n# original overlay draft'; disk.set('project.abs', draft);
+      await expectAsync(service.exportGeneration()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SOURCE_CONFLICT' }));
+      expect(disk.get('project.abs')).toBe(draft); expect(disk.has('workspace-mode.json')).toBeFalse();
+    });
+    it('reads the active canvas and negotiates its physical project without consulting the damaged commit', async () => {
+      await baseline(); select();
+      disk.set('committed.json', '{"schemaVersion":1,');
+      const prior = [...disk];
+      const readModeOnly = { ...port, read: async (key: string) => {
+        expect(key).toBe('workspace-mode.json');
+        return port.read(key);
+      } };
+      const reply: any = await absWorkspaceProtocol(scope.projectKey, { version: 1, binding: 'project' }, () => {}, readModeOnly);
+      expect(reply.protocol.workspaceModeBinding).toEqual({ version: 2, attachment: port.attachment });
+      const canvas = await service.captureWorkingCandidate([], true);
+      expect(canvas.abs).toContain('before'); expect(canvas.published).toBeNull();
+      expect([...disk]).toEqual(prior);
+    });
+
+    it('regenerates the saved projection from ABI after losing both the index and the old snapshot', async () => {
+      await baseline(); select();
+      const abi = disk.get('project.abi')!, pointer = disk.get('committed.json')!;
+      const draft = disk.get('project.abs')! + '\n# unapplied'; disk.set('project.abs', draft);
+      disk.delete(absBaselineKey(JSON.parse(pointer).generation));
+      disk.set('project.abs.map.json', '{'); disk.set('committed.json', '{');
+      roots().setFieldValue('unsaved change', 'TEXT');
+      const capture = await service.captureWorkingCandidate();
+      expect(capture.abs).toContain('unsaved change');
+      const saved = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(saved!.abi).toBe(abi); expect(saved!.projection.abs).toContain('before');
+      expect(disk.get('project.abs')).toBe(draft); expect(disk.get('project.abi')).toBe(abi);
+      expect(capture.published!.generation).not.toBe(JSON.parse(pointer).generation);
+      expect(disk.get('project.abs.map.json')).toBe(absMapJson(saved!.projection.map));
+      expect((await service.captureWorkingCandidate()).published).toEqual(capture.published);
+    });
+
+    it('refreshes only an obsolete host trailer when regenerating the saved projection', async () => {
+      await baseline(); select();
+      const current = disk.get('project.abs')!;
+      const old = current.replace(/# @project-state:[^\n]+/, '# @project-state:{"obsolete":true}');
+      expect(old).not.toBe(current);
+      disk.set('project.abs', old); disk.set('committed.json', '{');
+      const capture = await service.captureWorkingCandidate();
+      const saved = await new AbsBaselineStore(port, scope).readCommittedSnapshot();
+      expect(disk.get('project.abs')).toBe(saved!.projection.abs);
+      expect(capture.authorSource!.text).toBe(saved!.projection.abs);
+      expect(JSON.parse(disk.get(absBaselineKey(capture.published!.generation))!).inputAbs).toBe(old);
+    });
+
+    it('preserves an active publication during projection regeneration', async () => {
+      await baseline(); select();
+      const pointer = disk.get('committed.json')!; disk.set('prepared.json', pointer);
+      disk.delete('committed.json'); const before = [...disk];
+      await expectAsync(service.captureWorkingCandidate()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_TRANSACTION_PENDING' }));
+      expect([...disk]).toEqual(before); expect((await service.captureWorkingCandidate([], true)).abs).toContain('before');
+      disk.delete('prepared.json');
+      expect((await service.captureWorkingCandidate()).published).toBeTruthy();
+    });
+    it('negotiates only a physically bound accepted generation and refuses a marker without initialization', async () => {
+      select();
+      const before = [...disk], missing = await absWorkspaceProtocol(scope.projectKey, { version: 1 }, () => {}, port);
+      expect(missing.ok).toBeFalse(); expect((missing as any).code).toBe('ABS_WORKSPACE_MODE_UNINITIALIZED'); expect([...disk]).toEqual(before);
+      disk.delete('workspace-mode.json'); await baseline(); select();
+      const result = await absWorkspaceProtocol(scope.projectKey, { version: 1 }, () => {}, port);
+      expect(result.ok).toBeTrue();
+      const protocol = (result as any).protocol;
+      expect(protocol.workspaceMode).toBe('project-v1'); expect(protocol.supportedWorkspaceModes).toEqual(['overlay-v1', 'project-v1']);
+      expect(protocol.workspaceModeBinding.attachment).toEqual(port.attachment);
+      expect(protocol.workspaceModeBinding.accepted.generation).toBe(JSON.parse(disk.get('committed.json')!).generation);
+      expect(protocol.workspaceModeBinding.committedHash).toBe(await hashAbsText(disk.get('committed.json')!));
+    });
+    it('preserves an actual dirty author through candidate apply and then saves its accepted Working normally', async () => {
+      enableNative(); await baseline(); select();
+      const capture = await service.captureWorkingCandidate();
+      const source = capture.abs.replace('TEXT="before"', 'TEXT="candidate A"');
+      const workingCandidate = await retainWorkingCandidate(capture, source);
+      disk.set('project.abs', source);
+      const validation = await service.validateGeneration(source, await service.bindWorkingCandidate(source, {
+        version: 2, requestId: crypto.randomUUID(), workingCandidate,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength },
+      } as any));
+      const result = await service.applyGeneration(source, validation.base.generation, {}, validation);
+      expect(result.publication.status).toBe('COMMITTED'); expect(roots().getFieldValue('TEXT')).toBe('candidate A');
+      expect(disk.get('project.abs')).toBe(source);
+      expect(result.acceptedSource?.binding).toEqual(result.evidence!.binding);
+      expect(result.acceptedSource?.authorSource.pending).toBeFalse();
+      expect(result.publication.absMirrored).toBe(disk.get('project.abs') === (await new AbsBaselineStore(port, scope).loadCommitted())!.abs);
+      const observed = await service.observeApplication(validation.requestId);
+      expect(observed.receipt.requestId).toBe(validation.requestId);
+      expect(observed.applicationObservation.current).toBeTrue();
+      expect(observed.acceptedSource.binding).toEqual(result.evidence!.binding);
+      const saved: any = await project.save(scope.projectKey);
+      expect(saved.projectSaved).toBeTrue(); expect(saved.publication.status).toBe('COMMITTED');
+      expect(disk.get('project.abs')).toContain('TEXT="candidate A"'); expect(gate.busy).toBeFalse();
+    });
+    it('keeps the original History observation attached when the project switches during request validation', async () => {
+      const tools = new AbsGenerationToolsService(service), open = spyOn(window['fs'], 'openProjectSyncStorage').and.callThrough();
+      const hash = `sha256:${'a'.repeat(64)}`;
+      const request = { version: 2, requestId: `pub2-${crypto.randomUUID()}`, action: 'history_observe', originalTargetPid: 101,
+        history: { id: 'original-history-step', expected: { generation: 'original-base', scope, abiHash: hash, absHash: hash, mapHash: hash },
+          base: { hash, bytes: 21 }, candidate: { hash, bytes: 21 } } };
+      const observing = tools.execute('abs_recovery', request, undefined, undefined, undefined, scope.projectKey);
+      project.currentProjectPath = 'D:/competing-project';
+      expect(await observing).toEqual(jasmine.objectContaining({ ok: false, code: 'ABS_CONTEXT_STALE' }));
+      expect(open).not.toHaveBeenCalled();
+    });
+    it('S3 observes the one History commit after a lost reply with a dirty author and rejects changed accepted files', async () => {
+      await baseline(); select();
+      const savedA: any = await project.save(scope.projectKey), sourceA = (await service.inspectHistoryProgram()).abs;
+      roots().setFieldValue('History C before lost reply', 'TEXT');
+      const savedC: any = await project.save(scope.projectKey), sourceC = disk.get('project.abs')!;
+      const tools = new AbsGenerationToolsService(service), request = {
+        version: 2, requestId: `pub2-${crypto.randomUUID()}`, action: 'history_publish',
+        history: { id: crypto.randomUUID(), expected: savedC.evidence.binding,
+          base: { source: sourceC, hash: await hashAbsText(sourceC), bytes: new TextEncoder().encode(sourceC).byteLength },
+          candidate: { hash: await hashAbsText(sourceA), bytes: new TextEncoder().encode(sourceA).byteLength }, source: sourceA },
+      };
+      const stage = spyOn(AbsBaselineStore.prototype, 'stage').and.callThrough();
+      await expectAsync((async () => {
+        const published: any = await tools.execute('abs_recovery', request);
+        expect(published.saveReceipt.state).toBe('completed'); expect(published.result.publication.status).toBe('COMMITTED');
+        throw new Error('lost History reply');
+      })())
+        .toBeRejectedWithError('lost History reply');
+      expect(roots().getFieldValue('TEXT')).toBe('before'); expect(disk.get('project.abs')).toBe(sourceC);
+      const dirty = sourceC + '\n# newer independent author after the lost reply'; disk.set('project.abs', dirty);
+      const before = [...disk], stageCount = stage.calls.count(), observe = () => tools.execute('abs_recovery', { ...request, action: 'history_observe' });
+      const observed: any = await observe();
+      expect(observed.saveReceipt.state).toBe('completed'); expect(observed.saveReceipt.requestId).toBe(request.requestId);
+      expect(observed.publicationObservation.current).toBeTrue(); expect(observed.result.absPersistence.verified).toBeTrue();
+      expect(observed.result.publication.status).toBe('COMMITTED'); expect(observed.result.publication.absMirrored).toBeFalse();
+      expect(observed.result.acceptedSource.authorSource.pending).toBeTrue();
+      expect(observed.result.acceptedSource.authorSource.hash).toBe(await hashAbsText(dirty));
+      expect(observed.result.acceptedSource.binding).toEqual(observed.result.evidence.binding);
+      expect(observed.result.evidence.binding.generation).not.toBe(savedA.evidence.binding.generation);
+      for (const key of ['project.abi', 'project.abs.map.json', 'committed.json']) {
+        const original = disk.get(key)!; disk.set(key, original + ' ');
+        const changed: any = await observe(); expect(changed.publicationObservation?.current === true).withContext(key).toBeFalse();
+        disk.set(key, original);
+      }
+      expect((await observe() as any).publicationObservation.current).toBeTrue();
+      expect([...disk]).toEqual(before); expect(stage.calls.count()).toBe(stageCount); expect(gate.busy).toBeFalse();
+    });
+    it('S3 observes the one apply commit after a lost reply with a later author and rejects changed accepted files', async () => {
+      enableNative(); await baseline(); select();
+      const capture = await service.captureWorkingCandidate(), source = capture.abs.replace('TEXT="before"', 'TEXT="candidate A"');
+      const workingCandidate = await retainWorkingCandidate(capture, source); disk.set('project.abs', source);
+      const validation = await service.validateGeneration(source, await service.bindWorkingCandidate(source, {
+        version: 2, requestId: crypto.randomUUID(), workingCandidate,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength },
+      } as any));
+      const stage = spyOn(AbsBaselineStore.prototype, 'stage').and.callThrough();
+      await expectAsync((async () => {
+        const published = await service.applyGeneration(source, validation.base.generation, {}, validation);
+        expect(published.publication?.status).toBe('COMMITTED');
+        throw new Error('lost apply reply');
+      })())
+        .toBeRejectedWithError('lost apply reply');
+      expect(roots().getFieldValue('TEXT')).toBe('candidate A');
+      const dirty = source + '\n# later author remains editable'; disk.set('project.abs', dirty);
+      const before = [...disk], stageCount = stage.calls.count(), observe = () => service.observeApplication(validation.requestId);
+      const observed: any = await observe();
+      expect(observed.receipt.requestId).toBe(validation.requestId); expect(observed.applicationObservation.current).toBeTrue();
+      expect(observed.acceptedSource?.binding).toEqual(observed.evidence.binding);
+      expect(observed.acceptedSource.authorSource.pending).toBeTrue();
+      expect(observed.acceptedSource.authorSource.hash).toBe(await hashAbsText(dirty));
+      expect(observed.receipt.candidate.hash).toBe(await hashAbsText(source));
+      expect(observed.publication.status).toBe('COMMITTED');
+      for (const key of ['project.abi', 'project.abs.map.json', 'committed.json']) {
+        const original = disk.get(key)!; disk.set(key, original + ' ');
+        let current = false;
+        try { current = (await observe() as any).applicationObservation?.current === true; } catch { /* Corrupt accepted bytes grant no current authority. */ }
+        expect(current).withContext(key).toBeFalse(); disk.set(key, original);
+      }
+      expect((await observe() as any).applicationObservation.current).toBeTrue();
+      expect([...disk]).toEqual(before); expect(stage.calls.count()).toBe(stageCount); expect(gate.busy).toBeFalse();
+    });
+    it('native save and export retain an unapplied author draft while accepted generation follows the canvas', async () => {
+      await baseline(); select();
+      const draft = disk.get('project.abs')!.replace('TEXT="before"', 'TEXT="pending author"');
+      disk.set('project.abs', draft);
+      roots().setFieldValue('new UI Working', 'TEXT');
+      const saved: any = await project.save(scope.projectKey);
+      expect(saved.projectSaved).toBeTrue(); expect(saved.publication.status).toBe('COMMITTED');
+      expect(saved.publication.absMirrored).toBeFalse(); expect(disk.get('project.abs')).toBe(draft);
+      const exported = await service.exportGeneration();
+      expect(exported.publication.status).toBe('COMMITTED'); expect(disk.get('project.abs')).toBe(draft);
+      expect(exported.publication.acceptedSource?.authorSource.pending).toBeTrue();
+      const accepted = (await new AbsBaselineStore(port, scope).readCommittedSnapshot())!;
+      expect(accepted.projection.abs).toContain('new UI Working'); expect(accepted.projection.abs).not.toBe(draft);
+      const capture = await service.captureWorkingCandidate();
+      expect(capture.abs).toContain('new UI Working'); expect(capture.authorSource?.text).toBe(draft);
+      expect(capture.authorSource?.hash).toBe(await hashAbsText(draft)); expect(capture.accepted).toBeDefined();
+      const inspected = await service.inspectGeneration();
+      expect(inspected.diagnostics.issues).not.toContain('ABS_SOURCE_CONFLICT');
+      expect(inspected.diagnostics.authorSource?.pending).toBeTrue();
+    });
+    it('refreshes a clean author after UI changes without treating normalized and submitted source hashes as interchangeable', async () => {
+      await baseline(); select();
+      roots().setFieldValue('UI clean save', 'TEXT');
+      const saved: any = await project.save(scope.projectKey);
+      expect(saved.publication.status).toBe('COMMITTED'); expect(disk.get('project.abs')).toContain('UI clean save');
+      const snapshot = (await new AbsBaselineStore(port, scope).readCommittedSnapshot())!;
+      expect(snapshot.authorSource?.disposition).toBe('refreshed'); expect(disk.get('project.abs')).toBe(snapshot.projection.abs);
+      expect((saved as any).acceptedSource.authorSource.pending).toBeFalse();
+    });
+    it('retains a competing author write and rolls back the precommit Working change', async () => {
+      enableNative(); await baseline(); select();
+      const capture = await service.captureWorkingCandidate(), source = capture.abs.replace('TEXT="before"', 'TEXT="candidate A"');
+      const workingCandidate = await retainWorkingCandidate(capture, source); disk.set('project.abs', source);
+      const validation = await service.validateGeneration(source, await service.bindWorkingCandidate(source, {
+        version: 2, requestId: crypto.randomUUID(), workingCandidate,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength },
+      } as any));
+      const competing = source + '\n# competing author survives';
+      const lock = port.withLock.bind(port); let injected = false;
+      port.withLock = operation => lock(access => operation({ ...access, replace: async (key, expected, content) => {
+        const result = await access.replace(key, expected, content);
+        if (!injected && key.startsWith('baselines/') && content?.includes('project-v1')) {
+          injected = true; disk.set('project.abs', competing);
+        }
+        return result;
+      } }));
+      const result = await service.applyGeneration(source, validation.base.generation, {}, validation);
+      expect(injected).toBeTrue(); expect(result.publication.status).toBe('CONFLICT');
+      expect(result.publication.abiSaved).toBeFalse(); expect(disk.get('project.abs')).toBe(competing);
+      expect(roots().getFieldValue('TEXT')).toBe('before'); expect(gate.busy).toBeFalse();
+    });
+    it('repairs damaged ABI and map through the full wire result and observes its exact original request without another writer', async () => {
+      await baseline(); select();
+      const draft = disk.get('project.abs')!.replace('TEXT="before"', 'TEXT="pending author"');
+      disk.set('project.abs', draft); disk.set('project.abi', '{"damaged":true}'); disk.set('project.abs.map.json', '{"damagedMap":true}');
+      const capture = await service.captureWorkingCandidate();
+      const keys = ['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json', 'prepared.json'];
+      const names = ['abiHash', 'absHash', 'mapHash', 'committedHash', 'preparedHash'];
+      const expected = Object.fromEntries(await Promise.all(keys.map(async (key, i) => [names[i], disk.has(key) ? await hashAbsText(disk.get(key)!) : null])));
+      const observation = { version: 1, attachment: port.attachment, workingRevision: capture.working.revision, expected };
+      const tools = new AbsGenerationToolsService(service), requestId = crypto.randomUUID();
+      const input = { version: 2, requestId, action: 'reconcile_program', observation };
+      const stage = spyOn(AbsBaselineStore.prototype, 'stage').and.callThrough();
+      const save = spyOn(project, 'prepareSave').and.callThrough();
+      const apply = spyOn(service, 'applyGeneration').and.callThrough();
+      const result: any = await tools.execute('abs_recovery', input);
+      expect(result.ok).toBeTrue(); expect(result.publication.status).toBe('COMMITTED'); expect(disk.get('project.abs')).toBe(draft);
+      expect(result.receipt.requestId).toBe(requestId); expect(result.receipt.action).toBe('reconcile_program');
+      expect(result.acceptedSource).toEqual(result.publication.acceptedSource);
+      expect(result.acceptedSource?.binding).toEqual(result.receipt.output.binding);
+      expect(result.publication.absMirrored).toBeFalse(); expect(result.acceptedSource?.authorSource.pending).toBeTrue();
+      const accepted = (await new AbsBaselineStore(port, scope).readCommittedSnapshot())!;
+      expect(disk.get('project.abi')).toBe(accepted.abi); expect(disk.get('project.abs.map.json')).toBe(absMapJson(accepted.projection.map));
+      expect(result.recoveryArchive).toBeDefined(); expect(roots().getFieldValue('TEXT')).toBe('before');
+      const stageCount = stage.calls.count(), saveCount = save.calls.count(), codeCount = editor.prepareProjectCode.calls.count();
+      const laterDraft = draft + '\n# later author remains pending';
+      disk.set('project.abs', laterDraft);
+      const beforeObserve = [...disk];
+      const observed: any = await tools.execute('abs_recovery', input);
+      expect(observed.ok).toBeTrue(); expect(observed.reused).toBeTrue(); expect(observed.receipt.requestId).toBe(requestId);
+      expect(observed.publication.generation).toBe(result.publication.generation);
+      expect(observed.acceptedSource).toEqual(observed.publication.acceptedSource);
+      expect(observed.acceptedSource.binding).toEqual(result.receipt.output.binding);
+      expect(observed.acceptedSource.authorSource.hash).toBe(await hashAbsText(laterDraft));
+      expect(observed.acceptedSource.authorSource.pending).toBeTrue(); expect(observed.publication.absMirrored).toBeFalse();
+      expect([...disk]).toEqual(beforeObserve); expect(stage.calls.count()).toBe(stageCount); expect(save.calls.count()).toBe(saveCount);
+      expect(editor.prepareProjectCode.calls.count()).toBe(codeCount); expect(apply).not.toHaveBeenCalled();
+      expect(gate.busy).toBeFalse();
     });
   });
 });
