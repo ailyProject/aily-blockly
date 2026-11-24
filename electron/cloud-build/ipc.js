@@ -122,7 +122,9 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
         try {
           session.lease=await broker.acquireCurrentArtifact(event.sender,session.root);
           assertCloudBackend(revision);controller.signal.throwIfAborted();
-          session.workspace=fs.mkdtempSync(path.join(os.tmpdir(),'aily-cloud-local-upload-'));
+          // macOS exposes /var as an alias, while staged files must use physical paths.
+          const tempRoot=fs.realpathSync(os.tmpdir());
+          session.workspace=fs.mkdtempSync(path.join(tempRoot,'aily-cloud-local-upload-'));
           session.appDataPath=path.dirname(getRuntimeRoot());
           session.preparing=prepareCloudUpload(session.lease.record,{workspace:session.workspace,appDataPath:session.appDataPath,sourceIdentity:session.lease.identity,signal:controller.signal,portType:request.portType});
           session.staged=await session.preparing;

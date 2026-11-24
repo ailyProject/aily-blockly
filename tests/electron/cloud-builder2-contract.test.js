@@ -9,6 +9,8 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const protocol = require('../../electron/cloud-build/protocol');
+const { CloudBuildBroker } = require('../../electron/cloud-build/broker');
+const { registerCloudBuildHandlers } = require('../../electron/cloud-build/ipc');
 const { validateCloudRecipePlan } = require('../../electron/cloud-build/cloud-recipe-contract');
 const { checkedRecipe, cloudUploadRequirements, bindRecipe, stageCloudRecipeUpload } = require('../../electron/cloud-build/cloud-recipe-upload');
 const { boardUploadConfig, localDependencyPath, networkUploadConfig, runCloudUpload, verifyStagedUpload } = require('../../electron/cloud-build/cloud-upload-runtime');
@@ -81,6 +83,7 @@ test('signed cloud recipe requires only exact uploader tools without an installe
 
 function linkbitFixture(t, primary = 'sketch.bin') {
   const sdk = '@aily-project/sdk-esp32';
+  const stem = primary.split('.')[0];
   const pkg = { name: '@aily-project/board-linkbit_3c', version: '3.3.10', boardDependencies: {
     [sdk]: '3.3.10', [esptool.package]: esptool.version,
   } };
@@ -92,15 +95,15 @@ function linkbitFixture(t, primary = 'sketch.bin') {
       '"__AILY_SDK__\\tools\\flasher.exe" --esptool "__AILY_TOOL_esptool_py__/esptool.exe" --build-dir "__AILY_BUILD__"',
       '--chip esp32c3 --port "${serial}" --baud 921600  --before default-reset --after hard-reset',
       'write-flash  -z --flash-mode keep --flash-freq keep --flash-size keep',
-      '0x0 "__AILY_BUILD__/sketch.bootloader.bin" 0x8000 "__AILY_BUILD__/sketch.partitions.bin"',
+      `0x0 "__AILY_BUILD__/${stem}.bootloader.bin" 0x8000 "__AILY_BUILD__/${stem}.partitions.bin"`,
       '0xe000 "__AILY_SDK__/tools/partitions/boot_app0.bin"',
       `0x10000 "__AILY_BUILD__/${primary}"`,
     ].join(' ') },
   };
   const firmware = [
     { filename: primary, role: 'firmware', bytes: Buffer.alloc(338560, 0xe9) },
-    { filename: 'sketch.bootloader.bin', role: 'auxiliary', bytes: Buffer.alloc(18672, 0x11) },
-    { filename: 'sketch.partitions.bin', role: 'auxiliary', bytes: Buffer.alloc(3072, 0x22) },
+    { filename: `${stem}.bootloader.bin`, role: 'auxiliary', bytes: Buffer.alloc(18672, 0x11) },
+    { filename: `${stem}.partitions.bin`, role: 'auxiliary', bytes: Buffer.alloc(3072, 0x22) },
   ];
   const sdkAssets = [
     { sdkPath: 'tools/flasher.exe', kind: 'executable', bytes: Buffer.from('Windows wrapper fixture') },
@@ -198,6 +201,44 @@ test('Windows keeps the signed SDK wrapper and bound tool paths for the same Lin
   assert.throws(() => boardUploadConfig(f.record, { serialPort: '/dev/cu.usbmodem1101', portType: 'serial' }, staged, f.root),
     { code: 'UPLOAD_INVALID' });
   verifyStagedUpload(f.record, staged);
+});
+
+test('cloud upload IPC verifies a Coder artifact when the system temp path is an alias', async t => {
+  const f = linkbitFixture(t, 'main.bin');
+  toolFixture(f.root);
+  const temp = path.join(f.root, 'temp');
+  const alias = path.join(f.root, 'temp-alias');
+  fs.mkdirSync(temp);
+  fs.symlinkSync(temp, alias, 'junction');
+  t.mock.method(os, 'tmpdir', () => alias);
+  let released = false;
+  t.mock.method(CloudBuildBroker.prototype, 'acquireCurrentArtifact', async () => ({
+    record: f.record, identity: { entry: 'sketch/src/main.cpp' }, assertCurrent() {},
+    release: () => { released = true; },
+  }));
+
+  const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: {}, isDestroyed: () => false, send() {} });
+  let handler;
+  const controller = registerCloudBuildHandlers({
+    ipcMain: { handle: (_name, callback) => { handler = callback; } },
+    getOwner: () => ({ generation: 1 }), getRuntimeRoot: () => path.join(f.root, 'runtime'),
+    getRegion: () => 'cn', buildFlavor: 'cn', backend: 'cloud',
+    prepareCloudUpload: (record, options) => stageCloudRecipeUpload(record, { ...options, ...mac }),
+  });
+  const invoke = action => handler({ sender, senderFrame: sender.mainFrame }, {
+    action, requestId: 'coder-cloud-upload', projectPath: f.root, portType: 'serial',
+  });
+  try {
+    const prepared = await invoke('prepareArtifactUpload');
+    assert.equal(prepared.ok, true, JSON.stringify(prepared));
+    assert.deepEqual(await invoke('assertArtifactUpload'), { ok: true, result: true });
+    assert.equal(prepared.result.uploadArtifactInventory.primary, 'main.bin');
+    assert.deepEqual(await invoke('finishArtifactUpload'), { ok: true, result: true });
+    assert.equal(released, true);
+    assert.deepEqual(fs.readdirSync(temp), []);
+  } finally {
+    await controller.shutdown();
+  }
 });
 
 for (const portType of ['network-ota', 'ble']) test(`macOS ${portType} needs no Windows SDK uploader for a signed ESP32 application BIN`, async t => {
