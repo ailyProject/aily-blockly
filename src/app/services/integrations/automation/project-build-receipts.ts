@@ -1,4 +1,4 @@
-import { isCloudBuildServiceFailure, type BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, type BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
 
 /** A build owns its Promise; a caller only owns a bounded observation of it. */
 export interface ProjectBuildRequest {
@@ -78,7 +78,7 @@ export class ProjectBuildReceipts {
       };
       const control: BuildLocalFallbackControl = fallbackGuard
         ? { local: { fromRequestId: fallbackFromRequestId!, assertCurrent: assertFallbackCurrent } }
-        : { recordCloudFailure: (error, guard) => { if (isCloudBuildServiceFailure(error)) owned.fallbackGuard = guard; } };
+        : { recordCloudFailure: (error, guard) => { if (canOfferLocalBuildFallback(error)) owned.fallbackGuard = guard; } };
       void Promise.resolve().then(async () => {
         if (fallbackGuard) await assertFallbackCurrent();
         return run(control);

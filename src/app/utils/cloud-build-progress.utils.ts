@@ -38,10 +38,11 @@ const KNOWN_CLOUD_WORKER_FAILURES = new Set([
 ]);
 const GATEWAY_SERVER_FAILURES = new Set(['GATEWAY_HTTP_ERROR', 'GATEWAY_ERROR', 'internal_error', 'gateway_closing']);
 
-export function isCloudBuildServiceFailure(error: unknown): boolean {
+export function canOfferLocalBuildFallback(error: unknown): boolean {
   const fault = error as { code?: string; httpStatus?: number; cleanupConfirmed?: boolean; remoteCleanupConfirmed?: boolean } | undefined;
   if (!fault?.code || fault.cleanupConfirmed === false || fault.remoteCleanupConfirmed === false) return false;
-  return KNOWN_CLOUD_WORKER_FAILURES.has(fault.code)
+  return fault.code === 'CLOUD_TARGET_UNAVAILABLE'
+    || KNOWN_CLOUD_WORKER_FAILURES.has(fault.code)
     || (GATEWAY_SERVER_FAILURES.has(fault.code) && typeof fault.httpStatus === 'number' && [500, 502, 503, 504].includes(fault.httpStatus));
 }
 

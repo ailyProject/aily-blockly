@@ -5,7 +5,7 @@ import { recordCompileNotices } from '../../../../../tests/fixtures/compile-noti
 import { NpmService } from '../dependencies/public-api';
 import { CmdService } from '@core/platform/public-api';
 import { of, Subject } from 'rxjs';
-import { CLOUD_BUILD_LOCAL_REQUESTED, isCloudBuildServiceFailure } from '../../../utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 
 describe('Coder build metadata', () => {
   const root = '/projects/coder';
@@ -326,7 +326,7 @@ describe('Coder build metadata', () => {
       compiler.runCloudCompile.and.rejectWith(stage === 'unconfirmed' ? Object.assign(offline, { remoteCleanupConfirmed: false }) : offline);
       let guard: (() => Promise<void>) | undefined;
       const result = await compiler.runCompileFromDisk({ requestId: 'coder-cloud-failure', preprocessOnly: stage === 'analysis', localFallback: {
-        recordCloudFailure: (error: unknown, check: () => Promise<void>) => { if (isCloudBuildServiceFailure(error)) guard = check; },
+        recordCloudFailure: (error: unknown, check: () => Promise<void>) => { if (canOfferLocalBuildFallback(error)) guard = check; },
       } });
       expect(result.success).toBeFalse();
       expect(result.result.buildLog.requestId).toBe('coder-cloud-failure');
