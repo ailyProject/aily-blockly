@@ -165,6 +165,7 @@ test('IPC rejects cloud operations in the international edition and before regio
         assert.equal(result.ok, false, action);
         assert.equal(result.error.code, 'CLOUD_BUILD_UNAVAILABLE', action);
       }
+      assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: false });
       assert.equal((await invoke('configuration')).ok, true);
       assert.equal((await invoke('cancel')).ok, true);
       assert.equal((await invoke('cancelUpload')).ok, true);

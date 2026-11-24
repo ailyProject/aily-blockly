@@ -382,7 +382,7 @@ export class _UploaderService {
           if (this.cancelled || !activationCurrent() || this.projectService.currentProjectPath !== projectPath
               || (initialCloud && !backendOperation.local) !== this.projectService.isCloudBuild()) throw new Error('Upload project, settings or activation changed or was cancelled.');
 
-          if (initialCloud) this.projectService.assertProjectDependencySession(dependencySession);
+          if (initialCloud || cloud) this.projectService.assertProjectDependencySession(dependencySession);
           if (prepared && (prepared.projectPath !== projectPath || prepared.port !== this.serialService.currentPort
             || this.projectService.isAilyCodeProject(projectPath) || this.projectService.isCloudBuild() !== reuseCloud)) {
             throw Object.assign(new Error('Prepared firmware upload no longer owns the requested project and port.'),
@@ -511,6 +511,18 @@ export class _UploaderService {
         let buildPath: string;
         let sharedExecution: SharedBuildExecution | undefined;
 
+        // A local build retires the previous cloud receipt. A live receipt
+        // identifies the downloaded candidate; the input check still owns reuse.
+        const cloudCandidate = !prepared && window['cloudBuild']?.hasArtifact
+          ? await window['cloudBuild'].hasArtifact({ projectPath }) : initialCloud;
+        assertContext();
+        const candidateBackend = cloudCandidate ? 'cloud' : 'local';
+        const selectReusableFirmware = () => {
+          cloud = cloudCandidate;
+          if (!cloud && initialCloud) backendOperation.useLocal();
+          this.cloudUploadInProgress = cloud;
+        };
+
         if (firmware) {
           const execution = requirePreparedBuildExecution(projectPath, firmware);
           buildPath = execution.buildPath;
@@ -524,12 +536,19 @@ export class _UploaderService {
           try {
             this.coderBuildActive = true;
 
-            const reusable = (cloud || verifyLocalCoderBuild)
-              && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled);
+            const reusable = (cloudCandidate || verifyLocalCoderBuild)
+              && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled, candidateBackend);
 
             assertContext();
 
-            if (!reusable) {
+            if (reusable) {
+              selectReusableFirmware();
+            } else {
+              if (this.projectService.isCoderProjectContext && this.projectService.getProjectDependencyStatus(projectPath) === 'idle') {
+                const ready = await this.npmService.ensureProjectAndBoardDeps(projectPath, undefined, dependencySession);
+                assertContext();
+                if (!ready) throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+              }
               const buildResult = await this.hostBuilderService.build(projectPath);
 
               console.log('Coder build result:', buildResult);
@@ -538,15 +557,15 @@ export class _UploaderService {
               cloud = initialCloud && !backendOperation.local;
 
               if ((cloud || verifyLocalCoderBuild)
-                && !await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled)) {
+                && !await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled, cloud ? 'cloud' : 'local')) {
                 throw new Error('BUILD_SOURCE_STALE: Coder inputs changed during compilation; build again before upload.');
               }
             }
 
-            buildPath = await this.projectService.getBuildPath();
+            buildPath = cloud ? '' : await this.projectService.getBuildPath();
             assertContext();
 
-            if (!buildPath || !window['fs'].existsSync(buildPath)) {
+            if (!cloud && (!buildPath || !window['fs'].existsSync(buildPath))) {
               throw new Error(`Coder build output directory does not exist: ${buildPath || '(empty)'}`);
             }
           } catch (error) {
@@ -591,12 +610,14 @@ export class _UploaderService {
 
           assertContext();
 
-          const needsBuild = !reuseCloud && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution);
+          const reusable = reuseCloud || await this._builderService.canReuseBuildForUpload(
+            () => this.cancelled, captureExecution, candidateBackend);
 
           assertContext();
 
-          // 如果需要编译，先执行编译
-          if (needsBuild) {
+          if (reusable) {
+            selectReusableFirmware();
+          } else {
             try {
               const buildResult = await this._builderService.build();
 
@@ -608,7 +629,7 @@ export class _UploaderService {
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
               if ((cloud || window['builder']?.canReuseBlocklyUpload)
-                && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {
+                && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution, cloud ? 'cloud' : 'local')) {
                 throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
               }
               if ((verifiedExecution?.layout === 'shared' || verifiedExecution?.isolatedRecovery)
@@ -691,10 +712,8 @@ export class _UploaderService {
             disposeCloudInvalidation = window['cloudBuild'].onProgress((event: any) => {
               if (event?.requestId === requestId && event.stage === 'upload-invalidated' && !this.cancelled) this.cancel();
             });
-          } else {
-            if (capturedPortInfo?.type && capturedPortInfo.type !== 'serial') throw new Error('This older cloud result requires a physical serial upload. Recompile to receive its cloud-resolved Windows upload configuration.');
-
-            buildPath = await this.projectService.getBuildPath();
+          } else if (capturedPortInfo?.type && capturedPortInfo.type !== 'serial') {
+            throw new Error('This older cloud result requires a physical serial upload. Recompile to receive its cloud-resolved Windows upload configuration.');
           }
 
           assertContext();
@@ -983,7 +1002,7 @@ export class _UploaderService {
         let bufferData = '';
 
         await new Promise<void>((completeCommand) => {
-        if (prepared) assertContext();
+        assertContext();
         if (currentProjectPath !== this.projectService.currentProjectPath
           || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
           throw new Error('Upload cancelled: project is closing or has changed.');

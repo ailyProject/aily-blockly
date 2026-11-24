@@ -33,6 +33,10 @@ describe('BuilderService Coder persistence', () => {
       isCloudBuild: () => options.cloud === true,
     };
     const compileService = {
+      canReuseCloudBuildForUpload: async () => {
+        events.push('check-cloud-firmware');
+        return true;
+      },
       canReuseLocalCoderBuildForUpload: async () => {
         events.push('check-local-firmware');
         return true;
@@ -81,6 +85,12 @@ describe('BuilderService Coder persistence', () => {
       const { service, events } = createHarness({ coder: true });
       expect(await service.canReuseBuildForUpload('/workspace/coder')).toBeTrue();
       expect(events).toEqual(['project-save', 'check-local-firmware']);
+      const fallback = createHarness({ coder: true, cloud: true });
+      expect(await fallback.service.canReuseBuildForUpload('/workspace/coder', () => false, 'local')).toBeTrue();
+      expect(fallback.events).toEqual(['project-save', 'check-local-firmware']);
+      const previousCloud = createHarness({ coder: true, cloud: false });
+      expect(await previousCloud.service.canReuseBuildForUpload('/workspace/coder', () => false, 'cloud')).toBeTrue();
+      expect(previousCloud.events).toEqual(['project-save', 'check-cloud-firmware']);
       const failure = createHarness({ coder: true, saveSucceeds: false });
       await expectAsync(failure.service.canReuseBuildForUpload('/workspace/coder')).toBeRejectedWithError('save failed');
       expect(failure.events).toEqual(['project-save']);

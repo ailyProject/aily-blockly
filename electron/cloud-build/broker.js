@@ -1105,6 +1105,13 @@ class CloudBuildBroker {
       this.collectArtifacts(root, undefined, usesIsolatedArtifacts(record.config));
     }
   }
+  hasArtifact(sender, projectPath) {
+    const owner = this.owner(sender);
+    const record = this.active.get(fs.realpathSync(projectPath));
+    // A lookup hint only. Every consumer still verifies identity, inputs, signature and bytes.
+    return record?.sender === sender && record.generation === owner.generation
+      && record.manifest.action === 'compile' && !record.controller.signal.aborted;
+  }
   async artifactPath(sender, projectPath, config) {
     this.owner(sender);
     const root = fs.realpathSync(projectPath), record = this.active.get(root);
@@ -1116,7 +1123,8 @@ class CloudBuildBroker {
   }
   async reusable(sender, config, profileDigest) {
     const root = fs.realpathSync(config.currentProjectPath), record = this.active.get(root);
-    if (!record || record.sender !== sender || config.code !== record.config.code || config.boardModule !== record.config.boardModule
+    if (!record || record.sender !== sender || record.manifest.action !== 'compile'
+        || config.code !== record.config.code || config.boardModule !== record.config.boardModule
         || usesIsolatedArtifacts(config) !== usesIsolatedArtifacts(record.config)
         || (profileDigest !== undefined && profileDigest !== record.manifest.profileDigest)) return false;
     try {
@@ -1220,12 +1228,14 @@ class CloudBuildBroker {
     for (const root of roots) this.collectArtifacts(root);
     return Promise.allSettled(cancelled);
   }
-  invalidateAll() {
-    const roots = new Set(this.active.keys()), cancelled = [];
-    for (const record of this.active.values()) record.controller.abort(abortFault());
-    this.active.clear();
+  invalidateAll({ keepCompleted = false } = {}) {
+    const roots = new Set([...this.requests.values()].map(record => record.root)), cancelled = [];
+    for (const [root, record] of this.active) {
+      // Results published by a still-pending request have not cleared its final checks yet.
+      if (keepCompleted && !roots.has(root)) continue;
+      record.controller.abort(abortFault()); this.active.delete(root); roots.add(root);
+    }
     for (const record of this.requests.values()) {
-      roots.add(record.root);
       record.controller.abort(abortFault()); if (!record.cleanupBlocked) this.requests.delete(record.requestId); cancelled.push(this.cancelRemote(record));
     }
     for (const root of roots) this.collectArtifacts(root);

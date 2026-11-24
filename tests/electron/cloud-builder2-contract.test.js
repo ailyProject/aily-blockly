@@ -229,6 +229,8 @@ test('cloud upload IPC verifies a Coder artifact when the system temp path is an
     action, requestId: 'coder-cloud-upload', projectPath: f.root, portType: 'serial',
   });
   try {
+    await controller.setBackend('local');
+    assert.equal((await invoke('compile')).error.code, 'CLOUD_BUILD_DISABLED');
     const prepared = await invoke('prepareArtifactUpload');
     assert.equal(prepared.ok, true, JSON.stringify(prepared));
     assert.deepEqual(await invoke('assertArtifactUpload'), { ok: true, result: true });

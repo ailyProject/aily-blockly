@@ -380,6 +380,19 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.events).toEqual(['upload']);
   });
 
+  for (const reusable of [true, false]) it(`prepares the new Coder settings session only on a firmware miss (reusable=${reusable})`, async () => {
+    const f = uploadFixture();
+    Object.assign(f.project, { isAilyCodeProject: () => true, isCoderProjectContext: true, getProjectDependencyStatus: () => 'idle' });
+    window['builder'].canReuseCoderUpload = async () => true;
+    f.uploader.hostBuilderService.canReuseBuildForUpload = jasmine.createSpy('verify').and.returnValues(reusable, true);
+    const prepare = jasmine.createSpy('prepare').and.resolveTo(true);
+    f.uploader.npmService = { ensureProjectAndBoardDeps: prepare };
+    await f.run();
+    expect(f.events).toEqual(['upload']);
+    expect(prepare).toHaveBeenCalledTimes(reusable ? 0 : 1);
+    if (!reusable) expect(prepare).toHaveBeenCalledBefore(f.uploader.hostBuilderService.build);
+  });
+
   for (const coder of [false, true]) it(`continues ${coder ? 'Coder' : 'Blockly'} upload with local firmware after a task-only switch`, async () => {
     const f = uploadFixture();
     const operation = { local: false, release: jasmine.createSpy('release') };

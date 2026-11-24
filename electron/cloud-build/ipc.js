@@ -48,19 +48,21 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
     };
   };
   const broker = new CloudBuildBroker({ getOwner, getGatewaySettings, getAuth, querySource, acquirePowerSaveBlocker, getAppDataPath: () => path.dirname(getRuntimeRoot()) });
-  const assertCloudSupported = () => {
+  const isCloudSupported = () => {
     const region = getRegion();
-    if (typeof region !== 'string' || !region || region === 'eu' || buildFlavor === 'global') {
+    return typeof region === 'string' && !!region && region !== 'eu' && buildFlavor !== 'global';
+  };
+  const assertCloudSupported = () => {
+    if (!isCloudSupported()) {
       throw Object.assign(new Error('Cloud compilation is unavailable in the international edition or before region initialization.'), { code: 'CLOUD_BUILD_UNAVAILABLE' });
     }
   };
-  const assertCloudBackend = revision => {
+  const assertRevision = revision => {
     assertCloudSupported();
-    if (currentBackend !== 'cloud') throw Object.assign(new Error('Cloud compilation is disabled.'), { code: 'CLOUD_BUILD_DISABLED' });
     if (revision !== backendRevision) throw Object.assign(new Error('Cloud compilation settings changed.'), { code: 'BUILD_SOURCE_STALE', sourceReason: 'settings' });
   };
-  const invalidateAll = () => {
-    const cancelled = broker.invalidateAll();
+  const invalidateAll = options => {
+    const cancelled = broker.invalidateAll(options);
     for (const item of uploads.values()) item.controller.abort();
     const sessions=[...uploadSessions.keys()].map(key=>closeUploadSession(key));
     return Promise.allSettled([cancelled, ...operations, ...sessions]);
@@ -76,10 +78,14 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       // 设置子窗口只有连接检查权限；提交任务、读取固件及烧录必须属于当前主页面。
       if (!owner && !['finishArtifactUpload','cancelUpload'].includes(request.action) && !(deploymentRead && canReadGateway(event.sender))) throw Object.assign(new Error('Cloud build operations require the current main window; application settings can only read deployment identity or check Gateway health.'), { code: 'CLOUD_BUILD_FORBIDDEN' });
       // 以主进程版本和区域为准，旧偏好或渲染层参数不能放开云请求；初始化读取和清理仍可执行。
+      if (request.action === 'hasArtifact' && !isCloudSupported()) return { ok: true, result: false };
       if (!['configuration', 'cancel', 'cancelUpload', 'finishArtifactUpload', 'invalidate'].includes(request.action)) assertCloudSupported();
       if (['targets', 'compile', 'analysis'].includes(request.action)) request.settings = await broker.configuration();
       // 跨窗口设置保存可能早于旧页面的 IPC 到达；主进程必须拒绝关闭后的迟到任务。
-      if (['preparationRequirements', 'completeCIToolPreparation', 'compile', 'analysis', 'upload', 'prepareArtifactUpload', 'assertArtifactUpload', 'beginArtifactUploadRoute','runArtifactUpload'].includes(request.action)) assertCloudBackend(revision);
+      if (['preparationRequirements', 'completeCIToolPreparation', 'compile', 'analysis'].includes(request.action)) {
+        assertRevision(revision);
+        if (currentBackend !== 'cloud') throw Object.assign(new Error('Cloud compilation is disabled.'), { code: 'CLOUD_BUILD_DISABLED' });
+      }
       const send = progress => {
         if (!shuttingDown && revision === backendRevision && !event.sender.isDestroyed()
             && getOwner(event.sender)?.generation === owner?.generation) event.sender.send('cloud-build-progress', progress);
@@ -100,6 +106,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
         try { result = await broker.run(event.sender, request, send); }
         finally { event.sender.removeListener('destroyed', stopped); }
       } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId);
+      else if (request.action === 'hasArtifact') result = broker.hasArtifact(event.sender, request.projectPath);
       else if (request.action === 'artifactPath') result = await broker.artifactPath(event.sender, request.projectPath);
       else if (request.action === 'artifactUploadInfo') {
         result = await broker.artifactUploadInfo(event.sender, request.projectPath, request.portType);
@@ -121,14 +128,14 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
         uploadSessions.set(key,session);
         try {
           session.lease=await broker.acquireCurrentArtifact(event.sender,session.root);
-          assertCloudBackend(revision);controller.signal.throwIfAborted();
+          assertRevision(revision);controller.signal.throwIfAborted();
           // macOS exposes /var as an alias, while staged files must use physical paths.
           const tempRoot=fs.realpathSync(os.tmpdir());
           session.workspace=fs.mkdtempSync(path.join(tempRoot,'aily-cloud-local-upload-'));
           session.appDataPath=path.dirname(getRuntimeRoot());
           session.preparing=prepareCloudUpload(session.lease.record,{workspace:session.workspace,appDataPath:session.appDataPath,sourceIdentity:session.lease.identity,signal:controller.signal,portType:request.portType});
           session.staged=await session.preparing;
-          await session.lease.assertCurrent();assertCloudBackend(revision);controller.signal.throwIfAborted();
+          await session.lease.assertCurrent();assertRevision(revision);controller.signal.throwIfAborted();
           session.releasePowerSaveBlocker=acquirePowerSaveBlocker();
           session.stop=()=>{
             // Web Bluetooth belongs to this renderer context. Its destruction
@@ -155,7 +162,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
           session.externalComplete?.();
           result=await closeUploadSession(key);
         } else {
-          assertCloudBackend(session.revision);session.controller.signal.throwIfAborted();await session.lease.assertCurrent();
+          await session.lease.assertCurrent();assertRevision(session.revision);session.controller.signal.throwIfAborted();
           uploadRuntime.verifyStagedUpload(session.lease.record,session.staged);
           if(request.action==='assertArtifactUpload')result=true;
           else if(request.action==='beginArtifactUploadRoute'){
@@ -196,7 +203,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
         const releasePowerSaveBlocker = acquirePowerSaveBlocker();
         try {
           result = await broker.withCurrentArtifact(event.sender, upload.root, async (artifact, assertCurrent) => {
-            assertCloudBackend(revision);
+            assertRevision(revision);
             if (controller.signal.aborted) throw Object.assign(new Error('Cloud artifact upload cancelled.'), { code: 'CANCELLED' });
             return uploadArtifact(artifact, request, { runtimeRoot: getRuntimeRoot(), signal: controller.signal, onProgress: send, assertCurrent });
           });
@@ -239,7 +246,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       // 先推进代次，阻断旧进度和迟到提交，再等待旧任务、烧录及其租约清理。
       backendRevision += 1;
       currentBackend = next;
-      return invalidateAll();
+      return invalidateAll({ keepCompleted: true });
     },
     invalidateOwner(sender, generation) {
       const cancelled = broker.invalidateOwner(sender, generation);

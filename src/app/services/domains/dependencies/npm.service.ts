@@ -769,7 +769,7 @@ export class NpmService {
   }
 
   /** Coder execution preflight: completed preparation plus the current files on disk. */
-  async assertCoderDependenciesReady(projectPath: string, reportCloudFailure = false): Promise<void> {
+  async assertCoderDependenciesReady(projectPath: string, purpose: 'build' | 'cloud-build' | 'firmware-upload' = 'build'): Promise<void> {
     if (!this.configService.isCoderProduct() || !this.prjService.isAilyCodeProject(projectPath)) return;
     const session = this.prjService.getProjectDependencySession(projectPath);
     const blocked = () => this.prjService.getProjectDependencyBlockMessage(projectPath);
@@ -778,8 +778,9 @@ export class NpmService {
     if (initialBlock) throw reject(initialBlock);
 
     try {
-      // An idle/unknown session is not evidence that SDK and source preparation succeeded.
-      if (this.prjService.getProjectDependencyStatus(projectPath) !== 'ready'
+      // Changing compile settings creates an idle session. Upload may verify a prior
+      // firmware against disk; a new compile still requires full dependency preparation.
+      if ((purpose !== 'firmware-upload' && this.prjService.getProjectDependencyStatus(projectPath) !== 'ready')
         || !await this.installedOk(projectPath)) {
         throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
       }
@@ -790,11 +791,16 @@ export class NpmService {
       if (boardModule) {
         const boardPackage = await project.getBoardPackageJson();
         this.assertDependencySession(session);
-        if (this.isCloudBuild(projectPath)) {
+        const cloud = this.isCloudBuild(projectPath);
+        if (cloud && purpose !== 'firmware-upload') {
           await project.getCloudBoardProfile({}, session);
           this.assertDependencySession(session);
         }
-        const missing = await this.getMissingBoardDependencies(boardPackage, projectPath);
+        // Cached cloud firmware carries its own signed uploader inventory and needs no local compiler.
+        const cloudPackages = cloud || (purpose === 'firmware-upload'
+          && await window['cloudBuild']?.hasArtifact?.({ projectPath }) === true);
+        this.assertDependencySession(session);
+        const missing = await this.getMissingBoardDependencies(boardPackage, projectPath, cloudPackages);
         if (missing.length) {
           throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
             name: missing.join(', '),
@@ -810,7 +816,7 @@ export class NpmService {
       const latestBlock = blocked();
       if (latestBlock) throw reject(latestBlock);
       // The active compile owns the cloud failure and its local retry action.
-      if (reportCloudFailure && this.isCloudBuild(projectPath) && canOfferLocalBuildFallback(error)) throw error;
+      if (purpose === 'cloud-build' && this.isCloudBuild(projectPath) && canOfferLocalBuildFallback(error)) throw error;
       this.prjService.setProjectDependencyResult(session, false);
       const message = this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
       this.application.updateNotice({
@@ -1538,8 +1544,7 @@ export class NpmService {
     return missing;
   }
 
-  getMissingBoardDependencies(packageJson: any, projectPath?: string): Promise<string[]> {
-    const cloudMode = this.isCloudBuild(projectPath);
+  getMissingBoardDependencies(packageJson: any, projectPath?: string, cloudMode = this.isCloudBuild(projectPath)): Promise<string[]> {
     const dependencies = cloudMode ? getCloudEditorDependencies(packageJson) : packageJson?.boardDependencies || {};
     return this.getUnreadyBoardPlatformDeps(dependencies, !cloudMode);
   }

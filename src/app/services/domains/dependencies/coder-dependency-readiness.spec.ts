@@ -306,7 +306,7 @@ describe('Coder dependency installation and recovery', () => {
     failCloudBoardProfile(targetError);
     project.setProjectDependencyResult(session, true);
 
-    await expectAsync(npm.assertCoderDependenciesReady('/project', true)).toBeRejectedWith(targetError);
+    await expectAsync(npm.assertCoderDependenciesReady('/project', 'cloud-build')).toBeRejectedWith(targetError);
     expect(npm.application.updateNotice).not.toHaveBeenCalled();
 
     project.setProjectDependencyResult(session, true);
@@ -314,6 +314,49 @@ describe('Coder dependency installation and recovery', () => {
     expect(npm.application.updateNotice).toHaveBeenCalledOnceWith(jasmine.objectContaining({
       title: 'NPM.DEPENDENCY_INSTALL_FAILED_TITLE', detail: targetError.message, onRetry: jasmine.any(Function),
     }));
+  });
+
+  it('admits a firmware upload with ready disk dependencies when the cloud target is unavailable', async () => {
+    failCloudBoardProfile(new Error('Cloud target offline'));
+    project.setProjectDependencyResult(session, true);
+
+    await npm.assertCoderDependenciesReady('/project', 'firmware-upload');
+    expect(npm.installedOk).toHaveBeenCalled();
+    expect(project.getCloudBoardProfile).not.toHaveBeenCalled();
+    expect(npm.application.updateNotice).not.toHaveBeenCalled();
+  });
+
+  it('admits the fresh idle session after a backend settings change only for firmware verification', async () => {
+    const previous = project.getProjectDependencySession('/project');
+    project.setProjectDependencyResult(previous, true);
+    failCloudBoardProfile(new Error('offline'));
+    expect(previous.signal.aborted).toBeTrue();
+    expect(project.getProjectDependencyStatus('/project')).toBe('idle');
+
+    await npm.assertCoderDependenciesReady('/project', 'firmware-upload');
+
+    expect(npm.installedOk).toHaveBeenCalled();
+    expect(project.getCloudBoardProfile).not.toHaveBeenCalled();
+    expect(project.getProjectDependencyStatus('/project')).toBe('idle');
+    npm.installedOk.and.resolveTo(false);
+    await expectAsync(npm.assertCoderDependenciesReady('/project', 'firmware-upload')).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
+    expect(project.getProjectDependencyStatus('/project')).toBe('error');
+  });
+
+  it('allows cloud artifact verification under local preferences when the compiler is missing', async () => {
+    const originalCloud = window['cloudBuild'];
+    const hasArtifact = jasmine.createSpy('hasArtifact').and.resolveTo(true);
+    window['cloudBuild'] = { hasArtifact };
+    try {
+      lifecycle.setResult(session, true);
+      window['path'].isExists = (path: string) => !path.endsWith('/boards.txt');
+      await npm.assertCoderDependenciesReady('/project', 'firmware-upload');
+      expect(hasArtifact).toHaveBeenCalledOnceWith({ projectPath: '/project' });
+      hasArtifact.and.resolveTo(false);
+      await expectAsync(npm.assertCoderDependenciesReady('/project', 'firmware-upload')).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
+    } finally {
+      window['cloudBuild'] = originalCloud;
+    }
   });
 
   for (const missing of ['package', 'version', 'boards.txt', 'tool-directory', 'tool-executable']) {

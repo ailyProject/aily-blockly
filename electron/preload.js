@@ -639,6 +639,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     completeCIToolPreparation: options => invokeCloudBuild({ ...options, action: 'completeCIToolPreparation' }),
     run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
     cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
+    hasArtifact: options => invokeCloudBuild({ ...options, action: 'hasArtifact' }),
     artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
     artifactUploadInfo: options => invokeCloudBuild({ ...options, action: 'artifactUploadInfo' }),
     prepareArtifactUpload: options => invokeCloudBuild({ ...options, action: 'prepareArtifactUpload' }),
