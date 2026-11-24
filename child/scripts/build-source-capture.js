@@ -45,21 +45,56 @@ function workspaceRecord(value) {
         runtimeRevision: value.runtimeRevision, pageId: value.pageId };
 }
 
-/** A shared build stages captured declarations only in its temporary sketch. */
-function sharedGeneratedArtifacts(config) {
-    if (config.execution?.layout !== 'shared' || config.generatedArtifacts === undefined) return undefined;
-    const artifacts = config.generatedArtifacts ?? [];
+function generatedArtifacts(value, caseInsensitive) {
+    if (value === undefined) return undefined;
+    const artifacts = value ?? [];
     if (!Array.isArray(artifacts) || artifacts.length > 256) fail('Invalid captured generated artifacts.');
     const seen = new Set();
     let size = 0;
     return artifacts.map(artifact => {
         const { fileName, content } = artifact ?? {};
         if (typeof fileName !== 'string' || !HEADER.test(fileName) || typeof content !== 'string') fail('Invalid captured generated artifact.');
-        const key = process.platform === 'win32' ? fileName.toLowerCase() : fileName;
+        const key = caseInsensitive ? fileName.toLowerCase() : fileName;
         if (seen.has(key) || (size += Buffer.byteLength(content)) > generatedLimit) fail('Generated artifact exceeds its capture boundary.');
         seen.add(key);
         return { fileName, content };
     }).sort((a, b) => a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0);
+}
+
+/** A shared build stages captured declarations only in its temporary sketch. */
+function sharedGeneratedArtifacts(config) {
+    return config.execution?.layout === 'shared'
+        ? generatedArtifacts(config.generatedArtifacts, process.platform === 'win32') : undefined;
+}
+
+function isolatedCloudGeneratorInputs(config) {
+    const artifacts = generatedArtifacts(config.generatedArtifacts ?? undefined, true);
+    const effects = config.projectMacros;
+    if (effects === undefined) return { artifacts };
+    if (!Array.isArray(effects) || effects.length > 512) fail('Invalid captured generator macros.');
+    const seen = new Set();
+    const projectMacros = effects.map(effect => {
+        const { name, value } = effect ?? {};
+        if (typeof name !== 'string' || !/^[A-Za-z_]\w{0,127}$/u.test(name) || seen.has(name)
+            || (value !== null && (typeof value !== 'string' || value.length > 4096 || /[\r\n\0]/u.test(value)
+                || (value !== name && !value.startsWith(`${name}=`))))) fail('Invalid captured generator macro.');
+        seen.add(name);
+        return { name, value };
+    });
+    return { artifacts, projectMacros };
+}
+
+function mergeGeneratorInputs(pkg, config) {
+    if (config.projectMacros !== undefined) {
+        const macros = new Map();
+        for (const item of pkg.MACROS || []) { const value = String(Array.isArray(item) ? item[0] : item).trim(); if (value) macros.set(value.split('=')[0], value); }
+        for (const [name, value] of Object.entries(pkg.ailyGeneratorMacros || {})) if (macros.get(name) === value) macros.delete(name);
+        const owned = Object.create(null);
+        for (const { name, value } of [...config.projectMacros].sort((a, b) => a.name.localeCompare(b.name))) {
+            macros.delete(name); if (value !== null) { macros.set(name, value); owned[name] = value; }
+        }
+        pkg.MACROS = [...macros.values()].map(value => [value]); pkg.ailyGeneratorMacros = owned;
+    }
 }
 
 function confirmSharedGeneratedArtifacts(config, root) {
@@ -88,7 +123,8 @@ function record(config, workspace) {
     const mode = project.isAilyCodeProjectRoot(root) ? 'coder' : 'blockly';
     const board = fs.realpathSync(path.join(root, 'node_modules', config.boardModule));
     const headers = [];
-    const artifacts = sharedGeneratedArtifacts(config);
+    const cloud = mode === 'blockly' && config.isolatedCloudBuild === true ? isolatedCloudGeneratorInputs(config) : undefined;
+    const artifacts = cloud ? cloud.artifacts : sharedGeneratedArtifacts(config);
     let generatedBytes = 0;
     if (mode === 'coder') {
         if (workspace) fail('Coder cannot claim a Blockly workspace revision.');
@@ -114,6 +150,7 @@ function record(config, workspace) {
         boardModule: config.boardModule, boardLocationSha256: location(board),
         boardJsonSha256: hash(read(board, 'board.json')), boardPackageSha256: hash(read(board, 'package.json')),
         generatedHeadersSha256: hash(JSON.stringify(headers)), generatedHeaderCount: headers.length,
+        ...(cloud ? { isolatedCloudBuild: true, ...(cloud.projectMacros ? { generatorMacrosSha256: hash(JSON.stringify(cloud.projectMacros)) } : {}) } : {}),
         ...(workspace ? { workspace } : {}) };
     return { ...body, digest: hash(JSON.stringify(body)) };
 }
@@ -144,4 +181,4 @@ function confirmBuildSource(config) {
 }
 
 module.exports = { captureBuildSource, confirmBuildSource, sourceManifest, isGeneratedBuildHeader,
-    sharedGeneratedArtifacts, confirmSharedGeneratedArtifacts };
+    sharedGeneratedArtifacts, confirmSharedGeneratedArtifacts, isolatedCloudGeneratorInputs, mergeGeneratorInputs };

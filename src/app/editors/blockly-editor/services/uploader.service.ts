@@ -436,13 +436,6 @@ export class _UploaderService {
           ? (execution: ResolvedBuildExecution) => { verifiedExecution = execution; } : undefined;
 
         assertContext();
-        if (cloud && !prepared && !this.projectService.isAilyCodeProject(projectPath)
-          && window['builder']?.resolveBuildExecution?.(projectPath)?.isolatedRecovery
-          && await window['builder']?.requiresIsolatedBuildRecovery?.(projectPath)) {
-          assertContext();
-          backendOperation.useLocal();
-          cloud = false;
-        }
         if (firmware || reuseCloud) {
           this._builderService.isUploading = true;
           if (!await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {

@@ -8,7 +8,7 @@ const { directory, json, write, locked, readOptional, storage, requestPath, find
     storeForExecution, retainOutcome } = require('./build-execution-storage');
 const { collectLibraryPackages } = require('./library-packages');
 const { generatorInputDigest } = require('./blockly-upload-state');
-const { captureBuildSource, isGeneratedBuildHeader } = require('./build-source-capture');
+const { captureBuildSource, isGeneratedBuildHeader, mergeGeneratorInputs } = require('./build-source-capture');
 const { buildSnapshotReceipt } = require('./build-snapshot-receipt');
 const { getSystemBootId } = require('./system-boot-id');
 const { observeBuildProcessIdentity } = require('./build-process-identity');
@@ -278,19 +278,6 @@ function resolveCurrentAbiHash(content, retained) {
         }
     } catch { /* Unrecognized or unavailable documents require a new build. */ }
     return digest;
-}
-
-function mergeGeneratorInputs(pkg, config) {
-    if (config.projectMacros !== undefined) {
-        const macros = new Map();
-        for (const item of pkg.MACROS || []) { const value = String(Array.isArray(item) ? item[0] : item).trim(); if (value) macros.set(value.split('=')[0], value); }
-        for (const [name, value] of Object.entries(pkg.ailyGeneratorMacros || {})) if (macros.get(name) === value) macros.delete(name);
-        const owned = {};
-        for (const { name, value } of [...config.projectMacros].sort((a, b) => a.name.localeCompare(b.name))) {
-            macros.delete(name); if (value !== null) { macros.set(name, value); owned[name] = value; }
-        }
-        pkg.MACROS = [...macros.values()].map(value => [value]); pkg.ailyGeneratorMacros = owned;
-    }
 }
 
 function applyGeneratorInputs(root, config) {

@@ -70,7 +70,7 @@ describe('Blockly compile and upload handoff', () => {
     expect(window['builder'].canReuseBlocklyUpload).toHaveBeenCalledOnceWith(jasmine.objectContaining({ code: f.prepared.code }));
   });
 
-  it('reuses matching isolated recovery firmware while the old shared cache is protected', async () => {
+  it('keeps the cloud upload route when a prior isolated local firmware remains available', async () => {
     const f = uploadFixture();
     const backend = { local: false, useLocal() { this.local = true; }, release() {} };
     Object.assign(f.project, { beginBuildBackendOperation: () => backend,
@@ -81,10 +81,15 @@ describe('Blockly compile and upload handoff', () => {
       resolveBuildExecution: jasmine.createSpy('resolveBuildExecution').and.returnValue({
         isolatedRecovery: true, buildPath: '/private/.build',
       }) });
+    f.builder.waitForUploadPreprocess = async () => {};
+    f.builder.canReuseBuildForUpload = jasmine.createSpy('reuseCloud').and.resolveTo(true);
+    f.uploader.prepareCloudUploader = jasmine.createSpy('cloudUploader').and.resolveTo('legacy');
+    window['cloudBuild'] = { artifactPath: async () => '/cloud/build' };
 
     await f.run();
     expect(f.events).toEqual(['upload']);
-    expect(window['builder'].resolveBuildExecution).toHaveBeenCalledWith('/project', jasmine.objectContaining({ code: f.prepared.code }));
+    expect(f.uploader.prepareCloudUploader).toHaveBeenCalled();
+    expect(backend.local).toBeFalse();
     expect(f.builder.build).not.toHaveBeenCalled();
   });
 
@@ -431,6 +436,34 @@ describe('Blockly compile and upload handoff', () => {
     };
     return { service, files, command, start };
   }
+
+  it('builds and revalidates cloud firmware without publishing to a protected local workspace', async () => {
+    const f = compileFixture();
+    const manifest = f.files.get('/project/package.json');
+    Object.assign(window['builder'], {
+      isolatedBuildExecutionVersion: 1,
+      requiresIsolatedBuildRecovery: async () => true,
+      publishArduinoGeneratedCode: jasmine.createSpy('publish').and.throwError('Local build workspace is protected'),
+    });
+    f.service.projectService.isCloudBuild = () => true;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService.prepareCompileBackend = async () => {};
+    f.service.npmService.ensureCloudLibrarySources = async () => {};
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo');
+    f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.resolveTo({ state: 'done' });
+    const reusable = jasmine.createSpy('reusable').and.resolveTo(true);
+    window['cloudBuild'] = { reusable };
+
+    expect((await f.service.build()).state).toBe('done');
+    expect(f.service.runCloudCompilation).toHaveBeenCalledOnceWith(jasmine.objectContaining({ isolatedCloudBuild: true,
+      projectMacros: [{ name: 'WIDTH', value: 'WIDTH=320' }], sourceCapture: { digest: 'test' } }), 'board', jasmine.any(Function));
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
+    expect(f.files.get('/project/package.json')).toBe(manifest);
+    expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
+    expect(await f.service.canReuseBuildForUpload(() => false)).toBeTrue();
+    expect(reusable).toHaveBeenCalledOnceWith({ config: jasmine.objectContaining({ isolatedCloudBuild: true, generatedArtifacts: null }) });
+  });
 
   for (const exitCode of [0, 1]) it(`uses a tool loading diagnostic only for a failed build (exit=${exitCode})`, async () => {
     const f = compileFixture();

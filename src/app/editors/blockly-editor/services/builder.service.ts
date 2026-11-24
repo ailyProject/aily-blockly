@@ -63,6 +63,7 @@ type BuildActionState = ActionState & { buildInput?: BuildInput };
 @Injectable({ providedIn: 'root' })
 export class _BuilderService {
   private buildAttempt = 0;
+  private cloudBuildUsesIsolatedWorkspace = false;
   private activeBuildLog?: ProjectBuildLog;
   private activeExecutionConfig?: any;
   private explicitPreprocess?: { requestId: string; cancellation: AbortController; config?: any };
@@ -344,6 +345,7 @@ export class _BuilderService {
     detail?: string,
     checkpoint?: BuildCheckpoint,
     isCancelled: () => boolean = () => false,
+    captureOnly = false,
   ): Promise<{
     code: string;
     projectMacros: PreparedBlocklyCode['projectMacros'];
@@ -367,9 +369,10 @@ export class _BuilderService {
         // The prepared revision is guarded for the entire publication, including
         // artifact writes; record the code/map snapshot before that async I/O.
         if (checkpoint) checkpoint.inputCapturedAt = Date.now();
-        if (!this.isolatedBuilds() || this.isCloudBuild()) await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
+        const publish = !captureOnly && (!this.isolatedBuilds() || this.isCloudBuild());
+        if (publish) await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
         assertCurrent();
-        if (!this.isolatedBuilds() || this.isCloudBuild()) await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
+        if (publish) await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
         const runtimeRevision = getActiveProjectGeneratorRevision();
@@ -1158,7 +1161,8 @@ export class _BuilderService {
       // merely to decide whether to upload an existing firmware.
       // 云产物是否可复用由主进程按完整项目/库内容核对，不能只比较生成的 sketch 代码。
       const config = { currentProjectPath: projectPath, boardModule, code: prepared.code,
-        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
+        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
+        ...(cloud && this.cloudBuildUsesIsolatedWorkspace ? { isolatedCloudBuild: true } : {}) };
       let reusable: boolean;
       let execution: ResolvedBuildExecution | null = null;
       if (cloud) {
@@ -1575,9 +1579,11 @@ export class _BuilderService {
         }
         const recoveringBuild = (cloudBuild || preparation.clearCache)
           && await window['builder']?.requiresIsolatedBuildRecovery?.(requestedProjectPath);
-        if (recoveringBuild && cloudBuild) await switchToLocal();
+        const isolatedCloudBuild = recoveringBuild === true && cloudBuild;
         if (cloudBuild && graphSemanticRevision !== undefined) throw new Error('Cloud compilation does not support simulator graph builds yet.');
-        if (!cloudBuild && window['cloudBuild']?.invalidate) await window['cloudBuild'].invalidate({ projectPath: requestedProjectPath });
+        if ((!cloudBuild || (isolatedCloudBuild && preparation.clearCache)) && window['cloudBuild']?.invalidate) {
+          await window['cloudBuild'].invalidate({ projectPath: requestedProjectPath });
+        }
 
         const tempPath = this.electronService.pathJoin(this.currentProjectPath, '.temp');
         if (cloudBuild && (this.preprocessProcess || this.preprocessStreamId || this.preprocessStop)) await this.stopPreprocess();
@@ -1674,6 +1680,7 @@ export class _BuilderService {
             'compile_config',
             checkpoint,
             () => cancellation.signal.aborted,
+            isolatedCloudBuild,
           );
           await this.blocklyService.readAfterWorkspaceEdit(() => { assertPackage(); assertBoard(); assertFresh(); });
           // Generator-owned macros are now published. From here through launch,
@@ -1693,6 +1700,7 @@ export class _BuilderService {
             appDataPath: window['path'].getAppDataPath(), za7Path: this.platformService.za7,
             devmode: this.configService.data.devmode || false,
             partitionFilePath: this.electronService.pathJoin(projectPath, 'partitions.csv'),
+            ...(isolatedCloudBuild ? { isolatedCloudBuild: true } : {}),
             ...(savedConfig.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}) };
           if (buildConfig.recordProjectDelivery) assertCloudFailureSource = undefined;
           if (!sourceWorkspace) throw new Error('Build source workspace capture is unavailable.');
@@ -1732,11 +1740,12 @@ export class _BuilderService {
                 const codeHash = await this.electronService.calculateHash(code);
                 await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
                 const duration = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
-                await this.saveBuildInfo(projectPath, 'success', duration, codeHash, true);
+                if (!isolatedCloudBuild) await this.saveBuildInfo(projectPath, 'success', duration, codeHash, true);
                 await this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
                 this.metrics.record('build_succeeded');
                 this.compileValidationService.triggerAfterSuccessfulCompile();
                 this.passed = true;
+                this.cloudBuildUsesIsolatedWorkspace = isolatedCloudBuild;
                 this.buildCompleted = true;
                 this.buildPromiseReject = null;
                 this.safeUpdateNotice({ title: this.t('COMPLETE_TITLE'), text: state.text, state: 'done', progress: 100, setTimeout: 600000 });
@@ -1745,8 +1754,9 @@ export class _BuilderService {
                 return;
               }
             }
-            const executionConfig = await this.prepareExecution({ ...buildConfig, buildRequestId: requestId,
-              executionRetryOf: previousLocalExecutionId }, sourceWorkspace);
+            const localConfig = { ...buildConfig, buildRequestId: requestId, executionRetryOf: previousLocalExecutionId };
+            delete localConfig.isolatedCloudBuild;
+            const executionConfig = await this.prepareExecution(localConfig, sourceWorkspace);
             if (executionConfig.execution?.isolatedRecovery) {
               const message = '上一次编译的退出状态待确认，正在独立工作区重新编译。';
               this.appendCompileLog(message, 'INFO');
