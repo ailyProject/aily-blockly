@@ -116,6 +116,15 @@ describe('BuilderService isolated derived outputs', () => {
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
   });
+  it('publishes the cloud startup preview when the host confirms protected disk recovery', async () => {
+    const prepared = startup();
+    service.configService.getCompileBackend = () => 'cloud'; service.projectService.isCloudBuild = () => true;
+    window['builder'].requiresIsolatedBuildRecovery = jasmine.createSpy('requiresRecovery').and.resolveTo(true);
+    window['builder'].publishArduinoGeneratedCode.and.throwError('BUILD_WORKSPACE_RECOVERY_REQUIRED: orphaned owner');
+    expect(await service.generateAndWriteProjectSourceInBackground(() => false)).toBeTrue();
+    expect(service.blocklyService.publishPreparedCodeView).toHaveBeenCalledOnceWith(prepared.code, prepared.blockCodeMapText);
+    expect(window['builder'].requiresIsolatedBuildRecovery).toHaveBeenCalledOnceWith('D:/logical');
+  });
   for (const cloud of [false, true]) it(`preserves ${cloud ? 'cloud' : 'legacy host'} startup artifact publication`, async () => {
     const prepared = startup();
     if (cloud) {

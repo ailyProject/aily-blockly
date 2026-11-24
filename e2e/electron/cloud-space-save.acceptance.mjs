@@ -199,10 +199,17 @@ async function main() {
   await fs.writeFile(path.join(coder, 'package.json'), '{"name":"coder","type":"coder"}');
   await fs.writeFile(path.join(coder, 'sketch/main.cpp'), 'void setup() {}\nvoid loop() {}\n');
   await fs.writeFile(path.join(coder, 'sketch/.aily-component-library.json'), '{"preserve":true}');
+  const hiddenDirectories = ['.vscode', 'sketch/.local-state'];
+  for (const directory of hiddenDirectories) {
+    await fs.mkdir(path.join(coder, directory));
+    await fs.writeFile(path.join(coder, directory, 'settings.json'), '{}');
+  }
   for (const file of ['project.abs', 'project.abs.map.json']) await fs.writeFile(path.join(coder, file), 'leftover Blockly metadata');
   const coderEntries = archivePaths(await packageProject(coder));
   assert.ok(coderEntries.includes('sketch/main.cpp'));
   assert.ok(coderEntries.includes('sketch/.aily-component-library.json'));
+  for (const directory of hiddenDirectories)
+    assert.ok(!coderEntries.some(name => name === directory || name.startsWith(directory + '/')), directory);
   assert.ok(!coderEntries.includes('project.abs') && !coderEntries.includes('project.abs.map.json'));
   evidence.scenarios.push({ name: 'coder-package-isolation', entries: coderEntries });
   assert.equal(evidence.remoteWrites.length, 2);

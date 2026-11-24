@@ -611,7 +611,8 @@ export class _UploaderService {
                 && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {
                 throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
               }
-              if (verifiedExecution?.layout === 'shared' && buildResult.buildInput?.executionId !== verifiedExecution.executionId) {
+              if ((verifiedExecution?.layout === 'shared' || verifiedExecution?.isolatedRecovery)
+                && buildResult.buildInput?.executionId !== verifiedExecution.executionId) {
                 throw new Error('BUILD_ARTIFACT_STALE: Another build replaced the requested firmware.');
               }
 
@@ -669,12 +670,14 @@ export class _UploaderService {
         if (cloud) {
           assertContext();
 
-          const uploadMode = await this.prepareCloudUploader(assertContext);
+          const portType = ['ble', 'network-ota', 'debugger'].includes(capturedPortInfo?.type)
+            ? capturedPortInfo.type : 'serial';
+          const uploadMode = await this.prepareCloudUploader(assertContext, portType);
 
           if (uploadMode === 'cloud-recipe') {
             const requestId = `cloud-local-upload-${crypto.randomUUID()}`;
             this.activeCloudUploadId = requestId;
-            cloudLocalUpload = await window['cloudBuild'].prepareArtifactUpload({ requestId, projectPath });
+            cloudLocalUpload = await window['cloudBuild'].prepareArtifactUpload({ requestId, projectPath, portType });
 
             assertContext();
 
@@ -1509,15 +1512,15 @@ export class _UploaderService {
     });
   }
 
-  /** 云端已经展开 Windows 烧录配置，本机只准备配方实际需要的烧录工具。 */
-  private async prepareCloudUploader(assertContext: () => void): Promise<'cloud-recipe' | 'legacy'> {
+  /** 由主进程选择烧录路径，仅安装所选路径使用的工具。 */
+  private async prepareCloudUploader(assertContext: () => void, portType: string): Promise<'cloud-recipe' | 'legacy'> {
     assertContext();
 
     const bridge = window['cloudBuild'];
 
     if (!bridge?.artifactUploadInfo) throw new Error('Cloud upload metadata bridge is unavailable. Upload preparation is blocked by a host capability mismatch; preserve the build result and report upload as incomplete.');
 
-    const info = await bridge.artifactUploadInfo({ projectPath: this.projectService.currentProjectPath });
+    const info = await bridge.artifactUploadInfo({ projectPath: this.projectService.currentProjectPath, portType });
 
     assertContext();
 

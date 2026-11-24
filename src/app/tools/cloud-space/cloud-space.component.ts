@@ -428,11 +428,11 @@ export class CloudSpaceComponent {
     let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi" "-x!package.json" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`;
     if (isCoder) {
       // 保留 sketch 源码、本地库和 .aily-component-library.json 来源记录。
-      // 只排除本机状态和可重建缓存，Blockly 仍使用上面的原始打包规则。
+      // 通配符末尾的 / 让 7-Zip 只匹配点开头的目录，保留其他点开头的文件。
       const exclusions = [
         '-x!node_modules', '-x!package-lock.json', '-x!project.7z',
         '-x!project.abi', '-x!project.abi.backup', '-x!project.abs', '-x!project.abs.map.json',
-        '-xr!.git', '-xr!.aily', '-xr!.temp', '-xr!.build', '-xr!.cache', '-xr!.pio',
+        '-xr!.*/', '-xr!.git', '-xr!.aily', '-xr!.temp', '-xr!.build', '-xr!.cache', '-xr!.pio',
         '-xr!.DS_Store', '-xr!.env*',
         '-x!sketch/preprocess.json', '-x!sketch/library-cache.json',
         '-x!sketch/build-config.json', '-x!sketch/upload-config.json',

@@ -4,6 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const uploadRuntime = require('./cloud-upload-runtime');
 const cloudRecipe = require('./cloud-recipe-upload');
+const { nativeSerialExecutable } = require('./cloud-native-upload');
 const ciResources = require('./ci-resource-preparation');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const { confirmBuildSource } = require(path.join(childRoot, 'scripts/build-source-capture'));
@@ -101,9 +102,14 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId);
       else if (request.action === 'artifactPath') result = await broker.artifactPath(event.sender, request.projectPath);
       else if (request.action === 'artifactUploadInfo') {
-        result = await broker.artifactUploadInfo(event.sender, request.projectPath);
+        result = await broker.artifactUploadInfo(event.sender, request.projectPath, request.portType);
         if(result.protocol==='cloud-recipe')result={...result,requirements:result.requirements.map(requirement=>{
-          let installed=false;try{uploadRuntime.localDependencyPath(path.dirname(getRuntimeRoot()),requirement);installed=true;}catch{/* Prepare the exact Windows package through the existing dependency installer. */}
+          let installed=false;
+          try{
+            const {directory}=uploadRuntime.localDependencyPath(path.dirname(getRuntimeRoot()),requirement);
+            if(result.nativeSerial)nativeSerialExecutable(directory,requirement.id);
+            installed=true;
+          }catch{/* Prepare the exact package through the existing dependency installer. */}
           return {...requirement,installed};
         })};
       }
@@ -116,9 +122,11 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
         try {
           session.lease=await broker.acquireCurrentArtifact(event.sender,session.root);
           assertCloudBackend(revision);controller.signal.throwIfAborted();
-          session.workspace=fs.mkdtempSync(path.join(os.tmpdir(),'aily-cloud-local-upload-'));
+          // macOS exposes /var as an alias, while staged files must use physical paths.
+          const tempRoot=fs.realpathSync(os.tmpdir());
+          session.workspace=fs.mkdtempSync(path.join(tempRoot,'aily-cloud-local-upload-'));
           session.appDataPath=path.dirname(getRuntimeRoot());
-          session.preparing=prepareCloudUpload(session.lease.record,{workspace:session.workspace,appDataPath:session.appDataPath,sourceIdentity:session.lease.identity,signal:controller.signal});
+          session.preparing=prepareCloudUpload(session.lease.record,{workspace:session.workspace,appDataPath:session.appDataPath,sourceIdentity:session.lease.identity,signal:controller.signal,portType:request.portType});
           session.staged=await session.preparing;
           await session.lease.assertCurrent();assertCloudBackend(revision);controller.signal.throwIfAborted();
           session.releasePowerSaveBlocker=acquirePowerSaveBlocker();
@@ -133,7 +141,8 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
             if(!event.sender.isDestroyed())event.sender.send('cloud-build-progress',{requestId:session.requestId,stage:'upload-invalidated'});
           },{once:true});
           event.sender.once('destroyed',session.stop);
-          result={requestId:session.requestId,...session.staged};
+          const {nativeUpload,...rendererStaged}=session.staged;
+          result={requestId:session.requestId,...rendererStaged};
         } catch(error) {
           session.lease?.release();if(session.workspace)fs.rmSync(session.workspace,{recursive:true,force:true});uploadSessions.delete(key);throw error;
         }
@@ -150,6 +159,9 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
           uploadRuntime.verifyStagedUpload(session.lease.record,session.staged);
           if(request.action==='assertArtifactUpload')result=true;
           else if(request.action==='beginArtifactUploadRoute'){
+            if(session.staged.nativeUpload && session.staged.nativeUpload.transport!=='ble'){
+              throw Object.assign(new Error('The selected device transport changed after preparing the cloud firmware.'),{code:'UPLOAD_INVALID'});
+            }
             if(request.transport!=='ble'||session.started)throw new Error('Invalid external cloud upload route.');
             session.started=true;session.externalDone=new Promise(resolve=>{session.externalComplete=resolve;});result=true;
           }

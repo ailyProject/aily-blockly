@@ -31,6 +31,7 @@ export interface BlocklyLiveEditorPort {
   saveProject(path: string, request?: ProjectSaveRequest): Promise<ProjectSaveOutcome | void>;
   readCanvasWorkingRevision(): number | undefined;
   getProjectRevisionSnapshot(): Promise<BlocklyProjectRevisionSnapshot>;
+  hasUnsavedBuildChanges(): Promise<boolean>;
   getRuntimeBlockMetadataSnapshot(): BlocklyRuntimeMetadataSnapshot;
   getLibraryRuntimeSnapshot(): BlocklyLibraryRuntimeSnapshot;
 }

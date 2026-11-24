@@ -6,7 +6,8 @@ const { performance } = require('node:perf_hooks');
 const protocol = require('./protocol');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const project = require(path.join(childRoot, 'scripts/aily-code-project'));
-const { sourceManifest } = require(path.join(childRoot, 'scripts/build-source-capture'));
+const { sourceManifest, isGeneratedBuildHeader, isolatedCloudGeneratorInputs, mergeGeneratorInputs } =
+  require(path.join(childRoot, 'scripts/build-source-capture'));
 
 // 捕获编译所需源码、库和语义配置；隐藏文件、依赖目录和本地中间产物不进入上传快照。
 const GENERATED = /^(?:build-config|upload-config|preprocess|target-compile|library-cache)\.json$|^compile-(?:request|preprocess)-.+\.json$/u;
@@ -121,6 +122,10 @@ function captureSnapshot(config, profile, { identityOnly = false, onEncode, limi
   if (profile.boardModule !== config.boardModule || profile.boardVersion !== boardPackage.version || profile.boardDigest !== boardIdentity
       || profile.runner !== 'aily-builder') throw fault('The cloud target does not match this installed board package.', 'TARGET_UNSUPPORTED');
   const coder = project.isAilyCodeProjectRoot(root);
+  const generator = !coder && config.isolatedCloudBuild === true ? isolatedCloudGeneratorInputs(config) : undefined;
+  if (generator?.projectMacros && (generator.projectMacros.length || manifest.ailyGeneratorMacros)) {
+    mergeGeneratorInputs(manifest, generator);
+  }
   const sourceRoot = coder && manifest.arduinoSketch !== true ? path.join(root, 'sketch') : coder ? root : path.join(root, 'src');
   const files = new Map(), libraries = [];
   let total = 0;
@@ -151,14 +156,14 @@ function captureSnapshot(config, profile, { identityOnly = false, onEncode, limi
     files.set(relative, item);
     if (total > budget.maxInputBytes || files.size > budget.maxFiles) throw fault('Project exceeds the cloud build input budget.', 'INPUT_TOO_LARGE');
   };
-  const walk = (directory, destination, skipRootFiles = new Set(), depth = 0) => {
+  const walk = (directory, destination, skipFile, depth = 0) => {
     if (depth > 32) throw fault('Source tree exceeds its depth limit.', 'UNSAFE_PATH');
     observeDirectory(directory);
     for (const item of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
-      if (item.name === 'node_modules' || item.name.startsWith('.') || GENERATED.test(item.name) || (depth === 0 && skipRootFiles.has(item.name))) continue;
+      if (item.name === 'node_modules' || item.name.startsWith('.') || GENERATED.test(item.name) || skipFile?.(item.name)) continue;
       const absolute = path.join(directory, item.name), relative = `${destination}/${item.name}`;
       if (item.isSymbolicLink()) throw fault('Source tree contains an implicit link.', 'UNSAFE_PATH');
-      if (item.isDirectory()) walk(absolute, relative, new Set(), depth + 1);
+      if (item.isDirectory()) walk(absolute, relative, undefined, depth + 1);
       else if (item.isFile()) add(relative, read(absolute));
       else throw fault('Unsupported source entry.', 'UNSAFE_PATH');
     }
@@ -167,12 +172,14 @@ function captureSnapshot(config, profile, { identityOnly = false, onEncode, limi
   if (coder) {
     const nativeEntry = project.resolveCompileSourcePath(root);
     if (read(nativeEntry).toString('utf8') !== config.code) throw fault('Coder entry differs from the saved build request.');
-    walk(sourceRoot, 'sketch', new Set(['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']));
+    const packageFiles = new Set(['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']);
+    walk(sourceRoot, 'sketch', name => packageFiles.has(name));
     entry = `sketch/${path.relative(sourceRoot, nativeEntry).split(path.sep).join('/')}`;
   } else {
-    if (fs.existsSync(sourceRoot)) walk(sourceRoot, 'sketch');
+    if (fs.existsSync(sourceRoot)) walk(sourceRoot, 'sketch', generator?.artifacts ? isGeneratedBuildHeader : undefined);
     entry = 'sketch/sketch.ino';
     add(entry, Buffer.from(config.code, 'utf8'));
+    for (const { fileName, content } of generator?.artifacts ?? []) add(`sketch/${fileName}`, Buffer.from(content, 'utf8'));
   }
   // 只上传影响编译语义的项目配置，排除账户、设备设置及派生的编译元数据。
   const fields = ['type', 'entry', 'framework', 'devmode', 'arduinoSketch', 'dependencies', 'boardDependencies', 'projectConfig', 'macros', 'MACROS'];

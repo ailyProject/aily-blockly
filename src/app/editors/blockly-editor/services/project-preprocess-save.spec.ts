@@ -232,6 +232,43 @@ describe('background artifact publication during save and library undo', () => {
     expect(report).toHaveBeenCalledWith('Code generation error:', error);
   }));
 
+  it('keeps the preview and dependency update when startup disk publication needs isolated recovery', fakeAsync(() => {
+    const code = '#include <Arduino.h>\nvoid setup() {}';
+    publish.and.throwError('BUILD_WORKSPACE_RECOVERY_REQUIRED: orphaned owner');
+    window['builder'].requiresIsolatedBuildRecovery = jasmine.createSpy('requiresRecovery').and.resolveTo(true);
+    component.workspace = { isDragging: () => false, getInjectionDiv: () => null };
+    component.codeGenerationSubject = new Subject();
+    component.projectService.getBlocklyProjectLoadStatus = () => ({ ready: true });
+    Object.assign(component.blocklyService, {
+      workspace: component.workspace,
+      publishPreparedCodeView: jasmine.createSpy('preview'),
+      dependencySubject: { next: jasmine.createSpy('dependencies') },
+      runWithBackgroundProjectCode: async (consume: Function) => {
+        await consume({ code, artifacts: [], blockCodeMapText: 'map' }, () => {});
+        return true;
+      },
+    });
+    component.projectDebugConfigurationService = { updateWorkspaceGeneratedCode: jasmine.createSpy('debugCode') };
+    const report = spyOn(console, 'error');
+    component.initCodeGenerationDebounce();
+    component.codeGenerationSubject.next();
+    tick(3000);
+    expect(component.blocklyService.publishPreparedCodeView).toHaveBeenCalledOnceWith(code, 'map');
+    expect(component.blocklyService.dependencySubject.next).toHaveBeenCalledOnceWith('#include <Arduino.h>');
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(report).not.toHaveBeenCalled();
+  }));
+
+  it('stops disk-only retry when the host confirms isolated recovery', fakeAsync(() => {
+    publish.and.throwError('BUILD_WORKSPACE_RECOVERY_REQUIRED: orphaned owner');
+    window['builder'].requiresIsolatedBuildRecovery = jasmine.createSpy('requiresRecovery').and.resolveTo(true);
+    const report = spyOn(console, 'error');
+    component.scheduleGeneratedArtifactRetry('/project', [], 3);
+    tick(3000);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(report).not.toHaveBeenCalled();
+  }));
+
   it('waits for confirmed preprocess shutdown before reading a library checkpoint and holds it until release', async () => {
     const adapter: any = Object.create(ProjectApplicationAdapter.prototype);
     let stopped!: () => void;

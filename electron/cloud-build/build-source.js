@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { cloudArtifactWorkspace } = require('./artifact-store');
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -61,10 +62,11 @@ function publishCloudBuildSource(record, directory, jobId = record.jobId) {
         || !Number.isSafeInteger(workspace.runtimeRevision) || workspace.runtimeRevision < 0
         || typeof workspace.pageId !== 'string' || !workspace.pageId || workspace.pageId.length > 256)) return unavailable('workspace-capture-unavailable');
     const folder = path.basename(directory);
+    const workspaceRoot = cloudArtifactWorkspace(record.root, { isolated: record.config.isolatedCloudBuild === true });
     if (!new RegExp(`^${jobId}-${uuid}$`).test(folder)
-        || key(path.resolve(directory)) !== key(path.join(record.root, '.build', 'cloud', folder))) return unavailable('source-directory-invalid');
+        || key(path.resolve(directory)) !== key(path.join(workspaceRoot, '.build', 'cloud', folder))) return unavailable('source-directory-invalid');
     for (const relative of ['', '.build', '.build/cloud', `.build/cloud/${folder}`]) {
-      const current = path.join(record.root, relative), stat = fs.lstatSync(current);
+      const current = path.join(workspaceRoot, relative), stat = fs.lstatSync(current);
       if (!stat.isDirectory() || stat.isSymbolicLink() || key(fs.realpathSync(current)) !== key(current)) return unavailable('source-directory-invalid');
     }
     const sourceName = `aily-cloud-source-${capture.sourceSha256}.ino`;

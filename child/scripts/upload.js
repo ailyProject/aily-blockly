@@ -552,7 +552,7 @@ async function main() {
                     logger.log(`Executing: ${shellCmd} ${cmdArgs.join(' ')}`);
 
                     const exitCode = await new Promise((resolveCmd, rejectCmd) => {
-                        coderWorkspace?.markDelegated();
+                        workspace?.markDelegated();
                         const child = spawn(shellCmd, cmdArgs, {
                             cwd: buildPath,
                             shell: true,
@@ -675,7 +675,7 @@ async function main() {
         // 12. 执行上传命令。部分旧版 SDK 包装脚本会吞掉底层工具的异常并返回 0，
         // 因此在透传输出的同时保留末尾内容，用致命错误文本兜底校正退出码。
         const result = await new Promise((resolve, reject) => {
-            coderWorkspace?.markDelegated();
+            workspace?.markDelegated();
             const child = spawn(shellCommand, args, {
                 cwd: buildPath,
                 shell: true,

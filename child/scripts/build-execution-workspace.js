@@ -8,11 +8,11 @@ const { directory, json, write, locked, readOptional, storage, requestPath, find
     storeForExecution, retainOutcome } = require('./build-execution-storage');
 const { collectLibraryPackages } = require('./library-packages');
 const { generatorInputDigest } = require('./blockly-upload-state');
-const { captureBuildSource, isGeneratedBuildHeader } = require('./build-source-capture');
+const { captureBuildSource, isGeneratedBuildHeader, mergeGeneratorInputs } = require('./build-source-capture');
 const { buildSnapshotReceipt } = require('./build-snapshot-receipt');
 const { getSystemBootId } = require('./system-boot-id');
 const { observeBuildProcessIdentity } = require('./build-process-identity');
-const { acquireBuildWorkspace, inspectBuildWorkspaceIdle } = require('./build-workspace-lease');
+const { acquireBuildWorkspace, inspectBuildWorkspaceIdle, requiresIsolatedBuildRecovery } = require('./build-workspace-lease');
 const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const UUID = /^[a-f0-9-]{36}$/;
@@ -280,19 +280,6 @@ function resolveCurrentAbiHash(content, retained) {
     return digest;
 }
 
-function mergeGeneratorInputs(pkg, config) {
-    if (config.projectMacros !== undefined) {
-        const macros = new Map();
-        for (const item of pkg.MACROS || []) { const value = String(Array.isArray(item) ? item[0] : item).trim(); if (value) macros.set(value.split('=')[0], value); }
-        for (const [name, value] of Object.entries(pkg.ailyGeneratorMacros || {})) if (macros.get(name) === value) macros.delete(name);
-        const owned = {};
-        for (const { name, value } of [...config.projectMacros].sort((a, b) => a.name.localeCompare(b.name))) {
-            macros.delete(name); if (value !== null) { macros.set(name, value); owned[name] = value; }
-        }
-        pkg.MACROS = [...macros.values()].map(value => [value]); pkg.ailyGeneratorMacros = owned;
-    }
-}
-
 function applyGeneratorInputs(root, config) {
     const pkgPath = path.join(root, 'package.json'), pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     if (config.projectMacros !== undefined) {
@@ -310,10 +297,10 @@ function applyGeneratorInputs(root, config) {
 
 /** A shared request reserves immutable inputs, never the shared write directory.
  * The verified native child lease admits it before any project-cache mutation. */
-function prepareBuildExecution(config, workspace, operation = 'compile', { shared = false, cache = shared } = {}) {
+function prepareBuildExecution(config, workspace, operation = 'compile', { shared = false, cache = shared, isolatedRecovery = false } = {}) {
     if (!config || typeof config.code !== 'string' || typeof config.boardModule !== 'string'
         || !/^@[^/\\]+\/[^/\\]+$/.test(config.boardModule) || config.boardModule.includes('..')
-        || !['compile', 'preprocess'].includes(operation)) fail('Invalid execution request.');
+        || !['compile', 'preprocess'].includes(operation) || (isolatedRecovery && (shared || cache))) fail('Invalid execution request.');
     const store = storage(config.currentProjectPath, true, cache);
     if (JSON.parse(fs.readFileSync(path.join(store.root, 'package.json'), 'utf8')).type === 'coder') fail('Coder execution uses its own build contract.');
     const explicitPreprocess = operation === 'preprocess' && config.explicitPreprocess === true;
@@ -332,6 +319,8 @@ function prepareBuildExecution(config, workspace, operation = 'compile', { share
     };
     if (index) assertIndexAvailable();
     const root = shared ? store.root : directory(directory(store.parent, id), 'project');
+    const sharedStore = isolatedRecovery && readOptional(storage, store.root, false, true);
+    const interruptedExecution = sharedStore && readSharedSelector(sharedStore.pointer)?.value?.id;
     const generator = cache ? generatorInputDigest(config) : undefined;
     const inputDigest = snapshot(config, root, !shared, { generator });
     const savedAbi = readOptional(fs.readFileSync, path.join(root, 'project.abi'));
@@ -345,6 +334,7 @@ function prepareBuildExecution(config, workspace, operation = 'compile', { share
     const execution = { version: 1, id, logicalProjectPath: store.root, inputDigest,
         buildRequestId, operation, ...(explicitPreprocess ? { explicitPreprocess } : {}),
         ...(shared ? { layout: SHARED } : {}), ...(cache ? { storage: 'cache' } : {}),
+        ...(isolatedRecovery ? { isolatedRecovery: true } : {}),
         ...(savedAbi ? { abiHash: `sha256:${hash(savedAbi)}` } : {}),
         ...(config.executionRetryOf ? { retryOf: config.executionRetryOf } : {}) };
     const prepared = { ...config, currentProjectPath: root, partitionFilePath: path.join(root, 'partitions.csv'), execution };
@@ -376,7 +366,8 @@ function prepareBuildExecution(config, workspace, operation = 'compile', { share
             write(pendingPath, { version: 1, id, buildRequestId });
             published = true;
         }
-        if (operation === 'compile' && !shared) write(store.pointer, { version: 1, id, buildRequestId });
+        if (operation === 'compile' && !shared) write(store.pointer, { version: 1, id, buildRequestId,
+            ...(interruptedExecution ? { supersedesShared: interruptedExecution } : {}) });
     };
     try {
         write(path.join(folder, 'execution.json'), record);
@@ -733,18 +724,32 @@ function abandonPreparedPreprocess(config) {
     if (abandoned) retireStandalonePreprocessInputs(config);
     return abandoned;
 }
-function completedExecution(projectPath) {
+function currentExecutionStore(projectPath) {
     const cache = readOptional(storage, projectPath, false, true);
-    const store = cache && readOptional(fs.lstatSync, cache.pointer) ? cache : storage(projectPath);
+    const shared = cache && readSharedSelector(cache.pointer);
+    if (!shared) return storage(projectPath);
+    try {
+        const isolated = readOptional(storage, projectPath);
+        const selected = isolated && readSharedSelector(isolated.pointer)?.value;
+        // A subsequently started shared build has a different selector.
+        if (selected?.supersedesShared && selected.supersedesShared === shared.value?.id) return isolated;
+    } catch { /* An invalid older isolated store cannot replace a shared selection. */ }
+    return cache;
+}
+
+function completedExecution(projectPath) {
+    const store = currentExecutionStore(projectPath);
     const pointer = json(store.pointer);
     if (pointer.version !== 1 || !UUID.test(pointer.id)) return null;
     const folder = directory(store.parent, pointer.id, false);
     const record = json(path.join(folder, 'execution.json')), root = executionRoot(store, folder, record);
-    if (record.version !== 1 || !['running', 'completed'].includes(record.status)
+    if (record.version !== 1 || (pointer.supersedesShared && record.isolatedRecovery !== true)
+        || !['running', 'completed'].includes(record.status)
         || record.operation !== 'compile' || record.id !== pointer.id
         || record.buildRequestId !== pointer.buildRequestId || !samePath(record.logicalProjectPath, store.root)
         || readOutcome({ folder, record })?.status !== 'completed'
         || !samePath(fs.realpathSync(root), root)) return null;
+    if (record.layout === SHARED && process.platform === 'darwin' && requiresIsolatedBuildRecovery(root)) return null;
     // A directory or exit code alone is never a firmware receipt.
     const upload = require('./blockly-upload-state');
     const config = store.cache ? { currentProjectPath: root, execution: record, boardModule: record.boardModule }
@@ -766,7 +771,8 @@ function inspectBlocklyCompileProof(config) {
         const actual = snapshot(config, '', false, options);
         const expected = record.layout === SHARED ? record.compilerInputDigest
             : snapshot({ ...compiled, currentProjectPath: root }, '', false, options);
-        if (snapshot(config, '', false, options) !== actual || JSON.stringify(json(store.pointer)) !== JSON.stringify(pointer)) {
+        if (snapshot(config, '', false, options) !== actual || !samePath(currentExecutionStore(config.currentProjectPath).pointer, store.pointer)
+            || JSON.stringify(json(store.pointer)) !== JSON.stringify(pointer)) {
             return { version: 1, status: 'unknown', reason: 'inputs-changed-during-check' };
         }
         return { version: 1, status: actual === expected ? 'verified' : 'unverified',
@@ -793,9 +799,11 @@ function resolveBuildExecution(projectPath, liveConfig) {
         const generator = store.cache ? (liveConfig ? generatorInputDigest(liveConfig) : record.generator) : undefined;
         const generatedHeaders = liveConfig ? liveConfig.generatedArtifacts !== undefined : record.generatedHeaders;
         if (snapshot({ ...(liveConfig ?? config), currentProjectPath: store.root }, '', false, { retainedAbi, generator, generatedHeaders }) !== record.inputDigest
+            || !samePath(currentExecutionStore(projectPath).pointer, store.pointer)
             || JSON.stringify(json(store.pointer)) !== JSON.stringify(pointer)) return null;
         return { currentProjectPath: root, logicalProjectPath: store.root, buildPath: path.join(root, '.build'),
             preprocessPath: path.join(root, '.temp', 'preprocess.json'), buildRequestId: record.buildRequestId, inputDigest: record.inputDigest,
+            ...(record.isolatedRecovery ? { isolatedRecovery: true, executionId: record.id } : {}),
             ...(record.layout === SHARED ? { executionId: record.id, layout: SHARED, ...(store.cache ? { storage: 'cache' } : {}) } : {}) };
     } catch { return null; }
 }
@@ -882,8 +890,11 @@ function inspectBuildExecution(projectPath, buildRequestId) {
         if (!outcome && !unreadableOutcome && !['prepared', 'running'].includes(record.status)) return null;
         let status = unreadableOutcome ? 'unconfirmed' : outcome?.status ?? record.status;
         let ownerState = unreadableOutcome ? 'outcome-unreadable' : undefined;
-        const newer = !cache && readOptional(storage, rootPath, false, true);
-        const isCurrent = !(newer && readOptional(fs.lstatSync, newer.pointer)) && operation === 'compile' && current?.id === record.id && current.buildRequestId === buildRequestId;
+        let isCurrent = false;
+        if (operation === 'compile' && current?.id === record.id && current.buildRequestId === buildRequestId) {
+            try { isCurrent = samePath(currentExecutionStore(rootPath).pointer, store.pointer); }
+            catch { /* The exact request remains observable without a current selection. */ }
+        }
         const resolved = status === 'completed' && isCurrent ? resolveBuildExecution(projectPath) : null;
         const selected = resolved?.buildRequestId === buildRequestId
             && samePath(resolved.currentProjectPath, root) ? resolved : null;

@@ -45,6 +45,9 @@ function alive(pid) {
 }
 
 const darwin = { skip: process.platform !== 'darwin', timeout: 15000 };
+const builderPrefix = process.env.AILY_NPM_PREFIX || path.join(os.homedir(), 'Library', 'aily-project', 'npm-global');
+const installedNinja = path.join(builderPrefix, 'lib', 'node_modules', '@aily-project', 'aily-builder', 'ninja', 'ninja');
+const darwinWithNinja = { ...darwin, skip: darwin.skip || (!fs.existsSync(installedNinja) && 'Installed Builder Ninja is unavailable') };
 const writer = `
 const { spawn } = require('node:child_process');
 const [ready, detached] = process.argv.slice(1);
@@ -176,6 +179,41 @@ setInterval(() => {}, 1000);
   assert.equal(fs.readFileSync(f.receiptPath, 'utf8'), proof.job);
   assert.equal(fs.existsSync(lock), false);
   assert.equal(manager.getProcess(streamId), undefined);
+});
+
+test('macOS cancellation drains the installed Ninja and its separately grouped recipes', darwinWithNinja, async t => {
+  const f = fixture(t);
+  const previousPrefix = process.env.AILY_NPM_PREFIX;
+  process.env.AILY_NPM_PREFIX = builderPrefix;
+  t.after(() => {
+    if (previousPrefix === undefined) delete process.env.AILY_NPM_PREFIX;
+    else process.env.AILY_NPM_PREFIX = previousPrefix;
+  });
+  fs.writeFileSync(path.join(f.directory, 'build.ninja'), [
+    'rule hold',
+    '  command = echo $$$$ > $out.ready && exec /bin/sleep 6',
+    'build first: hold',
+    'build second: hold',
+    '',
+  ].join('\n'));
+  let proof;
+  const compile = `
+const ninja = require('node:child_process').spawn(process.argv[1], ['-j', '2'], { stdio: 'inherit' });
+ninja.once('close', code => process.exit(code ?? 1));
+`;
+  const child = owned.spawnManagedBuild(process.execPath, ['-e', compile, installedNinja], {
+    cwd: f.directory, stdio: 'ignore',
+  }, { ...f, publish(value) { proof = value; } });
+  const closed = once(child, 'close');
+  f.stop(async () => { await owned.stopOwnedProcess(child); await closed; });
+  const readiness = ['first', 'second'].map(name => path.join(f.directory, name + '.ready'));
+  await until(() => readiness.every(file => fs.existsSync(file) && fs.statSync(file).size > 0));
+  const recipes = readiness.map(file => Number(fs.readFileSync(file, 'utf8')));
+  assert.ok(recipes.every(pid => Number.isSafeInteger(pid) && pid > 0 && alive(pid)));
+  assert.equal(await owned.stopOwnedProcess(child), true);
+  assert.deepEqual(await closed, [1, null]);
+  assert.ok(recipes.every(pid => !alive(pid)));
+  assert.equal(fs.readFileSync(f.receiptPath, 'utf8'), proof.job);
 });
 
 test('macOS host crash during binding publication never starts the target', darwin, async t => {

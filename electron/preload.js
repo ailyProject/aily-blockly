@@ -18,7 +18,7 @@ const { rootAttachment, storageExecutor } = require('./project-file-lock-owner')
 const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
 const { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
-    prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution,
+    prepareBuildExecution, requiresIsolatedBuildRecovery, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution,
     sharedBuildExecutionVersion, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
@@ -618,6 +618,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
         require(require('./child-script-path').childScriptPath('shared-build-firmware.js')).readSharedBuildFirmware(execution, filename)),
     } : {}),
     prepareBuildExecution,
+    requiresIsolatedBuildRecovery,
     abandonPreparedPreprocess,
     resolveBuildExecution,
     resolveBuildProjectPath,

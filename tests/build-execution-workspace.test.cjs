@@ -8,7 +8,7 @@ const { fork, spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
 const api = require('../child/scripts/build-execution-workspace');
 const upload = require('../child/scripts/blockly-upload-state');
-const { acquireBuildWorkspace } = require('../child/scripts/build-workspace-lease');
+const { acquireBuildWorkspace, releaseManagedBuildWorkspace } = require('../child/scripts/build-workspace-lease');
 const { createHash, randomUUID } = require('node:crypto');
 const { prepareCompileSource, captureBlocklyCompileSource } = require('../child/scripts/compile-source');
 const { holdWindowsFileWithoutDeleteSharing } = require('./fixtures/windows-file-sharing.cjs');
@@ -136,6 +136,43 @@ test('a later shared preparation retires only its pending original without chang
     assert.deepEqual(api.settleStoppedSharedBuild(f.root,
         { id: completed.execution.id, buildRequestId: 'compiled' }).status, 'completed');
     assert.equal(api.resolveBuildExecution(f.root).executionId, next.execution.id);
+});
+
+test('isolated recovery supersedes only the interrupted shared selection and never mutates its cache', t => {
+    const f = sharedFixture(t);
+    const shared = f.prepare('shared-original');
+    complete(shared);
+    const pointer = path.join(f.root, '.build', 'requests', 'current.json');
+    const original = fs.readFileSync(pointer);
+    const lock = path.join(f.root, '.build', 'aily-workspace.lock');
+    const interrupted = execFileSync(process.execPath, ['-e', `
+      const lease = require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'preprocess');
+      lease.markDelegated();
+      process.stdout.write(require('node:fs').readFileSync(process.argv[3]));
+    `, require.resolve('../child/scripts/build-workspace-lease'), f.root, lock]);
+    if (process.platform === 'darwin') assert.equal(api.resolveBuildExecution(f.root), null);
+    const recover = buildRequestId => api.prepareBuildExecution({ ...f.config, buildRequestId }, undefined, 'compile',
+        { isolatedRecovery: true });
+
+    const failed = recover('recovery-failed');
+    assert.equal(api.resolveBuildExecution(f.root), null);
+    assert.equal(api.inspectBuildExecution(f.root, 'shared-original').current, false);
+    api.finishBuildExecution(failed, false);
+    assert.equal(api.resolveBuildExecution(f.root), null);
+
+    const recovered = recover('recovery-complete');
+    complete(recovered);
+    assert.equal(api.resolveBuildExecution(f.root, f.config).currentProjectPath, recovered.currentProjectPath);
+    assert.equal(api.inspectBuildExecution(f.root, 'recovery-complete').current, true);
+    assert.equal(api.inspectBuildExecution(f.root, 'shared-original').status, 'completed');
+    assert.deepEqual(fs.readFileSync(pointer), original);
+    assert.deepEqual(fs.readFileSync(lock), interrupted);
+
+    assert.equal(releaseManagedBuildWorkspace(f.root, process.env.AILY_BUILD_WORKSPACE_SUPERVISOR), true);
+    const later = f.prepare('shared-later');
+    complete(later);
+    assert.equal(api.resolveBuildExecution(f.root).executionId, later.execution.id);
+    assert.equal(api.inspectBuildExecution(f.root, 'recovery-complete').current, false);
 });
 
 for (const operation of ['compile', 'preprocess']) {
