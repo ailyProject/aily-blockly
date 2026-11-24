@@ -89,6 +89,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(window['fs'].readFileSync).not.toHaveBeenCalledWith(`${root}/project.abi`, 'utf8');
     expect(component.message.error).not.toHaveBeenCalled();
     const command = component.cmdService.runAsync.calls.first().args[0];
+    expect(command).toContain('"-xr!.*/"');
     expect(command).not.toContain('"-xr!.*"');
     expect(command).toContain('"-x!sketch/preprocess.json"');
     expect(command).toContain('"-x!sketch/library-cache.json"');
