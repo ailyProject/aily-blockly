@@ -1,5 +1,6 @@
 import { Inject, Injectable, Optional } from '@angular/core';
 import { firstValueFrom, Subject } from 'rxjs';
+import type { BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
 import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
 import {
   CmdService,
@@ -74,6 +75,7 @@ export class BuilderService {
     requestId?: string;
     expectedProjectPath?: string;
     clearCache?: boolean;
+    localFallback?: BuildLocalFallbackControl;
   } = {}) {
     const activePath = this.projectService.currentProjectPath;
     const targetPath = projectPath || activePath;
@@ -90,6 +92,7 @@ export class BuilderService {
       if (coder) return await this.buildFromProjectPath(targetPath, options);
       return await this.buildCurrentBlocklyProject(targetPath, {
         source: options.source, requestId: options.requestId, clearCache: options.clearCache,
+        ...(options.localFallback ? { localFallback: options.localFallback } : {}),
         ...(options.preprocessOnly ? { preprocessOnly: true } : {}),
       });
     } finally {
@@ -142,6 +145,7 @@ export class BuilderService {
       requestId?: string;
       clearCache?: boolean;
       preprocessOnly?: boolean;
+      localFallback?: BuildLocalFallbackControl;
     },
   ) {
     let checkpoint: BuildCheckpoint | undefined;
@@ -199,7 +203,8 @@ export class BuilderService {
     return normalize(left) === normalize(right);
   }
 
-  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string } = {}) {
+  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string;
+    localFallback?: BuildLocalFallbackControl } = {}) {
     let compileResult: Awaited<ReturnType<CompileService['runCompileFromDisk']>>;
     try {
       await this.persistActiveCoderProjectBeforeBuild(projectPath);
@@ -217,6 +222,7 @@ export class BuilderService {
       error.buildLog = buildResult?.buildLog;
       error.buildInput = buildResult?.buildInput;
       error.buildOutcome = buildResult?.buildOutcome;
+      if (typeof buildResult?.code === 'string') error.code = buildResult.code;
       error.buildResult = buildResult;
       if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
       if (!options.preprocessOnly && buildResult?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);

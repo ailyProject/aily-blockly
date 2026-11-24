@@ -1,10 +1,11 @@
 import { BuilderService } from '@domain/build/public-api';
 import { isBuildCancelled } from '@domain/build/public-api';
 import type { HostToolResult } from './host-tool-result';
+import type { BuildLocalFallbackControl } from '../../utils/cloud-build-progress.utils';
 
 export async function runProjectBuild(
   builderService: BuilderService,
-  input: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string },
+  input: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string; localFallback?: BuildLocalFallbackControl },
   projectPath: string,
 ): Promise<HostToolResult> {
   try {
@@ -14,6 +15,7 @@ export async function runProjectBuild(
       requestId: input.requestId,
       expectedProjectPath: projectPath,
       clearCache: input.clearCache,
+      ...(input.localFallback ? { localFallback: input.localFallback } : {}),
     });
     return {
       is_error: false,

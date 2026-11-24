@@ -13,6 +13,7 @@ import {
   readProjectSaveRequest,
 } from '@domain/project/public-api';
 import { BuilderService, readPreparedBuildInput, requirePreparedBuildExecution } from '@domain/build/public-api';
+import type { BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { AiOperationRegistryService } from './ai-operation-registry.service';
 import { SubappAgentBridgeService } from '@integration/subapps/public-api';
@@ -83,6 +84,8 @@ const PROJECT_MUTATIONS = new Set([
   'project_build', 'project_upload',
   'project_media_import',
 ]);
+const buildFallbackControl = Symbol('buildFallbackControl');
+type ProjectBuildParameters = Record<string, any> & { [buildFallbackControl]?: BuildLocalFallbackControl };
 const projectLockMaintenance = new Set(['retire_empty_project_lock', 'retire_project_file_lock']);
 const diskRecoveryObservations = new Set(['history_observe', 'read_draft']);
 
@@ -338,17 +341,47 @@ export class BlocklyLiveOperationBridgeService {
         const receipts = this.buildReceipts ??= new ProjectBuildReceipts(undefined, undefined, (target, requestId) =>
           this.normalizePath(target) === this.normalizePath(this.projectService.currentProjectPath)
             ? readNativeBuildReceipt(target, requestId) : undefined);
-        if (payload.operation === 'project_build_status') return await receipts.status(project, request);
-        const params = { ...payload.params };
+        const params: ProjectBuildParameters = { ...payload.params };
+        const hasFallback = Object.hasOwn(params, 'local_fallback_from_request_id');
+        if (payload.operation === 'project_build_status' && !hasFallback) return await receipts.status(project, request);
+        const fromRequestId = hasFallback ? readProjectBuildRequest({ version: 1, requestId: params['local_fallback_from_request_id'] }).requestId : undefined;
+        if (hasFallback && (payload.operation !== 'project_build' || params['preprocess_only'] === true
+          || params['clear_cache'] === true || request.requestId === fromRequestId)) {
+          throw Object.assign(new Error('A local fallback requires a new full compile request with its original cloud receipt.'), { code: 'BUILD_FALLBACK_UNAVAILABLE' });
+        }
         delete params['buildRequest'];
+        delete params['local_fallback_from_request_id'];
         params['buildLogRequestId'] = request.requestId;
-        const signature = JSON.stringify([params['preprocess_only'] === true, params['clear_cache'] === true]);
-        return await receipts.start(project, request, signature, () =>
-          this.executeAdmittedOperation({ ...payload, path: project, params }));
+        const signature = JSON.stringify([params['preprocess_only'] === true, params['clear_cache'] === true, fromRequestId]);
+        return await receipts.start(project, request, signature, control => {
+          if (control.local) params[buildFallbackControl] = control;
+          else if (params['preprocess_only'] !== true) {
+            const capture = () => window['fs']?.captureProjectAttachment?.(project) as ProjectStorageAttachment | undefined;
+            let attachment: ProjectStorageAttachment | undefined;
+            try { attachment = capture(); } catch { /* The original build can still run without a fallback receipt. */ }
+            if (attachment?.version === 1) params[buildFallbackControl] = {
+              recordCloudFailure: (error, assertSourceCurrent) => control.recordCloudFailure?.(error, async () => {
+                const checkAttachment = () => {
+                  if (JSON.stringify(capture()) !== JSON.stringify(attachment)) {
+                    throw Object.assign(new Error('The cloud build project is no longer the same physical project.'), { code: 'BUILD_FALLBACK_UNAVAILABLE' });
+                  }
+                };
+                checkAttachment();
+                await assertSourceCurrent();
+                checkAttachment();
+              }),
+            };
+          }
+          return this.executeAdmittedOperation({ ...payload, path: project, params });
+        }, fromRequestId);
       } catch (error) {
         return { ok: false, operation: payload.operation, project, code: (error as any)?.code, buildOutcome: 'not-started',
           message: error instanceof Error ? error.message : String(error) };
       }
+    }
+    if (payload.operation === 'project_build' && Object.hasOwn(payload.params || {}, 'local_fallback_from_request_id')) {
+      return { ok: false, operation: payload.operation, buildOutcome: 'not-started', code: 'BUILD_FALLBACK_UNAVAILABLE',
+        message: 'Local fallback requires a new and original build receipt.' };
     }
     return this.executeAdmittedOperation(payload);
   }
@@ -2068,7 +2101,7 @@ export class BlocklyLiveOperationBridgeService {
     };
   }
 
-  private async executeCoderProjectOperation(path: string, operation: string, params: Record<string, any>): Promise<Record<string, any>> {
+  private async executeCoderProjectOperation(path: string, operation: string, params: ProjectBuildParameters): Promise<Record<string, any>> {
     try {
       if (operation === 'serial_ports_list') {
         const { session, ports, selection } = await this.coderRuntime.resolvePort(path, params['port']);
@@ -2085,16 +2118,16 @@ export class BlocklyLiveOperationBridgeService {
       const result = operation === 'project_upload'
         ? await this.coderRuntime.upload(path, params['port'])
         : await this.coderRuntime.build(path, { preprocessOnly: params['preprocess_only'] === true, clearCache: params['clear_cache'] === true,
-          requestId: params['buildLogRequestId'] });
+          requestId: params['buildLogRequestId'], ...(params[buildFallbackControl] ? { localFallback: params[buildFallbackControl] } : {}) });
       return { ok: true, operation, project: path, message: result?.text || '', result, ...(result?.buildLog ? { buildLog: result.buildLog } : {}) };
     } catch (error: any) {
-      return { ok: false, operation, project: path, buildOutcome: error?.buildOutcome,
+      return { ok: false, operation, project: path, buildOutcome: error?.buildOutcome, ...(error?.code ? { code: error.code } : {}),
         message: error?.text || error?.message || String(error), result: error?.result || error?.buildResult,
         ...(error?.buildLog || error?.buildResult?.buildLog ? { buildLog: error.buildLog || error.buildResult.buildLog } : {}) };
     }
   }
 
-  private async executeProjectBuild(params: Record<string, any>, projectPath = this.projectService.currentProjectPath): Promise<Record<string, any>> {
+  private async executeProjectBuild(params: ProjectBuildParameters, projectPath = this.projectService.currentProjectPath): Promise<Record<string, any>> {
     const projectCurrent = this.projectService.captureCurrentProjectGuard();
     const assertCurrent = () => {
       if (this.projectService.currentProjectPath !== projectPath || !projectCurrent()) {
@@ -2116,6 +2149,7 @@ export class BlocklyLiveOperationBridgeService {
         preprocessOnly: params['preprocess_only'] === true,
         clearCache: params['clear_cache'] === true,
         requestId: params['buildLogRequestId'],
+        localFallback: params[buildFallbackControl],
       },
       projectPath,
     );

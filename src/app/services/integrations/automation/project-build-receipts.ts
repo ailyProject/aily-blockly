@@ -1,3 +1,5 @@
+import { isCloudBuildServiceFailure, type BuildLocalFallbackControl } from '../../../utils/cloud-build-progress.utils';
+
 /** A build owns its Promise; a caller only owns a bounded observation of it. */
 export interface ProjectBuildRequest {
   version: 1;
@@ -18,6 +20,7 @@ interface BuildEntry {
   completedAt?: number;
   result?: Record<string, any>;
   waiters: Set<() => void>;
+  fallbackGuard?: () => void | Promise<void>;
 }
 
 type PersistedBuild = { state: ProjectBuildReceiptResponse['buildReceipt']['state']; result?: Record<string, any> };
@@ -49,23 +52,54 @@ export class ProjectBuildReceipts {
     private readonly readPersisted?: (project: string, requestId: string) => PersistedBuild | undefined) {}
 
   start(project: string, request: ProjectBuildRequest, signature: string,
-    run: () => Promise<Record<string, any>>): Promise<ProjectBuildReceiptResponse> {
+    run: (control: BuildLocalFallbackControl) => Promise<Record<string, any>>, fallbackFromRequestId?: string): Promise<ProjectBuildReceiptResponse> {
     this.prune();
     let entry = this.find(project, request.requestId);
     if (entry && entry.signature !== signature) throw fault('Build request ID already belongs to different compile options.');
     if (!entry) {
       const original = this.readPersisted?.(project, request.requestId);
       if (original) return Promise.resolve(this.response('project_build', project, request, original));
+      const fallback = fallbackFromRequestId === undefined ? undefined : this.find(project, fallbackFromRequestId);
+      if (fallbackFromRequestId !== undefined && (fallback?.completedAt === undefined || !fallback.fallbackGuard
+        || fallback.result?.['localFallback']?.fromRequestId !== fallbackFromRequestId)) {
+        throw Object.assign(new Error('No matching live cloud build failure permits this local compilation.'), { code: 'BUILD_FALLBACK_UNAVAILABLE' });
+      }
       entry = { project, signature, waiters: new Set() };
       this.entries.set(request.requestId, entry);
       const owned = entry;
-      void Promise.resolve().then(run).then(
-        result => { owned.result = result; },
-        error => { owned.result = { ok: false, operation: 'project_build', project,
-          code: error?.code, buildOutcome: error?.buildOutcome,
-          ...(error?.buildLog ? { buildLog: error.buildLog } : {}),
-          ...(error?.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
-          message: error instanceof Error ? error.message : String(error) }; },
+      const fallbackGuard = fallback?.fallbackGuard;
+      if (fallback) fallback.fallbackGuard = undefined;
+      const assertFallbackCurrent = async () => {
+        try { await fallbackGuard?.(); }
+        catch (error) {
+          throw Object.assign(new Error(error instanceof Error ? error.message : String(error)),
+            { code: 'BUILD_FALLBACK_UNAVAILABLE', buildOutcome: 'not-started' });
+        }
+      };
+      const control: BuildLocalFallbackControl = fallbackGuard
+        ? { local: { fromRequestId: fallbackFromRequestId!, assertCurrent: assertFallbackCurrent } }
+        : { recordCloudFailure: (error, guard) => { if (isCloudBuildServiceFailure(error)) owned.fallbackGuard = guard; } };
+      void Promise.resolve().then(async () => {
+        if (fallbackGuard) await assertFallbackCurrent();
+        return run(control);
+      }).then(
+        async result => {
+          owned.result = result;
+          if (result?.['ok'] === false && !['not-started', 'cancelled', 'unknown'].includes(result['buildOutcome']) && owned.fallbackGuard) {
+            try {
+              await owned.fallbackGuard();
+              owned.result = { ...result, localFallback: { fromRequestId: request.requestId } };
+            } catch { owned.fallbackGuard = undefined; }
+          } else owned.fallbackGuard = undefined;
+        },
+        error => {
+          owned.fallbackGuard = undefined;
+          owned.result = { ok: false, operation: 'project_build', project,
+            code: error?.code, buildOutcome: error?.buildOutcome ?? (fallbackGuard ? 'not-started' : undefined),
+            ...(error?.buildLog ? { buildLog: error.buildLog } : {}),
+            ...(error?.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),
+            message: error instanceof Error ? error.message : String(error) };
+        },
       ).then(() => {
         owned.completedAt = Date.now();
         for (const finish of [...owned.waiters]) finish();

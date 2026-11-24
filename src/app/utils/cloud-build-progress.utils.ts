@@ -28,6 +28,11 @@ interface CloudBuildProgressCallbacks {
 
 export const CLOUD_BUILD_LOCAL_REQUESTED = 'CLOUD_BUILD_LOCAL_REQUESTED';
 
+export interface BuildLocalFallbackControl {
+  recordCloudFailure?: (error: unknown, assertCurrent: () => void | Promise<void>) => void;
+  local?: { fromRequestId: string; assertCurrent: () => void | Promise<void> };
+}
+
 const KNOWN_CLOUD_WORKER_FAILURES = new Set([
   'CLOUD_BOARD_OFFLINE', 'NODE_CAPACITY_EXCEEDED', 'node_restarted', 'offer_lost', 'task_missing', 'worker_stopped',
 ]);

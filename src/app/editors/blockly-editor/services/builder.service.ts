@@ -39,7 +39,7 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
-import { runCloudBuildWithProgress, cloudBuildProgressPresentation, isCloudBuildServiceFailure, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 import {
@@ -57,7 +57,7 @@ const PREPROCESS_PENDING_CHAT_MAX_WAIT_MS = 10_000;
 const PREPROCESS_POST_CHAT_QUIET_MS = 1500;
 const PREPROCESS_SLOW_PHASE_MS = 32;
 const PREPROCESS_ERROR_OUTPUT_LIMIT = 64 * 1024;
-type BuildPreparation = Partial<Pick<BlocklyBuildInput, 'projectPath' | 'clearCache'>>;
+type BuildPreparation = Partial<Pick<BlocklyBuildInput, 'projectPath' | 'clearCache' | 'localFallback'>>;
 type BuildActionState = ActionState & { buildInput?: BuildInput };
 
 @Injectable({ providedIn: 'root' })
@@ -576,7 +576,8 @@ export class _BuilderService {
         const graphSemanticRevision =
           action.payload?.graphSemanticRevision as string | undefined;
         const requestId = action.payload?.requestId as string | undefined;
-        const preparation = { projectPath: action.payload?.projectPath, clearCache: action.payload?.clearCache === true };
+        const preparation = { projectPath: action.payload?.projectPath, clearCache: action.payload?.clearCache === true,
+          localFallback: action.payload?.localFallback };
         const result = action.payload?.preprocessOnly === true
           ? await this.preprocessProject(requestId ?? crypto.randomUUID(), checkpoint, preparation)
           : await this.build(graphSemanticRevision, requestId, checkpoint, preparation);
@@ -1480,21 +1481,15 @@ export class _BuilderService {
     this.buildCancellation = cancellation;
     const requestLog = await createProjectBuildLog(requestedProjectPath, requestId);
     this.activeBuildLog = requestLog;
-    const canAutomaticallySwitch = !backendOperation.isNested && graphSemanticRevision === undefined;
-    let automaticallySwitched = false;
-    const maySwitchAfterFailure = (error: unknown) => cloudBuild && canAutomaticallySwitch && !automaticallySwitched
-      && isCloudBuildServiceFailure(error);
-    const switchToLocal = async (error?: unknown) => {
+    const fallback = preparation.localFallback?.local;
+    let assertCloudFailureSource: (() => void) | undefined;
+    const switchToLocal = async () => {
       if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
       if (!projectCurrent() || requestedProjectPath !== this.projectService.currentProjectPath) {
         throw buildSourceStale('project', 'Build project changed before switching to local compilation.');
       }
       if (requestedSettingsKey !== this.compileSettingsKey()) {
         throw buildSourceStale('settings', 'Build settings changed before switching to local compilation.');
-      }
-      if (error) {
-        automaticallySwitched = true;
-        requestLog.append(`Cloud compilation service failure; continuing locally: ${(error as Error).message || String(error)}\n`);
       }
       backendOperation.useLocal();
       cloudBuild = false;
@@ -1526,7 +1521,16 @@ export class _BuilderService {
         this.currentProjectPath = requestedProjectPath;
         this.streamId = null; // 初始化为 null
         this.buildStartTime = Date.now(); // 记录编译开始时间
-        if (retryLocally) {
+        if (fallback) {
+          if (!cloudBuild || backendOperation.isNested || graphSemanticRevision !== undefined) {
+            throw Object.assign(new Error('The local fallback no longer belongs to an active cloud compile.'),
+              { code: 'BUILD_FALLBACK_UNAVAILABLE', buildOutcome: 'not-started' });
+          }
+          await fallback.assertCurrent();
+          requestLog.append(`AI requested local compilation after cloud build ${fallback.fromRequestId}.\n`);
+          await switchToLocal();
+          await fallback.assertCurrent();
+        } else if (retryLocally) {
           backendOperation.useLocal();
           cloudBuild = false;
           this.noticeService.update({ title: this.t('PREPARING_TITLE'),
@@ -1535,12 +1539,36 @@ export class _BuilderService {
           await this.npmService.prepareLocalCompileBackend(requestedProjectPath,
             () => cancellation.signal.aborted, () => this.cancel(requestId));
         }
-        if (this.configService.getCompileBackend() === 'cloud') {
-          try { await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted); }
-          catch (error) {
-            if (!maySwitchAfterFailure(error)) throw error;
-            await switchToLocal(error);
-          }
+        if (cloudBuild && !backendOperation.isNested && graphSemanticRevision === undefined && preparation.localFallback?.recordCloudFailure) {
+          try {
+            const canvas = this.blocklyService.captureBuildSnapshot().revision;
+            const workspace = this.blocklyService.workspace;
+            const page = this.blocklyService.getActivePageId();
+            const generator = getActiveProjectGeneratorRevision();
+            const manifest = this.electronService.pathJoin(requestedProjectPath, 'package.json');
+            const boardModule = this.projectService.getRuntimeBoardModule();
+            if (!boardModule) throw new Error('The Blockly board is unavailable.');
+            const boardFiles = ['package.json', 'board.json'].map(name =>
+              this.electronService.pathJoin(requestedProjectPath, 'node_modules', boardModule, name));
+            const assertInputs = captureBuildRequestGuard(() => ({
+              manifest: buildManifestForGuard(window['fs'].readFileSync(manifest, 'utf8'), true),
+              board: boardFiles.map(file => window['fs'].readFileSync(file, 'utf8')),
+            }));
+            assertCloudFailureSource = () => {
+              if (!projectCurrent() || this.compileSettingsKey() !== requestedSettingsKey || this.configService.getCompileBackend() !== 'cloud') {
+                throw buildSourceStale('project', 'The project or compile settings changed after the cloud failure.');
+              }
+              if (this.blocklyService.workspace !== workspace || this.blocklyService.getActivePageId() !== page
+                || getActiveProjectGeneratorRevision() !== generator || this.blocklyService.captureBuildSnapshot().revision !== canvas) {
+                throw buildSourceStale('blocks', 'The Blockly canvas changed after the cloud failure.');
+              }
+              if (this.projectService.getRuntimeBoardModule() !== boardModule) throw buildSourceStale('inputs', 'The Blockly board changed after the cloud failure.');
+              assertInputs();
+            };
+          } catch { /* Failure to capture an exact source only withholds the fallback offer. */ }
+        }
+        if (!fallback && this.configService.getCompileBackend() === 'cloud') {
+          await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted);
           if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()
             || requestedProjectPath !== this.projectService.currentProjectPath) throw new Error('Build configuration changed or was cancelled.');
           cloudBuild = this.isCloudBuild();
@@ -1621,12 +1649,7 @@ export class _BuilderService {
             await this.npmService.ensureCloudLibrarySources(projectPath);
             // Restore selected/default cloud pins before generating code and
             // capturing the generator revision. Opening Upload must be idempotent.
-            try { await this.projectService.getBoardConfigMenu({ requireCloudTarget: true }); }
-            catch (error) {
-              if (!maySwitchAfterFailure(error)) throw error;
-              assertPackage(); assertBoard();
-              await switchToLocal(error);
-            }
+            await this.projectService.getBoardConfigMenu({ requireCloudTarget: true });
           }
           if (!cloudBuild) await this.waitForAilyBuilderReady();
           assertPackage(); assertBoard();
@@ -1668,6 +1691,7 @@ export class _BuilderService {
             devmode: this.configService.data.devmode || false,
             partitionFilePath: this.electronService.pathJoin(projectPath, 'partitions.csv'),
             ...(savedConfig.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}) };
+          if (buildConfig.recordProjectDelivery) assertCloudFailureSource = undefined;
           if (!sourceWorkspace) throw new Error('Build source workspace capture is unavailable.');
           const savedBuildComparison = await this.blocklyProjectService?.compareSavedBuildDocument(projectPath, sourceWorkspace.documentText);
           if (savedBuildComparison) buildConfig.savedBuildComparison = savedBuildComparison;
@@ -1694,11 +1718,9 @@ export class _BuilderService {
                 cloudBuildSnapshot = state.buildSnapshot;
               } catch (error) {
                 cloudBuildSnapshot = error?.buildSnapshot;
-                const automatic = !buildConfig.recordProjectDelivery && maySwitchAfterFailure(error);
-                if (!automatic && error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
+                if (error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
                 assertCurrent();
-                await switchToLocal(automatic ? error : undefined);
-                if (automatic) allowCloudSwitch = false;
+                await switchToLocal();
                 await this.waitForAilyBuilderReady();
                 assertCurrent();
               }
@@ -1767,6 +1789,7 @@ export class _BuilderService {
             this.logService.update({ detail: compileCommand, state: 'info' });
             // Launch Node directly so a native crash keeps its real exit code and
             // project paths are passed as arguments without another shell parser.
+            await fallback?.assertCurrent();
             assertCurrent();
             this.buildCompleted = false;
             this.isErrored = false;
@@ -2148,12 +2171,7 @@ export class _BuilderService {
               this.buildPromiseReject = reject;
               backendOperation.useCloud();
               cloudBuild = true;
-              try { cloudBuild = await this.npmService.prepareCloudCompileBackend(projectPath, () => cancellation.signal.aborted); }
-              catch (error) {
-                if (!maySwitchAfterFailure(error)) throw error;
-                assertCurrent();
-                await switchToLocal(error);
-              }
+              cloudBuild = await this.npmService.prepareCloudCompileBackend(projectPath, () => cancellation.signal.aborted);
               assertCurrent();
               if (!cloudBuild) {
                 if (!backendOperation.local) backendOperation.useLocal();
@@ -2181,6 +2199,7 @@ export class _BuilderService {
           return;
         }
         const message = this.buildErrorText(error);
+        if (cloudBuild && assertCloudFailureSource) preparation.localFallback?.recordCloudFailure?.(error, assertCloudFailureSource);
         const detail = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
         const fullErrorMessage = message === error?.message || detail.includes(message) ? detail : `${message}\n${detail}`;
         this.handleCompileError(message, true, fullErrorMessage, cloudBuild ? retry : undefined, cloudBuild);
