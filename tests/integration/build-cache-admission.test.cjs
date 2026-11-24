@@ -73,7 +73,7 @@ const mountEditor = new Function(transpile(editorListeners.join('\n')));
 const adapter = methods('src/app/integrations/build/blockly-build.adapter.ts', 'BlocklyBuildAdapter', ['isAvailable', 'build']);
 const domain = methods('src/app/services/domains/build/builder.service.ts', 'BuilderService',
   ['build', 'buildCurrentBlocklyProject', 'persistActiveCoderProjectBeforeBuild', 'clearBuildCache', 'triggerPreprocess',
-    'triggerPreprocessWithCacheClear'], {
+    'triggerPreprocessWithCacheClear', 'usesSharedBuildCache'], {
     isBuildCancelled: cancellation.isBuildCancelled, persistBuildResult: () => {},
   });
 const bridge = methods('src/app/services/integrations/automation/blockly-live-operation-bridge.service.ts',
@@ -165,7 +165,7 @@ function fixture(t) {
       fs.rmSync(file, { recursive, force: false });
     } },
   });
-  const editor = methods(editorFile, '_BuilderService', ['build', 'buildAttemptWithBackend', 'cancel',
+  const editor = methods(editorFile, '_BuilderService', ['build', 'buildAttemptWithBackend', 'buildErrorText', 'cancel',
     'preparePreprocessCache', 'detachIsolatedPreprocess', 'clearOwnedBuildCache'], {
     crypto: webcrypto,
     ProcessState,
@@ -229,7 +229,10 @@ function fixture(t) {
     for (const relative of paths) assert.equal(fs.readFileSync(path.join(target, relative), 'utf8'), relative);
   };
   const cancel = requestId => actions.dispatch('compile-cancel', { requestId });
-  return { project, context, workflow, events, faults, seed, start, receipts, cancel, assertIntact };
+  const advisoryPreprocess = () => new Promise(resolve => actions.dispatch('preprocess-trigger', { reason: 'test' }, resolve));
+  const clearThenAdvisoryPreprocess = () => builder.triggerPreprocessWithCacheClear(project, 'test');
+  return { project, context, workflow, events, faults, seed, start, receipts, cancel, assertIntact,
+    advisoryPreprocess, clearThenAdvisoryPreprocess };
 }
 
 test('a rejected concurrent Agent build never clears the active project cache or reruns its receipt', async t => {
@@ -257,7 +260,7 @@ test('the admitted Agent build clears its exact project once before source freez
   const outcome = await f.start('owned-clear', true);
   assert.equal(outcome.buildReceipt.state, 'completed');
   assert.equal(outcome.result.ok, false);
-  assert.match(outcome.result.result.text, /Fixture stopped at source freeze/);
+  assert.match(outcome.result.message, /Fixture stopped at source freeze/);
   assert.deepEqual(f.events, [
     { kind: 'admission', state: ProcessState.IDLE, requestId: 'owned-clear' },
     ...['.build', '.temp/libraries', '.temp/library-cache.json', '.temp/preprocess.json']
@@ -292,22 +295,16 @@ test('a project switch during readiness leaves both sets of caches intact', asyn
 test('advisory preprocessing clears only after ownership and still triggers no foreground compiler', async t => {
   const f = fixture(t);
   assert.equal(f.workflow.startBuild(), true);
-  const rejected = await f.start('busy-preprocess', true, true);
-  assert.equal(rejected.buildReceipt.state, 'completed');
-  assert.equal(rejected.result.ok, false);
-  assert.equal(rejected.result.buildOutcome, 'not-started');
+  await assert.rejects(f.clearThenAdvisoryPreprocess(), { buildOutcome: 'not-started' });
   f.assertIntact([...caches, ...retained]);
   assert.deepEqual(f.events, []);
   f.workflow.finishBuild(true);
 
-  const unchanged = await f.start('plain-preprocess', false, true);
-  assert.equal(unchanged.result.ok, true);
+  assert.equal((await f.advisoryPreprocess()).success, true);
   assert.deepEqual(f.events, [{ kind: 'preprocess', state: ProcessState.IDLE }]);
   f.assertIntact([...caches, ...retained]);
 
-  const admitted = await f.start('owned-preprocess', true, true);
-  assert.equal(admitted.buildReceipt.state, 'completed');
-  assert.equal(admitted.result.ok, true);
+  await f.clearThenAdvisoryPreprocess();
   assert.deepEqual(f.events.slice(1), [
     ...['.build', '.temp/libraries', '.temp/library-cache.json', '.temp/preprocess.json']
       .map(label => ({ kind: 'clear', label, state: ProcessState.BUILDING })),
@@ -315,7 +312,6 @@ test('advisory preprocessing clears only after ownership and still triggers no f
   ]);
   assert.ok(caches.every(relative => !fs.existsSync(path.join(f.project, relative))));
   f.assertIntact(retained);
-  assert.deepEqual(await f.start('owned-preprocess', true, true), admitted);
   assert.equal(f.events.length, 6);
 });
 
@@ -332,7 +328,9 @@ test('cancelling during cache removal keeps ownership until the actual removal s
     }
   };
   const original = f.start('cancel-owned-clear', true);
-  await entered;
+  await Promise.race([entered, original.then(outcome => {
+    throw new Error(`Build settled before cache removal: ${JSON.stringify(outcome.result)}`);
+  })]);
   try {
     f.cancel('cancel-owned-clear');
     assert.equal(f.workflow.currentState, ProcessState.BUILDING);

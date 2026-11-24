@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 
 const { originFromSenderUrl } = require('./simulator-gateway');
 const { resolveInstalledPackagePath, resolveSubappRoot } = require('./subapp-manager');
+const { resolveBuildExecutionInWorker } = require('./build-workspace-publication');
 
 const CONTROL_SCHEMA_VERSION = 2;
 const CONTROL_REQUEST_TYPE = 'aily-simulator-subapp.control.request';
@@ -42,6 +43,7 @@ const registeredIpcMains = new WeakSet();
 function createSimulatorSubappHost(options = {}) {
   const spawnProcess = options.spawnProcess || spawn;
   const runtimeResolver = options.runtimeResolver || resolveSimulatorSubappRuntime;
+  const buildResolver = options.buildResolver || resolveSimulatorBuild;
   const randomBytes = options.randomBytes || crypto.randomBytes;
   const now = options.now || (() => new Date());
   const startTimeoutMs = positiveTimeout(options.startTimeoutMs, START_TIMEOUT_MS);
@@ -81,15 +83,38 @@ function createSimulatorSubappHost(options = {}) {
     return run;
   }
 
+  async function selectArtifact(projectRoot) {
+    const build = await buildResolver(projectRoot);
+    if (!build) throw new Error('No current compiled Artifact. Compile the project before starting simulation.');
+    const directory = build.buildPath;
+    const relativeDirectory = path.relative(projectRoot, directory);
+    if (!relativeDirectory || path.isAbsolute(relativeDirectory)
+      || relativeDirectory === '..' || relativeDirectory.startsWith(`..${path.sep}`)) {
+      throw new Error('Simulator Artifact is outside the project directory.');
+    }
+    return {
+      directory,
+      relativeDirectory: relativeDirectory.split(path.sep).join('/'),
+      requestId: build.buildRequestId,
+      digest: await readArtifactManifestDigest(directory),
+    };
+  }
+
+  async function assertArtifactCurrent(projectRoot, expected) {
+    const selected = await selectArtifact(projectRoot);
+    if (selected.requestId !== expected.requestId || selected.directory !== expected.directory
+      || selected.digest !== expected.digest) {
+      throw new Error('The compiled Artifact changed during simulator import. Try again.');
+    }
+  }
+
   async function open(options_) {
     return serialize(async () => {
       const input = validateOpenInput(options_);
       const projectRoot = requireProjectRoot(input.projectPath);
       const projectSceneOnly = input.mode === 'project-scene';
-      const buildDirectory = projectSceneOnly
-        ? projectRoot
-        : path.join(projectRoot, '.build');
-      if (!projectSceneOnly) requireArtifact(buildDirectory);
+      const artifact = projectSceneOnly ? null : await selectArtifact(projectRoot);
+      const buildDirectory = artifact?.directory ?? projectRoot;
       const rendererOrigin = requireHttpOrigin(input.rendererOrigin);
       const projectIdentity = createProjectIdentity(projectRoot);
       const projectSceneBootstrap = projectSceneOnly
@@ -100,7 +125,7 @@ function createSimulatorSubappHost(options = {}) {
         : readProjectDebugConfiguration(projectRoot);
       const launchRevision = projectSceneOnly
         ? createProjectSceneLaunchRevision(input)
-        : createLaunchRevision(buildDirectory, input);
+        : createLaunchRevision(artifact.digest, projectRoot, input);
 
       if (
         active
@@ -238,6 +263,12 @@ function createSimulatorSubappHost(options = {}) {
         });
         requireSuccess(imported, 'import-artifact');
         const artifactHandle = requireArtifactHandle(imported.artifactHandle);
+        try {
+          await assertArtifactCurrent(projectRoot, artifact);
+        } catch (error) {
+          await bestEffortControl(spawned, { operation: 'release-artifact', projectIdentity, artifactHandle });
+          throw error;
+        }
 
         const prepared = await sendControl(spawned, {
           operation: 'prepare-session',
@@ -588,6 +619,7 @@ function createSimulatorSubappHost(options = {}) {
         throw new Error('No matching Project Scene is open.');
       }
       if (active.sessionId && active.artifactHandle && active.session) {
+        // The Subapp has already verified and staged an immutable copy for this session.
         return {
           schemaVersion: 1,
           kind: 'aily-project-scene-session-attachment-result',
@@ -595,32 +627,35 @@ function createSimulatorSubappHost(options = {}) {
           session: { ...active.session },
         };
       }
-      const buildDirectory = path.join(active.projectRoot, '.build');
-      requireArtifact(buildDirectory);
+      const target = child;
+      const scene = active;
+      const artifact = await selectArtifact(scene.projectRoot);
       const sessionId = `session-v1-${randomBytes(16).toString('hex')}`;
       const projectDebugConfiguration = readProjectDebugConfiguration(
-        active.projectRoot,
+        scene.projectRoot,
       );
       let artifactHandle = null;
       try {
-        const imported = await sendControl(child, {
+        const imported = await sendControl(target, {
           operation: 'import-artifact',
-          projectIdentity: active.projectIdentity,
-          sourceArtifactDirectory: '.build',
+          projectIdentity: scene.projectIdentity,
+          sourceArtifactDirectory: artifact.relativeDirectory,
         });
         requireSuccess(imported, 'import-artifact');
         artifactHandle = requireArtifactHandle(imported.artifactHandle);
-        const attached = await sendControl(child, {
+        await assertArtifactCurrent(scene.projectRoot, artifact);
+        const attached = await sendControl(target, {
           operation: 'attach-project-scene-session',
-          projectIdentity: active.projectIdentity,
-          launchId: active.launchId,
+          projectIdentity: scene.projectIdentity,
+          launchId: scene.launchId,
           sessionId,
           artifactHandle,
           ...(projectDebugConfiguration ? { projectDebugConfiguration } : {}),
         });
         requireSuccess(attached, 'attach-project-scene-session');
         if (
-          attached.launchId !== active.launchId
+          active !== scene
+          || attached.launchId !== scene.launchId
           || attached.state !== 'attached'
         ) {
           throw new Error(
@@ -640,9 +675,9 @@ function createSimulatorSubappHost(options = {}) {
         };
       } catch (error) {
         if (artifactHandle) {
-          await bestEffortControl(child, {
+          await bestEffortControl(target, {
             operation: 'release-artifact',
-            projectIdentity: active.projectIdentity,
+            projectIdentity: scene.projectIdentity,
             artifactHandle,
           });
         }
@@ -2326,15 +2361,25 @@ function requireProjectRoot(projectPath) {
   return projectRoot;
 }
 
-function requireArtifact(buildDirectory) {
+async function resolveSimulatorBuild(projectRoot) {
+  const manifest = await fs.promises.readFile(path.join(projectRoot, 'package.json'), 'utf8');
+  if (JSON.parse(manifest).type === 'coder') return { buildPath: path.join(projectRoot, '.build') };
+  return resolveBuildExecutionInWorker(projectRoot);
+}
+
+async function readArtifactManifestDigest(buildDirectory) {
   const manifestPath = path.join(
     buildDirectory,
     'aily-artifact-manifest.json',
   );
-  if (!fs.existsSync(manifestPath)) {
-    throw new Error(
-      'Missing .build/aily-artifact-manifest.json. Compile the project with the latest aily-builder first.',
-    );
+  try {
+    const bytes = await fs.promises.readFile(manifestPath);
+    return crypto.createHash('sha256').update(bytes).digest('hex');
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error('Missing .build/aily-artifact-manifest.json. Compile the project with the latest aily-builder first.');
+    }
+    throw error;
   }
 }
 
@@ -2687,18 +2732,14 @@ function createProjectIdentity(projectRoot) {
   return `project-v1-${digest}`;
 }
 
-function createLaunchRevision(buildDirectory, input) {
-  const manifestPath = path.join(
-    buildDirectory,
-    'aily-artifact-manifest.json',
-  );
+function createLaunchRevision(artifactDigest, projectRoot, input) {
   const projectDebugConfigurationPath = path.join(
-    path.dirname(buildDirectory),
+    projectRoot,
     PROJECT_DEBUG_CONFIGURATION_FILE,
   );
   return crypto
     .createHash('sha256')
-    .update(fs.readFileSync(manifestPath))
+    .update(artifactDigest)
     .update('\0')
     .update(input.tool)
     .update('\0')

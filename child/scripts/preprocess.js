@@ -6,7 +6,7 @@ const { spawn, exec, execFileSync } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const targetCompileContext = require('./target-compile-context');
-const { prepareCompileSource } = require('./compile-source');
+const { prepareCompileSource, captureBlocklyCompileSource } = require('./compile-source');
 const { captureLibrarySource, createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
 const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDelivery } = require('./compile-delivery');
@@ -15,7 +15,7 @@ const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs,
     validateSharedBuildLaunch, confirmSharedBuildInputs, mergeGeneratorInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild,
-    resolveBuildExecution } = require('./build-execution-workspace');
+    resolveBuildExecution, retainSharedBuildSource } = require('./build-execution-workspace');
 const { resolvePlatformResourceRoots, resolveBoardResourceDirectory, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
 const { readBuilderCapabilities } = require('./builder-capabilities');
 
@@ -107,6 +107,10 @@ async function main() {
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
         confirmSharedBuildInputs(config);
+        if (standalone && config.execution.layout === 'shared' && config.explicitPreprocess) {
+            const filename = path.join(config.currentProjectPath, '.temp', 'sketch', 'sketch.ino');
+            retainSharedBuildSource(config, captureBlocklyCompileSource(config, filename));
+        }
         completed = true;
     } finally {
         workspace.release();

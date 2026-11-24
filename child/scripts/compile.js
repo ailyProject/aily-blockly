@@ -13,7 +13,7 @@ const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, materializeEspSrModel } = require('./blockly-upload-state');
 const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
 const { recordFor, startBuildExecution, finishBuildExecution, validateSharedBuildLaunch,
-    confirmSharedBuildInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild } = require('./build-execution-workspace');
+    confirmSharedBuildInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild, retainSharedBuildSource } = require('./build-execution-workspace');
 const { captureBlocklyCompileSource } = require('./compile-source');
 
 // 简单的日志工具
@@ -164,6 +164,7 @@ async function main() {
         confirmSharedBuildInputs(config);
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         const materializedSource = !isAilyCode ? captureBlocklyCompileSource(config, compileSourcePath) : undefined;
+        if (materializedSource) retainSharedBuildSource(config, materializedSource);
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
         const uploadInputs = isAilyCode ? captureCoderUploadInputs(config) : captureBlocklyUploadInputs(config);
 
