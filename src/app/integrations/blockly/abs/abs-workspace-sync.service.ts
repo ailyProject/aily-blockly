@@ -10,7 +10,7 @@ import type { HistoryEnvironmentPlan } from '../history-environment';
 import { settleLinkedProjectEnvironment } from '../environment-settlement';
 import { observeRuntimePublication } from './abs-runtime-publication-observation';
 import { AbsOperationJournal, type NativeSaveOperationRef } from './abs-operation-journal';
-import { assertWorkspaceMigrationWritable, prepareWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
+import { prepareWorkspaceMigrationProof, verifyWorkspaceMigrationRecord } from './abs-workspace-migration';
 import { absWorkspaceProtocol } from './abs-workspace-protocol';
 import { AbsApplicationJournal } from './abs-application-journal';
 import { nativeSaveIdentity, nativeSaveResult, nativeSaveObservationResponse } from './abs-native-save-result';
@@ -398,7 +398,7 @@ export class AbsWorkspaceSyncService {
       }
       const migration = await this.withoutViewChecks(() => prepareWorkspaceMigrationProof(port, working, guard)); guard();
       return { ...protocol, migration, ...(draftArchive ? { draftArchive } : {}) };
-    }, false, true, false, false, true);
+    }, false, true, false);
   }
 
   async migrateWorkspaceMode(input: Record<string, any>) {
@@ -421,7 +421,7 @@ export class AbsWorkspaceSyncService {
       const protocol = await absWorkspaceProtocol(context.path, { version: 1 }, guard); guard();
       if (!protocol.ok) return { ...protocol, migrationReceipt };
       return { ...protocol, migrationReceipt };
-    }, false, true, false, false, true);
+    }, false, true, false);
     return { ...selection, operation: 'abs_workspace_migrate' };
   }
 
@@ -2659,7 +2659,7 @@ export class AbsWorkspaceSyncService {
 
   releaseHistoryNavigation(_token: string): void { /* No cross-request writer lease exists in this protocol. */ }
 
-  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore, computation?: AbsBackgroundComputation) => Promise<T>, flush = true, allowPageChange = false, repairLocation = true, background = false, migration = false): Promise<T> {
+  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore, computation?: AbsBackgroundComputation) => Promise<T>, flush = true, allowPageChange = false, repairLocation = true, background = false): Promise<T> {
     const context = this.context(allowPageChange); // Before queueing, not when an old task eventually starts.
     return this.editor.runProjectOperation(async () => {
       context.assertCurrent();
@@ -2668,7 +2668,6 @@ export class AbsWorkspaceSyncService {
       let computation: AbsBackgroundComputation | undefined;
       try {
         const nativeStorage = await openAbsHostStorage(context.path, context.assertCurrent);
-        if (!migration) await assertWorkspaceMigrationWritable(nativeStorage);
         context.assertCurrent(); lease.assertCurrent();
         releaseLayout = fenceBlocklyWorkspaceBumps(context.workspace);
         if (background) {

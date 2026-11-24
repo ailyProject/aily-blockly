@@ -43,7 +43,15 @@ function readOptional(read, ...args) {
 
 function requestPath(root, id, cache, create = false) {
     const key = createHash('sha256').update(id).digest('hex');
-    if (!cache) return path.join(directory(storage(root, create).parent, 'requests', create), key + '.json');
+    if (!cache) {
+        let parent = directory(fs.realpathSync(root), '.aily', create);
+        for (const name of ['build-executions', 'requests']) {
+            // A regular file cannot contain the requested legacy receipt.
+            if (!create && readOptional(fs.lstatSync, path.join(parent, name))?.isFile()) return null;
+            parent = directory(parent, name, create);
+        }
+        return path.join(parent, key + '.json');
+    }
     const log = directory(directory(directory(root, '.log', create), 'compile', create), 'requests', create);
     return path.join(log, key + '.build.json');
 }

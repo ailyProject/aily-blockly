@@ -14,6 +14,25 @@ const project = () => {
 const guard = () => undefined;
 const request = root => ({ projectPath: root, fileName: 'project.abi', expectedHash: null, content: 'single writer' });
 
+test('a native candidate resolves immutable objects by digest in both tracking periods', async () => {
+  const root = project(), history = path.join(root, '.workspace-history'), store = await openProjectSyncStorage(root, guard);
+  for (const [dir, text] of [[history, 'original'], [path.join(history, 'native-history'), 'current']]) {
+    const digest = hash(text).slice(7), bucket = path.join(dir, 'objects', digest.slice(0, 2));
+    fs.mkdirSync(bucket, { recursive: true });
+    const file = path.join(bucket, digest + '.blob');
+    fs.writeFileSync(file, text);
+    assert.equal(await store.read('history-objects/' + digest), text);
+    fs.writeFileSync(file, 'different');
+    await assert.rejects(async () => store.read('history-objects/' + digest), { code: 'ABS_CANDIDATE_OBJECT_INVALID' });
+    if (dir === history) {
+      const next = path.join(history, 'native-history', 'objects', digest.slice(0, 2));
+      fs.mkdirSync(next, { recursive: true });
+      fs.writeFileSync(path.join(next, digest + '.blob'), text);
+      assert.equal(await store.read('history-objects/' + digest), text);
+    }
+  }
+});
+
 test('retire malformed ABS pointers without touching a draft, valid staging or a newer writer', async () => {
   const root = project(), store = await openProjectSyncStorage(root, guard);
   const sync = path.join(root, '.aily', 'abs-sync');
@@ -70,7 +89,7 @@ after(() => { for (const root of roots) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 
-test('prepared migration permits only the exact immutable original ABS refusal', async () => {
+test('old migration metadata does not gate program writes; a migration refusal still identifies its original writer', async () => {
   const root = project(), store = await openProjectSyncStorage(root, guard);
   const history = path.join(root, '.workspace-history');
   const original = randomUUID(), indexed = randomUUID(), other = randomUUID();
@@ -94,9 +113,9 @@ test('prepared migration permits only the exact immutable original ABS refusal',
   fs.writeFileSync(path.join(history, 'workspace.json'), migration);
   const body = receipt(original);
   await store.withLock(async locked => {
-    const denied = (key, content) => assert.rejects(locked.replace(key, null, content), { code: 'ABS_WORKSPACE_MIGRATION_PENDING' });
-    await denied('project.abs', 'unauthorized author write');
-    await denied('operation.json', '{}');
+    const denied = (key, content) => assert.rejects(locked.replace(key, null, content), { code: 'ABS_ADMISSION_INVALID' });
+    assert.equal(await locked.replace('project.abs', null, 'current author'), true);
+    assert.equal(await locked.replace('operation.json', null, '{}'), true);
     await denied(receiptKey(indexed), receipt(indexed));
     await denied(receiptKey(other), body);
     await denied(receiptKey(other), receipt(other, { executor: { ...store.executor, instanceId: randomUUID() } }));

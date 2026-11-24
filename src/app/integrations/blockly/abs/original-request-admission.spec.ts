@@ -92,31 +92,29 @@ describe('original project admission settlement', () => {
     return () => host.execute({ operation: 'abs_apply', path: project, params });
   }
 
-  for (const refusal of ['workspace-busy', 'migration-prepared'] as const) {
-    it(`retains a pre-journal ABS application refusal (${refusal}) after the blocker ends`, async () => {
-      const gate = new BlocklyWorkspaceEditGate();
-      const previous = refusal === 'workspace-busy' ? gate.acquire() : undefined;
-      const preparation = jasmine.createSpy('application preparation');
-      const apply = applyThroughCoordinator(gate, preparation);
-      await new OriginalRequestAdmissions(port, project).reserveApplication(requestId, hash, guard);
-      if (refusal === 'migration-prepared') files.set('history-workspace.json', '{"executionMigration":{"phase":"prepared"}}');
-      const reply = await apply();
-      const expectedCode = refusal === 'workspace-busy' ? 'ABS_WORKSPACE_BUSY' : 'ABS_WORKSPACE_MIGRATION_PENDING';
-      expect(reply).toEqual(jasmine.objectContaining({ code: expectedCode, publication: { status: 'NOT_COMMITTED' },
-        admission: { requestId, status: 'NOT_STARTED' } }));
-      expect(preparation).not.toHaveBeenCalled();
-      expect(await port.read(await applicationRequestKey(requestId))).toBeNull();
-      expect(await port.read('operation.json')).toBeNull();
-      previous?.release(); files.delete('history-workspace.json');
-      const observed = await new AbsApplicationJournal(port, project).observe(requestId, guard, port.executor!.hostPid);
-      expect(observed.result).toEqual(jasmine.objectContaining({ code: expectedCode,
-        applicationObservation: jasmine.objectContaining({ requestId, resultKnown: true, current: false }) }));
-      expect(await apply()).toEqual(jasmine.objectContaining({ code: expectedCode }));
-      expect(preparation).not.toHaveBeenCalled();
-    });
-  }
+  it('retains a pre-journal ABS application refusal after a busy workspace is released', async () => {
+    const gate = new BlocklyWorkspaceEditGate();
+    const previous = gate.acquire();
+    const preparation = jasmine.createSpy('application preparation');
+    const apply = applyThroughCoordinator(gate, preparation);
+    await new OriginalRequestAdmissions(port, project).reserveApplication(requestId, hash, guard);
+    const reply = await apply();
+    const expectedCode = 'ABS_WORKSPACE_BUSY';
+    expect(reply).toEqual(jasmine.objectContaining({ code: expectedCode, publication: { status: 'NOT_COMMITTED' },
+      admission: { requestId, status: 'NOT_STARTED' } }));
+    expect(preparation).not.toHaveBeenCalled();
+    expect(await port.read(await applicationRequestKey(requestId))).toBeNull();
+    expect(await port.read('operation.json')).toBeNull();
+    previous.release();
+    const observed = await new AbsApplicationJournal(port, project).observe(requestId, guard, port.executor!.hostPid);
+    expect(observed.result).toEqual(jasmine.objectContaining({ code: expectedCode,
+      applicationObservation: jasmine.objectContaining({ requestId, resultKnown: true, current: false }) }));
+    expect(await apply()).toEqual(jasmine.objectContaining({ code: expectedCode }));
+    expect(preparation).not.toHaveBeenCalled();
+  });
 
   it('keeps a lost first ABS journal acknowledgement uncertain for the caller and observes no start', async () => {
+    files.set('history-workspace.json', '{');
     spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
     const candidateHash = await hashAbsText(applyParams().abs);
     const apply = applyThroughCoordinator(new BlocklyWorkspaceEditGate(), jasmine.createSpy('prepare').and.resolveTo({
