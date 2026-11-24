@@ -203,12 +203,19 @@ export class BuilderService {
     return normalize(left) === normalize(right);
   }
 
+  /** The Coder dependency notice already owns the project build operation. */
+  buildCoderLocally(projectPath: string) {
+    return this.buildFromProjectPath(projectPath, { source: 'manual' }, true);
+  }
+
   private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string;
-    localFallback?: BuildLocalFallbackControl } = {}) {
+    localFallback?: BuildLocalFallbackControl } = {}, retryLocally = false) {
     let compileResult: Awaited<ReturnType<CompileService['runCompileFromDisk']>>;
     try {
       await this.persistActiveCoderProjectBeforeBuild(projectPath);
-      compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
+      compileResult = retryLocally
+        ? await this.compileService.runLocalCompileFromDisk(projectPath)
+        : await this.compileService.runCompileFromDisk({ projectPath, ...options });
     } catch (error) {
       this.notifyBuildCompletion(error, false, options);
       throw error;

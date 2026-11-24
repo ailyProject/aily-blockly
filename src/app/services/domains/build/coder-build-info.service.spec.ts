@@ -305,6 +305,63 @@ describe('Coder build metadata', () => {
     return { compiler, operation };
   }
 
+  it('prepares a blocked Coder project for one explicit local build without rechecking the cloud target', async () => {
+    const { compiler, operation } = createSwitchingCompiler();
+    let dependenciesBlocked = true;
+    project.getProjectDependencyBlockMessage = () => dependenciesBlocked ? 'Dependency preparation failed' : undefined;
+    operation.release.and.callFake(() => { operation.local = false; });
+    const cloudPreflight = spyOn(compiler.npmService, 'prepareCompileBackend').and.rejectWith(
+      Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' }),
+    );
+    const prepareLocal = compiler.npmService.prepareLocalCompileBackend.and.callFake(async (projectPath: string) => {
+      expect(projectPath).toBe(root);
+      expect(operation.local).toBeTrue();
+      dependenciesBlocked = false;
+    });
+
+    const result = await compiler.runLocalCompileFromDisk(root);
+
+    expect(result.success).toBeTrue();
+    expect(prepareLocal).toHaveBeenCalledTimes(1);
+    expect(prepareLocal).toHaveBeenCalledBefore(compiler.npmService.assertCoderDependenciesReady);
+    expect(compiler.npmService.assertCoderDependenciesReady).toHaveBeenCalledBefore(compiler.runOneShotCommand);
+    expect(compiler.runOneShotCommand).toHaveBeenCalledTimes(1);
+    expect(cloudPreflight).not.toHaveBeenCalled();
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    expect(operation.release).toHaveBeenCalledTimes(1);
+    expect(operation.local).toBeFalse();
+    expect(compiler.configService.getCompileBackend()).toBe('cloud');
+    expect(compiler.configService.getCompileSettingsKey()).toBe('cloud');
+
+    const ordinaryBuild = await compiler.runCompileFromDisk();
+    expect(ordinaryBuild.result.code).toBe('CLOUD_TARGET_UNAVAILABLE');
+    expect(cloudPreflight).toHaveBeenCalledTimes(1);
+    expect(prepareLocal).toHaveBeenCalledTimes(1);
+    expect(compiler.runOneShotCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the existing local retry when a ready Coder project loses its cloud target during build readiness checks', async () => {
+    const { compiler } = createSwitchingCompiler();
+    const cloudPreflight = spyOn(compiler.npmService, 'prepareCompileBackend').and.resolveTo();
+    const error = Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' });
+    const assertReady = compiler.npmService.assertCoderDependenciesReady.and.rejectWith(error);
+    const recordCloudFailure = jasmine.createSpy('recordCloudFailure');
+
+    const result = await compiler.runCompileFromDisk({ requestId: 'cloud-target-lost', localFallback: { recordCloudFailure } });
+
+    expect(result.success).toBeFalse();
+    expect(result.result.code).toBe('CLOUD_TARGET_UNAVAILABLE');
+    expect(result.result.buildLog.requestId).toBe('cloud-target-lost');
+    expect(cloudPreflight).toHaveBeenCalledBefore(assertReady);
+    expect(assertReady).toHaveBeenCalledOnceWith(root, true);
+    expect(recordCloudFailure).toHaveBeenCalledOnceWith(error, jasmine.any(Function));
+    await expectAsync(recordCloudFailure.calls.mostRecent().args[1]()).toBeResolved();
+    expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toEqual(jasmine.any(Function));
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+  });
+
   it('does not report cloud analysis as a Build success', async () => {
     const { compiler } = createSwitchingCompiler();
     project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', profileDigest: 'profile', capabilities: { analysis: true } });

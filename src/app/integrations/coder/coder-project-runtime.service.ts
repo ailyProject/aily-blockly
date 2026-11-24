@@ -115,7 +115,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     session.notice.stateSubject.subscribe(notice => {
       if (notice?.onRetryLocally) {
         const retry = notice.onRetryLocally;
-        const current = this.projects.captureCurrentProjectGuard();
+        const current = session.project.captureCurrentProjectGuard();
         notice = { ...notice, onRetryLocally: () => {
           if (!this.isActive(path) || !current() || session.busy) return;
           // The explicit retry repairs dependencies and must still participate

@@ -22,6 +22,7 @@ import {
 
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
+import { canOfferLocalBuildFallback } from '../../../utils/cloud-build-progress.utils';
 import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 import { findCompilerIntegrityProblem } from '../../../utils/compiler-integrity.utils';
@@ -768,7 +769,7 @@ export class NpmService {
   }
 
   /** Coder execution preflight: completed preparation plus the current files on disk. */
-  async assertCoderDependenciesReady(projectPath: string): Promise<void> {
+  async assertCoderDependenciesReady(projectPath: string, reportCloudFailure = false): Promise<void> {
     if (!this.configService.isCoderProduct() || !this.prjService.isAilyCodeProject(projectPath)) return;
     const session = this.prjService.getProjectDependencySession(projectPath);
     const blocked = () => this.prjService.getProjectDependencyBlockMessage(projectPath);
@@ -808,6 +809,8 @@ export class NpmService {
       // A new install may have started during the async reads. Preserve its state and notice.
       const latestBlock = blocked();
       if (latestBlock) throw reject(latestBlock);
+      // The active compile owns the cloud failure and its local retry action.
+      if (reportCloudFailure && this.isCloudBuild(projectPath) && canOfferLocalBuildFallback(error)) throw error;
       this.prjService.setProjectDependencyResult(session, false);
       const message = this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
       this.application.updateNotice({
@@ -830,7 +833,8 @@ export class NpmService {
   /** Blockly / Aily Code 共用：等待工程 npm 和主板平台依赖全部完成。 */
   async ensureProjectAndBoardDeps(
     projectPath: string,
-    options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void | Promise<void> },
+    options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void | Promise<void>;
+      onRetryLocally?: () => void | Promise<unknown> },
     session = this.prjService.getProjectDependencySession(projectPath),
   ): Promise<boolean> {
     const cloudInventory: { value?: CloudDependencyInventory } = {};
@@ -905,11 +909,20 @@ export class NpmService {
         return true;
       } catch (error) {
         this.assertDependencySession(session);
+        const retryLocally = options?.onRetryLocally;
+        const offerLocal = retryLocally && this.isCloudBuild(projectPath) && canOfferLocalBuildFallback(error);
+        const detail = this.getNpmErrorMessage(error);
         this.application.updateNotice({
-          title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
-          text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
-          detail: this.getNpmErrorMessage(error),
+          title: this.translate.instant(offerLocal ? 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE' : 'NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+          text: offerLocal ? detail : this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+          detail,
           state: 'error', onRetry: onRetryInstall,
+          ...(offerLocal ? {
+            onRetryLocally: () => {
+              if (!pending.has(session) && this.isDependencySessionCurrent(session)
+                && this.prjService.getProjectDependencyStatus(projectPath) === 'error') return retryLocally?.();
+            },
+          } : {}),
         });
         return false;
       } finally {
