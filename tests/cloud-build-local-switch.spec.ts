@@ -1,6 +1,6 @@
 import { Subject } from 'rxjs';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../src/app/utils/local-build-switch.utils';
-import { CLOUD_BUILD_LOCAL_REQUESTED, isCloudBuildServiceFailure, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
 import { ProjectService } from '../src/app/services/domains/project/project.service';
 
 function deferred<T>() {
@@ -9,27 +9,30 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-describe('confirmed cloud service failure', () => {
-  it('recognizes structured gateway and worker faults after the cloud request settles', () => {
-    expect(isCloudBuildServiceFailure({ code: 'gateway_closing', httpStatus: 503 })).toBeTrue();
-    expect(isCloudBuildServiceFailure({ code: 'GATEWAY_HTTP_ERROR', httpStatus: 502 })).toBeTrue();
-    expect(isCloudBuildServiceFailure({ code: 'NODE_CAPACITY_EXCEEDED' })).toBeTrue();
-    expect(isCloudBuildServiceFailure({ code: 'CLOUD_BOARD_OFFLINE' })).toBeTrue();
+describe('cloud build failures eligible for local fallback', () => {
+  it('recognizes structured gateway, worker and unavailable target failures', () => {
+    expect(canOfferLocalBuildFallback({ code: 'gateway_closing', httpStatus: 503 })).toBeTrue();
+    expect(canOfferLocalBuildFallback({ code: 'GATEWAY_HTTP_ERROR', httpStatus: 502 })).toBeTrue();
+    expect(canOfferLocalBuildFallback({ code: 'NODE_CAPACITY_EXCEEDED' })).toBeTrue();
+    expect(canOfferLocalBuildFallback({ code: 'CLOUD_BOARD_OFFLINE' })).toBeTrue();
+    expect(canOfferLocalBuildFallback({ code: 'CLOUD_TARGET_UNAVAILABLE' })).toBeTrue();
   });
 
   it('leaves unconfirmed cancellation, input, authentication and compiler failures to their own handling', () => {
     for (const fault of [
       { code: 'gateway_closing', httpStatus: 503, remoteCleanupConfirmed: false },
       { code: 'NODE_CAPACITY_EXCEEDED', cleanupConfirmed: false },
+      { code: 'CLOUD_TARGET_UNAVAILABLE', remoteCleanupConfirmed: false },
       { code: 'GATEWAY_ERROR', httpStatus: 429 },
       { code: 'AUTH_TOKEN_INVALID', httpStatus: 401 },
       { code: 'GATEWAY_UNREACHABLE' },
       { code: 'BUILD_TIMEOUT' },
       { code: 'BUILD_SOURCE_STALE' },
+      { code: 'CLOUD_BOARD_UNSUPPORTED' },
       { code: 'CI_RESOURCE_UNSUPPORTED' },
       { code: 'COMPILE_ERROR' },
       new Error('HTTP 503'),
-    ]) expect(isCloudBuildServiceFailure(fault)).withContext(JSON.stringify(fault)).toBeFalse();
+    ]) expect(canOfferLocalBuildFallback(fault)).withContext(JSON.stringify(fault)).toBeFalse();
   });
 });
 

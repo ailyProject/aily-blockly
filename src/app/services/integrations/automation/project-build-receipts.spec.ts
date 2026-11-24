@@ -118,7 +118,7 @@ describe('project build receipt store', () => {
     expect(answer.result).toEqual(jasmine.objectContaining({ ok: false, code: 'BUILD_SOURCE_STALE', message: 'source changed' }));
   });
 
-  it('reports a settled cloud fault and requires an explicit, separate, same-project request to switch', async () => {
+  for (const code of ['node_restarted', 'CLOUD_TARGET_UNAVAILABLE']) it(`requires an explicit, separate, same-project request after ${code}`, async () => {
     const store = new ProjectBuildReceipts();
     const guard = jasmine.createSpy('guard');
     const local = jasmine.createSpy('local').and.callFake(async control => {
@@ -127,10 +127,11 @@ describe('project build receipt store', () => {
       return { ok: true };
     });
     const first = await store.start('/isolated', request('cloud', 10_000), 'compile', async control => {
-      control.recordCloudFailure?.({ code: 'node_restarted' }, guard);
-      return { ok: false, code: 'node_restarted' };
+      control.recordCloudFailure?.({ code }, guard);
+      return { ok: false, code };
     });
-    expect(first.result?.['localFallback']).toEqual({ fromRequestId: 'cloud' });
+    expect(first.buildReceipt.state).toBe('completed');
+    expect(first.result).toEqual({ ok: false, code, localFallback: { fromRequestId: 'cloud' } });
     expect((await store.status('/isolated', request('cloud'))).result).toBe(first.result);
     expect(local).not.toHaveBeenCalled();
     expect(() => store.start('/wrong', request('wrong-project'), 'local', local, 'cloud')).toThrowError(/another project/);

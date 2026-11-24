@@ -6,7 +6,7 @@ import { ProcessState, NoticeService } from '@core/app-shell/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
 import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
-import { CLOUD_BUILD_LOCAL_REQUESTED, isCloudBuildServiceFailure } from '../../../utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { NpmService } from '../../../services/domains/dependencies/public-api';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
@@ -697,7 +697,7 @@ describe('Blockly compile and upload handoff', () => {
     expect(operation.release).toHaveBeenCalledTimes(1);
   });
 
-  for (const stage of ['board-support', 'target-profile', 'cloud-run', 'changed', 'nested-upload', 'sdk-unsupported']) {
+  for (const stage of ['board-support', 'target-profile', 'target-unavailable', 'cloud-run', 'changed', 'nested-upload', 'sdk-unsupported']) {
     it(`reports Blockly cloud failure without starting local compilation: ${stage}`, async () => {
       const f = compileFixture();
       const operation = { local: false, isNested: stage === 'nested-upload', useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
@@ -714,6 +714,9 @@ describe('Blockly compile and upload handoff', () => {
         }),
       });
       if (stage === 'target-profile') f.service.projectService.getBoardConfigMenu.and.rejectWith(offline);
+      if (stage === 'target-unavailable') {
+        f.service.projectService.getBoardConfigMenu.and.rejectWith(Object.assign(new Error('No matching cloud target'), { code: 'CLOUD_TARGET_UNAVAILABLE' }));
+      }
       f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.callFake(async () => {
         if (stage === 'changed') f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
         if (stage === 'sdk-unsupported') throw Object.assign(new Error('Unsupported SDK'), { code: 'CI_RESOURCE_UNSUPPORTED' });
@@ -721,17 +724,18 @@ describe('Blockly compile and upload handoff', () => {
       });
       let guard: (() => void) | undefined;
       const { result } = await f.start('cloud-service-failure', { localFallback: {
-        recordCloudFailure: (error: unknown, check: () => void) => { if (isCloudBuildServiceFailure(error)) guard = check; },
+        recordCloudFailure: (error: unknown, check: () => void) => { if (canOfferLocalBuildFallback(error)) guard = check; },
       } });
       expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
       expect(f.service.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
       const completed = await result;
       expect(completed.state).toBe('error');
       expect(completed.buildLog.requestId).toBe('cloud-service-failure');
-      if (['board-support', 'target-profile', 'cloud-run'].includes(stage)) expect(guard).not.toThrow();
+      if (['board-support', 'target-profile', 'target-unavailable', 'cloud-run'].includes(stage)) expect(guard).not.toThrow();
       else if (stage === 'changed') expect(guard).toThrowError(/canvas changed/);
       else expect(guard).toBeUndefined();
       if (stage === 'sdk-unsupported') expect(completed.code).toBe('CI_RESOURCE_UNSUPPORTED');
+      if (stage === 'target-unavailable') expect(completed.code).toBe('CLOUD_TARGET_UNAVAILABLE');
       expect(operation.release).toHaveBeenCalledTimes(1);
       expect(f.service.configService.getCompileBackend()).toBe('cloud');
     });
