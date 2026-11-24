@@ -59,6 +59,30 @@ test('exclusive descriptor removal cannot delete a replacement publication', win
 });
 
 const bootId = 'win32:71bf9050-4abc-4e2a-a2d5-350416fe4947';
+test('managed build writes a long native admission path and retains the original proof path', windows, async t => {
+  const root = fixture(t);
+  const padding = 'x'.repeat(Math.max(1, 253 - root.length - 1 - '.json'.length));
+  const receiptPath = path.join(root, `${padding}.json`);
+  const admissionPath = `${receiptPath}.admitted`;
+  const ready = path.join(root, 'ready');
+  assert.ok(admissionPath.length >= 260);
+  let proof;
+  const target = "require('node:fs').writeFileSync(process.argv[1],'started')";
+  const child = owned.spawnManagedBuild(process.execPath, ['-e', target, ready],
+    { windowsHide: true, env: environment(), stdio: 'ignore' }, {
+      bootId, receiptPath, publish(record) { proof = record; },
+    });
+  try {
+    assert.deepEqual(await once(child, 'exit'), [0, null]);
+    assert.equal(proof.receiptPath, receiptPath);
+    assert.equal(fs.readFileSync(ready, 'utf8'), 'started');
+    assert.equal(fs.readFileSync(admissionPath, 'utf8'), proof.job);
+    assert.equal(fs.readFileSync(receiptPath, 'utf8'), proof.job);
+  } finally {
+    await owned.stopOwnedProcess(child);
+  }
+});
+
 test('managed build publishes before launch; an observation never stops its live Job', windows, async t => {
   const root = fixture(t), published = path.join(root, 'job.json'), receiptPath = path.join(root, 'drained');
   const ready = path.join(root, 'ready');

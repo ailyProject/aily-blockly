@@ -144,7 +144,7 @@ function spawnManagedBuild(file, args, options, { bootId, receiptPath, publish }
     // The monitor must outlive libuv's host-owned Job long enough to prove
     // that the compiler Job is empty. It still exits when the host disappears.
     child = childProcess.spawn(record.launcher, ['--monitor-build', String(proof.hostPid),
-      proof.hostCreation, receiptPath, name, String(flags), record.file, record.options.argv0 || record.file,
+      proof.hostCreation, path.toNamespacedPath(receiptPath), name, String(flags), record.file, record.options.argv0 || record.file,
       ...record.args], { ...record.options, detached: true });
   } catch (error) {
     try { publishBuildReceipt(proof); } finally { rt.binding.release(handle); }
