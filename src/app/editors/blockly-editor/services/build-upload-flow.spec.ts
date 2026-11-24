@@ -220,6 +220,38 @@ describe('Blockly compile and upload handoff', () => {
     });
   }
 
+  for (const portType of ['ble', 'network-ota']) {
+    it(`prepares and uses the signed cloud firmware for the selected ${portType} transport`, async () => {
+      const f = uploadFixture();
+      Object.assign(f.project, { isCloudBuild: () => true, assertProjectDependencySession() {} });
+      f.builder.canReuseBuildForUpload = async () => true;
+      f.uploader.serialService.currentPortInfo = { type: portType };
+      f.uploader.uploaderBleService = { authorizeDevice: async () => {} };
+      f.uploader.canUseWifiOta = async () => true;
+      f.uploader.workflowService.startUpload = () => true;
+      const upload = jasmine.createSpy('uploadOta').and.resolveTo({ state: 'done' });
+      f.uploader[portType === 'ble' ? 'uploadByBle' : 'uploadByNetworkOta'] = upload;
+      const artifactUploadInfo = jasmine.createSpy('artifactUploadInfo').and.resolveTo({ protocol: 'cloud-recipe', requirements: [] });
+      const prepareArtifactUpload = jasmine.createSpy('prepareArtifactUpload').and.callFake(async ({ requestId }) => ({
+        requestId, buildPath: '/verified/build', uploadArtifactInventory: { primary: 'sketch.bin' },
+      }));
+      const beginArtifactUploadRoute = jasmine.createSpy('beginArtifactUploadRoute').and.resolveTo(true);
+      window['path'] = { join: (...parts: string[]) => parts.join('/') };
+      window['cloudBuild'] = {
+        artifactUploadInfo, prepareArtifactUpload, beginArtifactUploadRoute,
+        artifactPath: async () => '/verified/build/sketch.bin', assertArtifactUpload: async () => true,
+        finishArtifactUpload: async () => true, onProgress: () => () => {},
+      };
+
+      expect(await f.uploader.upload({ projectPath: '/project', port: 'TEST-NO-DEVICE', reuseCloudFirmware: true }))
+        .toEqual({ state: 'done' });
+      expect(artifactUploadInfo).toHaveBeenCalledOnceWith({ projectPath: '/project', portType });
+      expect(prepareArtifactUpload).toHaveBeenCalledOnceWith(jasmine.objectContaining({ projectPath: '/project', portType }));
+      expect(upload).toHaveBeenCalledOnceWith('/verified/build', { type: portType }, undefined, undefined);
+      expect(beginArtifactUploadRoute.calls.count()).toBe(portType === 'ble' ? 1 : 0);
+    });
+  }
+
   for (const changed of ['code', 'inputs-or-firmware', 'config-reset']) {
     it(`rebuilds before upload after ${changed}`, async () => {
       const f = uploadFixture();

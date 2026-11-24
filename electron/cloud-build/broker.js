@@ -1110,13 +1110,13 @@ class CloudBuildBroker {
       return true;
     } catch { return false; }
   }
-  async artifactUploadInfo(sender, projectPath) {
+  async artifactUploadInfo(sender, projectPath, portType) {
     this.owner(sender);
     const root = fs.realpathSync(projectPath), record = this.active.get(root);
     if (!record || record.sender !== sender || !await this.reusable(sender, record.config) || this.active.get(root) !== record) {
       throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
     }
-    if (record.manifest.flashPlan?.protocol === 'cloud-recipe') return cloudUploadRequirements(record);
+    if (record.manifest.flashPlan?.protocol === 'cloud-recipe') return cloudUploadRequirements(record, { portType });
     const info = getArtifactUploadInfo(record);
     const boardRoot = path.join(root, 'node_modules', ...record.manifest.boardModule.split('/'));
     const boardPackage = JSON.parse(fs.readFileSync(path.join(boardRoot, 'package.json'), 'utf8'));
