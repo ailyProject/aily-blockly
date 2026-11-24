@@ -847,6 +847,7 @@ export class _BuilderService {
           [preprocessScriptPath, configFilePath],
           { ...this.projectService.getProjectDependencySession?.(currentProjectPath),
             streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: buildConfig.currentProjectPath,
+            ...(buildConfig.execution?.layout === 'shared' ? { shellProfile: false } : {}),
             backgroundPreprocess: true, observeExit: true },
           true,
         ).subscribe({
@@ -2669,6 +2670,7 @@ export class _BuilderService {
           exit = await firstValueFrom(this.cmdService.spawn('node', [script, file], {
             ...this.projectService.getProjectDependencySession?.(project),
             streamId: `builder_preprocess_${owner.config.execution.id}`, forwardStdout: true,
+            ...(owner.config.execution.layout === 'shared' ? { shellProfile: false } : {}),
             buildWorkspace: owner.config.currentProjectPath, signal, observeExit: true,
             onOutput: output => { if (output.data) log.append(output.data); },
           }, true).pipe(filter(output => output.type === 'close' || output.type === 'error')));

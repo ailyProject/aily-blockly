@@ -265,24 +265,34 @@ describe('BuilderService background preprocess ownership', () => {
       service.destroy();
     }));
 
-    it('a private background execution uses its own captured inputs and supervisor path', fakeAsync(() => {
-      const service = backgroundBuilder(), previousBridge = window['builder'];
-      const captured = { code: 'void setup() {}', projectMacros: [], generatedArtifacts: [],
-        sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' }, assertFresh: () => {} };
-      service.generateWorkspaceBuildSnapshotForPreprocess = async () => captured;
-      service.writeCompileRequest = jasmine.createSpy('request').and.resolveTo('/private/request.json');
-      const prepare = jasmine.createSpy('prepare').and.callFake(async config => ({ ...config, currentProjectPath: '/private/execution', execution: { operation: 'preprocess' } }));
-      const abandon = jasmine.createSpy('abandon').and.resolveTo(true);
-      window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: prepare, abandonPreparedPreprocess: abandon };
-      try {
-        service.init(); service.blocklyService.dependencySubject.next('changed'); tick(500);
-        expect(prepare).toHaveBeenCalledOnceWith(jasmine.objectContaining({ generatedArtifacts: [], projectMacros: [] }), captured.sourceWorkspace, 'preprocess');
-        expect(service.writeCompileRequest).toHaveBeenCalledOnceWith(jasmine.objectContaining({ currentProjectPath: '/private/execution' }));
-        expect(service.cmdService.spawn.calls.mostRecent().args[2].buildWorkspace).toBe('/private/execution');
-        service.backgroundOutput.complete(); tick(); service.destroy(); tick();
-        expect(abandon).not.toHaveBeenCalled();
-      } finally { window['builder'] = previousBridge; }
-    }));
+    for (const layout of ['private', 'shared'] as const) {
+      it(`a ${layout} background execution launches the prepared request with the expected shell profile`, fakeAsync(() => {
+        const service = backgroundBuilder(), previousBridge = window['builder'];
+        const projectPath = layout === 'shared' ? service.projectService.currentProjectPath : '/private/execution';
+        const requestPath = `${projectPath}/request.json`;
+        const captured = { code: 'void setup() {}', projectMacros: [], generatedArtifacts: [],
+          sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' }, assertFresh: () => {} };
+        service.generateWorkspaceBuildSnapshotForPreprocess = async () => captured;
+        service.writeCompileRequest = jasmine.createSpy('request').and.resolveTo(requestPath);
+        const prepare = jasmine.createSpy('prepare').and.callFake(async config => ({
+          ...config, currentProjectPath: projectPath, execution: { operation: 'preprocess', layout }
+        }));
+        const abandon = jasmine.createSpy('abandon').and.resolveTo(true);
+        window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: prepare, abandonPreparedPreprocess: abandon };
+        try {
+          service.init(); service.blocklyService.dependencySubject.next('changed'); tick(500);
+          expect(prepare).toHaveBeenCalledOnceWith(jasmine.objectContaining({ generatedArtifacts: [], projectMacros: [] }), captured.sourceWorkspace, 'preprocess');
+          expect(service.writeCompileRequest).toHaveBeenCalledOnceWith(jasmine.objectContaining({ currentProjectPath: projectPath }));
+          expect(service.cmdService.spawn).toHaveBeenCalledOnceWith(
+            'node', ['/child/scripts/preprocess.js', requestPath],
+            jasmine.objectContaining({ buildWorkspace: projectPath }), true
+          );
+          expect(service.cmdService.spawn.calls.mostRecent().args[2].shellProfile).toBe(layout === 'shared' ? false : undefined);
+          service.backgroundOutput.complete(); tick(); service.destroy(); tick();
+          expect(abandon).not.toHaveBeenCalled();
+        } finally { window['builder'] = previousBridge; }
+      }));
+    }
 
     for (const phase of ['stale capture', 'configuration write failure', 'closing before spawn']) {
       it(`relinquishes its exact private preparation on ${phase}`, fakeAsync(() => {
