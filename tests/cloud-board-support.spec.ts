@@ -178,6 +178,53 @@ describe('board cloud support and local fallback', () => {
       expect(project.currentBoardConfig).toBe(displayed);
     });
 
+    it('reuses the opening profile for subsequent board menus and refreshes it at build time', async () => {
+      project.currentBoardMenuConfig = [];
+      const displayed = project.currentBoardConfig = await project.resolveBoardConfigForRuntime(board, null);
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(async identity => ({
+        profiles: [{ ...identity, runner: 'aily-builder', fqbn: 'esp32:esp32:p4', profileDigest: 'a'.repeat(64),
+          capabilities: { compile: true }, metadata: { defaults: {}, boardOptions: {
+            Speed: { default: 'fast', values: { fast: { label: 'Fast' } } },
+          } } }],
+      }));
+      await project.hydrateCloudBoardAfterOpen(displayed, () => {});
+      for (let i = 0; i < 2; i++) {
+        expect((await project.getBoardConfigMenu()).map(item => item.key)).toContain('Speed');
+      }
+      expect(targets).toHaveBeenCalledTimes(1);
+      targets.and.resolveTo({ profiles: [] });
+      await expectAsync(project.prepareCloudBoardForBuild(project.currentBoardConfig, () => {}))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_TARGET_UNAVAILABLE' }));
+      expect((await project.getBoardConfigMenu())[0].name).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+      expect(targets).toHaveBeenCalledTimes(3);
+    });
+
+    it('lets waiting readers follow a fresh build lookup before a delayed old response arrives', async () => {
+      let release!: () => void;
+      let started!: () => void;
+      const firstStarted = new Promise<void>(resolve => { started = resolve; });
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(async identity => {
+        const first = targets.calls.count() === 1;
+        if (first) {
+          started();
+          await new Promise<void>(resolve => { release = resolve; });
+        }
+        return { profiles: [{ ...identity, runner: 'aily-builder', fqbn: 'esp32:esp32:p4',
+          profileDigest: (first ? 'a' : 'b').repeat(64), capabilities: { compile: true },
+          metadata: { defaults: {}, boardOptions: {} } }] };
+      });
+      const opening = project.getCloudBoardProfile();
+      await firstStarted;
+      const menu = project.getCloudBoardProfile();
+      const build = await project.getCloudBoardProfile({ refresh: true });
+      try {
+        expect((await menu).profileDigest).toBe(build.profileDigest);
+        expect((await opening).profileDigest).toBe('b'.repeat(64));
+      } finally { release(); }
+      expect((await project.getCloudBoardProfile()).profileDigest).toBe('b'.repeat(64));
+      expect(targets).toHaveBeenCalledTimes(2);
+    });
+
     it('drops background board data when the view changes while publication is queued', async () => {
       project.currentBoardMenuConfig = [];
       const displayed = project.currentBoardConfig = { ...board };

@@ -60,6 +60,17 @@ import {
 import { ConnectorSettingDialogComponent } from '../connector-setting-dialog/connector-setting-dialog.component';
 import { ProjectAutoSave, type AutoSaveState } from './project-auto-save';
 
+interface PortMenuContent {
+  project: string;
+  board: unknown;
+  settings: string;
+  connectors: string;
+  currentProject: () => boolean;
+  serial?: IMenuItem[];
+  ota?: IMenuItem[];
+  boardOptions?: IMenuItem[];
+}
+
 interface NetworkOtaTarget {
   id: string;
   name?: string;
@@ -222,6 +233,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       }
     }));
     this.unsavedSubscriptions.add(this.projectService.currentProjectPath$.subscribe(() => {
+      if (this.showPortList) this.closePortList();
       this.autoSave?.cancel();
       this.setProjectUnsaved(false);
       this.syncCoderUnsavedPoll();
@@ -507,6 +519,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.boardChangeSubscription = this.projectService.boardChangeSubject.subscribe(() => {
       void this.resetDebuggerSelectionAfterBoardChange();
     });
+    this.boardChangeSubscription.add(merge(this.projectService.boardConfigUpdatedSubject,
+      this.projectService.cloudBoardHydratedSubject, this.configService.configReloaded$).subscribe(() => {
+      if (this.showPortList && !this.portMenuMatchesContext(this.portMenuContent)) void this.getDevicePortList();
+    }));
     this.connectorStateSubscription = this.linuxBoardConnector.state$.subscribe(state => {
       const wasRunning = this.connectorState.running;
       this.connectorState = state;
@@ -821,47 +837,21 @@ export class HeaderComponent implements OnInit, OnDestroy {
   configList: PortItem[] = []
   boardKeywords = [];
   private cachedDebuggerItems: IMenuItem[] = [];
-  private portListGeneration = 0; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
+  private portListGeneration = 0;
+  private portDeviceRequest?: object;
+  private portMenuContent?: PortMenuContent;
 
-  /**
-   * 异步检测调试探针，完成后更新缓存并重建端口列表
-   */
-  private detectProbes(generation: number, portList: IMenuItem[], skipDetect: boolean) {
-
-    // console.log('detectProbes');
-
-    if (!skipDetect) {
-      if (this.cachedDebuggerItems.length > 0) {
-        portList.push(...this.cachedDebuggerItems);
-      }
-      this.probeRsService.listProbes().then(result => {
-        if (generation !== this.portListGeneration) return;
-        const newDebuggerItems: IMenuItem[] = [];
-        if (result.success && result.probes && result.probes.length > 0) {
-          newDebuggerItems.push({ sep: true });
-          for (const probe of result.probes) {
-            console.log('Detected probe:', probe);
-            const typeName = probe.type || probe.name || 'Unknown';
-            newDebuggerItems.push({
-              name: typeName,
-              text: probe.shortSerial || '',
-              type: 'debugger',
-              icon: 'fa-brands fa-usb',
-              extra: { vidPid: probe.vidPid, serial: probe.serial },
-            });
-          }
-        }
-        if (JSON.stringify(newDebuggerItems) !== JSON.stringify(this.cachedDebuggerItems)) {
-          this.cachedDebuggerItems = newDebuggerItems;
-          this.getDevicePortList(true);
-        }
-      }).catch(e => {
-        console.warn('调试探针检测失败:', e);
-      });
-    } else if (this.cachedDebuggerItems.length > 0) {
-      portList.push(...this.cachedDebuggerItems);
-    }
+  private detectProbes(isCurrent: () => boolean, publish: () => void): void {
+    void this.probeRsService.listProbes().then(result => {
+      if (!isCurrent()) return;
+      this.cachedDebuggerItems = (result.success ? result.probes || [] : []).map(probe => ({
+        name: probe.type || probe.name || 'Unknown', text: probe.shortSerial || '',
+        type: 'debugger', icon: 'fa-brands fa-usb', extra: { vidPid: probe.vidPid, serial: probe.serial },
+      }));
+      publish();
+    }).catch(error => console.warn('调试探针检测失败:', error));
   }
+
   openPortList(event?: MouseEvent) {
     if (event) {
       // A cached menu can mount before this click bubbles to document. Keep the
@@ -897,6 +887,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   closePortList() {
+    ++this.portListGeneration;
     if (this.uploaderBleService.isScanning() || this.uploaderBleService.hasActiveRequest()) {
       this.uploaderBleService.cancelScan();
     }
@@ -969,188 +960,111 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.closePortList();
   }
 
-  async getDevicePortList(skipDetect = false) {
-    const generation = ++this.portListGeneration;
-    const projectPath = this.projectService.currentProjectPath;
-    // Linux 菜单严格按 board.json.connector 组合；没有 Linux 执行路由时走后面的 Arduino 端口菜单。
-    const supportsSsh = this.supportsLinuxBoardConnector('ssh');
-    const supportsSerial = this.supportsLinuxBoardConnector('serial');
-    // 纯 SSH 板不枚举本地串口。
-    if (supportsSsh && !supportsSerial) {
-      this.configList = [
-        {
-          name: 'SSH_CONNECTION_DIALOG.TITLE',
-          text: this.connectorState.selectedTransport === 'ssh'
-            ? this.connectorState.endpointLabel
-            : '',
-          icon: 'fa-light fa-network-wired',
-          action: 'connector-settings',
-          current: this.connectorState.selectedTransport === 'ssh',
-        },
-        { sep: true },
-        {
-          name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-          icon: 'fa-light fa-layer-group',
-          action: 'board-select',
-        },
-      ];
-      setTimeout(() => this.cd.detectChanges(), 0);
-      return;
-    }
-    let portList0: IMenuItem[];
-    try {
-      portList0 = await this.serialService.getSerialPorts();
-    } catch (error) {
-      if (!this.isLinuxBoardProject) throw error;
-      console.warn('Linux board serial enumeration failed:', error);
-      portList0 = [];
-    }
-    let hasSelectablePort = portList0.length > 0;
+  private portMenuMatchesContext(content?: PortMenuContent): boolean {
+    return !!content && content.currentProject() && content.project === this.projectService.currentProjectPath
+      && content.board === this.projectService.currentBoardConfig && content.settings === this.configService.getCompileSettingsKey()
+      && content.connectors === this.linuxBoardConnectors.join(',');
+  }
 
-    // 纯串口 Linux 板沿用系统串口枚举，但选择结果交给 Linux connector 执行。
-    if (supportsSerial && !supportsSsh) {
-      const serialPorts: IMenuItem[] = hasSelectablePort
-        ? portList0.map(item => ({
-          ...item,
-          current: this.connectorState.selectedTransport === 'serial'
-            && item.name === this.serialService.currentPort,
-        }))
-        : [{
-          name: 'AILY_CONNECTOR.DEVICE_NOT_FOUND',
-          text: '',
-          type: 'serial',
-          icon: 'fa-light fa-triangle-exclamation',
-          disabled: true,
-        }];
-      this.configList = [
-        ...serialPorts,
-        { sep: true },
-        {
-          name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-          icon: 'fa-light fa-layer-group',
-          action: 'board-select',
-        },
-      ];
-      setTimeout(() => this.cd.detectChanges(), 0);
-      return;
-    }
-
-    // 同时支持 SSH/串口的 Linux 板并列展示两种方式，由用户明确选择。
-    if (this.isLinuxBoardProject) {
-      const serialPorts: IMenuItem[] = hasSelectablePort
-        ? portList0.map(item => ({
-          ...item,
-          current: this.connectorState.selectedTransport === 'serial'
-            && item.name === this.serialService.currentPort,
-        }))
-        : [{
-          name: 'AILY_CONNECTOR.DEVICE_NOT_FOUND',
-          text: '',
-          type: 'serial',
-          icon: 'fa-light fa-triangle-exclamation',
-          disabled: true,
-        }];
-      this.configList = [
-        ...serialPorts,
-        { sep: true },
-        {
-          name: 'SSH_CONNECTION_DIALOG.TITLE',
-          text: this.connectorState.selectedTransport === 'ssh'
-            ? this.connectorState.endpointLabel
-            : '',
-          icon: 'fa-light fa-network-wired',
-          action: 'connector-settings',
-          current: this.connectorState.selectedTransport === 'ssh',
-        },
-        { sep: true },
-        {
-          name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-          icon: 'fa-light fa-layer-group',
-          action: 'board-select',
-        },
-      ];
-      setTimeout(() => this.cd.detectChanges(), 0);
-      return;
-    }
-
-    // 未命中 Linux 路由，以下保持 Arduino 的串口、BLE、OTA 与调试器逻辑不变。
-    let core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase();
-    const canShowBleOtaPorts = await this.canShowBleOtaPorts(core);
-    const canShowNetworkOtaPorts = await this.canShowNetworkOtaPorts(core);
-
-    if (canShowBleOtaPorts) {
-      const bleItems = this.uploaderBleService.getPortMenuItems(this.serialService.currentPort);
-      //console.log('[BLE:header] getDevicePortList BLE items', bleItems.length, bleItems);
-      if (bleItems.length > 0) {
-        if (portList0.length > 0) {
-          portList0.push({ sep: true });
-        }
-        portList0 = portList0.concat(bleItems);
-        hasSelectablePort = true;
-      }
-    }
-
-    if (canShowNetworkOtaPorts) {
-      const networkOtaItems = await this.getNetworkOtaPortMenuItems(this.serialService.currentPort);
-      if (networkOtaItems.length > 0) {
-        if (portList0.length > 0) {
-          portList0.push({ sep: true });
-        }
-        portList0 = portList0.concat(networkOtaItems);
-        hasSelectablePort = true;
-      }
-    }
-
-    if (!hasSelectablePort) {
-      portList0 = [
-        {
-          name: 'Device not found',
-          text: '',
-          type: 'serial',
-          icon: 'fa-light fa-triangle-exclamation',
-          disabled: true,
-        }
-      ];
-    }
-
-    // 加载当前开发板包声明的可选配置菜单。
-    if (hasLinkUploadParam(this.projectService.currentBoardConfig)) {
-      this.detectProbes(generation, portList0, skipDetect);
-    } else {
+  async getDevicePortList(devicesOnly = false): Promise<void> {
+    const board = this.projectService.currentBoardConfig;
+    const connectors = this.linuxBoardConnectors;
+    if (!this.portMenuMatchesContext(this.portMenuContent)) {
+      devicesOnly = false;
       this.cachedDebuggerItems = [];
+      this.portMenuContent = { project: this.projectService.currentProjectPath, board,
+        settings: this.configService.getCompileSettingsKey(), connectors: connectors.join(','),
+        currentProject: this.projectService.captureCurrentProjectGuard() };
     }
+    if (!devicesOnly) ++this.portListGeneration;
+    const generation = this.portListGeneration;
+    const deviceRequest = this.portDeviceRequest = {};
+    const content = this.portMenuContent!;
+    // Board configuration availability is owned by ProjectService. For a fresh
+    // open it may have revoked the last verified cloud target after a failed build.
+    if (!devicesOnly) content.boardOptions = undefined;
+    const isCurrent = () => !this.destroyed && generation === this.portListGeneration && this.portMenuMatchesContext(content);
+    const supportsSsh = connectors.includes('ssh');
+    const supportsSerial = connectors.includes('serial');
+    const linux = supportsSsh || supportsSerial;
+    const boardSelector = { name: this.translate.instant('BOARD_SELECTOR.TITLE'),
+      icon: 'fa-light fa-layer-group', action: 'board-select' };
+    const publish = () => {
+      if (!isCurrent()) return;
+      const devices = [...(content.serial ?? [])];
+      if (content.ota?.length) {
+        if (devices.length) devices.push({ sep: true });
+        devices.push(...content.ota);
+      }
+      if (!devices.length && content.serial && (linux || content.ota)) {
+        devices.push({ name: linux ? 'AILY_CONNECTOR.DEVICE_NOT_FOUND' : 'Device not found',
+          text: '', type: 'serial', icon: 'fa-light fa-triangle-exclamation', disabled: true });
+      }
+      if (supportsSsh) {
+        if (devices.length) devices.push({ sep: true });
+        devices.push({ name: 'SSH_CONNECTION_DIALOG.TITLE',
+          text: this.connectorState.selectedTransport === 'ssh' ? this.connectorState.endpointLabel : '',
+          icon: 'fa-light fa-network-wired', action: 'connector-settings',
+          current: this.connectorState.selectedTransport === 'ssh' });
+      }
+      if (this.cachedDebuggerItems.length) {
+        if (devices.length) devices.push({ sep: true });
+        devices.push(...this.cachedDebuggerItems);
+      }
+      if (!linux) devices.push(...(content.boardOptions ?? []));
+      if (devices.length) devices.push({ sep: true });
+      this.configList = [...devices, boardSelector];
+      this.cd.markForCheck();
+    };
 
-    const boardConfigMenu = await this.projectService.getBoardConfigMenu();
-    if (boardConfigMenu.length > 0) {
-      portList0 = portList0.concat(boardConfigMenu);
+    // The board selector is actionable immediately. Only reuse rows belonging
+    // to this project, board and backend while their independent sources refresh.
+    publish();
+    if (supportsSsh && !supportsSerial) return;
+    const ports = this.serialService.getSerialPorts().catch(error => {
+      console.warn('获取串口列表失败:', error);
+      return [];
+    }).then(items => {
+      if (!isCurrent() || this.portDeviceRequest !== deviceRequest) return;
+      content.serial = linux ? items.map(item => ({ ...item, current:
+        this.connectorState.selectedTransport === 'serial' && item.name === this.serialService.currentPort })) : items;
+      publish();
+    });
+    if (linux) return ports;
+
+    if (!devicesOnly && hasLinkUploadParam(board)) this.detectProbes(isCurrent, publish);
+    const ota = this.getOtaPortMenuItems().catch(error => {
+      console.warn('获取 OTA 端口菜单失败:', error);
+      return [];
+    }).then(items => {
+      if (!isCurrent() || this.portDeviceRequest !== deviceRequest) return;
+      content.ota = items;
+      publish();
+    });
+    if (devicesOnly) {
+      await Promise.all([ports, ota]);
+      return;
     }
+    const options = this.projectService.getBoardConfigMenu().catch(error => {
+      console.warn('读取主板选项失败:', error);
+      return [];
+    }).then(items => {
+      if (!isCurrent()) return;
+      content.boardOptions = items;
+      publish();
+    });
+    await Promise.all([ports, ota, options]);
+  }
 
-    // Add the board switch entry after optional package-provided menu items.
-    portList0.push({ sep: true });
-    portList0.push({
-      name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-      icon: 'fa-light fa-layer-group',
-      action: 'board-select',
-      // children: boardList
-    })
-    if (generation !== this.portListGeneration || projectPath !== this.projectService.currentProjectPath) return;
-    this.configList = portList0;
-    // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
-    setTimeout(() => {
-      this.cd.detectChanges();
-    }, 0);
+  private async getOtaPortMenuItems(): Promise<IMenuItem[]> {
+    const { ble, network } = await this.getOtaCapabilities();
+    const bleItems = ble ? this.uploaderBleService.getPortMenuItems(this.serialService.currentPort) : [];
+    const networkItems = network ? await this.getNetworkOtaPortMenuItems(this.serialService.currentPort) : [];
+    return [...bleItems, ...(bleItems.length && networkItems.length ? [{ sep: true }] : []), ...networkItems];
   }
 
   private isEsp32Core(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): boolean {
     return core === 'esp32' || core.startsWith('esp32:');
-  }
-
-  private async canShowBleOtaPorts(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): Promise<boolean> {
-    return this.isEsp32Core(core) && await this.hasProjectDependency('@aily-project/lib-bleota');
-  }
-
-  private async canShowNetworkOtaPorts(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): Promise<boolean> {
-    return this.isEsp32Core(core) && await this.hasProjectDependency('@aily-project/lib-wifiota');
   }
 
   private async getNetworkOtaPortMenuItems(currentPort?: string): Promise<IMenuItem[]> {
@@ -1243,7 +1157,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.closePortList();
   }
 
-  private async hasProjectDependency(dependencyName: string): Promise<boolean> {
+  private async getOtaCapabilities(): Promise<{ ble: boolean; network: boolean }> {
+    const core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase();
+    if (!this.isEsp32Core(core)) return { ble: false, network: false };
     try {
       const packageJson = await this.projectService.getPackageJson();
       const dependencies = {
@@ -1253,10 +1169,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
         ...(packageJson?.peerDependencies || {}),
       };
 
-      return Object.prototype.hasOwnProperty.call(dependencies, dependencyName);
+      return { ble: Object.hasOwn(dependencies, '@aily-project/lib-bleota'),
+        network: Object.hasOwn(dependencies, '@aily-project/lib-wifiota') };
     } catch (error) {
       console.warn('读取项目依赖失败:', error);
-      return false;
+      return { ble: false, network: false };
     }
   }
 
@@ -2126,7 +2043,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   private async startBleScan() {
-    if (!await this.canShowBleOtaPorts()) {
+    if (!(await this.getOtaCapabilities()).ble) {
       if (this.showPortList) {
         this.getDevicePortList(true);
       }
@@ -2179,7 +2096,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private async startNetworkOtaMdnsSearch() {
     if (this.networkOtaScanInProgress) return;
-    if (!await this.canShowNetworkOtaPorts()) {
+    if (!(await this.getOtaCapabilities()).network) {
       return;
     }
 
@@ -2328,10 +2245,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
-    if (subItem.disabled) return;
+    const content = this.portMenuContent;
+    if (!content || !this.portMenuMatchesContext(content) || subItem.disabled) return;
+    const parent = content.boardOptions?.find(row => !row.disabled && row.children?.includes(subItem));
+    if (!parent) return;
     const projectPath = this.projectService.currentProjectPath;
-    const boardConfig = this.projectService.currentBoardConfig;
-    // console.log('选择子菜单项:', subItem);
     if (this.selectDebounceTimer !== null) {
       clearTimeout(this.selectDebounceTimer);
     }
@@ -2344,30 +2262,34 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     this.selectDebounceTimer = setTimeout(async () => {
       this.selectDebounceTimer = null;
-      if (this.destroyed || projectPath !== this.projectService.currentProjectPath
-        || boardConfig !== this.projectService.currentBoardConfig) return;
+      if (this.destroyed || this.portMenuContent !== content || !this.portMenuMatchesContext(content)) return;
+      const latestParent = content.boardOptions?.find(row => !row.disabled
+        && (row === parent || !!parent.key && row.key === parent.key));
+      const selected = latestParent?.children?.find(child => !child.disabled
+        && (child === subItem || !!subItem.key && child.key === subItem.key && child.data === subItem.data));
+      if (!selected) return;
       try {
         const coder = this.projectService.isAilyCodeProject(projectPath);
 
         const configChanged = coder
-          ? await this.coderBoardConfig.select(projectPath, subItem)
-          : (await this.projectService.applyBoardConfiguration(subItem)).changed;
+          ? await this.coderBoardConfig.select(projectPath, selected)
+          : (await this.projectService.applyBoardConfiguration(selected)).changed;
         const shouldRunEffects = shouldRunBoardConfigSelectionEffects(
           configChanged,
-          subItem,
+          selected,
         );
         if (!shouldRunEffects) {
           return;
         }
 
-        if (subItem.extra?.selectAction === 'flash-softdevice') {
+        if (selected.extra?.selectAction === 'flash-softdevice') {
           if (projectPath !== this.projectService.currentProjectPath) return;
           if (!this.serialService.currentPort) {
-            const messageKey = subItem.extra?.selectPortMessage;
+            const messageKey = selected.extra?.selectPortMessage;
             this.message.warning(messageKey ? this.translate.instant(messageKey) : 'Please select a port first');
             return;
           }
-          await this.uploaderService.flashSoftdevice(subItem.data, this.serialService.currentPort);
+          await this.uploaderService.flashSoftdevice(selected.data, this.serialService.currentPort);
           if (coder && configChanged) await this.coderRuntime.build(projectPath, { preprocessOnly: true });
         }
 
@@ -2378,7 +2300,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.message.error(error instanceof Error ? error.message : String(error));
       } finally {
         if (!this.destroyed && this.showPortList && projectPath === this.projectService.currentProjectPath) {
-          await this.getDevicePortList(true).catch(error => console.warn('刷新主板配置菜单失败:', error));
+          await this.getDevicePortList().catch(error => console.warn('刷新主板配置菜单失败:', error));
         }
       }
     }, 500);

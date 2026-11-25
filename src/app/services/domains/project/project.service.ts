@@ -4584,11 +4584,15 @@ export class ProjectService {
   }
 
   private cloudBoardProfileCache?: { key: string; profile: CloudBoardProfile };
-  private cloudBoardProfileLookups?: Map<string, Promise<CloudBoardProfile>>;
+  private cloudBoardProfileLookups?: Map<string, {
+    promise: Promise<CloudBoardProfile>;
+    refresh: boolean;
+    followRefresh: (result: Promise<CloudBoardProfile>) => void;
+  }>;
 
   /** 根据已安装开发板包和原始 board.json 的内容摘要，匹配 Gateway 已注册的精确编译目标。 */
   async getCloudBoardProfile(
-    options: { refresh?: boolean; background?: boolean; projection?: Map<string, Promise<CloudBoardProfile>> } = {}, session?: ProjectDependencySession,
+    options: { refresh?: boolean; projection?: Map<string, Promise<CloudBoardProfile>> } = {}, session?: ProjectDependencySession,
   ): Promise<CloudBoardProfile> {
     if (!this.isCloudBuild()) throw new Error('Cloud compilation is not selected.');
     const settingsKey = this.getCompileBackendKey();
@@ -4628,15 +4632,14 @@ export class ProjectService {
       return cached;
     }
     const pending = this.cloudBoardProfileLookups ??= new Map();
-    // 菜单、分区工具和编译预检可能同时读取目标，合并相同身份的在途请求。
-    // A build must be able to retry immediately while a background lookup is stalled.
-    const pendingKey = options.background ? 'open:' + key : key;
-    const existing = projection?.get(key) ?? pending.get(pendingKey);
+    // 菜单与工程后台预取共享同一目标。编译可以发起新的权威查询。
+    const active = pending.get(key);
+    const existing = projection?.get(key) ?? (active && (!options.refresh || active.refresh) ? active.promise : undefined);
     if (existing) {
       projection?.set(key, existing);
       try { return await existing; } finally { guard(); }
     }
-    const promise = (async () => {
+    const lookupResult = (async () => {
       const gateway = window['cloudBuild'];
       if (!gateway?.targets) throw new Error(this.translate.instant('PROJECT.CLOUD_BRIDGE_RESTART_REQUIRED'));
       const settings = getCloudBuildSettings(this.configService?.data);
@@ -4660,7 +4663,6 @@ export class ProjectService {
         throw Object.assign(new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE')),
           { code: 'CLOUD_TARGET_UNAVAILABLE' });
       }
-      if (!options.background) this.cloudBoardProfileCache = { key, profile };
       return profile;
     })().catch(error => {
       guard();
@@ -4670,10 +4672,26 @@ export class ProjectService {
       }
       throw error;
     });
-    pending.set(pendingKey, promise);
+    // If a build overtakes a slow menu lookup, existing readers follow the build's
+    // result. A late response from the original lookup cannot restore stale options.
+    let followRefresh!: (result: Promise<CloudBoardProfile>) => void;
+    const promise = new Promise<CloudBoardProfile>((resolve, reject) => {
+      followRefresh = resolve;
+      lookupResult.then(resolve, reject);
+    });
+    const request = { promise, refresh: !!options.refresh, followRefresh };
+    if (options.refresh && cached) this.cloudBoardProfileCache = undefined;
+    pending.set(key, request);
+    active?.followRefresh(promise);
     projection?.set(key, promise);
-    try { return await promise; }
-    finally { if (pending.get(pendingKey) === promise) pending.delete(pendingKey); }
+    try {
+      const profile = await promise;
+      guard();
+      if (pending.get(key) === request) this.cloudBoardProfileCache = { key, profile };
+      return profile;
+    } finally {
+      if (pending.get(key) === request) pending.delete(key);
+    }
   }
 
   /** 为分区管理等功能提供统一的构建属性：本地读取 SDK，云端使用已注册元数据。 */
@@ -4829,7 +4847,7 @@ export class ProjectService {
       }
     };
     check();
-    const profile = await this.getCloudBoardProfile(background ? { background: true } : { refresh: true });
+    const profile = await this.getCloudBoardProfile({ refresh: !background });
     check();
     const resolved = await this.resolveBoardConfigForRuntime(undefined, profile);
     check();
