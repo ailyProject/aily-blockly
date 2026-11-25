@@ -1098,7 +1098,7 @@ export class ProjectService {
   private boardSwitchNotice?: { projectPath: string; messageId: string };
   private loadingBlocklyProjectPath = '';
   private loadedBlocklyProjectPath = '';
-  private blocklyProjectLoadFailure: { path: string; error: string } | null = null;
+  private blocklyProjectLoadFailure: { path: string; error: string; code?: string } | null = null;
   private blocklyLibraryRuntimeRebuildTask: {
     path: string;
     runtimeSignature: string;
@@ -1190,7 +1190,7 @@ export class ProjectService {
     this.stateSubject.next('loaded');
   }
 
-  markBlocklyProjectLoadFailed(projectPath: string, error: string): void {
+  markBlocklyProjectLoadFailed(projectPath: string, error: string, code?: string): void {
     if ((!this.isSameProjectPath(projectPath, this.currentProjectPath)
       && !this.isSameProjectPath(projectPath, this.loadingBlocklyProjectPath))
       || this.dependencyLifecycleState?.get(projectPath)?.signal.aborted) return;
@@ -1201,6 +1201,7 @@ export class ProjectService {
     this.blocklyProjectLoadFailure = {
       path: projectPath,
       error: String(error || '未知项目加载错误'),
+      code,
     };
     this.stateSubject.next('error');
   }
@@ -2048,8 +2049,8 @@ export class ProjectService {
     } finally { lifecycle.release(); }
   }
 
-  async selectAndOpenProject({ defaultPath, beforeOpen }: {
-    defaultPath?: string; beforeOpen?: () => Promise<boolean>;
+  async selectAndOpenProject({ defaultPath, beforeOpen, asCopy = false }: {
+    defaultPath?: string; beforeOpen?: () => Promise<boolean>; asCopy?: boolean;
   } = {}): Promise<boolean> {
     const current = this.captureCurrentProjectGuard();
     const revision = this.projectNavigationIntentRevision;
@@ -2057,13 +2058,13 @@ export class ProjectService {
     try {
       const selection = await window['ipcRenderer'].invoke('dialog-select-files', {
         defaultPath,
-        title: this.translate.instant('MENU.PROJECT_OPEN'),
+        title: this.translate.instant(asCopy ? 'PROJECT.LOCK_OPEN_COPY' : 'MENU.PROJECT_OPEN'),
         properties: ['openDirectory'],
       });
       const selected = selection?.filePaths?.[0];
       if (selection?.canceled || !selected || !stillCurrent()) return false;
       if ((beforeOpen && !await beforeOpen()) || !stillCurrent()) return false;
-      return await this.projectOpen(selected);
+      return asCopy ? await this.openProjectCopy(selected, stillCurrent) : await this.projectOpen(selected);
     } catch (error) {
       this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + (error instanceof Error ? error.message : String(error)));
       return false;
@@ -2173,13 +2174,16 @@ export class ProjectService {
     } catch (error) {
       if (signal?.aborted) throw error;
       if (session) this.dependencyLifecycle.finishPreparation(session);
-      if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return false;
+      const code = (error as { code?: string })?.code;
+      if (code === 'PROJECT_DEPENDENCY_CANCELLED') return false;
       // Router/editor teardown can fail before the new Blockly component exists
       // to report a load failure. Close this load transaction here as well.
       if (this.isSameProjectPath(projectPath, this.loadingBlocklyProjectPath)) {
-        this.markBlocklyProjectLoadFailed(projectPath, error instanceof Error ? error.message : String(error));
+        this.markBlocklyProjectLoadFailed(projectPath, error instanceof Error ? error.message : String(error), code);
       }
-      throw error;
+      if (code !== 'ABS_OPERATION_LOCATION_UNPROVEN' || targetMode !== 'blockly' || !requestCopy) throw error;
+      if (await this.promptProjectLockConflict(true, true, false) !== 'copy') return false;
+      requestCopy();
     } finally {
       signal?.removeEventListener('abort', release);
       release();
@@ -2904,7 +2908,7 @@ export class ProjectService {
         }
         const status = this.getBlocklyProjectLoadStatus(projectPath);
         if (state === 'error' && status.error) {
-          finish(new Error(status.error));
+          finish(Object.assign(new Error(status.error), { code: this.blocklyProjectLoadFailure?.code }));
           return;
         }
         if (!status.ready) {

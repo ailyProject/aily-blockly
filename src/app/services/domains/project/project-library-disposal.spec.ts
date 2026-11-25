@@ -198,6 +198,36 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     } finally { window['projectLock'] = previous; }
   });
 
+  it('offers a managed copy when an inherited ABS operation cannot be adopted', async () => {
+    const { service, mounted } = fixture();
+    service.projectOpenInternal = jasmine.createSpy('open').and.rejectWith(Object.assign(
+      new Error('The copied transaction could not be verified'), { code: 'ABS_OPERATION_LOCATION_UNPROVEN' },
+    ));
+    service.promptProjectLockConflict = jasmine.createSpy('conflict').and.resolveTo('copy');
+    service.openProjectCopy = jasmine.createSpy('copy').and.callFake(async (source: string, stillCurrent: () => boolean) => {
+      expect(stillCurrent()).toBeTrue();
+      expect(service.projectOpenTask).toBeNull();
+      expect(service.projectLifecycle.hasActive(source)).toBeFalse();
+      expect(mounted()).toBeTrue();
+      return true;
+    });
+    expect(await service.projectOpen('/target')).toBeTrue();
+    expect(service.promptProjectLockConflict).toHaveBeenCalledOnceWith(true, true, false);
+    expect(service.openProjectCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses managed copy directly from the directory picker when requested', async () => {
+    const { service } = fixture();
+    const previous = window['ipcRenderer'];
+    window['ipcRenderer'] = { invoke: async () => ({ canceled: false, filePaths: ['/target'] }) };
+    service.translate = { instant: (key: string) => key };
+    service.openProjectCopy = jasmine.createSpy('copy').and.resolveTo(true);
+    try {
+      expect(await service.selectAndOpenProject({ asCopy: true })).toBeTrue();
+      expect(service.openProjectCopy).toHaveBeenCalledOnceWith('/target', jasmine.any(Function));
+    } finally { window['ipcRenderer'] = previous; }
+  });
+
   it('leaves the current project untouched when the directory picker is cancelled', async () => {
     const { service, mounted } = fixture();
     const previous = window['ipcRenderer'];

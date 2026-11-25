@@ -4,6 +4,7 @@ const { copyProjectLibraryLink } = require('./project-library-copy');
 const { readProjectMode } = require('./project-companion');
 const SAVE_AS_EXCLUDED_DIRECTORIES = new Set(['.workspace-history', '.temp', '.log', '.build']);
 const CODER_HISTORY_COPY_INPUTS = ['.workspace-history', '.aily/workspace-mode.json'];
+const BLOCKLY_HISTORY_COPY_INPUTS = [...CODER_HISTORY_COPY_INPUTS, '.aily/abs-sync', 'project.abs.map.json'];
 const BUILD_WORKSPACE_OWNER_FILES = new Set([
   '.build/aily-workspace.lock', '.build/aily-builder.lock', '.build/aily-workspace-recovery.lock',
 ]);
@@ -26,15 +27,28 @@ function isProjectWriterTransient(relativePath) {
     || /^\.(?:project\.(?:abi|abs|abs\.map\.json)|project-data-backup)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name);
 }
 
-function coderCopyHistory(root, coderTemplate) {
-  const inputs = new Map();
-  const metadata = fs.lstatSync(path.join(root, '.aily'), { throwIfNoEntry: false });
-  const historyEntries = CODER_HISTORY_COPY_INPUTS.flatMap(name => {
+function readHistoryCopyInputs(root, metadata, names) {
+  return names.flatMap(name => {
     if (name.startsWith('.aily/') && !metadata?.isDirectory()) return [];
     const source = path.join(root, name);
     const entry = fs.lstatSync(source, { throwIfNoEntry: false });
     return entry ? [{ source, name, entry }] : [];
   });
+}
+
+function identifyHistoryCopyInputs(root, metadata, entries) {
+  if (metadata?.isSymbolicLink()) throw new Error('Project metadata must not be copied through a symbolic link.');
+  return new Map(entries.map(({ source, name, entry }) => {
+    if (entry.isSymbolicLink()) throw new Error('Project History metadata must not be copied through a symbolic link.');
+    // Use the actual directory-entry spelling on a case-insensitive filesystem.
+    return [path.relative(root, fs.realpathSync.native(source)), { source, name: path.basename(name) }];
+  }));
+}
+
+function coderCopyHistory(root, coderTemplate) {
+  const inputs = new Map();
+  const metadata = fs.lstatSync(path.join(root, '.aily'), { throwIfNoEntry: false });
+  const historyEntries = readHistoryCopyInputs(root, metadata, CODER_HISTORY_COPY_INPUTS);
   if (!historyEntries.length) return inputs;
   const manifestPath = path.join(root, 'package.json');
   const manifest = fs.lstatSync(manifestPath, { throwIfNoEntry: false });
@@ -50,23 +64,53 @@ function coderCopyHistory(root, coderTemplate) {
         && fs.readFileSync(absPath).includes('\n# @project-state:')) return inputs;
     } catch { return inputs; }
   }
-  if (metadata?.isSymbolicLink()) throw new Error('Project metadata must not be copied through a symbolic link.');
-  for (const { source, name, entry } of historyEntries) {
-    if (entry.isSymbolicLink()) throw new Error('Coder History metadata must not be copied through a symbolic link.');
-    // Use the actual directory-entry spelling on a case-insensitive filesystem.
-    inputs.set(path.relative(root, fs.realpathSync.native(source)), { source, name: path.basename(name) });
-  }
-  return inputs;
+  return identifyHistoryCopyInputs(root, metadata, historyEntries);
 }
 
-function archiveCoderCopyHistory(target, history) {
+function hasSavedBlocklyAbi(root) {
+  const abi = path.join(root, 'project.abi');
+  if (!fs.lstatSync(abi, { throwIfNoEntry: false })?.isFile()) return false;
+  try {
+    const document = JSON.parse(fs.readFileSync(abi, 'utf8'));
+    const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+    if (!object(document)) return false;
+    // Select the same saved document shapes as the Blockly editor on first open.
+    if (Array.isArray(document.pages)) return document.pages.every(object);
+    return (object(document.blocks) && (document.blocks.blocks === undefined || Array.isArray(document.blocks.blocks)))
+      || Object.keys(document).every(key => ['variables', 'comments', '$ailyProjectData'].includes(key));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return false;
+  }
+}
+
+function blocklyImportHistory(root) {
+  if (!fs.lstatSync(path.join(root, '.workspace-history'), { throwIfNoEntry: false })) return new Map();
+  const savedAbi = hasSavedBlocklyAbi(root);
+  if (!savedAbi) {
+    const abs = path.join(root, 'project.abs');
+    // A complete ABS-only project must bootstrap from its public program.
+    if (!fs.lstatSync(abs, { throwIfNoEntry: false })?.isFile()
+      || !fs.readFileSync(abs).includes('\n# @project-state:')) return new Map();
+  }
+  const metadata = fs.lstatSync(path.join(root, '.aily'), { throwIfNoEntry: false });
+  // With an independently saved ABI, the public ABS may be an unapplied draft.
+  // Keep its bytes with the original map and transaction instead of replaying it.
+  const names = [...BLOCKLY_HISTORY_COPY_INPUTS, savedAbi ? 'project.abs' : 'project.abi'];
+  return identifyHistoryCopyInputs(root, metadata, readHistoryCopyInputs(root, metadata, names));
+}
+
+function archiveCopyHistory(target, history) {
   if (!history.size) return;
   const metadata = path.join(target, '.aily');
   const recovery = path.join(metadata, 'history-recovery');
   for (const directory of [metadata, recovery]) {
     try { fs.mkdirSync(directory, { mode: 0o700 }); }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
-    if (!fs.lstatSync(directory).isDirectory()) throw new Error('Coder History recovery requires a regular directory.');
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory()) throw new Error('Project History recovery requires a regular directory.');
+    // Extracted archives may carry read-only metadata. Only the new copy owns this path.
+    if (!(stat.mode & 0o200)) fs.chmodSync(directory, (stat.mode & 0o7777) | 0o200);
   }
   const archive = fs.mkdtempSync(path.join(recovery, 'copy-'));
   for (const { source, name } of history.values()) {
@@ -77,7 +121,7 @@ function archiveCoderCopyHistory(target, history) {
 }
 
 /** Filtered directory copy, not a point-in-time snapshot or a multi-file transaction. */
-function copyProjectContents(source, destination, { excludeRuntimeDirectories, recoveryCopy, coderTemplate }) {
+function copyProjectContents(source, destination, { excludeRuntimeDirectories, recoveryCopy, coderTemplate, imported }) {
   if (!path.isAbsolute(source) || !path.isAbsolute(destination)) throw new Error('Project copy requires absolute paths.');
   const root = fs.realpathSync(source);
   const target = fs.realpathSync(destination); // Caller must reserve the destination first.
@@ -88,7 +132,8 @@ function copyProjectContents(source, destination, { excludeRuntimeDirectories, r
   if (!fs.lstatSync(root).isDirectory() || !fs.lstatSync(target).isDirectory()
     || fs.lstatSync(destination).isSymbolicLink()) throw new Error('Project copy requires regular directories.');
   if (fs.readdirSync(target).length) throw new Error('Project copy destination must be empty.');
-  const history = coderCopyHistory(root, coderTemplate);
+  const coderHistory = coderCopyHistory(root, coderTemplate);
+  const history = imported && !coderHistory.size ? blocklyImportHistory(root) : coderHistory;
   const libraryLinks = [];
   fs.cpSync(root, target, { recursive: true, force: false, errorOnExist: true,
     filter: file => {
@@ -114,7 +159,7 @@ function copyProjectContents(source, destination, { excludeRuntimeDirectories, r
   for (const relative of libraryLinks) copyProjectLibraryLink(root, target, relative);
   // A fresh project owns a new History. Keep its predecessor outside the active
   // store; the existing cloud rule excludes the enclosing .aily directory.
-  archiveCoderCopyHistory(target, history);
+  archiveCopyHistory(target, history);
 }
 
 function copyProjectDirectory(source, destination, excludeRuntimeDirectories = true, recoveryCopy = false) {
@@ -167,7 +212,7 @@ function importProjectDirectory(source, destination, unwrapArchive = false) {
   fs.mkdirSync(target);
   const created = fs.lstatSync(target, { bigint: true });
   try {
-    copyProjectDirectory(root, target, false);
+    copyProjectContents(root, target, { imported: true });
     // Folder and cloud archive imports may have read-only source metadata.
     for (const name of ['package.json', 'project.abi', 'project.abs', 'project.abs.map.json']) {
       const file = path.join(target, name);

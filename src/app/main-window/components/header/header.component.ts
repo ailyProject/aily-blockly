@@ -1287,10 +1287,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     return folderPath;
   }
 
-  async openProject() {
+  async openProject(asCopy = false) {
     return this.projectService.selectAndOpenProject({
       defaultPath: this.projectData.path,
       beforeOpen: async () => !this.isLoaded() || this.checkUnsavedChanges('open'),
+      asCopy,
     });
   }
 
@@ -1482,6 +1483,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
         break;
       case 'project-open':
         await this.openProject();
+        break;
+      case 'project-open-as-copy':
+        if (source === 'manual') await this.openProject(true);
         break;
       case 'project-add':
         await this.addCoderProjects();

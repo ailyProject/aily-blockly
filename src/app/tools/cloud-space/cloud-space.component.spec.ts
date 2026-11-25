@@ -125,9 +125,10 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(component.message.error).not.toHaveBeenCalled();
   });
 
-  it('preserves the Blockly private-cloud open path', async () => {
+  it('preserves the clean Blockly private-cloud open path', async () => {
     const cloudItem = { id: 10, category: 'blockly', name: 'blockly-demo' };
     const extracted = '/tmp/cloud/extracted';
+    window['fs'].readDirSync = () => [{ name: 'package.json', _isFile: true }];
     component.cloudService.openProjectArchive = jasmine.createSpy('download').and.returnValue(of(extracted));
     component.configService = { isCoderProduct: () => false };
     component.openingProjectIds = new Set();
@@ -152,6 +153,36 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(JSON.parse(files.get(`${target}/package.json`)!).cloudId).toBe(cloudItem.id);
     expect(component.message.error).not.toHaveBeenCalled();
   });
+
+  for (const archive of ['root project with history', 'wrapped project']) {
+    it(`uses the history-isolating import for a Blockly private-cloud ${archive}`, async () => {
+      const cloudItem = { id: 12, category: 'blockly', name: 'legacy-blockly', nickname: 'Legacy project' };
+      const extracted = '/tmp/cloud/extracted';
+      window['fs'].readDirSync = () => archive === 'wrapped project'
+        ? [{ name: 'project-folder', _isFile: false }]
+        : [{ name: 'package.json', _isFile: true }, { name: '.workspace-history', _isFile: false }];
+      component.cloudService.openProjectArchive = jasmine.createSpy('download').and.returnValue(of(extracted));
+      component.configService = { isCoderProduct: () => false };
+      component.openingProjectIds = new Set();
+      component.platformService.getPlatformSeparator = () => '/';
+      component.projectService.projectRootPath = '/projects';
+      component.projectService.importProjectDirectory = jasmine.createSpy('importProjectDirectory').and.returnValue(root);
+      component.projectService.projectOpen = jasmine.createSpy('open').and.resolveTo(true);
+      component.crossPlatformCmdService = { copyItem: jasmine.createSpy('copy') };
+      component.electronService.writeFile = (file, content) => files.set(file, content);
+      useBlockly();
+
+      component.openInNewTab(cloudItem);
+      await Promise.resolve();
+
+      expect(component.projectService.importProjectDirectory).toHaveBeenCalledOnceWith(extracted,
+        jasmine.stringMatching(/^\/projects\/legacy-blockly_\d{6}$/), true);
+      expect(component.crossPlatformCmdService.copyItem).not.toHaveBeenCalled();
+      expect(component.projectService.projectOpen).toHaveBeenCalledOnceWith(root);
+      expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe(cloudItem.id);
+      expect(component.message.error).not.toHaveBeenCalled();
+    });
+  }
 
   it('treats a manifest-declared Coder project with a leftover invalid ABI as Coder', async () => {
     files.set(`${root}/project.abi`, 'invalid leftover');

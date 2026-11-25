@@ -223,11 +223,14 @@ export class CloudSpaceComponent {
           // 直接添加随机数避免重名
           const randomNum = Math.floor(100000 + Math.random() * 900000);
           const coder = item.category === 'coder' || this.configService.isCoderProduct();
+          const entries: Array<{ name: string; _isFile: boolean }> = coder ? [] : window['fs'].readDirSync(res);
+          const useArchiveImport = coder || !entries.some(entry => entry.name.toLowerCase() === 'package.json' && entry._isFile)
+            || entries.some(entry => entry.name.toLowerCase() === '.workspace-history');
           const originalName = item.name || 'cloud_project';
-          const projectName = coder ? String(originalName).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+          const projectName = useArchiveImport ? String(originalName).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
             .replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 60) || 'cloud_project' : originalName;
           let targetPath = this.projectService.projectRootPath + this.platformService.getPlatformSeparator() + `${projectName}_${randomNum}`;
-          if (coder) targetPath = this.projectService.importProjectDirectory(res, targetPath, true);
+          if (useArchiveImport) targetPath = this.projectService.importProjectDirectory(res, targetPath, true);
           else await this.crossPlatformCmdService.copyItem(res, targetPath, true, true);
 
           // 更新 package.json 中的项目信息

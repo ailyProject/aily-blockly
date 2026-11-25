@@ -199,7 +199,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
             this.abortFailedProjectLoad();
             this.uiService.updateFooterState({ state: 'error', text: detail });
           }
-          this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail);
+          if (cancellation?.code === 'ABS_OPERATION_LOCATION_UNPROVEN') {
+            this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail, cancellation.code);
+          } else {
+            this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail);
+          }
           this.message.error(detail);
         }
       } else {
