@@ -222,23 +222,25 @@ export class CloudSpaceComponent {
         try {
           // 直接添加随机数避免重名
           const randomNum = Math.floor(100000 + Math.random() * 900000);
-          const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
-          const targetPath = this.projectService.projectRootPath + this.platformService.getPlatformSeparator() + uniqueName;
-
-          // 使用 Move-Item 将下载/临时文件移动到目标项目目录
-          // -Force 用于覆盖同名目标（如果存在）
-          await this.crossPlatformCmdService.copyItem(res, targetPath, true, true);
+          const coder = item.category === 'coder' || this.configService.isCoderProduct();
+          const originalName = item.name || 'cloud_project';
+          const projectName = coder ? String(originalName).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+            .replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 60) || 'cloud_project' : originalName;
+          let targetPath = this.projectService.projectRootPath + this.platformService.getPlatformSeparator() + `${projectName}_${randomNum}`;
+          if (coder) targetPath = this.projectService.importProjectDirectory(res, targetPath, true);
+          else await this.crossPlatformCmdService.copyItem(res, targetPath, true, true);
 
           // 更新 package.json 中的项目信息
-          const packageJson = JSON.parse(this.electronService.readFile(`${targetPath}/package.json`));
+          const manifestPath = `${targetPath}/package.json`;
+          const packageJson = JSON.parse(this.electronService.readFile(manifestPath));
           packageJson.nickname = item.nickname
           packageJson.description = item.description || ''
           packageJson.doc_url = item.doc_url || ''
           packageJson.keywords = item?.tags ? JSON.parse(item.tags) : []
           packageJson.cloudId = item.id;
 
-          this.electronService.writeFile(`${targetPath}/package.json`, JSON.stringify(packageJson, null, 2));
-          this.projectService.projectOpen(targetPath);
+          this.electronService.writeFile(manifestPath, JSON.stringify(packageJson, null, 2));
+          await this.projectService.projectOpen(targetPath);
         } catch (e) {
           console.error('打开项目失败', e);
           this.message.error('打开项目失败');

@@ -124,6 +124,83 @@ test('Coder template copies preserve the project skeleton and leave entry select
   for (const file of excluded) assert.equal(fs.existsSync(path.join(target, file)), false);
 });
 
+for (const method of ['save-as', 'folder-import', 'wrapped-archive-import']) {
+  test(`Coder ${method} retains the old History and mode in an inactive archive`, () => {
+    const origin = directory(), parent = directory(), target = path.join(parent, 'independent copy');
+    const source = method === 'wrapped-archive-import' ? path.join(origin, 'project-wrapper') : origin;
+    const inherited = {
+      '.workspace-history/workspace.json': '{"executionMigration":{"phase":"prepared"}}\n',
+      '.workspace-history/overlays/turn.json': 'copied writer',
+      '.workspace-history/objects/source.bin': Buffer.from([0, 13, 255, 64]),
+      ...(method === 'wrapped-archive-import' ? {} : { '.aily/workspace-mode.json': '{"version":1,"mode":"project-v1"}\n' }),
+    };
+    const ordinary = {
+      'package.json': method === 'folder-import' ? '{"name":"legacy"}' : '{"type":"coder"}',
+      'project.aci': '',
+      'sketch/src/main.cpp': 'int value = 1;\n',
+      '.aily/history-recovery/older/.workspace-history/workspace.json': 'older archive',
+      '.aily/coder-embed-hints.json': '{}',
+    };
+    for (const [name, bytes] of Object.entries({ ...inherited, ...ordinary })) {
+      fs.mkdirSync(path.dirname(path.join(source, name)), { recursive: true });
+      fs.writeFileSync(path.join(source, name), bytes);
+    }
+    if (method === 'save-as') {
+      fs.mkdirSync(target);
+      copyProjectDirectory(source, target);
+    } else assert.equal(importProjectDirectory(origin, target, method === 'wrapped-archive-import'), target);
+
+    const recovery = path.join(target, '.aily/history-recovery');
+    const archives = fs.readdirSync(recovery).filter(name => name !== 'older');
+    assert.equal(archives.length, 1);
+    for (const [name, bytes] of Object.entries(inherited)) {
+      const archivedName = name.startsWith('.aily/') ? path.basename(name) : name;
+      assert.equal(fs.existsSync(path.join(target, name)), false, name);
+      const expected = Buffer.from(bytes);
+      assert.deepEqual(fs.readFileSync(path.join(recovery, archives[0], archivedName)), expected);
+      assert.deepEqual(fs.readFileSync(path.join(source, name)), expected);
+    }
+    for (const [name, text] of Object.entries(ordinary)) {
+      assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), text);
+    }
+  });
+}
+
+test('a clean Coder cloud import opens without synthesizing archived History', () => {
+  const source = directory(), parent = directory(), target = path.join(parent, 'clean import');
+  fs.writeFileSync(path.join(source, 'package.json'), '{"type":"coder"}');
+  fs.writeFileSync(path.join(source, 'project.aci'), '');
+  fs.mkdirSync(path.join(source, 'sketch/src'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'sketch/src/main.cpp'), 'int value = 1;');
+  importProjectDirectory(source, target, true);
+  assert.equal(fs.existsSync(path.join(target, '.workspace-history')), false);
+  assert.equal(fs.existsSync(path.join(target, '.aily')), false);
+  assert.equal(fs.readFileSync(path.join(target, 'sketch/src/main.cpp'), 'utf8'), 'int value = 1;');
+});
+
+test('an ABS-only Blockly import with a leftover Coder launcher retains its existing History behavior', () => {
+  const source = directory(), parent = directory(), target = path.join(parent, 'blockly import');
+  fs.writeFileSync(path.join(source, 'package.json'), '{"name":"blockly"}');
+  fs.writeFileSync(path.join(source, 'project.abs'), '\n# @project-state:{}\n');
+  fs.writeFileSync(path.join(source, 'project.aci'), 'old launcher');
+  fs.mkdirSync(path.join(source, '.workspace-history'));
+  fs.writeFileSync(path.join(source, '.workspace-history/workspace.json'), 'old Blockly state');
+  importProjectDirectory(source, target, true);
+  assert.equal(fs.existsSync(path.join(target, '.aily/history-recovery')), false);
+  assert.equal(fs.readFileSync(path.join(target, '.workspace-history/workspace.json'), 'utf8'), 'old Blockly state');
+});
+
+test('Coder import rejects a linked History root without touching its target', () => {
+  const source = directory(), parent = directory(), external = directory();
+  fs.writeFileSync(path.join(source, 'package.json'), '{"type":"coder"}');
+  fs.writeFileSync(path.join(external, 'workspace.json'), 'untouched');
+  fs.symlinkSync(external, path.join(source, '.workspace-history'), process.platform === 'win32' ? 'junction' : 'dir');
+  const target = path.join(parent, 'copy');
+  assert.throws(() => importProjectDirectory(source, target), /History metadata.*symbolic link/);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.readFileSync(path.join(external, 'workspace.json'), 'utf8'), 'untouched');
+});
+
 test('Coder template copies reject linked directories before following them for entry creation', () => {
   const source = directory(); const target = directory(); const external = directory();
   fs.writeFileSync(path.join(external, 'original.ino'), 'external source');

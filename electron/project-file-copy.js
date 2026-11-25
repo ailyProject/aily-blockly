@@ -1,7 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { copyProjectLibraryLink } = require('./project-library-copy');
+const { readProjectMode } = require('./project-companion');
 const SAVE_AS_EXCLUDED_DIRECTORIES = new Set(['.workspace-history', '.temp', '.log', '.build']);
+const CODER_HISTORY_COPY_INPUTS = ['.workspace-history', '.aily/workspace-mode.json'];
 const BUILD_WORKSPACE_OWNER_FILES = new Set([
   '.build/aily-workspace.lock', '.build/aily-builder.lock', '.build/aily-workspace-recovery.lock',
 ]);
@@ -24,6 +26,56 @@ function isProjectWriterTransient(relativePath) {
     || /^\.(?:project\.(?:abi|abs|abs\.map\.json)|project-data-backup)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name);
 }
 
+function coderCopyHistory(root, coderTemplate) {
+  const inputs = new Map();
+  const metadata = fs.lstatSync(path.join(root, '.aily'), { throwIfNoEntry: false });
+  const historyEntries = CODER_HISTORY_COPY_INPUTS.flatMap(name => {
+    if (name.startsWith('.aily/') && !metadata?.isDirectory()) return [];
+    const source = path.join(root, name);
+    const entry = fs.lstatSync(source, { throwIfNoEntry: false });
+    return entry ? [{ source, name, entry }] : [];
+  });
+  if (!historyEntries.length) return inputs;
+  const manifestPath = path.join(root, 'package.json');
+  const manifest = fs.lstatSync(manifestPath, { throwIfNoEntry: false });
+  if (manifest?.isSymbolicLink()) throw new Error('Project metadata must not be copied through a symbolic link.');
+  if (!coderTemplate) {
+    try {
+      if (readProjectMode(root) !== 'coder') return inputs;
+      const absPath = path.join(root, 'project.abs');
+      const abs = fs.lstatSync(absPath, { throwIfNoEntry: false });
+      // Match the editor's ABS-only Blockly fallback even when an obsolete
+      // Coder launcher is present. An explicit Coder manifest still wins.
+      if (abs?.isFile() && (!manifest || JSON.parse(fs.readFileSync(manifestPath, 'utf8'))?.type !== 'coder')
+        && fs.readFileSync(absPath).includes('\n# @project-state:')) return inputs;
+    } catch { return inputs; }
+  }
+  if (metadata?.isSymbolicLink()) throw new Error('Project metadata must not be copied through a symbolic link.');
+  for (const { source, name, entry } of historyEntries) {
+    if (entry.isSymbolicLink()) throw new Error('Coder History metadata must not be copied through a symbolic link.');
+    // Use the actual directory-entry spelling on a case-insensitive filesystem.
+    inputs.set(path.relative(root, fs.realpathSync.native(source)), { source, name: path.basename(name) });
+  }
+  return inputs;
+}
+
+function archiveCoderCopyHistory(target, history) {
+  if (!history.size) return;
+  const metadata = path.join(target, '.aily');
+  const recovery = path.join(metadata, 'history-recovery');
+  for (const directory of [metadata, recovery]) {
+    try { fs.mkdirSync(directory, { mode: 0o700 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    if (!fs.lstatSync(directory).isDirectory()) throw new Error('Coder History recovery requires a regular directory.');
+  }
+  const archive = fs.mkdtempSync(path.join(recovery, 'copy-'));
+  for (const { source, name } of history.values()) {
+    fs.cpSync(source, path.join(archive, name), {
+      recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true,
+    });
+  }
+}
+
 /** Filtered directory copy, not a point-in-time snapshot or a multi-file transaction. */
 function copyProjectContents(source, destination, { excludeRuntimeDirectories, recoveryCopy, coderTemplate }) {
   if (!path.isAbsolute(source) || !path.isAbsolute(destination)) throw new Error('Project copy requires absolute paths.');
@@ -36,10 +88,12 @@ function copyProjectContents(source, destination, { excludeRuntimeDirectories, r
   if (!fs.lstatSync(root).isDirectory() || !fs.lstatSync(target).isDirectory()
     || fs.lstatSync(destination).isSymbolicLink()) throw new Error('Project copy requires regular directories.');
   if (fs.readdirSync(target).length) throw new Error('Project copy destination must be empty.');
+  const history = coderCopyHistory(root, coderTemplate);
   const libraryLinks = [];
   fs.cpSync(root, target, { recursive: true, force: false, errorOnExist: true,
     filter: file => {
       const relativePath = path.relative(root, file);
+      if (history.has(relativePath)) return false;
       const name = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
       const normalized = name.split(path.sep).join('/');
       if (coderTemplate && ['package.json', 'project.aci'].includes(normalized)) return false;
@@ -58,6 +112,9 @@ function copyProjectContents(source, destination, { excludeRuntimeDirectories, r
           && fs.statSync(file, { throwIfNoEntry: false })?.isDirectory());
     } });
   for (const relative of libraryLinks) copyProjectLibraryLink(root, target, relative);
+  // A fresh project owns a new History. Keep its predecessor outside the active
+  // store; the existing cloud rule excludes the enclosing .aily directory.
+  archiveCoderCopyHistory(target, history);
 }
 
 function copyProjectDirectory(source, destination, excludeRuntimeDirectories = true, recoveryCopy = false) {

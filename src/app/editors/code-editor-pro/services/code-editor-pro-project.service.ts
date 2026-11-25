@@ -86,6 +86,13 @@ export class CodeEditorProProjectService {
     const bridge = this.persistenceBridges.get(this.key(path))?.bridge;
     if (!bridge?.captureCopy || !bridge.checkCopy) throw new Error('另存为需要更新后的 Coder 编辑器，请更新编辑器后重试。');
     const captured = await bridge.captureCopy();
+    const dirtyHistory = captured.files.find(file => {
+      const relative = window['path'].relative(path, file.path).replaceAll('\\', '/').toLowerCase();
+      return relative === '.workspace-history' || relative.startsWith('.workspace-history/')
+        || relative === '.aily/workspace-mode.json'
+        || relative === '.aily/history-recovery' || relative.startsWith('.aily/history-recovery/');
+    });
+    if (dirtyHistory) throw new Error(`工程历史文件有未保存的修改，请先在原工程处理：${dirtyHistory.path}`);
     const assertCurrent = async () => {
       if (this.persistenceBridges.get(this.key(path))?.bridge !== bridge) throw new Error('Coder 编辑器已切换，请重新执行另存为。');
       await bridge.checkCopy!(captured.token);
