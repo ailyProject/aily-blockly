@@ -257,10 +257,18 @@ test('artifacts support same-run retries and stable baselines wait for domestic 
     }), expected);
   }
   const syncWorkflow = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/workflows/coder-sync.yml'), 'utf8'));
-  for (const source of [workflow, syncWorkflow]) {
-    assert.deepEqual(source.jobs['sync-stable-feed'].steps[0].env, {
-      SERVER_HOST: '${{ secrets.TRIGGER_SERVER_HOST }}', SERVER_USER: '${{ secrets.TRIGGER_SERVER_USER }}',
-      SERVER_PASSWORD: '${{ secrets.TRIGGER_SERVER_PASSWORD }}', SERVER_SCRIPT_PATH: '${{ secrets.TRIGGER_CODER_SERVER_SCRIPT_PATH }}',
-    });
+  assert.equal(syncWorkflow.on.workflow_dispatch.inputs.source_run_id.required, true);
+  const repair = syncWorkflow.jobs['sync-stable-feed'];
+  assert.equal(repair.if, "github.ref == 'refs/heads/deploy-coder'");
+  const sources = [workflow.jobs['sync-stable-feed'], repair];
+  for (const job of sources) {
+    const dispatch = job.steps.at(-1);
+    assert.equal(dispatch.run, 'bash scripts/dispatch-cn-feed.sh coder "$RELEASE_VERSION"');
+    assert.equal(dispatch.env.GH_TOKEN, '${{ secrets.CN_FEED_DISPATCH_TOKEN }}');
   }
+  assert.equal(sources[0].steps.at(-1).env.RELEASE_VERSION, '${{ needs.prepare.outputs.version }}');
+  assert.equal(repair.steps.at(-1).env.SOURCE_RUN_ID, '${{ inputs.source_run_id }}');
+  assert.equal(repair.steps.at(-1).env.SOURCE_SHA, '${{ steps.source.outputs.sha }}');
+  assert.equal(repair.steps.at(-1).env.SOURCE_ATTEMPT, '${{ steps.source.outputs.attempt }}');
+  assert.equal(repair.steps.at(-1).env.RELEASE_VERSION, '${{ steps.source.outputs.version }}');
 });

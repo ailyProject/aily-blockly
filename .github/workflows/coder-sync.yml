@@ -2,23 +2,45 @@ name: Aily Coder Sync
 
 on:
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Aily Coder Package run ID on deploy-coder
+        required: true
+        type: string
 
-permissions: {}
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   sync-stable-feed:
+    if: github.ref == 'refs/heads/deploy-coder'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 65
     steps:
-      - name: Trigger Coder Server Script
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve stable Coder release run
+        id: source
         env:
-          SERVER_HOST: ${{ secrets.TRIGGER_SERVER_HOST }}
-          SERVER_USER: ${{ secrets.TRIGGER_SERVER_USER }}
-          SERVER_PASSWORD: ${{ secrets.TRIGGER_SERVER_PASSWORD }}
-          SERVER_SCRIPT_PATH: ${{ secrets.TRIGGER_CODER_SERVER_SCRIPT_PATH }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
-          : "${SERVER_SCRIPT_PATH:?Missing TRIGGER_CODER_SERVER_SCRIPT_PATH}"
-          sudo apt-get update && sudo apt-get install -y sshpass
-          echo "触发服务器脚本..."
-          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" "bash $SERVER_SCRIPT_PATH"
-          echo "✓ 脚本执行完成"
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          repo="repos/$GITHUB_REPOSITORY"
+          run=$(gh api "$repo/actions/runs/$SOURCE_RUN_ID")
+          sha=$(jq -er 'select(.path == ".github/workflows/coder.yml" and .head_branch == "deploy-coder") | .head_sha' <<< "$run")
+          attempt=$(jq -er '.run_attempt' <<< "$run")
+          version=$(gh api "$repo/contents/build/products/coder.json?ref=$sha" --jq .content | base64 --decode | jq -er .version)
+          [[ "$sha" =~ ^[a-f0-9]{40}$ && "$attempt" =~ ^[1-9][0-9]*$ && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'sha=%s\nattempt=%s\nversion=%s\n' "$sha" "$attempt" "$version" >> "$GITHUB_OUTPUT"
+      - name: Sync domestic Coder feed
+        env:
+          GH_TOKEN: ${{ secrets.CN_FEED_DISPATCH_TOKEN }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        run: bash scripts/dispatch-cn-feed.sh coder "$RELEASE_VERSION"
