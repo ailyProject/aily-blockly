@@ -35,7 +35,7 @@ describe('cloud build failures eligible for local fallback', () => {
     ]) expect(canOfferLocalBuildFallback(fault)).withContext(JSON.stringify(fault)).toBeFalse();
   });
 
-  it('offers a manual local action for unsupported targets without widening AI fallback', () => {
+  it('keeps unmarked unsupported targets out of AI fallback while offering a manual local action', () => {
     for (const code of ['CLOUD_BOARD_NOT_ENABLED', 'CLOUD_BOARD_UNSUPPORTED', 'CLOUD_TARGET_UNAVAILABLE', 'CLOUD_COMPILE_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED']) {
       expect(isUnsupportedCloudBuild({ code })).withContext(code).toBeTrue();
       expect(canRetryCloudBuildLocally({ code })).withContext(code).toBeTrue();
@@ -43,6 +43,31 @@ describe('cloud build failures eligible for local fallback', () => {
       expect(canRetryCloudBuildLocally({ code, cleanupConfirmed: false })).withContext(code).toBeFalse();
       expect(canRetryCloudBuildLocally({ code, remoteCleanupConfirmed: false })).withContext(code).toBeFalse();
     }
+  });
+
+  it('limits new AI fallback to the exact native CI SDK or citool compatibility refusal', () => {
+    const compatibility = { code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported' };
+    expect(canOfferLocalBuildFallback(compatibility)).toBeTrue();
+    expect(canOfferLocalBuildFallback({ ...compatibility, ciResourceReason: 'linked-input-mismatch' })).toBeFalse();
+    expect(canOfferLocalBuildFallback({ ...compatibility, code: 'COMPILE_ERROR' })).toBeFalse();
+    expect(canOfferLocalBuildFallback({ ...compatibility, cleanupConfirmed: false })).toBeFalse();
+    expect(canOfferLocalBuildFallback({ ...compatibility, remoteCleanupConfirmed: false })).toBeFalse();
+  });
+
+  it('retains the native CI compatibility reason without calling the cloud compiler', async () => {
+    const rejection = Object.assign(new Error('Unsupported CI SDK version'), {
+      code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported',
+    });
+    const bridge = { preparationRequirements: jasmine.createSpy('requirements').and.rejectWith(rejection),
+      run: jasmine.createSpy('run'), onProgress: () => () => {}, cancel: jasmine.createSpy('cancel') };
+    const failed = await runCloudBuildWithProgress({ requestId: 'ci-unsupported' }, bridge, {
+      isCurrent: () => true, log: () => {}, progress: () => {},
+    }).catch(error => error);
+    expect(failed.code).toBe(rejection.code);
+    expect(failed.ciResourceReason).toBe(rejection.ciResourceReason);
+    expect(canOfferLocalBuildFallback(failed)).toBeTrue();
+    expect(bridge.run).not.toHaveBeenCalled();
+    expect(bridge.cancel).not.toHaveBeenCalled();
   });
 
   it('keeps temporary failures out of the unsupported summary', () => {

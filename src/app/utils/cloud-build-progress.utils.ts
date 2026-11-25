@@ -42,7 +42,13 @@ const UNSUPPORTED_CLOUD_BUILD_CODES = new Set([
   'CLOUD_COMPILE_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED',
 ]);
 
-type CloudBuildFault = { code?: string; httpStatus?: number; cleanupConfirmed?: boolean; remoteCleanupConfirmed?: boolean };
+type CloudBuildFault = {
+  code?: string;
+  ciResourceReason?: string;
+  httpStatus?: number;
+  cleanupConfirmed?: boolean;
+  remoteCleanupConfirmed?: boolean;
+};
 
 export function isUnsupportedCloudBuild(error: unknown): boolean {
   return UNSUPPORTED_CLOUD_BUILD_CODES.has((error as CloudBuildFault | undefined)?.code ?? '');
@@ -56,6 +62,7 @@ export function canOfferLocalBuildFallback(error: unknown): boolean {
   const fault = error as CloudBuildFault | undefined;
   if (!fault?.code || !cloudBuildCleanupAllowsRetry(fault)) return false;
   return fault.code === 'CLOUD_TARGET_UNAVAILABLE'
+    || (fault.code === 'CI_RESOURCE_UNSUPPORTED' && fault.ciResourceReason === 'sdk-toolchain-unsupported')
     || KNOWN_CLOUD_WORKER_FAILURES.has(fault.code)
     || (GATEWAY_SERVER_FAILURES.has(fault.code) && typeof fault.httpStatus === 'number' && [500, 502, 503, 504].includes(fault.httpStatus));
 }

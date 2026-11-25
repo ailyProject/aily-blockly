@@ -12,6 +12,7 @@ const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { createNotificationApi } = require('./notification-preload');
+const { SDK_TOOLCHAIN_UNSUPPORTED } = require('./cloud-build/ci-resource-contract');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { rootAttachment, storageExecutor } = require('./project-file-lock-owner');
@@ -82,6 +83,8 @@ async function invokeCloudBuild(payload) {
       ...(envelope?.error?.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
       ...(envelope?.error?.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(envelope?.error?.sourceReason ? { sourceReason: envelope.error.sourceReason } : {}),
+      ...(envelope?.error?.code === 'CI_RESOURCE_UNSUPPORTED' && envelope.error.ciResourceReason === SDK_TOOLCHAIN_UNSUPPORTED
+        ? { ciResourceReason: SDK_TOOLCHAIN_UNSUPPORTED } : {}),
       ...(envelope?.error?.buildSnapshot ? { buildSnapshot: envelope.error.buildSnapshot } : {}),
       ...(typeof envelope?.error?.logComplete === 'boolean' ? { logComplete: envelope.error.logComplete } : {}),
     };

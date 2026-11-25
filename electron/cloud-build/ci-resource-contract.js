@@ -7,6 +7,7 @@ const SDK_PACKAGE = '@aily-project/sdk-ci13xx';
 const TOOL_PACKAGE = '@aily-project/tool-citool-cli';
 const SDK_VERSIONS = Object.freeze(['1.0.14', '1.0.15', '1.0.17']);
 const TOOL_VERSION = '1.2.2';
+const SDK_TOOLCHAIN_UNSUPPORTED = 'sdk-toolchain-unsupported';
 const SERVICE_URL = 'https://gen.yiyu.pro/ci';
 const ASR_FILES = Object.freeze(['asr.bin', 'dnn.bin', 'user_file.bin']);
 
@@ -70,5 +71,5 @@ function resourceRoot(entry, algorithm = '') {
   return entry.slice(0, entry.lastIndexOf('/')) + '/recursos' + (['cwsl', 'cwsl_aec'].includes(algorithm) ? '/cwsl' : '');
 }
 
-module.exports = { MANIFEST_PATH, KIND, SDK_PACKAGE, TOOL_PACKAGE, SDK_VERSIONS, TOOL_VERSION, SERVICE_URL,
+module.exports = { MANIFEST_PATH, KIND, SDK_PACKAGE, TOOL_PACKAGE, SDK_VERSIONS, TOOL_VERSION, SDK_TOOLCHAIN_UNSUPPORTED, SERVICE_URL,
   ASR_FILES, detectIntent, mp3References, expectedFiles, resourceRoot };

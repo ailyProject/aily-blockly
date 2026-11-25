@@ -6,6 +6,7 @@ const uploadRuntime = require('./cloud-upload-runtime');
 const cloudRecipe = require('./cloud-recipe-upload');
 const { nativeSerialExecutable } = require('./cloud-native-upload');
 const ciResources = require('./ci-resource-preparation');
+const { SDK_TOOLCHAIN_UNSUPPORTED } = require('./ci-resource-contract');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const { confirmBuildSource } = require(path.join(childRoot, 'scripts/build-source-capture'));
 const { CloudBuildBroker } = require('./broker');
@@ -222,6 +223,8 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
     } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
       ...(Number.isInteger(error.httpStatus) ? { httpStatus: error.httpStatus } : {}),
       ...(error.code === 'BUILD_SOURCE_STALE' && error.sourceReason ? { sourceReason: error.sourceReason } : {}),
+      ...(error.code === 'CI_RESOURCE_UNSUPPORTED' && error.ciResourceReason === SDK_TOOLCHAIN_UNSUPPORTED
+        ? { ciResourceReason: SDK_TOOLCHAIN_UNSUPPORTED } : {}),
       ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
       ...(error.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(error.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),

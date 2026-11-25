@@ -9,6 +9,7 @@ import { _UploaderService } from './uploader.service';
 import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { NpmService } from '../../../services/domains/dependencies/public-api';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
+import { ProjectBuildReceipts } from '../../../services/integrations/automation/project-build-receipts';
 
 describe('Blockly compile and upload handoff', () => {
   let originalFs: any, originalPath: any, originalBuilder: any, originalCmd: any, originalCloudBuild: any;
@@ -1025,7 +1026,10 @@ describe('Blockly compile and upload handoff', () => {
         f.service.projectService.getBoardConfigMenu.and.rejectWith(Object.assign(new Error('No matching cloud target'), { code: 'CLOUD_TARGET_UNAVAILABLE' }));
       }
       f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.callFake(async () => {
-        if (stage === 'changed') f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+        if (stage === 'changed') {
+          f.service.blocklyService.captureBuildSnapshot = () => ({ revision: 2 });
+          throw Object.assign(new Error('Unsupported SDK'), { code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported' });
+        }
         if (stage === 'sdk-unsupported') throw Object.assign(new Error('Unsupported SDK'), { code: 'CI_RESOURCE_UNSUPPORTED' });
         throw offline;
       });
@@ -1041,32 +1045,53 @@ describe('Blockly compile and upload handoff', () => {
       if (['board-support', 'target-profile', 'target-unavailable', 'cloud-run'].includes(stage)) expect(guard).not.toThrow();
       else if (stage === 'changed') expect(guard).toThrowError(/canvas changed/);
       else expect(guard).toBeUndefined();
-      if (stage === 'sdk-unsupported' || stage === 'target-unavailable') {
-        expect(completed.code).toBe(stage === 'sdk-unsupported' ? 'CI_RESOURCE_UNSUPPORTED' : 'CLOUD_TARGET_UNAVAILABLE');
+      if (['sdk-unsupported', 'target-unavailable', 'changed'].includes(stage)) {
+        expect(completed.code).toBe(stage === 'target-unavailable' ? 'CLOUD_TARGET_UNAVAILABLE' : 'CI_RESOURCE_UNSUPPORTED');
         expect(completed.text).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
-        expect(completed.fullStdErr).toContain(stage === 'sdk-unsupported' ? 'Unsupported SDK' : 'No matching cloud target');
+        expect(completed.fullStdErr).toContain(stage === 'target-unavailable' ? 'No matching cloud target' : 'Unsupported SDK');
       } else expect(completed.text).toBe(offline.message);
       expect(operation.release).toHaveBeenCalledTimes(1);
       expect(f.service.configService.getCompileBackend()).toBe('cloud');
     });
   }
 
-  it('uses local Blockly compilation only when the AI request carries a checked cloud receipt', async () => {
+  it('locally compiles Blockly after receiving a checked CI resource incompatibility receipt', async () => {
     const f = compileFixture();
     const operation = { local: false, isNested: false, useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
+    operation.release.and.callFake(() => { operation.local = false; });
     f.service.projectService.beginBuildBackendOperation = () => operation;
     f.service.projectService.isCloudBuild = () => !operation.local;
     f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService.prepareCompileBackend = async () => {};
+    f.service.npmService.ensureCloudLibrarySources = async () => {};
     f.service.npmService.prepareLocalCompileBackend = jasmine.createSpy('prepareLocal').and.resolveTo();
-    const assertCurrent = jasmine.createSpy('assertCurrent');
-    const { result } = await f.start('explicit-local', { localFallback: { local: { fromRequestId: 'original-cloud', assertCurrent } } });
+    const failure = Object.assign(new Error('Unsupported CI SDK version'), {
+      code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported',
+    });
+    f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.rejectWith(failure);
+    const receipts = new ProjectBuildReceipts();
+    const cloud = await receipts.start('/project', { version: 1, requestId: 'original-cloud', waitMs: 10_000 }, 'full', async localFallback => {
+      const { result } = await f.start('original-cloud', { localFallback });
+      const completed = await result;
+      return { ok: completed.state === 'done', code: completed.code };
+    });
+    expect(cloud.result).toEqual({ ok: false, code: failure.code, localFallback: { fromRequestId: 'original-cloud' } });
+    expect(f.service.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+
+    const local = receipts.start('/project', { version: 1, requestId: 'explicit-local', waitMs: 10_000 }, 'full-local', async localFallback => {
+      return { ok: (await f.service.build(undefined, 'explicit-local', {}, { localFallback })).state === 'done' };
+    }, cloud.result?.['localFallback']?.fromRequestId);
+    for (let n = 0; n < 100 && !f.service.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
     expect(f.service.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
-    expect(assertCurrent).toHaveBeenCalledTimes(3);
+    expect(f.service.cmdService.spawn).toHaveBeenCalledTimes(1);
     f.command.next({ type: 'close', code: 0 }); f.command.complete();
-    const completed = await result;
-    expect(completed.state).toBe('done');
-    expect(completed.buildLog.requestId).toBe('explicit-local');
-    expect(f.files.get(completed.buildLog.path)).toContain('AI requested local compilation after cloud build original-cloud');
+    const completed = await local;
+    expect(completed.result?.['ok']).toBeTrue();
+    expect(completed.buildReceipt.requestId).toBe('explicit-local');
+    const log = [...f.files.values()].find(value => value.includes('AI requested local compilation after cloud build original-cloud'));
+    expect(log).toBeDefined();
+    expect(f.service.runCloudCompilation).toHaveBeenCalledTimes(1);
+    expect(f.service.projectService.isCloudBuild()).toBeTrue();
   });
 
   for (const ending of ['cloud', 'local', 'unsupported', 'outage', 'cancel']) it(`keeps the same Blockly caller through a cloud/local round trip ending in ${ending}`, async () => {
