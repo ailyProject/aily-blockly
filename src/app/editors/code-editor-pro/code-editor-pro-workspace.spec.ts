@@ -43,6 +43,7 @@ describe('Coder retained project workspaces', () => {
     service = Object.create(ProjectService.prototype);
     Object.assign(service, {
       coderOperationSubject: new BehaviorSubject(null), coderOperationsSubject: new BehaviorSubject(new Map()),
+      projectNavigationIntentRevision: 0,
       coderOperations: new Map(), coderProjectContexts: new Map(), coderProjectsSubject: new BehaviorSubject([]),
       currentProjectPathSubject: new BehaviorSubject(''), stateSubject: new BehaviorSubject('loaded'),
       coderWorkspaceSubject: new BehaviorSubject(null),

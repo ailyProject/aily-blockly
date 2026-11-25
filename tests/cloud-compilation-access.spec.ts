@@ -147,6 +147,8 @@ describe('cloud compilation account access', () => {
     window['cloudBuild'] = { invalidate };
     const blockly = Object.assign(Object.create(_BuilderService.prototype), {
       metrics: { record: () => {} },
+      noticeService: { update: jasmine.createSpy('preparingNotice') },
+      translate: { instant: (key: string) => key },
       configService: config,
       projectService: { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {} },
       workflowService: { startBuild: () => true, finishBuild: () => {} },
@@ -154,6 +156,7 @@ describe('cloud compilation account access', () => {
     });
     await expectAsync(blockly.build()).toBeRejectedWith(jasmine.objectContaining({ text: 'local-boundary' }));
     expect(invalidate).toHaveBeenCalledOnceWith({ projectPath: '/project' });
+    expect(blockly.noticeService.update).toHaveBeenCalledWith(jasmine.objectContaining({ state: 'doing' }));
   });
 
   function settings(): any {
