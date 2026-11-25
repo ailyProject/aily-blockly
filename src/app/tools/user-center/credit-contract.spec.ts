@@ -312,6 +312,90 @@ describe('Auth Credit HTTP contract and refresh lifecycle', () => {
     }));
   }
 
+  it('releases cloud project startup after the verified profile and still finishes the full Credit snapshot', fakeAsync(() => {
+    let identityReady = false, snapshotReady = false;
+    void service.initializeAuth().then(() => { snapshotReady = true; });
+    void service.initializeAuth('identity').then(() => { identityReady = true; });
+    flushMicrotasks();
+    expect(identityReady).toBeFalse();
+    http.expectOne(API.me).flush({ status: 200, data: user });
+    flushMicrotasks();
+    expect(identityReady).toBeTrue();
+    expect(service.canUseCloudCompilation).toBeTrue();
+    expect(snapshotReady).toBeFalse();
+    http.expectOne(API.creditSnapshot).flush(ledgerPayload);
+    flushMicrotasks();
+    expect(snapshotReady).toBeTrue();
+    expect(service.getAuthSnapshot()?.quotaInfoSnapshot?.creditSnapshot?.available_micros).toBe(29_993_290);
+    tick();
+  }));
+
+  it('keeps cloud disabled when the verified session is invalidated during Credit hydration', fakeAsync(() => {
+    void service.initializeAuth();
+    flushMicrotasks();
+    http.expectOne(API.me).flush({ status: 200, data: user });
+    flushMicrotasks();
+    expect(service.canUseCloudCompilation).toBeTrue();
+    service.requestSessionInvalidation('AUTH_TOKEN_INVALID', 'http-401', 'test-token');
+    http.expectOne(API.creditSnapshot).flush(ledgerPayload);
+    flushMicrotasks();
+    expect(service.getAuthInitializationState()).toBe('signed_out');
+    expect(service.canUseCloudCompilation).toBeFalse();
+    expect(service.getAuthSnapshot()?.quotaInfoSnapshot?.creditSnapshot).toBeUndefined();
+    tick();
+  }));
+
+  it('verifies the new credential when an older profile request fails after a token change', fakeAsync(() => {
+    const previousToken = localStorage.getItem('aily_auth_token');
+    try {
+      void service.initializeAuth();
+      flushMicrotasks();
+      const oldProfile = http.expectOne(API.me);
+      void service.saveToken2('replacement-token');
+      flushMicrotasks();
+      (service.getToken2 as jasmine.Spy).and.resolveTo('replacement-token');
+      oldProfile.flush({}, { status: 503, statusText: 'Unavailable' });
+      flushMicrotasks();
+      const profile = http.expectOne(API.me);
+      expect(profile.request.headers.get('Authorization')).toBe('Bearer replacement-token');
+      profile.flush({ status: 200, data: { id: 'replacement-account' } });
+      flushMicrotasks();
+      expect(service.currentUser?.id).toBe('replacement-account');
+      expect(service.getAuthInitializationState()).toBe('authenticated');
+      http.expectOne(API.creditSnapshot).flush(ledgerPayload);
+      flushMicrotasks();
+      tick();
+    } finally {
+      if (previousToken === null) localStorage.removeItem('aily_auth_token');
+      else localStorage.setItem('aily_auth_token', previousToken);
+    }
+  }));
+
+  for (const change of ['credentials', 'profile'] as const) {
+    it(`discards pending startup Credits after a change of ${change}`, fakeAsync(() => {
+      void service.initializeAuth();
+      flushMicrotasks();
+      http.expectOne(API.me).flush({ status: 200, data: user });
+      flushMicrotasks();
+      if (change === 'credentials') {
+        const previousToken = localStorage.getItem('aily_auth_token');
+        try {
+          void service.saveToken2('new-session-token');
+          flushMicrotasks();
+        } finally {
+          if (previousToken === null) localStorage.removeItem('aily_auth_token');
+          else localStorage.setItem('aily_auth_token', previousToken);
+        }
+      } else {
+        (service as any).setCurrentUserInfo({ nickname: 'new profile without an id' });
+      }
+      http.expectOne(API.creditSnapshot).flush(ledgerPayload);
+      flushMicrotasks();
+      expect(service.getAuthSnapshot()?.quotaInfoSnapshot?.creditSnapshot).toBeUndefined();
+      tick();
+    }));
+  }
+
   for (const invalid of [
     { quota_snapshots: { premium_interactions: { remaining: 22 } } },
     { status: 500, data: ledgerPayload },

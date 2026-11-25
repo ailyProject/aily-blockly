@@ -133,7 +133,7 @@ export class ConfigService {
     if (getCompileBackend(this.data) !== 'cloud'
       || !isCloudCompilationSupported(this.data?.region, this.data?.build_flavor)) return;
     const auth = this.authService.getAuthInitializationState();
-    if (auth === 'idle' || auth === 'checking') await this.authService.initializeAuth();
+    if (auth === 'idle' || auth === 'checking') await this.authService.initializeAuth('identity');
   }
 
   getCloudBuildSettings(): CloudBuildSettings { return getCloudBuildSettings(this.data); }

@@ -10,7 +10,7 @@ import {
   ChatPerformanceTracer,
 } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
+import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState, yieldForNoticePaint } from '@core/app-shell/public-api';
 import { ProjectService, ProjectDebugConfigurationService, projectDataRuntime } from '@domain/project/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { MetricsService } from '@core/metrics/public-api';
@@ -1497,6 +1497,11 @@ export class _BuilderService {
     });
     const cancellation = new AbortController();
     this.buildCancellation = cancellation;
+    this.streamId = null;
+    this.buildStartTime = checkpoint.startedAt;
+    this.noticeService.update({ title: this.t('PREPARING_TITLE'), state: 'doing', showProgress: false, preparationId: requestId,
+      stop: () => this.cancel(requestId) });
+    await yieldForNoticePaint();
     const requestLog = await createProjectBuildLog(requestedProjectPath, requestId);
     this.activeBuildLog = requestLog;
     const fallback = preparation.localFallback?.local;
@@ -1537,8 +1542,6 @@ export class _BuilderService {
           throw Object.assign(buildSourceStale('settings', 'Build settings changed before compilation.'), { buildOutcome: 'not-started' });
         }
         this.currentProjectPath = requestedProjectPath;
-        this.streamId = null; // 初始化为 null
-        this.buildStartTime = Date.now(); // 记录编译开始时间
         if (fallback) {
           if (!cloudBuild || backendOperation.isNested || graphSemanticRevision !== undefined) {
             throw Object.assign(new Error('The local fallback no longer belongs to an active cloud compile.'),

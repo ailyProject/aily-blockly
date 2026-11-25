@@ -30,6 +30,8 @@ export interface NoticeOptions {
   onClose?: () => void;
   icon?: string;
   isCancellationNotice?: boolean;
+  /** Before the task publishes real progress, other task owners may take over the panel. */
+  preparationId?: string;
   /** 错误通知上的“重试”动作，例如 Aily Code npm install 失败后再执行一次。 */
   onRetry?: () => void;
   /** 当前云编译任务切换为本地编译，继续原调用。 */

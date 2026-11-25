@@ -57,6 +57,36 @@ describe('Coder upload dependency preflight', () => {
     expect(finish).not.toHaveBeenCalled();
   });
 
+  it('presents upload preparation before releasing the serial port and waits for both before dispatch', async () => {
+    const events: string[] = [];
+    let painted!: () => void, disconnected!: () => void;
+    uploader.isPythonProject = () => false;
+    uploader.serialService = { currentPort: 'TEST', currentPortInfo: { type: 'serial' } };
+    uploader.translate = { instant: (key: string) => key };
+    uploader.application = {
+      beginUploadPreparation: () => {
+        events.push('notice');
+        return { painted: new Promise<void>(resolve => { painted = resolve; }), close: () => events.push('retire') };
+      },
+      hasActionListener: () => false,
+      uploadFromBlocklyEditor: async () => { events.push('flash'); return { state: 'done' }; },
+    };
+    uploader.metrics = { record() {} };
+    uploader.electronService = { isWindowFocused: () => true };
+    uploader.sendSerialResourceUploadSignal = async (signal: string) => {
+      events.push(signal);
+      if (signal === 'serial-monitor:disconnect') await new Promise<void>(resolve => { disconnected = resolve; });
+    };
+    const upload = UploaderService.prototype['uploadCurrentProject'].call(uploader, undefined, () => {});
+    expect(events).toEqual(['notice', 'serial-monitor:disconnect']);
+    disconnected();
+    await Promise.resolve();
+    expect(events).not.toContain('flash');
+    painted();
+    expect((await upload).state).toBe('done');
+    expect(events).toEqual(['notice', 'serial-monitor:disconnect', 'flash', 'retire', 'serial-monitor:connect']);
+  });
+
   it('also blocks SoftDevice flashing before releasing the serial port', async () => {
     uploader.npmService.assertCoderDependenciesReady.and.rejectWith(new Error('SDK incomplete'));
     uploader.sendSerialResourceUploadSignal = jasmine.createSpy('serialSignal');

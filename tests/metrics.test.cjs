@@ -147,11 +147,13 @@ test('Python and Arduino report actual upload success before auxiliary cleanup, 
   service.createUploadOperationId = () => 'upload';
   service.sendSerialResourceUploadSignal = async signal => { if (signal.endsWith('connect') && !signal.endsWith('disconnect')) throw new Error('cleanup'); };
   service.projectService = { isAilyCodeProject: () => true };
-  service.application = { hasActionListener: () => false, uploadFromBlocklyEditor: async () => ({ state: 'done' }) };
+  service.translate = { instant: key => key };
+  service.application = { beginUploadPreparation: () => undefined, hasActionListener: () => false,
+    uploadFromBlocklyEditor: async () => ({ state: 'done' }) };
   service.electronService = { isWindowFocused: () => true }; service.resumeLifecycleFromPolicy = () => ({});
-  await assert.rejects(service.uploadCurrentProject(), /cleanup/); assert.equal(records.length, 2);
+  await assert.rejects(service.uploadCurrentProject(undefined, () => {}), /cleanup/); assert.equal(records.length, 2);
   service.application.uploadFromBlocklyEditor = async () => ({ state: 'warn', text: 'Cancelled' });
-  await assert.rejects(service.uploadCurrentProject(), /cleanup/); assert.equal(records.length, 2);
+  await assert.rejects(service.uploadCurrentProject(undefined, () => {}), /cleanup/); assert.equal(records.length, 2);
 });
 
 test('disk compilation reports an attempt before local or cloud failure, but not preprocessing or a busy rejection', async () => {

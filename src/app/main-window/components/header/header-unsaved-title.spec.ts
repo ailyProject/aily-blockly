@@ -1,5 +1,6 @@
 import { BehaviorSubject, Subject, Subscription } from 'rxjs';
 import { fakeAsync, tick } from '@angular/core/testing';
+import { NavigationEnd } from '@angular/router';
 import { HeaderComponent } from './header.component';
 import { BlocklyProjectDirtyState } from '../../../editors/blockly-editor/services/blockly-project-dirty-state';
 import { BlocklyProjectDocument } from '../../../editors/blockly-editor/services/blockly-project-model';
@@ -155,9 +156,24 @@ describe('project title unsaved marker', () => {
     view.watchProjectUnsavedState(); view.scheduleUnsavedCheck.calls.reset();
     tick(5000); expect(view.scheduleUnsavedCheck).not.toHaveBeenCalled();
     expect(view.projectService.getProjectMode).not.toHaveBeenCalled();
-    view.router.url = '/main/code-editor-pro'; tick(1000);
-    expect(view.scheduleUnsavedCheck).toHaveBeenCalledTimes(1);
-    clearInterval(view.coderUnsavedPoll);
+    expect(view.coderUnsavedPoll).toBeUndefined();
+    view.router.url = '/main/code-editor-pro';
+    const navigated = () => view.router.events.next(new NavigationEnd(1, view.router.url, view.router.url));
+    navigated(); navigated();
+    view.scheduleUnsavedCheck.calls.reset();
+    tick(1000); expect(view.scheduleUnsavedCheck).toHaveBeenCalledTimes(1);
+
+    view.projectService.currentProjectPath = '';
+    view.projectService.currentProjectPath$.next('');
+    expect(view.coderUnsavedPoll).toBeUndefined();
+    view.projectService.currentProjectPath = '/other';
+    view.projectService.currentProjectPath$.next('/other');
+    expect(view.coderUnsavedPoll).toBeDefined();
+
+    view.router.url = '/main/blockly-editor'; navigated();
+    expect(view.coderUnsavedPoll).toBeUndefined();
+    view.scheduleUnsavedCheck.calls.reset();
+    tick(5000); expect(view.scheduleUnsavedCheck).not.toHaveBeenCalled();
   }));
 
   it('retains canvas edits during dependency preparation and autosaves once it settles', fakeAsync(() => {

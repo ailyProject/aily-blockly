@@ -360,7 +360,8 @@ describe('Blockly dependency preparation cancellation', () => {
           resolveBoardConfigForRuntime: async () => ({}), loadBoardMenuConfig: async () => {}, isCloudBuild: () => false,
           markBlocklyProjectLoaded() {}, markBlocklyLibraryRuntimeReady() {} },
         applyProjectPackageJson() {}, getDeclaredBlocklyLibraryDependencies: () => new Map(),
-        npmService: { ensureProjectDependenciesInstalled: jasmine.createSpy('prepareSources').and.resolveTo(true), installedOk: async () => true,
+        npmService: { ensureProjectDependenciesInstalled: jasmine.createSpy('prepareSources').and.resolveTo(true),
+          installedOk: jasmine.createSpy('checkDependencies').and.resolveTo(true),
           getAllInstalledLibraries: async () => [], installBoardDeps: async () => {} },
         blocklyService: { waitForWorkspace: async () => {}, withToolboxRefreshBatch: async work => work(),
           getMissingBlockDefinitions: () => [], acquireWorkspaceEditLease: () => ({ assertCurrent() {}, release() {} }),
@@ -383,6 +384,7 @@ describe('Blockly dependency preparation cancellation', () => {
         await component.prepareProject('D:/isolated-load', { signal: new AbortController().signal }, () => {});
         expect(gc.calls.count()).toBe(retained === 'none' ? 1 : 0);
         expect(resources.size).toBe(retained === 'none' ? 0 : 1);
+        expect(component.npmService.installedOk.calls.count()).toBe(retained === 'journal' ? 1 : 0);
         if (retained === 'journal') {
           expect(component.npmService.ensureProjectDependenciesInstalled).not.toHaveBeenCalled();
           expect(component._projectService.syncUsedLibraryManifest).not.toHaveBeenCalled();

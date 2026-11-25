@@ -26,7 +26,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
-import { Router } from '@angular/router';
+import { NavigationEnd, Router } from '@angular/router';
 import { ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { AuthService } from '@core/auth/public-api';
@@ -224,6 +224,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.unsavedSubscriptions.add(this.projectService.currentProjectPath$.subscribe(() => {
       this.autoSave?.cancel();
       this.setProjectUnsaved(false);
+      this.syncCoderUnsavedPoll();
       this.scheduleUnsavedCheck();
     }));
     this.unsavedSubscriptions.add(this.projectService.stateSubject.subscribe(state => {
@@ -233,16 +234,24 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.unsavedSubscriptions.add(merge(
       this.projectService.libraryChangesChanged,
       this.blocklyService.projectDirtyState.changed,
-      this.router.events,
     ).subscribe(() => this.scheduleUnsavedCheck()));
-    // The embedded Coder exposes a cheap dirty-editor count through its existing
-    // bridge. Blockly is event-driven; never serialize an idle canvas on a timer.
-    this.ngZone.runOutsideAngular(() => {
-      this.coderUnsavedPoll = setInterval(() => {
-        if (this.showCoderSidebarToggle
-          && !this.unsavedCheckRunning) this.scheduleUnsavedCheck();
-      }, 1000);
-    });
+    this.unsavedSubscriptions.add(this.router.events.subscribe(event => {
+      if (event instanceof NavigationEnd) this.syncCoderUnsavedPoll();
+      this.scheduleUnsavedCheck();
+    }));
+  }
+
+  private syncCoderUnsavedPoll(): void {
+    if (!this.showCoderSidebarToggle) {
+      clearInterval(this.coderUnsavedPoll);
+      this.coderUnsavedPoll = undefined;
+    } else if (this.coderUnsavedPoll === undefined) {
+      this.ngZone.runOutsideAngular(() => {
+        this.coderUnsavedPoll = setInterval(() => {
+          if (!this.unsavedCheckRunning) this.scheduleUnsavedCheck();
+        }, 1000);
+      });
+    }
   }
 
   private scheduleUnsavedCheck(): void {

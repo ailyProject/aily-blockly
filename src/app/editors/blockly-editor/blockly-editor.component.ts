@@ -341,9 +341,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     const missingDeclaredLibraries: string[] = [];
     let dependencyInstallError = '';
-    const initiallyInstalled = await this.npmService.installedOk(projectPath);
+    // The normal preparation has already verified every declared dependency.
+    // Only the missing-local-library path bypasses it and needs a separate check.
+    const needsDependencyRepair = !dependenciesInstalled && !await this.npmService.installedOk(projectPath, session);
     assertCurrent();
-    if (!initiallyInstalled) {
+    if (needsDependencyRepair) {
       // 终端进入项目目录，安装项目依赖
       // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS') });
       setTimeout(() => {

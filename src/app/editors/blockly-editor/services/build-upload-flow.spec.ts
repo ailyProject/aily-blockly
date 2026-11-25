@@ -634,6 +634,25 @@ describe('Blockly compile and upload handoff', () => {
     return { service, files, command, start };
   }
 
+  it('publishes a cancellable preparation notice on admission, before writing the request log', async () => {
+    const f = compileFixture();
+    const notices: any[] = [];
+    f.service.noticeService = { update: (notice: any) => notices.push(notice) };
+    f.service.workflowService.currentState = ProcessState.BUILDING;
+    f.service.ensureCancelState = () => {};
+    const build = f.service.build().catch((error: any) => error);
+    expect(notices[0]).toEqual(jasmine.objectContaining({
+      title: 'BLOCKLY_EDITOR.BUILD.PREPARING_TITLE', state: 'doing', showProgress: false,
+    }));
+    expect([...f.files.keys()].some(path => path.endsWith('.log'))).toBeFalse();
+    notices[0].stop();
+    const result = await build;
+    expect(result.code).toBe('BUILD_CANCELLED');
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    expect(f.service.workflowService.finishBuild).toHaveBeenCalled();
+    expect(notices.at(-1).isCancellationNotice).toBeTrue();
+  });
+
   it('builds and revalidates cloud firmware without publishing to a protected local workspace', async () => {
     const f = compileFixture();
     const manifest = f.files.get('/project/package.json');

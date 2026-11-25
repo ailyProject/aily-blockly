@@ -1,7 +1,7 @@
 import { Injectable, inject, ApplicationRef } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { BehaviorSubject, Observable, ReplaySubject, Subject, TimeoutError, throwError, from, firstValueFrom } from 'rxjs';
-import { catchError, map, switchMap, timeout } from 'rxjs/operators';
+import { catchError, first, map, switchMap, timeout } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
 import { ElectronService } from '@core/platform/public-api';
 import { createApiError, extractApiErrorDetails } from '../../../utils/api-error.utils';
@@ -252,7 +252,7 @@ export class AuthService {
   /**
    * 初始化认证状态 - 需要在ElectronService初始化后调用
    */
-  initializeAuth(): Promise<void> {
+  initializeAuth(waitFor: 'snapshot' | 'identity' = 'snapshot'): Promise<void> {
     if (isDetachedAilyChatRenderer()) {
       if (this.authInitializationStateSubject.value === 'idle') {
         this.authInitializationStateSubject.next('unavailable');
@@ -260,19 +260,20 @@ export class AuthService {
       return Promise.resolve();
     }
 
-    if (this.authInitializationPromise) {
-      return this.authInitializationPromise;
+    if (!this.authInitializationPromise) {
+      const operation = this.performAuthInitialization();
+      this.authInitializationPromise = operation;
+      const clearOperation = () => {
+        if (this.authInitializationPromise === operation) this.authInitializationPromise = null;
+      };
+      void operation.then(clearOperation, clearOperation);
     }
-
-    const operation = this.performAuthInitialization();
-    this.authInitializationPromise = operation;
-    const clearOperation = () => {
-      if (this.authInitializationPromise === operation) {
-        this.authInitializationPromise = null;
-      }
-    };
-    void operation.then(clearOperation, clearOperation);
-    return operation;
+    if (waitFor === 'identity') {
+      return firstValueFrom(this.authInitializationState$.pipe(
+        first(state => state !== 'idle' && state !== 'checking'), map(() => undefined),
+      ));
+    }
+    return this.authInitializationPromise;
   }
 
   getAuthInitializationState(): AuthInitializationState {
@@ -303,29 +304,28 @@ export class AuthService {
   private async performAuthInitialization(): Promise<void> {
     this.authInitializationCredentialFailure = undefined;
     this.authInitializationStateSubject.next('checking');
-    try {
-      const token = await this.getToken2();
-      if (!token) {
-        this.isLoggedInSubject.next(false);
-        this.authInitializationStateSubject.next('signed_out');
-        return;
+    while (this.getAuthInitializationState() === 'checking') {
+      const generation = this.authCredentialGeneration;
+      const current = () => this.getAuthInitializationState() === 'checking' && generation === this.authCredentialGeneration;
+      try {
+        const token = await this.getToken2();
+        const userInfo = token ? await this.getVerifiedProfile(token) : null;
+        if (!current()) continue;
+        if (userInfo) this.setCurrentUserInfo(userInfo);
+        this.isLoggedInSubject.next(!!userInfo);
+        this.authInitializationStateSubject.next(userInfo ? 'authenticated' : 'signed_out');
+        if (userInfo) await this.hydrateUserCredits(token!, userInfo, true);
+      } catch (error) {
+        if (!current()) continue;
+        if (error instanceof HostCredentialOperationError) this.authInitializationCredentialFailure = error;
+        if (isAuthCredentialError(error)) {
+          this.isLoggedInSubject.next(false);
+          this.authInitializationStateSubject.next('signed_out');
+        } else {
+          // Offline credentials stay available to local features.
+          this.authInitializationStateSubject.next('unavailable');
+        }
       }
-
-      const userInfo = await this.getMe(token);
-      const authenticated = !!userInfo;
-      this.isLoggedInSubject.next(authenticated);
-      this.authInitializationStateSubject.next(authenticated ? 'authenticated' : 'signed_out');
-    } catch (error) {
-      if (error instanceof HostCredentialOperationError) this.authInitializationCredentialFailure = error;
-      if (isAuthCredentialError(error)) {
-        this.isLoggedInSubject.next(false);
-        this.authInitializationStateSubject.next('signed_out');
-        return;
-      }
-
-      // Network and timeout failures do not invalidate locally stored
-      // credentials. Remote capability owns the unavailable/offline surface.
-      this.authInitializationStateSubject.next('unavailable');
     }
   }
 
@@ -461,6 +461,11 @@ export class AuthService {
    * 获取当前登录用户信息
    */
   private async getMe(token: string): Promise<AuthUserInfo | null> {
+    const userInfo = await this.getVerifiedProfile(token);
+    return userInfo && this.hydrateUserCredits(token, userInfo);
+  }
+
+  private async getVerifiedProfile(token: string): Promise<AuthUserInfo | null> {
     const response = await firstValueFrom(this.http.get<CommonResponse>(API.me, {
       headers: { Authorization: `Bearer ${token}` },
     }).pipe(timeout(this.authRequestTimeoutMs)));
@@ -469,21 +474,27 @@ export class AuthService {
       throw createApiError(response, '获取用户信息失败');
     }
 
-    const userData = this.mergeCurrentGithubInfo(response.data);
+    return this.mergeCurrentGithubInfo(response.data);
+  }
+
+  private async hydrateUserCredits(token: string, userData: AuthUserInfo, identityPublished = false): Promise<AuthUserInfo | null> {
     this.clearPendingAuthQuotaInfoSnapshotRetry();
+    const generation = this.authCredentialGeneration;
+    let snapshot: AuthQuotaInfoSnapshot | null = null;
+    let retry = false;
     try {
-      const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
-      if (this.authSessionInvalidating) return null;
-      this.setCurrentUserInfo(userData, quotaInfoSnapshot);
+      snapshot = await this.getAuthQuotaInfoSnapshot(token);
     } catch (quotaError) {
       if (this.authSessionInvalidating) return null;
       console.warn('Credit 额度快照刷新失败，保留同账号已确认的额度:', quotaError);
-      this.setCurrentUserInfo(userData, null);
-      if (isRetryableCreditRequestError(quotaError)
-        && !this.authQuotaInfoSnapshotOverride?.creditSnapshot) {
-        this.scheduleAuthQuotaInfoSnapshotRetry(token, userData);
-      }
+      retry = isRetryableCreditRequestError(quotaError);
     }
+    // The initial profile is already visible. A late balance belongs only to
+    // that exact published profile and credential generation.
+    if (this.authSessionInvalidating || identityPublished && (this.currentUser !== userData
+      || this.authCredentialGeneration !== generation)) return null;
+    this.setCurrentUserInfo(userData, snapshot);
+    if (retry && !this.authQuotaInfoSnapshotOverride?.creditSnapshot) this.scheduleAuthQuotaInfoSnapshotRetry(token, userData);
     return userData;
   }
 

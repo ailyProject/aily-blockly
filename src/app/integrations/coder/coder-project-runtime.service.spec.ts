@@ -157,6 +157,22 @@ describe('Coder concurrent process integration', () => {
     expect(runtime.getState('/a').upload).toBe('default');
   });
 
+  it('shows preparation before Coder preflight, rejects reentry, and preserves progress from another owner', async () => {
+    const session = runtime.getSession('/a');
+    let fail!: (error: Error) => void;
+    session.project.syncCurrentBoardConfig = () => new Promise((_resolve, reject) => { fail = reject; });
+    const build = runtime.build('/a');
+    const notices = TestBed.inject(NoticeService);
+    expect(notices.data).toEqual(jasmine.objectContaining({ state: 'doing', preparationId: jasmine.any(String) }));
+    await expectAsync(runtime.build('/a')).toBeRejectedWithError(/编译/);
+    expect(notices.updateOwned('download', { title: 'Download', state: 'doing' })).toBeTrue();
+    fail(new Error('board unavailable'));
+    await expectAsync(build).toBeRejectedWithError('board unavailable');
+    expect(session.notice.data).toBeNull();
+    expect(notices.data.title).toBe('Download');
+    expect(session.busy).toBeNull();
+  });
+
   it('restores an actionable dependency failure and its retry when returning to a project', () => {
     project.getProjectDependencyBlockMessage.and.returnValue('retry dependencies');
     const a = runtime.getSession('/a'); runtime.getSession('/b');

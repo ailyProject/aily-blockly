@@ -226,13 +226,16 @@ export class UploaderService {
     const operationId = this.createUploadOperationId('firmware-upload', uploadPort);
     let uploadOutcome = 'failed';
     let resourceRecovery: UploadRecoveryPolicy | undefined;
+    // Coder has already presented its project-scoped notice before board and port selection.
+    const preparation = this.projectService.isCoderProjectContext ? undefined : this.application.beginUploadPreparation(
+      this.translate.instant('BLOCKLY_EDITOR.UPLOAD.UPLOADING_TITLE'),
+      this.translate.instant('BLOCKLY_EDITOR.UPLOAD.PREPARING_DATA'),
+    );
     try {
-      await this.sendSerialResourceUploadSignal(
-        'serial-monitor:disconnect',
-        uploadPort,
-        uploadPortType,
-        { operationId },
-      );
+      await Promise.all([
+        preparation?.painted,
+        this.sendSerialResourceUploadSignal('serial-monitor:disconnect', uploadPort, uploadPortType, { operationId }),
+      ]);
       const hasBlocklyUploader = this.application.hasActionListener('uploader-upload-begin');
       const isAilyCodeProject = this.projectService.isAilyCodeProject();
       const uploadDispatchMode = resolveUploadDispatchMode({ isAilyCodeProject, hasBlocklyUploader });
@@ -289,6 +292,7 @@ export class UploaderService {
       }
       throw error;
     } finally {
+      preparation?.close();
       await this.sendSerialResourceUploadSignal(
         'serial-monitor:connect',
         uploadPort,
