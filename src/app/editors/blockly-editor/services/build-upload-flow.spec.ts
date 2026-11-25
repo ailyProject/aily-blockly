@@ -62,6 +62,23 @@ describe('Blockly compile and upload handoff', () => {
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
   });
 
+  it('keeps the cloud unavailable notice and its local retry when upload needs a new build', async () => {
+    const f = uploadFixture(), fault = { state: 'error', code: 'CLOUD_TARGET_UNAVAILABLE', text: 'Cloud target unavailable' };
+    useCloudPreference(f);
+    f.builder.canReuseBuildForUpload = jasmine.createSpy('reuse').and.resolveTo(false);
+    const retry = jasmine.createSpy('manual local retry');
+    f.builder.build.and.callFake(async () => {
+      f.uploader.noticeService.data = { state: 'error', onRetryLocally: retry };
+      throw fault;
+    });
+    const generic = spyOn(f.uploader, 'handleUploadError');
+    expect(await f.run()).toBe(fault);
+    expect(f.uploader.noticeService.data.onRetryLocally).toBe(retry);
+    expect(retry).not.toHaveBeenCalled();
+    expect(generic).not.toHaveBeenCalled();
+    expect(f.events).not.toContain('upload');
+  });
+
   it('uses a verified local execution after reopening the editor', async () => {
     const f = uploadFixture();
     Object.assign(f.builder, { passed: false, lastCode: '', currentProjectPath: '' });
@@ -600,7 +617,10 @@ describe('Blockly compile and upload handoff', () => {
       passed: true, projectService: { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
         getBuildPath: async () => '/project/.build', getBoardModule: async () => '@aily-project/board-test',
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }),
-        getBoardConfigMenu: jasmine.createSpy('boardConfigMenu').and.resolveTo([]),
+        currentBoardConfig: { name: 'board' },
+        prepareCloudBoardForBuild: jasmine.createSpy('prepareCloudBoardForBuild').and.resolveTo({
+          boardModule: '@aily-project/board-test', profileDigest: 'a'.repeat(64), capabilities: { compile: true },
+        }),
         ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; } },
       workflowService: { currentState: ProcessState.IDLE,
         startBuild() { this.currentState = ProcessState.BUILDING; return true; },
@@ -672,7 +692,7 @@ describe('Blockly compile and upload handoff', () => {
 
     expect((await f.service.build()).state).toBe('done');
     expect(f.service.runCloudCompilation).toHaveBeenCalledOnceWith(jasmine.objectContaining({ isolatedCloudBuild: true,
-      projectMacros: [{ name: 'WIDTH', value: 'WIDTH=320' }], sourceCapture: { digest: 'test' } }), 'board', jasmine.any(Function));
+      projectMacros: [{ name: 'WIDTH', value: 'WIDTH=320' }], sourceCapture: { digest: 'test' } }), 'board', jasmine.any(Function), jasmine.objectContaining({ profileDigest: 'a'.repeat(64) }));
     expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
     expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
     expect(f.files.get('/project/package.json')).toBe(manifest);
@@ -970,14 +990,34 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
   });
 
+  it('rejects a target without compilation capability before generating or capturing source', async () => {
+    const f = compileFixture();
+    f.service.projectService.isCloudBuild = () => true;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService = { prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {} };
+    f.service.projectService.prepareCloudBoardForBuild.and.resolveTo({
+      boardModule: '@aily-project/board-test', profileDigest: 'a'.repeat(64), capabilities: { compile: false },
+    });
+    const capture = spyOn(f.service, 'generateWorkspaceBuildSnapshotForPreprocess');
+    const { result } = await f.start();
+    expect((await result).code).toBe('CLOUD_COMPILE_UNSUPPORTED');
+    expect(capture).not.toHaveBeenCalled();
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    expect(f.service.projectService.prepareCloudBoardForBuild).toHaveBeenCalledTimes(1);
+  });
+
   for (const metadataFailure of [false, true]) it(`restores cloud pins before capture and requires result metadata persistence (failure=${metadataFailure})`, async () => {
     const f = compileFixture();
     f.service.projectService.isCloudBuild = () => true;
     f.service.configService.getCompileBackend = () => 'cloud';
     f.service.npmService = { prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {} };
     let pinsRestored = false;
-    f.service.projectService.getBoardConfigMenu.and.callFake(async (options: any) => {
-      expect(options).toEqual({ requireCloudTarget: true }); pinsRestored = true; return [];
+    const profile = { boardModule: '@aily-project/board-test', profileDigest: 'b'.repeat(64), capabilities: { compile: true } };
+    f.service.projectService.prepareCloudBoardForBuild.and.callFake(async (board: any, assertCurrent: () => void) => {
+      expect(board).toBe(f.service.projectService.currentBoardConfig);
+      assertCurrent();
+      pinsRestored = true;
+      return profile;
     });
     const prepareSource = f.service.runWithInteractiveProjectCode;
     f.service.runWithInteractiveProjectCode = (...args: any[]) => {
@@ -989,6 +1029,8 @@ describe('Blockly compile and upload handoff', () => {
     });
     const { result } = await f.start();
     const completed = await result;
+    expect(f.service.projectService.prepareCloudBoardForBuild).toHaveBeenCalledTimes(1);
+    expect(f.service.runCloudCompilation.calls.mostRecent().args[3]).toBe(profile);
     expect(f.service.runCloudCompilation).toHaveBeenCalledTimes(1);
     expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'success', jasmine.any(String), 'hash', true);
     expect(completed.state).toBe(metadataFailure ? 'error' : 'done');
@@ -1024,7 +1066,7 @@ describe('Blockly compile and upload handoff', () => {
     expect(operation.release).toHaveBeenCalledTimes(1);
   });
 
-  for (const stage of ['board-support', 'target-profile', 'target-unavailable', 'cloud-run', 'changed', 'nested-upload', 'sdk-unsupported']) {
+  for (const stage of ['board-support', 'target-profile', 'target-unavailable', 'target-timeout', 'target-unreachable', 'cloud-run', 'changed', 'nested-upload', 'sdk-unsupported']) {
     it(`reports Blockly cloud failure without starting local compilation: ${stage}`, async () => {
       const f = compileFixture();
       const operation = { local: false, isNested: stage === 'nested-upload', useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
@@ -1040,9 +1082,13 @@ describe('Blockly compile and upload handoff', () => {
           expect(operation.release).not.toHaveBeenCalled();
         }),
       });
-      if (stage === 'target-profile') f.service.projectService.getBoardConfigMenu.and.rejectWith(offline);
+      if (stage === 'target-profile') f.service.projectService.prepareCloudBoardForBuild.and.rejectWith(offline);
+      const connectionError = stage === 'target-timeout' ? 'GATEWAY_TIMEOUT' : 'GATEWAY_UNREACHABLE';
+      if (stage === 'target-timeout' || stage === 'target-unreachable') {
+        f.service.projectService.prepareCloudBoardForBuild.and.rejectWith(Object.assign(new Error('Gateway connection failed'), { code: connectionError }));
+      }
       if (stage === 'target-unavailable') {
-        f.service.projectService.getBoardConfigMenu.and.rejectWith(Object.assign(new Error('No matching cloud target'), { code: 'CLOUD_TARGET_UNAVAILABLE' }));
+        f.service.projectService.prepareCloudBoardForBuild.and.rejectWith(Object.assign(new Error('No matching cloud target'), { code: 'CLOUD_TARGET_UNAVAILABLE' }));
       }
       f.service.runCloudCompilation = jasmine.createSpy('runCloud').and.callFake(async () => {
         if (stage === 'changed') {
@@ -1068,6 +1114,12 @@ describe('Blockly compile and upload handoff', () => {
         expect(completed.code).toBe(stage === 'target-unavailable' ? 'CLOUD_TARGET_UNAVAILABLE' : 'CI_RESOURCE_UNSUPPORTED');
         expect(completed.text).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
         expect(completed.fullStdErr).toContain(stage === 'target-unavailable' ? 'No matching cloud target' : 'Unsupported SDK');
+      } else if (['board-support', 'target-profile', 'target-timeout', 'target-unreachable'].includes(stage)) {
+        const connectionFailed = stage === 'target-timeout' || stage === 'target-unreachable';
+        expect(completed.code).toBe(connectionFailed ? connectionError : offline.code);
+        expect(completed.text).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+        expect(completed.fullStdErr).toContain(connectionFailed ? 'Gateway connection failed' : offline.message);
+        expect(f.service.runCloudCompilation).not.toHaveBeenCalled();
       } else expect(completed.text).toBe(offline.message);
       expect(operation.release).toHaveBeenCalledTimes(1);
       expect(f.service.configService.getCompileBackend()).toBe('cloud');

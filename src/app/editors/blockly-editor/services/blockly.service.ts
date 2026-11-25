@@ -24,6 +24,7 @@ import { beginNativeFieldDependencies } from './blockly-native-field-dependencie
 import { BlocklyCommentLoading } from './blockly-comment-loading';
 import { loadAbsWorkspaceInChunks } from '../../../integrations/blockly/abs/abs-chunk-loader';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
+import { forgetSavedBoardSelections, recordBoardDropdowns, rememberSavedBoardSelections } from './blockly-board-dropdowns';
 import { adaptLegacyDhtRuntimeState } from './blockly-legacy-dht-runtime';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import {
@@ -94,6 +95,7 @@ interface LoadedBlocklyLibraryInfo {
   packageName: string;
   blockTypes: string[];
   generatorPath: string;
+  localPath?: string;
 }
 
 export interface BlocklyLibraryRuntimeRebuildOptions {
@@ -1038,7 +1040,9 @@ export class BlocklyService {
   /** Initial opens can yield while the existing edit lease fences incomplete
    * topology. Publish readiness only after complete native readback. */
   async loadProjectDocumentForOpen(document: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease,
-    assertCurrent: () => void): Promise<void> {
+    assertCurrent: () => void, preserveBoardSelections = false): Promise<void> {
+    if (preserveBoardSelections) rememberSavedBoardSelections(this.workspace, document);
+    else forgetSavedBoardSelections(this.workspace);
     return this.loadProjectDocumentSettled(document, owner, assertCurrent);
   }
 
@@ -1825,6 +1829,7 @@ export class BlocklyService {
           packageName: libPackageName,
           blockTypes: loadedBlockTypes,
           generatorPath: generatorFilePath,
+          localPath: libLocalPath,
         });
       }
       // 补发Blockly.Events.FINISHED_LOADING
@@ -2087,6 +2092,7 @@ export class BlocklyService {
       );
       this.registerBlockFieldInputIncrementPolicy(block);
       Blockly.defineBlocksWithJsonArray([block]);
+      recordBoardDropdowns(Blockly.Blocks[block.type], blocks[index]);
       this.declarativeBlocks.record(block, Blockly.Blocks[block.type]);
       this.generatorRuntime.recordNativeBlockDefinitions([block], libPackageName);
     }
@@ -2298,7 +2304,8 @@ export class BlocklyService {
     setTimeout(apply, 150);
   }
 
-  refreshBoardDependentBlockDefinitions(): void {
+  refreshBoardDependentBlockDefinitions(changed?: ReadonlySet<string>): void {
+    if (changed && !changed.size) return;
     for (const [libPackagePath, libraryInfo] of this.loadedLibraryInfos.entries()) {
       const blockJsonPath = this.electronService.pathJoin(libPackagePath, 'block.json');
       if (!this.electronService.exists(blockJsonPath)) {
@@ -2307,6 +2314,13 @@ export class BlocklyService {
 
       try {
         let blocks = JSON.parse(this.electronService.readFile(blockJsonPath));
+        if (changed) {
+          blocks = blocks.filter(block => {
+            const source = JSON.stringify(block);
+            return [...changed].some(key => source.includes('"${board.' + key + '}"'));
+          });
+          if (!blocks.length) continue;
+        }
         const i18nFilePath = this.electronService.pathJoin(
           libPackagePath,
           'i18n',
@@ -2331,7 +2345,7 @@ export class BlocklyService {
           })()
           : '';
 
-        this.loadLibBlocks(blocks, staticPath, libraryInfo.packageName, libVersion);
+        this.loadLibBlocks(blocks, staticPath, libraryInfo.packageName, libVersion, libraryInfo.localPath);
       } catch (error) {
         console.warn('[BlocklyService] failed to refresh board-dependent blocks:', libPackagePath, error);
       }

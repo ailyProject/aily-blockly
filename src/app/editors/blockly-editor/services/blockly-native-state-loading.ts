@@ -8,6 +8,7 @@ import { nativeFieldDependencies, withNativeFieldDependencies } from './blockly-
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { indexAbsBlockActivity } from '../../../integrations/blockly/abs/abs-block-activity';
 import { withPreservedDropdownValue, prepareInactiveDropdownDisplay } from './blockly-inactive-field-loading';
+import { retainSavedBoardOption } from './blockly-board-dropdowns';
 import { isBlocklyBlockActive } from './blockly-block-activity';
 import type { AbsAbiBlock } from '../../../integrations/blockly/abs/abs-state';
 
@@ -202,6 +203,7 @@ export function restoreNativeFields(block: Blockly.Block, values: Record<string,
       const field = block.getField(name);
       if (!field || applied.get(name)?.field === field) return false;
       if (!options.preserveDropdownValue) {
+        retainSavedBoardOption(block, field, name, values[name]);
         retainLegacyU8g2Font(block, field, name, values[name]);
         retainLegacySscmaSerial(block, field, name, values[name]);
       }

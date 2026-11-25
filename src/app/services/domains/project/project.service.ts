@@ -209,6 +209,8 @@ export class ProjectService {
   // 开发板变更事件通知，只在变更时发出
   boardChangeSubject = new Subject<void>();
   boardConfigUpdatedSubject = new Subject<any>();
+  readonly cloudBoardHydratedSubject = new Subject<any>();
+  private cloudBoardProjectionRequest?: object;
 
   // 当前项目路径的订阅源
   private currentProjectPathSubject = new BehaviorSubject<string>('');
@@ -709,6 +711,8 @@ export class ProjectService {
       stateSubject: new BehaviorSubject('loaded'),
       boardChangeSubject: new Subject<void>(),
       boardConfigUpdatedSubject: new Subject<any>(),
+      cloudBoardHydratedSubject: new Subject<any>(),
+      cloudBoardProjectionRequest: undefined,
       projectOpenTask: null,
     });
     context.currentProjectPath$ = context.currentProjectPathSubject.asObservable();
@@ -717,11 +721,14 @@ export class ProjectService {
     context.syncCurrentBoardConfig = async (session?: ProjectDependencySession) => {
       try {
         if (session) context.assertProjectDependencySession(session);
-        const board = await context.resolveBoardConfigForRuntime();
+        const board = await context.resolveBoardConfigForRuntime(undefined, null);
         await context.loadBoardMenuConfig();
         if (session) context.assertProjectDependencySession(session);
         context.currentBoardConfig = board;
         context.boardConfigUpdatedSubject.next(context.currentBoardConfig);
+        if (context.isCloudBuild()) void context.hydrateCloudBoardAfterOpen(board, () => {
+          if (session) context.assertProjectDependencySession(session);
+        });
         return true;
       } catch (error) {
         if (session) context.assertProjectDependencySession(session);
@@ -4581,7 +4588,7 @@ export class ProjectService {
 
   /** 根据已安装开发板包和原始 board.json 的内容摘要，匹配 Gateway 已注册的精确编译目标。 */
   async getCloudBoardProfile(
-    options: { refresh?: boolean } = {}, session?: ProjectDependencySession,
+    options: { refresh?: boolean; background?: boolean; projection?: Map<string, Promise<CloudBoardProfile>> } = {}, session?: ProjectDependencySession,
   ): Promise<CloudBoardProfile> {
     if (!this.isCloudBuild()) throw new Error('Cloud compilation is not selected.');
     const settingsKey = this.getCompileBackendKey();
@@ -4611,15 +4618,23 @@ export class ProjectService {
     const boardDigest = await sha256Hex(originalBoardInput);
     guard();
     const key = JSON.stringify([settingsKey, projectPath, ownerSession?.projectSessionId, boardModule, boardVersion, boardDigest]);
+    const projection = options.projection;
+    if (projection?.size && !projection.has(key)) {
+      throw Object.assign(new Error('Board changed during runtime configuration.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    }
     const cached = this.cloudBoardProfileCache?.key === key ? this.cloudBoardProfileCache.profile : undefined;
-    if (!options.refresh && cached) return cached;
+    if (!options.refresh && cached && !projection?.has(key)) {
+      projection?.set(key, Promise.resolve(cached));
+      return cached;
+    }
     const pending = this.cloudBoardProfileLookups ??= new Map();
     // 菜单、分区工具和编译预检可能同时读取目标，合并相同身份的在途请求。
-    const existing = pending.get(key);
+    // A build must be able to retry immediately while a background lookup is stalled.
+    const pendingKey = options.background ? 'open:' + key : key;
+    const existing = projection?.get(key) ?? pending.get(pendingKey);
     if (existing) {
-      const profile = await existing;
-      guard();
-      return profile;
+      projection?.set(key, existing);
+      try { return await existing; } finally { guard(); }
     }
     const promise = (async () => {
       const gateway = window['cloudBuild'];
@@ -4645,7 +4660,7 @@ export class ProjectService {
         throw Object.assign(new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE')),
           { code: 'CLOUD_TARGET_UNAVAILABLE' });
       }
-      this.cloudBoardProfileCache = { key, profile };
+      if (!options.background) this.cloudBoardProfileCache = { key, profile };
       return profile;
     })().catch(error => {
       guard();
@@ -4655,9 +4670,10 @@ export class ProjectService {
       }
       throw error;
     });
-    pending.set(key, promise);
+    pending.set(pendingKey, promise);
+    projection?.set(key, promise);
     try { return await promise; }
-    finally { if (pending.get(key) === promise) pending.delete(key); }
+    finally { if (pending.get(pendingKey) === promise) pending.delete(pendingKey); }
   }
 
   /** 为分区管理等功能提供统一的构建属性：本地读取 SDK，云端使用已注册元数据。 */
@@ -4745,31 +4761,92 @@ export class ProjectService {
     }
   }
 
-  async resolveBoardConfigForRuntime(rawBoardJson?: any): Promise<any> {
+  /** A null profile restores package defaults and explicit project choices without network access. */
+  async resolveBoardConfigForRuntime(rawBoardJson?: any, cloudProfile?: CloudBoardProfile | null): Promise<any> {
+    const current = this.captureCurrentProjectGuard();
+    const settingsKey = this.getCompileBackendKey();
     const boardJson = rawBoardJson ?? await this.getBoardJson();
     const resolvedBoardJson = JSON.parse(JSON.stringify(boardJson));
     normalizeBoardMcuDeclaration(resolvedBoardJson);
     const boardModule = this.runtimeBoardModules.get(boardJson);
     if (boardModule) this.runtimeBoardModules.set(resolvedBoardJson, boardModule);
+    // One projection uses the same signed metadata for pins and CDC. A later
+    // menu open or build can retry even if this projection's lookup failed.
+    const projection = new Map<string, Promise<CloudBoardProfile>>();
+    const readProfile = () => cloudProfile ? Promise.resolve(cloudProfile) : this.getCloudBoardProfile({ projection });
     if (!this.isCoderProjectContext) {
-      // The installed board remains immutable. Variant pins are a projection
-      // of the selected project environment, just like CDC runtime ports.
-      const menu = await this.getBoardConfigMenu({ persistDefaults: false }, resolvedBoardJson);
-      const selected = menu.flatMap(item => item.children || []).find(item => item.check && item.extra?.syncPinConfig);
-      if (selected) {
-        const pins = await this.getVariantConfig(selected.extra?.build?.variant || null,
-          selected.extra?.build?.variant_h || 'variant_generic.h');
-        for (const [key, value] of Object.entries(pins || {})) if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
+      const hasPinMenu = this.currentBoardMenuConfig?.some(item =>
+        item.extra?.syncPinConfig || item.children?.some(child => child.extra?.syncPinConfig));
+      if (hasPinMenu) {
+        // Restore an explicitly selected variant from the installed SDK while offline.
+        // A verified cloud profile may later supply different signed defaults.
+        const pinProfile = cloudProfile === null ? null : readProfile;
+        const menu = await this.getBoardConfigMenu({ persistDefaults: false }, resolvedBoardJson, pinProfile);
+        const selected = menu.flatMap(item => item.children || []).find(item => item.check && item.extra?.syncPinConfig);
+        if (selected) {
+          const pins = await this.getVariantConfig(selected.extra?.build?.variant || null,
+            selected.extra?.build?.variant_h || 'variant_generic.h', pinProfile);
+          for (const [key, value] of Object.entries(pins || {})) if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
+        }
       }
       const packageJson = await this.getPackageJson();
       for (const [key, value] of Object.entries(packageJson?.ailyBoardOverrides || {})) {
         if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
       }
     }
-    const cdcEnabled = await this.isCdcOnBootEnabledForProject(resolvedBoardJson);
+    const cdcEnabled = await this.isCdcOnBootEnabledForProject(resolvedBoardJson, undefined, cloudProfile === null ? null : readProfile);
+    if (!current() || settingsKey !== this.getCompileBackendKey()) {
+      throw Object.assign(new Error('Board configuration was replaced.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    }
     // 云目标暂不可用时仍允许打开和编辑工程；CDC 状态未知时保留开发板原始运行端口。
     if (cdcEnabled !== undefined) this.application.applyCdcSerialPortOverrides(resolvedBoardJson, cdcEnabled);
     return resolvedBoardJson;
+  }
+
+  async hydrateCloudBoardAfterOpen(board: any, assertCurrent: () => void,
+    publishWhenIdle?: (publish: () => void) => Promise<void>): Promise<CloudBoardProfile | undefined> {
+    try { return await this.projectCloudBoardProfile(board, assertCurrent, true, publishWhenIdle); }
+    catch {
+      // Opening remains usable offline. The next cloud build reports its own fresh lookup.
+      return undefined;
+    }
+  }
+
+  prepareCloudBoardForBuild(board: any, assertCurrent: () => void): Promise<CloudBoardProfile> {
+    return this.projectCloudBoardProfile(board, assertCurrent, false);
+  }
+
+  private async projectCloudBoardProfile(board: any, assertCurrent: () => void, background: boolean,
+    publishWhenIdle?: (publish: () => void) => Promise<void>): Promise<CloudBoardProfile> {
+    const request = this.cloudBoardProjectionRequest = {};
+    const current = this.captureCurrentProjectGuard();
+    const settings = this.getCompileBackendKey();
+    const check = () => {
+      assertCurrent();
+      if (!current() || settings !== this.getCompileBackendKey() || !this.isCloudBuild()
+        || this.cloudBoardProjectionRequest !== request || this.currentBoardConfig !== board) {
+        throw Object.assign(new Error('Cloud board configuration was replaced.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+      }
+    };
+    check();
+    const profile = await this.getCloudBoardProfile(background ? { background: true } : { refresh: true });
+    check();
+    const resolved = await this.resolveBoardConfigForRuntime(undefined, profile);
+    check();
+    if (canonicalCloudJson(resolved) !== canonicalCloudJson(board)) {
+      const publish = () => {
+        check();
+        this.currentBoardConfig = resolved;
+        if (this.isCoderProjectContext) this.boardConfigUpdatedSubject.next(resolved);
+        else {
+          window['boardConfig'] = resolved;
+          this.cloudBoardHydratedSubject.next(resolved);
+        }
+      };
+      if (publishWhenIdle) await publishWhenIdle(publish);
+      else publish();
+    }
+    return profile;
   }
 
   async refreshRuntimeBoardConfig(): Promise<any> {
@@ -4783,6 +4860,7 @@ export class ProjectService {
   async isCdcOnBootEnabledForProject(
     rawBoardJson?: any,
     cdcOnBootOption?: string,
+    readProfile: (() => Promise<CloudBoardProfile>) | null = () => this.getCloudBoardProfile(),
   ): Promise<boolean | undefined> {
     try {
       const boardJson = rawBoardJson ?? await this.getBoardJson();
@@ -4806,14 +4884,15 @@ export class ProjectService {
       if (this.isCloudBuild()) {
         if (selectedOption === 'cdc') return true;
         if (selectedOption === 'default' || selectedOption === 'disabled') return false;
+        if (!readProfile) return undefined;
       }
-      const option = selectedOption
-        ?? (this.isCloudBuild() ? getCloudBoardOptions(await this.getCloudBoardProfile())['CDCOnBoot'] : undefined);
+      const profile = this.isCloudBuild() && readProfile ? await readProfile() : undefined;
+      const option = selectedOption ?? (profile ? getCloudBoardOptions(profile)['CDCOnBoot'] : undefined);
       if (!option) {
         return false;
       }
 
-      const rawBoardConfig = await this.getRawBoardsTxtConfig(boardName);
+      const rawBoardConfig = profile ? cloudBoardProperties(profile, boardName) : await this.getRawBoardsTxtConfig(boardName);
       if (!rawBoardConfig) {
         return false;
       }
@@ -4837,9 +4916,9 @@ export class ProjectService {
     return parts[parts.length - 1] || null;
   }
 
-  private async getRawBoardsTxtConfig(boardName: string, optionalSdk = false): Promise<Record<string, string> | null> {
+  private async getRawBoardsTxtConfig(boardName: string, optionalSdk = false, installedOnly = false): Promise<Record<string, string> | null> {
     // 将云端注册属性转成现有 boards.txt 键格式，复用菜单和 CDC 的本地解析逻辑。
-    if (this.isCloudBuild()) return cloudBoardProperties(await this.getCloudBoardProfile(), boardName);
+    if (!installedOnly && this.isCloudBuild()) return cloudBoardProperties(await this.getCloudBoardProfile(), boardName);
     try {
       const sdkPath = await this.getSdkPath({ optional: optionalSdk });
       if (!sdkPath) {
@@ -5123,7 +5202,8 @@ export class ProjectService {
   }
 
   /** Build the current board's configuration menu from its root menu.json. */
-  async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}, runtimeBoard?: any): Promise<IMenuItem[]> {
+  async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}, runtimeBoard?: any,
+    readProfile: (() => Promise<CloudBoardProfile>) | null = () => this.getCloudBoardProfile()): Promise<IMenuItem[]> {
     if (!this.isCoderProjectContext && this.isAilyCodeProject()) {
       const path = this.currentProjectPath;
       const context = this.getCoderProjectContext(path);
@@ -5146,10 +5226,10 @@ export class ProjectService {
     };
     const menu = this.cloneCurrentBoardMenuConfig();
     let cloudProfile: CloudBoardProfile | undefined;
-    if (this.isCloudBuild()) {
+    if (readProfile && this.isCloudBuild()) {
       // 云端元数据补齐 SDK 原本提供的菜单；目标不可用时禁用选项，避免写入未经验证的默认值。
       try {
-        cloudProfile = await this.getCloudBoardProfile();
+        cloudProfile = await readProfile();
         assertCurrent();
         for (const [key, declaration] of Object.entries(cloudProfile.metadata.boardOptions)) {
           if (!menu.some(item => item.key === key)) menu.push({
@@ -5187,7 +5267,7 @@ export class ProjectService {
     assertCurrent();
     const hasSdk = Object.keys(boardDependencies).some(name => name.startsWith('@aily-project/sdk-'));
     const boardConfig = boardName && cloudProfile ? cloudBoardProperties(cloudProfile, boardName)
-      : boardName && hasSdk ? await this.getRawBoardsTxtConfig(boardName, true) : null;
+      : boardName && hasSdk ? await this.getRawBoardsTxtConfig(boardName, true, readProfile === null) : null;
     assertCurrent();
     const sdkUnavailable = !cloudProfile && hasSdk && !boardConfig;
     persistDefaults = persistDefaults && !sdkUnavailable;
@@ -5451,10 +5531,11 @@ export class ProjectService {
   }
 
   // 根据传入的引脚信息解析引脚配置 如STM32F1xx/F100C(4-6)T
-  async getVariantConfig(variant: string, variant_h: string) {
-    if (this.isCloudBuild()) {
+  async getVariantConfig(variant: string, variant_h: string,
+    readProfile: (() => Promise<CloudBoardProfile>) | null = () => this.getCloudBoardProfile()) {
+    if (readProfile && this.isCloudBuild()) {
       // 云端返回已注册的变体引脚，避免为了读取引脚定义而下载整个 SDK。
-      const metadata = (await this.getCloudBoardProfile()).metadata;
+      const metadata = (await readProfile()).metadata;
       const pins = metadata.variants?.[`${variant}/${variant_h}`];
       if (!pins) throw Object.assign(new Error('Cloud target does not provide this board variant.'), { code: 'CLOUD_TARGET_UNAVAILABLE' });
       return JSON.parse(JSON.stringify(pins));

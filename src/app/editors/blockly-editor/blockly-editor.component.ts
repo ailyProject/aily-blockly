@@ -1,4 +1,6 @@
+import type { CloudBoardProfile } from '../../utils/cloud-build-settings.utils';
 import { readSavedAbiAfterRecoveryFailure, restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import { changedBoardKeys, forgetSavedBoardSelections, refreshLiveBoardDropdowns } from './services/blockly-board-dropdowns';
 import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
 import { recoverAbsProjectOperation, settleAbsProjectOpen } from '../../integrations/blockly/abs/abs-project-restart';
 import { AbsOperationJournal } from '../../integrations/blockly/abs/abs-operation-journal';
@@ -214,6 +216,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.boardConfigUpdatedSubscription = this.projectService.boardConfigUpdatedSubject.subscribe((boardConfig) => {
       this.applyRuntimeBoardConfig(boardConfig);
     });
+    this.boardConfigUpdatedSubscription.add(this.projectService.cloudBoardHydratedSubject.subscribe(boardConfig => {
+      this.applyRuntimeBoardConfig(boardConfig, true);
+    }));
 
     // 阻止鼠标按键前进后退
     window.history.replaceState(null, '', window.location.href);
@@ -410,21 +415,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     });
     await this.projectService.loadBoardMenuConfig();
     assertCurrent();
-    let boardJson = await this.projectService.resolveBoardConfigForRuntime();
+    const boardJson = await this.projectService.resolveBoardConfigForRuntime(undefined, null);
     assertCurrent();
 
     this.projectService.currentBoardConfig = boardJson;
     this.blocklyService.boardConfig = boardJson;
     window['boardConfig'] = boardJson;
-    if (this.projectService.isCloudBuild()) {
-      // Restore the saved/effective pin selection before generators or source
-      // captures observe this board. Opening Upload later must not change it.
-      await this.projectService.getBoardConfigMenu();
-      assertCurrent();
-      boardJson = this.projectService.currentBoardConfig || boardJson;
-      this.blocklyService.boardConfig = boardJson;
-      window['boardConfig'] = boardJson;
-    }
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
@@ -498,7 +494,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const loadLease = this.blocklyService.acquireWorkspaceEditLease();
     try {
       await this.ngZone.runOutsideAngular(() =>
-        this.blocklyService.loadProjectDocumentForOpen(projectDocument, loadLease, assertCurrent));
+        this.blocklyService.loadProjectDocumentForOpen(projectDocument, loadLease, assertCurrent, this.projectService.isCloudBuild()));
       // Comments settle after rendering. Keep queued pointer/keyboard input out
       // of this frame gap: a drag can detach a child before /roots admission.
       await this.waitForNextFrame(session.signal);
@@ -573,11 +569,28 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // 检查是否需要显示新手引导
     this.checkBlocklyOnboarding();
 
-    // 7. 后台安装开发板依赖
+    // A slow gateway must not keep this editor's dependency task alive and block a later reopen.
+    if (this.projectService.isCloudBuild()) {
+      void this.projectService.hydrateCloudBoardAfterOpen(boardJson, assertCurrent,
+        publish => this.blocklyService.runProjectOperation(async () => publish())).then(profile => {
+        if (profile && !session.signal.aborted) return this.finishOpenedBoardDependencies(
+          session, assertCurrent, missingDeclaredLibraries.length, profile);
+      }).catch(error => {
+        if (!session.signal.aborted) console.warn('[ProjectLoad] Background board resources:', error);
+      });
+    } else {
+      await this.finishOpenedBoardDependencies(session, assertCurrent, missingDeclaredLibraries.length);
+    }
+  }
+
+  private async finishOpenedBoardDependencies(session: ProjectDependencySession, assertCurrent: () => void,
+    missingCount: number, openedCloudProfile?: CloudBoardProfile): Promise<void> {
     try {
-      await this.npmService.installBoardDeps(session, { showSuccessNotice: false });
       assertCurrent();
-      if (missingDeclaredLibraries.length === 0) this.noticeService.update({
+      await this.npmService.installBoardDeps(session,
+        openedCloudProfile ? { showSuccessNotice: false, openedCloudProfile } : { showSuccessNotice: false });
+      assertCurrent();
+      if (missingCount === 0) this.noticeService.update({
         title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
         text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
         state: 'done', progress: 100, setTimeout: 3000,
@@ -884,9 +897,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.projectLoadedCodeRefreshTimer = setTimeout(attempt, this.projectLoadedCodeRefreshDelayMs);
   }
 
-  private applyRuntimeBoardConfig(boardConfig: any): void {
+  private applyRuntimeBoardConfig(boardConfig: any, preserveFieldValues = false): void {
+    const previous = this.blocklyService.boardConfig;
+    const workspace = this.blocklyService.workspace;
+    if (!preserveFieldValues && workspace) forgetSavedBoardSelections(workspace);
     const cdcEnabled = !!boardConfig?._cdcEnabled;
-    const shouldRestoreSerialFields = this.runtimeCdcEnabled === true && !cdcEnabled;
+    const shouldRestoreSerialFields = !preserveFieldValues && this.runtimeCdcEnabled === true && !cdcEnabled;
     const serialFieldSnapshots = shouldRestoreSerialFields && Array.isArray(boardConfig?.cdcSerialPort)
       ? this.blocklyService.snapshotSerialFieldValues()
       : null;
@@ -895,6 +911,13 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     window['boardConfig'] = boardConfig;
     if (this.generatorRuntime.isActive()) {
       this.generatorRuntime.updateBoardConfig(boardConfig);
+    }
+    if (preserveFieldValues) {
+      const changed = changedBoardKeys(previous, boardConfig);
+      this.blocklyService.refreshBoardDependentBlockDefinitions(changed);
+      if (workspace && changed.size) refreshLiveBoardDropdowns(workspace, previous, boardConfig, changed);
+      this.runtimeCdcEnabled = cdcEnabled;
+      return;
     }
     this.blocklyService.refreshBoardDependentBlockDefinitions();
     this.blocklyService.syncSerialDynamicToolboxBlocks();

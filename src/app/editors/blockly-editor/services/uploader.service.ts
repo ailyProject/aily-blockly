@@ -674,8 +674,14 @@ export class _UploaderService {
                 return;
               } else {
                 const buildErrorDetails = (error?.fullStdErr || error?.text || error?.message || error || '').toString();
+                // The cloud build already reported its cause and owns the explicit local retry.
+                if (initialCloud && this.noticeService.data?.state === 'error' && this.noticeService.data.onRetryLocally) {
+                  this.appendUploadLog(buildErrorDetails, 'ERROR');
+                  this.isErrored = true;
+                  reject(error);
+                  return;
+                }
                 const message = this.uploadT('BUILD_FAILED_CHECK_CODE');
-
                 this.handleUploadError(message, this.uploadT('BUILD_FAILED_TITLE'), buildErrorDetails);
                 reject({ state: 'error', text: message });
 

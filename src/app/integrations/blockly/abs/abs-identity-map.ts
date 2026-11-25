@@ -111,15 +111,20 @@ async function fingerprintNodeGroups(groups: readonly (readonly AbsSyntaxEntry[]
   const waves: Work[][] = [], trees: Work[][] = [];
   // Capture traversal/dependencies synchronously. Children and next links must
   // finish before their parent; unrelated subtrees do not need serial awaits.
-  for (const entries of groups.map(entries => [...entries])) {
-    const paths = new Map<string, Work>(), tree: Work[] = [];
+  for (const entries of groups) {
+    const byNode = new Map<AbsSyntaxNode, Work>(), tree: Work[] = [];
     for (let index = entries.length - 1; index >= 0; index--) {
-      const entry = entries[index], { path, node } = entry;
-      const inputs: Work['inputs'] = Object.keys(node.inputs).sort().map(name => [name, paths.get(absInputPath(path, name))]);
-      const next = paths.get(`${path}/next`);
+      const entry = entries[index], node = entry.node;
+      // The parsed tree already owns its edges. Hashing the full parent path
+      // again for every dependency is costly on long statement chains.
+      const inputs: Work['inputs'] = Object.keys(node.inputs).sort().map(name => {
+        const child = node.inputs[name];
+        return [name, child ? byNode.get(child) : undefined];
+      });
+      const next = node.next && byNode.get(node.next);
       const level = 1 + inputs.reduce((depth, [, child]) => Math.max(depth, child?.level ?? -1), next?.level ?? -1);
       const work: Work = { entry, inputs, next, level };
-      paths.set(path, work); tree.push(work); (waves[level] ??= []).push(work);
+      byNode.set(node, work); tree.push(work); (waves[level] ??= []).push(work);
     }
     trees.push(tree);
   }

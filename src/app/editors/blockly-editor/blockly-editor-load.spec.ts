@@ -22,7 +22,7 @@ describe('Blockly startup source and environment settlement', () => {
       _builderService: { init() {} }, _uploadService: { init() {} },
       projectService: {
         get currentProjectPath() { return projectPath; }, set currentProjectPath(path: string) { registerRoute(path); },
-        boardConfigUpdatedSubject: board, beginBlocklyProjectLoad() {},
+        boardConfigUpdatedSubject: board, cloudBoardHydratedSubject: new Subject(), beginBlocklyProjectLoad() {},
       },
       generatorRuntime: { isActive: () => false },
       loadProject: async (_path: string, assertCurrent: () => void) => assertCurrent(),
@@ -101,7 +101,7 @@ describe('failed Blockly open recovery', () => {
       Object.assign(component, {
         projectLoadSequence: 0, activatedRoute: { queryParams: route },
         _projectService: { init() {}, bindPreprocessSaveGuard: () => () => {} }, _builderService: { init() {} }, _uploadService: { init() {} },
-        projectService: { boardConfigUpdatedSubject: board, beginBlocklyProjectLoad() {},
+        projectService: { boardConfigUpdatedSubject: board, cloudBoardHydratedSubject: new Subject(), beginBlocklyProjectLoad() {},
           markBlocklyProjectLoadFailed: jasmine.createSpy('failed') },
         uiService: { updateFooterState: jasmine.createSpy('footer') },
         message: { error: jasmine.createSpy('error') },
@@ -318,7 +318,7 @@ describe('project load normalization context', () => {
     component.projectLoadSequence = 0; component.loadedProjectPath = null;
     component.activatedRoute = { queryParams: route };
     component._projectService = { init: () => {}, bindPreprocessSaveGuard: () => () => {} }; component._builderService = { init: () => {} }; component._uploadService = { init: () => {} };
-    Object.assign(component.projectService, { boardConfigUpdatedSubject: board,
+    Object.assign(component.projectService, { boardConfigUpdatedSubject: board, cloudBoardHydratedSubject: new Subject(),
       beginBlocklyProjectLoad: () => {}, markBlocklyProjectLoadFailed: jasmine.createSpy('failed') });
     component.abortFailedProjectLoad = jasmine.createSpy('abort'); component.message = { error: jasmine.createSpy('error') };
     let rejectOld!: (error: Error) => void;

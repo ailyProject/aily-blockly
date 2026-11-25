@@ -123,6 +123,86 @@ describe('board cloud support and local fallback', () => {
       .toBeRejectedWith(jasmine.objectContaining({ code: scenario.code }));
   });
 
+  describe('runtime board projection during open', () => {
+    const board = { type: 'esp32:esp32:p4', core: 'esp32', cdcSerialPort: ['USB'] };
+    let applyCdc: jasmine.Spy;
+    beforeEach(() => {
+      project.runtimeBoardModules = new WeakMap();
+      applyCdc = jasmine.createSpy('apply CDC');
+      Object.defineProperty(project, 'application', { value: { applyCdcSerialPortOverrides: applyCdc } });
+      project.currentBoardMenuConfig = [{ key: 'ChipVariant', children: [], extra: { syncPinConfig: true } }];
+    });
+
+    it('shares an unavailable lookup between pin and CDC consumers and retries on the next open', async () => {
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.resolveTo({ profiles: [] });
+      await project.resolveBoardConfigForRuntime(board);
+      expect(targets).toHaveBeenCalledTimes(1);
+      expect(applyCdc).not.toHaveBeenCalled();
+
+      targets.and.callFake(async identity => ({ profiles: [{
+        ...identity, runner: 'aily-builder', fqbn: 'esp32:esp32:p4', profileDigest: 'a'.repeat(64),
+        capabilities: { compile: true }, metadata: {
+          defaults: { CDCOnBoot: 'cdc', ChipVariant: 'p4' },
+          boardOptions: {
+            CDCOnBoot: { default: 'cdc', values: { cdc: { properties: { 'build.cdc_on_boot': '1' } } } },
+            ChipVariant: { default: 'p4', values: { p4: { properties: { 'build.variant': 'p4' } } } },
+          },
+          variants: { 'p4/variant_generic.h': { digital: [4, 5] } },
+        },
+      }] }));
+      const resolved = await project.resolveBoardConfigForRuntime(board);
+      expect(targets).toHaveBeenCalledTimes(2);
+      expect(resolved.digital).toEqual([4, 5]);
+      expect(applyCdc).toHaveBeenCalledOnceWith(resolved, true);
+    });
+
+    it('restores the board offline and lets a build retry while the opening request is still pending', async () => {
+      project.currentBoardMenuConfig = [];
+      project.currentBoardConfig = await project.resolveBoardConfigForRuntime(board, null);
+      expect(applyCdc).not.toHaveBeenCalled();
+      const displayed = project.currentBoardConfig;
+      let releaseOpen!: (value: any) => void;
+      let started!: () => void;
+      const opening = new Promise<void>(resolve => { started = resolve; });
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(() => {
+        if (targets.calls.count() === 1) return new Promise(resolve => { releaseOpen = resolve; started(); });
+        return Promise.resolve({ profiles: [] });
+      });
+      const done = project.hydrateCloudBoardAfterOpen(displayed, () => {});
+      await opening;
+      await expectAsync(project.prepareCloudBoardForBuild(displayed, () => {}))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_TARGET_UNAVAILABLE' }));
+      releaseOpen({ profiles: [] });
+      await done;
+      expect(targets).toHaveBeenCalledTimes(2);
+      expect(project.currentBoardConfig).toBe(displayed);
+    });
+
+    it('drops background board data when the view changes while publication is queued', async () => {
+      project.currentBoardMenuConfig = [];
+      const displayed = project.currentBoardConfig = { ...board };
+      project.getCloudBoardProfile = async () => ({ metadata: { defaults: {}, boardOptions: {} } });
+      project.resolveBoardConfigForRuntime = async () => ({ ...board, digital: [7] });
+      project.cloudBoardHydratedSubject = { next: jasmine.createSpy('stale board') };
+      await project.hydrateCloudBoardAfterOpen(displayed, () => {}, async publish => {
+        project.currentProjectPathSubject.value = '/other';
+        publish();
+      });
+      expect(project.currentBoardConfig).toBe(displayed);
+      expect(project.cloudBoardHydratedSubject.next).not.toHaveBeenCalled();
+    });
+
+    it('opens a board with explicit CDC and no variable pins without requesting cloud metadata', async () => {
+      project.currentBoardMenuConfig = [{ key: 'ChipVariant' }];
+      project.getPackageJson = async () => ({ projectConfig: { CDCOnBoot: 'cdc' }, ailyBoardOverrides: { digital: [13] } });
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets');
+      const resolved = await project.resolveBoardConfigForRuntime(board);
+      expect(resolved.digital).toEqual([13]);
+      expect(applyCdc).toHaveBeenCalledOnceWith(resolved, true);
+      expect(targets).not.toHaveBeenCalled();
+    });
+  });
+
   it('disables only the missing option when the cloud board profile is available', async () => {
     project.currentBoardMenuConfig = [{ name: 'CPU frequency', key: 'CPUFreq', children: [{ name: 'Default', data: 'default' }] }];
     window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(async identity => ({ profiles: [{
@@ -286,14 +366,16 @@ describe('board cloud support and local fallback', () => {
       metrics: { record: () => {} },
       configService: config, projectService: project, npmService: npm, translate: project.translate,
       workflowService: { startBuild: () => true, finishBuild: () => {} },
-      clearProgressTimer: () => {}, handleCompileError: () => {},
+      clearProgressTimer: () => {}, handleCompileError: () => {}, noticeService: { update: () => {} },
       t: (key: string) => key,
     });
-    await expectAsync(blockly.build()).toBeRejected();
+    project.getProjectDependencySession('/project');
+    await expectAsync(blockly.build()).toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_BOARD_UNSUPPORTED' }));
     expect(invalidate).not.toHaveBeenCalled();
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
     config.data.compile.backend = 'local';
-    await expectAsync(blockly.build()).toBeRejected();
+    project.getProjectDependencySession('/project');
+    await expectAsync(blockly.build()).toBeRejectedWith(jasmine.objectContaining({ text: 'local-boundary' }));
     expect(invalidate).toHaveBeenCalledOnceWith({ projectPath: '/project' });
   });
 });

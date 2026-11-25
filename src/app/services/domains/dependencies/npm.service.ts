@@ -23,7 +23,7 @@ import {
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
 import { canRetryCloudBuildLocally, isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
-import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
+import { getCloudEditorDependencies, type CloudBoardProfile } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 import { findCompilerIntegrityProblem } from '../../../utils/compiler-integrity.utils';
 import { readyVersionedPlatformResource, versionedPlatformResource } from '../../../utils/versioned-platform-resource.utils';
@@ -948,7 +948,7 @@ export class NpmService {
 
   async installBoardDeps(
     session = this.prjService.getProjectDependencySession(),
-    options: { showSuccessNotice?: boolean; prepareCloudSources?: boolean } = {},
+    options: { showSuccessNotice?: boolean; prepareCloudSources?: boolean; openedCloudProfile?: CloudBoardProfile } = {},
   ) {
     this.assertDependencySession(session);
     if (this.boardDepsInstallPromise?.session === session) {
@@ -962,13 +962,15 @@ export class NpmService {
         const project = this.getDependencyProject(session);
         const boardPackageJson = await project.getBoardPackageJson() || {};
         this.assertDependencySession(session);
-        if (this.configService.getCompileBackend() === 'cloud') {
+        if (!options.openedCloudProfile && this.configService.getCompileBackend() === 'cloud') {
           await project.resolveCompileBackend(session);
           this.assertDependencySession(session);
         }
         if (this.isCloudBuild(session.projectPath)) {
-          await project.getCloudBoardProfile({}, session);
-          this.assertDependencySession(session);
+          if (!options.openedCloudProfile) {
+            await project.getCloudBoardProfile({}, session);
+            this.assertDependencySession(session);
+          }
           // 云编译仅保留编辑器资源和库源码，SDK/编译器由云端提供；烧录工具仍按需在本地准备。
           await this.installBoardDependencies(boardPackageJson, false, false, session, false);
           this.assertDependencySession(session);
