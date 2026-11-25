@@ -7,13 +7,16 @@ const BUILD_WORKSPACE_OWNER_FILES = new Set([
 ]);
 
 // Runtime ownership belongs to the source's physical workspace, never a new copy.
-// Preserve all other recovery/resource data and the harmless native lock anchor.
+// Preserve other recovery/resource data. The view anchor may be locked by Windows.
 function isProjectWriterTransient(relativePath) {
   const normalized = relativePath.split(path.sep).join('/');
-  const name = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  const folded = normalized.toLowerCase();
+  const name = process.platform === 'win32' ? folded : normalized;
   return name === '.aily/project-files.write.lock'
     || /^\.aily\/\.project-files\.write\.lock\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/.test(name)
-    || name === '.aily/project-open.lock'
+    || folded === '.aily/project-open.lock'
+    || folded === '.aily/project-view.guard'
+    || /^\.aily\/\.project-open\.lock\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/.test(folded)
     || name === '.aily/build-executions' || name === '.aily/cloud-build' || name === '.build/requests'
     || /^\.log\/compile\/requests\/(?:[a-f0-9]{64}\.build\.json|\.build-receipts\.guard)$/.test(name)
     || BUILD_WORKSPACE_OWNER_FILES.has(name)
@@ -81,43 +84,79 @@ function resolveFutureDirectory(directory) {
   }
 }
 
+function hasPackage(directory) {
+  return fs.lstatSync(path.join(directory, 'package.json'), { throwIfNoEntry: false })?.isFile() === true;
+}
+
+function publishToFreshImportTarget(root, destination, publish, mode) {
+  const parent = resolveFutureDirectory(path.dirname(destination));
+  const target = path.join(parent, path.basename(destination));
+  const relative = path.relative(root, target);
+  if (!relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))) {
+    throw new Error('Project import destination must not be inside the source project.');
+  }
+  // An existing directory is never deleted or merged, even on random-name collision.
+  fs.mkdirSync(parent, { recursive: true });
+  fs.mkdirSync(target, { mode });
+  const created = fs.lstatSync(target, { bigint: true });
+  const ownsTarget = () => {
+    const current = fs.lstatSync(target, { bigint: true, throwIfNoEntry: false });
+    return current?.isDirectory() && !current.isSymbolicLink() && current.dev === created.dev && current.ino === created.ino
+      && current.birthtimeNs === created.birthtimeNs;
+  };
+  try {
+    publish(target, ownsTarget);
+  } catch (error) {
+    try {
+      if (ownsTarget()) fs.rmSync(target, { recursive: true, force: true });
+    } catch (cleanupError) {
+      console.warn('Could not clean incomplete project import:', target, cleanupError);
+    }
+    throw error;
+  }
+  return destination;
+}
+
 /** Resolve an archive's single wrapper before reserving a new project directory. */
 function importProjectDirectory(source, destination, unwrapArchive = false) {
   if (!path.isAbsolute(source) || !path.isAbsolute(destination) || typeof unwrapArchive !== 'boolean') {
     throw new Error('Project import requires absolute paths and an explicit archive option.');
   }
   let root = fs.realpathSync(source);
-  const hasPackage = directory => {
-    try { const stat = fs.lstatSync(path.join(directory, 'package.json')); return stat.isFile() && !stat.isSymbolicLink(); }
-    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-  };
   if (!hasPackage(root) && unwrapArchive) {
     const entries = fs.readdirSync(root, { withFileTypes: true });
     if (entries.length === 1 && entries[0].isDirectory() && !entries[0].isSymbolicLink()) root = path.join(root, entries[0].name);
   }
   if (!hasPackage(root)) throw new Error('Project import source must contain package.json (at root or in one archive wrapper).');
-  const parent = resolveFutureDirectory(path.dirname(destination));
-  const target = path.join(parent, path.basename(destination));
-  const relative = path.relative(root, target);
-  if (!relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))) {
-    throw new Error('Project import destination must not be inside the source project.');
-  }
-  // An existing directory is never deleted or merged, even on random-name collision.
-  fs.mkdirSync(parent, { recursive: true });
-  fs.mkdirSync(target);
-  // Imports preserve caches/artifacts, but never another workspace's runtime ownership.
-  copyProjectDirectory(root, target, false);
-  // Zip archives may mark project metadata read-only. These are fresh copies
-  // that the importer and project-data writer must update; leave the archive
-  // source and installed libraries untouched.
-  for (const name of ['package.json', 'project.abi', 'project.abs', 'project.abs.map.json']) {
-    const file = path.join(target, name);
-    let stat;
-    try { stat = fs.lstatSync(file); }
-    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-    if (stat.isFile() && !(stat.mode & 0o200)) fs.chmodSync(file, (stat.mode & 0o7777) | 0o200);
-  }
-  return destination;
+  return publishToFreshImportTarget(root, destination, target => {
+    copyProjectDirectory(root, target, false);
+    // Folder and cloud archive imports may have read-only source metadata.
+    for (const name of ['package.json', 'project.abi', 'project.abs', 'project.abs.map.json']) {
+      const file = path.join(target, name);
+      const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+      if (stat?.isFile() && !(stat.mode & 0o200)) fs.chmodSync(file, (stat.mode & 0o7777) | 0o200);
+    }
+  });
 }
 
-module.exports = { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory, isProjectWriterTransient };
+/** Publish files already validated and extracted in this import's private sibling stage. */
+function publishStagedProjectDirectory(stage, destination) {
+  if (!path.isAbsolute(stage) || !path.isAbsolute(destination)) throw new Error('Project import requires absolute paths.');
+  const root = fs.realpathSync.native(stage);
+  if (!fs.lstatSync(stage).isDirectory() || !path.basename(root).startsWith('.aily-zip-import-') || !hasPackage(root)
+      || path.dirname(root) !== fs.realpathSync.native(path.dirname(destination))) {
+    throw new Error('Project import stage must be a new project in the destination directory.');
+  }
+  return publishToFreshImportTarget(root, destination, (target, ownsTarget) => {
+    const names = fs.readdirSync(root).filter(name => name !== 'package.json');
+    // The manifest appears only once all the project files have been moved.
+    for (const name of [...names, 'package.json']) {
+      const entry = path.join(target, name);
+      if (!ownsTarget() || fs.lstatSync(entry, { throwIfNoEntry: false })) throw new Error('The staged project destination changed.');
+      fs.renameSync(path.join(root, name), entry);
+    }
+  }, 0o700);
+}
+
+module.exports = { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory,
+  importProjectDirectory, isProjectWriterTransient, publishStagedProjectDirectory };

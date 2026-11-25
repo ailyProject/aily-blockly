@@ -3,7 +3,7 @@ import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchP
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { ProjectNavigationTransition, type ProjectViewReservation } from './project-navigation-transition';
-import { projectViewOpenError } from './project-view-ownership';
+import { isProjectViewConflict, projectViewOpenError, type ProjectViewLockFailure } from './project-view-ownership';
 import { ProjectDependencyLifecycle, type ProjectDependencySession } from './project-dependency-lifecycle';
 import { BehaviorSubject, Subject, firstValueFrom } from 'rxjs';
 import { MetricsService } from '@core/metrics/public-api';
@@ -816,7 +816,7 @@ export class ProjectService {
     if (this.getProjectMode(path) !== 'coder') throw new Error('请选择 Coder 工程文件夹');
     if (this.coderProjects.some(folder => this.isSameProjectPath(folder.path, path))) return;
     if (window['projectLock']) {
-      const result = await window['projectLock'].tryAcquire(path);
+      const result = await window['projectLock'].tryAcquire(path, { auxiliary: true });
       if (!result.ok) throw new Error(`工程已被其他窗口占用: ${path}`);
     }
     this.registerCoderProject(path);
@@ -1055,7 +1055,7 @@ export class ProjectService {
       if (this.coderProjects.some(open => this.isSameProjectPath(open.path, project.path))) continue;
       if (!window['fs'].isDirectory(project.path) || this.getProjectMode(project.path) !== 'coder') continue;
       if (window['projectLock']) {
-        const lock = await window['projectLock'].tryAcquire(project.path);
+        const lock = await window['projectLock'].tryAcquire(project.path, { auxiliary: true });
         if (!lock.ok) continue;
       }
       this.coderProjectsSubject.next([...this.coderProjects, this.coderProjectTab(project.path)]);
@@ -2048,7 +2048,52 @@ export class ProjectService {
     } finally { lifecycle.release(); }
   }
 
-  // 打开项目
+  async selectAndOpenProject({ defaultPath, archive = false, beforeOpen }: {
+    defaultPath?: string; archive?: boolean; beforeOpen?: () => Promise<boolean>;
+  } = {}): Promise<boolean> {
+    const current = this.captureCurrentProjectGuard();
+    const revision = this.projectNavigationIntentRevision;
+    const stillCurrent = () => current() && revision === this.projectNavigationIntentRevision;
+    try {
+      const selection = await window['ipcRenderer'].invoke('dialog-select-files', {
+        defaultPath,
+        title: this.translate.instant(archive ? 'MENU.PROJECT_IMPORT_ZIP' : 'MENU.PROJECT_OPEN'),
+        properties: [archive ? 'openFile' : 'openDirectory'],
+        ...(archive ? { filters: [{ name: 'ZIP', extensions: ['zip'] }] } : {}),
+      });
+      const selected = selection?.filePaths?.[0];
+      if (selection?.canceled || !selected || !stillCurrent()) return false;
+      if ((beforeOpen && !await beforeOpen()) || !stillCurrent()) return false;
+      return archive ? await this.openImportedProject(selected, true, stillCurrent) : await this.projectOpen(selected);
+    } catch (error) {
+      this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + (error instanceof Error ? error.message : String(error)));
+      return false;
+    }
+  }
+
+  private async openImportedProject(source: string, archive: boolean, stillCurrent: () => boolean): Promise<boolean> {
+    let imported: string | undefined;
+    try {
+      const parent = await this.getDefaultProjectParentPath();
+      if (!stillCurrent()) return false;
+      const path = window['path'];
+      const name = path.basename(source, archive ? path.extname(source) : undefined)
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 60) || 'project';
+      const destination = path.join(parent, `${name}_${crypto.randomUUID().slice(0, 8)}`);
+      imported = archive
+        ? await window['ipcRenderer'].invoke('project-import-archive', { archivePath: source, destination })
+        : this.importProjectDirectory(source, destination);
+      if (!imported) throw new Error('Project import did not produce a directory.');
+      const opened = stillCurrent() && await this.projectOpen(imported);
+      if (!opened) this.message.info(this.translate.instant('PROJECT.IMPORT_PROJECT_CREATED', { path: imported }));
+      return opened;
+    } catch (error) {
+      if (imported) this.message.info(this.translate.instant('PROJECT.IMPORT_PROJECT_CREATED', { path: imported }));
+      this.message.error(this.translate.instant('PROJECT.IMPORT_PROJECT_FAILED', { error: error instanceof Error ? error.message : String(error) }));
+      return false;
+    }
+  }
+
   async projectOpen(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}) {
     options.createActivation?.assertCurrent();
     options.recoveryReopen?.assertCurrent();
@@ -2105,7 +2150,10 @@ export class ProjectService {
     if (!options.navigation && switchingBlocklyView) {
       options = { ...options, navigation: { requestId: crypto.randomUUID(), transition: new ProjectNavigationTransition() } };
     }
-    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }, startupPreparation?.signal).catch(error => {
+    let duplicateRequested = false;
+    const requestCopy = options.interactive === false || startupRestore || options.createActivation || options.recoveryReopen
+      ? undefined : () => { duplicateRequested = true; };
+    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }, startupPreparation?.signal, requestCopy).catch(error => {
       if (startupRestore && (error as { code?: string })?.code === 'PROJECT_STARTUP_OPEN_SUPERSEDED') return false;
       if (startupPreparation?.signal.aborted && error === startupPreparation.signal.reason) return false;
       throw error;
@@ -2124,7 +2172,7 @@ export class ProjectService {
       if (!opened) {
         if (session) this.dependencyLifecycle.finishPreparation(session);
       }
-      return opened;
+      if (!duplicateRequested) return opened;
     } catch (error) {
       if (signal?.aborted) throw error;
       if (session) this.dependencyLifecycle.finishPreparation(session);
@@ -2139,6 +2187,7 @@ export class ProjectService {
       signal?.removeEventListener('abort', release);
       release();
     }
+    return this.openImportedProject(projectPath, false, () => navigationRevision === this.projectNavigationIntentRevision);
   }
 
   private beginExplicitNavigation(): number {
@@ -2406,7 +2455,7 @@ export class ProjectService {
   }
 
   private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {},
-    onPreparation?: (session: ProjectDependencySession) => void, startupSignal?: AbortSignal): Promise<boolean> {
+    onPreparation?: (session: ProjectDependencySession) => void, startupSignal?: AbortSignal, requestCopy?: () => void): Promise<boolean> {
     const previousProjectPath = this.currentProjectPath;
     const previousReservation = this.activeProjectViewReservation;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
@@ -2451,7 +2500,8 @@ export class ProjectService {
     if (this.getProjectMode(projectPath) === 'coder') {
       if (startup) return false;
       const reload = activationReason === 'reload' || activationReason === 'chat-tool-reload';
-      if (reload && this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
+      const retained = this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath));
+      if (reload && retained) {
         if (this.getCoderOperation(projectPath)) throw new Error('工程正在编译或上传，请等待完成后重新加载');
         if (activationReason !== 'chat-tool-reload' && options.saveBeforeReload !== false) {
           const saved = await this.application.dispatchProjectSave(projectPath, 15_000);
@@ -2459,46 +2509,41 @@ export class ProjectService {
         }
         await this.stopProjectCommands(projectPath);
       }
-      const retained = this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath));
-      if (!this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
-        if (window['projectLock']) {
-          const lock = await window['projectLock'].tryAcquire(projectPath);
-          if (!lock.ok) {
-            if (options.interactive === false) throw projectViewOpenError(projectPath, lock);
-            this.message.error('工程已被其他窗口占用'); return false;
-          }
-          if (creation) await checkCreation();
-        }
-        try {
+      const view = window['projectLock'];
+      const leavingBlockly = isSwitchingProject && this.getProjectMode(previousProjectPath) === 'blockly';
+      const pending = view ? await view.tryAcquire(projectPath, { provisional: true }) : undefined;
+      if (pending && !pending.ok) {
+        if (options.interactive === false) throw projectViewOpenError(projectPath, pending);
+        await this.resolveProjectLockConflict(projectPath, pending, requestCopy);
+        return false;
+      }
+      let selected = false;
+      try {
+        creation?.assertCurrent();
+        if (!retained) {
           if (findArduinoSketchEntry(projectPath)) prepareArduinoSketchProject(projectPath);
-        } catch (error) {
-          await window['projectLock']?.release(projectPath);
-          throw error;
+          try {
+            ensureCoderProjectFile(projectPath);
+          } catch (error) {
+            // A legacy project can still be opened from its folder if launch file creation fails.
+            console.warn('补齐 Coder 项目入口失败:', error);
+          }
         }
-        try {
-          ensureCoderProjectFile(projectPath);
-        } catch (error) {
-          // A legacy project can still be opened from its folder when the launch file cannot be created.
-          console.warn('补齐 Coder 项目入口失败:', error);
-        }
-      }
-      if (creation) {
-        await checkCreation();
-        creation.beginHandoff();
-      }
-      if (isSwitchingProject && this.getProjectMode(previousProjectPath) === 'blockly') {
-        try {
+        creation?.beginHandoff();
+        if (leavingBlockly) {
           await this.stopProjectCommands(previousProjectPath);
           creation?.assertCurrent();
-          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, options.retainRecovery ? undefined : 'discard'))) {
-            if (!retained) await window['projectLock']?.release(projectPath);
-            return false;
-          }
-        } catch (error) {
-          if (!retained) await window['projectLock']?.release(projectPath);
-          throw error;
+          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, options.retainRecovery ? undefined : 'discard'))) return false;
         }
-        await this.releaseProjectViewLock(previousProjectPath, previousReservation);
+        const activeView = view ? await view.tryAcquire(projectPath) : undefined;
+        if (activeView && !activeView.ok) throw projectViewOpenError(projectPath, activeView);
+        selected = true;
+        if (leavingBlockly) await this.releaseProjectViewLock(previousProjectPath, previousReservation);
+      } finally {
+        if (pending && !pending.alreadyHeld && !selected) {
+          try { await view.release(projectPath, pending.viewToken); }
+          catch (error) { console.warn('project-lock release after Coder activation failed:', error); }
+        }
       }
       if (!retained) {
         this.registerCoderProject(projectPath);
@@ -2532,7 +2577,9 @@ export class ProjectService {
     const prepareBeforeHandoff = abiIsExist && isSwitchingProject && !creation && !recovery;
     const navigation = prepareBeforeHandoff ? options.navigation?.transition : undefined;
     const rendererGeneration = this.electronService.currentRendererGeneration;
-    const reservation: ProjectViewReservation | undefined = navigation && rendererGeneration > 0 && window['projectLock']?.navigate
+    // A Coder tab remains open while Blockly is selected. Its lease must not participate in the source retirement.
+    const retainedCoderView = this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath));
+    const reservation: ProjectViewReservation | undefined = navigation && !retainedCoderView && rendererGeneration > 0 && window['projectLock']?.navigate
       ? { requestId: options.navigation!.requestId, rendererGeneration, sourceProject: previousProjectPath, projectPath }
       : undefined;
     let promoted = false;
@@ -2543,6 +2590,7 @@ export class ProjectService {
         throw Object.assign(new Error('The original view changed during target preparation.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
     };
     let ownsNewTargetLock = false;
+    let targetViewToken: string | undefined;
     const releasePreparedTargetLock = async () => {
       if (reservation) {
         if (promoted) return;
@@ -2558,7 +2606,7 @@ export class ProjectService {
         || this.projectOpenTask && this.projectOpenTask !== originalOpen
           && (!startup || this.projectOpenTask.startupRestore !== startup)
           && this.isSameProjectPath(projectPath, this.projectOpenTask.path)) return;
-      try { await window['projectLock']?.release(projectPath); }
+      try { await window['projectLock']?.release(projectPath, targetViewToken); }
       catch (error) { console.warn('project-lock release after open preparation:', error); }
     };
     const beginPreparation = () => {
@@ -2570,37 +2618,24 @@ export class ProjectService {
     try {
       if (this.electronService.isElectron && window['projectLock']) {
         const provisional = prepareBeforeHandoff ? { provisional: true } : undefined;
-        const acquire = (force = false) => {
+        const acquire = () => {
           assertSourceView();
           const work = reservation
-            ? window['projectLock'].navigate('reserve', reservation, { force })
-            : window['projectLock'].tryAcquire(projectPath, force ? { ...provisional, force } : provisional);
+            ? window['projectLock'].navigate('reserve', reservation)
+            : window['projectLock'].tryAcquire(projectPath, provisional);
           return reservation ? navigation!.wait(work) : work;
         };
-        let r = await acquire();
+        const r = await acquire();
         if (!r.ok && startup) return false;
         if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
         if (!r.ok && options.interactive === false) throw projectViewOpenError(projectPath, r);
-        if (!r.ok && r.conflict && r.holder) {
-          const action = await this.promptProjectLockConflict(r.holder);
-          if (action === 'cancel') {
-            return false;
-          }
-          if (action === 'focus') {
-            await window['projectLock'].focusProcess(r.holder.pid);
-            return false;
-          }
-          r = await acquire(true);
-          if (!r.ok) {
-            this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
-            return false;
-          }
-        } else if (!r.ok) {
-          this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
+        if (!r.ok) {
+          await this.resolveProjectLockConflict(projectPath, r, requestCopy);
           return false;
         }
         if (creation || startup || prepareBeforeHandoff) {
           ownsNewTargetLock = !r.alreadyHeld;
+          targetViewToken = r.viewToken;
           try { creation?.assertCurrent(); assertStartup(); }
           catch (error) { if (!prepareBeforeHandoff) await releasePreparedTargetLock(); throw error; }
         }
@@ -3871,19 +3906,29 @@ export class ProjectService {
     return this.finishProjectCreation(projectPath, options);
   }
 
-  /** 项目已被其他实例占用时的操作：取消 / 前置其他进程 / 强制打开 */
-  private promptProjectLockConflict(holder: {
-    pid: number;
-    execPath?: string;
-    appVersion?: string;
-  }): Promise<'cancel' | 'focus' | 'force'> {
+  private async resolveProjectLockConflict(projectPath: string, result: ProjectViewLockFailure, requestCopy?: () => void): Promise<void> {
+    if (!isProjectViewConflict(result)) {
+      this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
+      return;
+    }
+    const unknown = result.ownership?.state !== 'active' && result.code !== 'PROJECT_VIEW_OCCUPIED';
+    const canCopy = unknown && !!requestCopy;
+    const focus = unknown ? undefined : result.focus?.viewToken;
+    const action = await this.promptProjectLockConflict(unknown, canCopy, !!focus);
+    if (action === 'copy' && canCopy) requestCopy();
+    if (action === 'focus' && focus) {
+      const focused = await window['projectLock'].focusProcess(projectPath, focus);
+      if (!focused?.ok) this.message.info(this.translate.instant('PROJECT.LOCK_FOCUS_UNAVAILABLE'));
+    }
+  }
+
+  private promptProjectLockConflict(unknown: boolean, canCopy: boolean, canFocus: boolean): Promise<'cancel' | 'focus' | 'copy'> {
     let modalRef: NzModalRef;
     modalRef = this.modal.create({
-      nzTitle: this.translate.instant('PROJECT.LOCK_CONFLICT_TITLE'),
-      nzContent: this.translate.instant('PROJECT.LOCK_CONFLICT_CONTENT', {
-        version: holder.appVersion || '-',
-        pid: String(holder.pid),
-      }),
+      nzTitle: this.translate.instant(unknown ? 'PROJECT.LOCK_UNKNOWN_TITLE' : 'PROJECT.LOCK_CONFLICT_TITLE'),
+      nzContent: this.translate.instant(unknown
+        ? canCopy ? 'PROJECT.LOCK_UNKNOWN_COPY_CONTENT' : 'PROJECT.LOCK_UNKNOWN_CONTENT'
+        : 'PROJECT.LOCK_CONFLICT_MESSAGE'),
       nzMaskClosable: false,
       nzClosable: true,
       nzClassName: 'project-lock-conflict-modal',
@@ -3896,23 +3941,21 @@ export class ProjectService {
           label: this.translate.instant('PROJECT.LOCK_CANCEL'),
           onClick: () => modalRef.close('cancel'),
         },
-        {
+        ...(canFocus ? [{
           label: this.translate.instant('PROJECT.LOCK_FOCUS_OTHER'),
-          type: 'primary',
+          type: 'primary' as const,
           onClick: () => modalRef.close('focus'),
-        },
-        // 不需要强制打开选项
-        // {
-        //   label: this.translate.instant('PROJECT.LOCK_FORCE_OPEN'),
-        //   type: 'primary',
-        //   danger: true,
-        //   onClick: () => modalRef.close('force'),
-        // },
+        }] : []),
+        ...(canCopy ? [{
+          label: this.translate.instant('PROJECT.LOCK_OPEN_COPY'),
+          type: 'primary' as const,
+          onClick: () => modalRef.close('copy'),
+        }] : []),
       ],
     });
     return new Promise((resolve) => {
       modalRef.afterClose.subscribe((result) => {
-        resolve((result as 'cancel' | 'focus' | 'force') || 'cancel');
+        resolve((result as 'cancel' | 'focus' | 'copy') || 'cancel');
       });
     });
   }

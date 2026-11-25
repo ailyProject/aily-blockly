@@ -480,12 +480,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     tryAcquire: (projectPath, options) =>
       ipcRenderer.invoke("project-lock-try", {
         projectPath,
-        force: options && options.force,
         provisional: options?.provisional === true,
+        auxiliary: options?.auxiliary === true,
       }),
-    release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
+    release: (projectPath, viewToken) => ipcRenderer.invoke("project-lock-release", { projectPath, viewToken }),
     navigate: (action, reservation, options) => ipcRenderer.invoke('project-view-navigation', {
-      ...reservation, action, force: options?.force, pendingOnly: options?.pendingOnly,
+      ...reservation, action, pendingOnly: options?.pendingOnly,
     }),
     checkStartupRestore: (projectPath, ticket) => ipcRenderer.invoke('project-navigation-startup-check', projectPath, ticket),
     cancelStartupRestore: () => ipcRenderer.send('project-navigation-startup-cancel'),
@@ -495,7 +495,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     canReopenNavigation: (proof, project) => ipcRenderer.invoke('project-navigation-can-reopen', { proof, project }),
     closedNavigationSession: () => ipcRenderer.invoke('project-navigation-closed-session'),
     clearActive: (projectPath, options) => ipcRenderer.invoke('project-navigation-clear', projectPath, options),
-    focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
+    focusProcess: (projectPath, viewToken) => ipcRenderer.invoke("project-lock-focus", { projectPath, viewToken }),
   },
   subWindow: (() => {
     // 立即监听 window-init-data，缓存数据，避免 Angular 组件注册监听前数据丢失

@@ -769,7 +769,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
           ...(rejection
             ? { automationBlockedReason: String(rejection['reason']) }
             : {}),
-          mayPrompt: ['project-new', 'project-open', 'recent-project-open', 'project-close']
+          mayPrompt: ['project-new', 'project-open', 'project-import-zip', 'recent-project-open', 'project-close']
             .includes(item.action || ''),
           ...(children.length ? { children } : {}),
         };
@@ -1269,14 +1269,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.closeMenu();
   }
 
-  async selectFolder() {
-    const folderPath = await window['ipcRenderer'].invoke('select-folder', {
-      path: this.projectData.path,
-    });
-    // console.log('选中的文件夹路径：', folderPath);
-    return folderPath;
-  }
-
   async selectSaveAsFolder() {
     const sourcePath = this.projectService.currentProjectPath;
     if (this.projectService.getProjectMode(sourcePath) === 'coder') {
@@ -1295,11 +1287,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     return folderPath;
   }
 
-  async openProject() {
-    const path = await this.selectFolder();
-    if (path) {
-      await this.projectService.projectOpen(path);
-    }
+  async openProject(archive = false) {
+    return this.projectService.selectAndOpenProject({
+      defaultPath: this.projectData.path, archive,
+      beforeOpen: async () => !this.isLoaded() || this.checkUnsavedChanges('open'),
+    });
   }
 
   private coderProjectsAdding = false;
@@ -1489,11 +1481,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.uiService.openWindow(item.data);
         break;
       case 'project-open':
-        if (this.isLoaded()) { // 只在已加载项目时检查
-          const canContinue = await this.checkUnsavedChanges('open');
-          if (!canContinue) return;
-        }
-        this.openProject();
+      case 'project-import-zip':
+        await this.openProject(item.action === 'project-import-zip');
         break;
       case 'project-add':
         await this.addCoderProjects();

@@ -53,9 +53,11 @@ test('view guard and runtime owner churn do not invalidate source identity or re
         assert.ok(view);
         f.put('.aily/project-open.lock', '{"owner":"first"}');
         f.put('.aily/project-files.write.lock', '{"owner":"first"}');
+        const staging = f.put('.aily/.project-open.lock.11111111-1111-4111-8111-111111111111.tmp', 'staged view owner');
         const snapshot = captureProjectSources(f.config);
         f.put('.aily/project-open.lock', '{"owner":"second"}');
         fs.unlinkSync(path.join(f.root, '.aily/project-files.write.lock'));
+        fs.unlinkSync(staging);
         confirmProjectSources(snapshot, f.config);
         assert.equal(snapshot.body.files.some(file => file.path.startsWith('.aily/')), false);
         assert.equal(fs.readFileSync(path.join(f.root, '.aily/project-open.lock'), 'utf8'), '{"owner":"second"}');
@@ -65,7 +67,7 @@ test('view guard and runtime owner churn do not invalidate source identity or re
 });
 
 for (const relative of ['.aily/assets/image.txt', '.aily/abs-sync/prepared.json', '.aily/custom.guard',
-    '.aily/custom.lock', '.aily/backup/build-workspace.guard', 'src/project-open.lock']) {
+    '.aily/custom.lock', '.aily/.project-open.lock.notes.tmp', '.aily/backup/build-workspace.guard', 'src/project-open.lock']) {
     test(`strict capture still includes and detects changes in ${relative}`, t => {
         const f = fixture(t);
         f.put(relative, 'original');

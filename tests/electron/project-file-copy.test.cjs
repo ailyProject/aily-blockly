@@ -73,7 +73,8 @@ after(() => { for (const root of roots) {
 test('project copies exclude writer/lifecycle transient files and preserve recovery/resource data', () => {
   const source = directory(); const target = directory();
   const id = '12345678-1234-1234-1234-123456789abc';
-  const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
+  const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', '.aily/project-view.guard',
+    `.aily/.project-open.lock.${id}.tmp`, `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
     `.project.abs.map.json.${id}.tmp`, `.project-data-backup.${id}.tmp`, `.abs-sync-${id}.tmp`,
     `.aily/abs-sync/.abs-sync-${id}.tmp`, `.aily/abs-sync/baselines/.abs-sync-${id}.tmp`,
     `.aily/.project-files.write.lock.${id}.tmp`, '.aily/build-executions/run/project/node_modules/dependency.c',
@@ -213,6 +214,17 @@ test('imports reject collisions, ambiguous archives, missing packages and descen
   const missing = path.join(parent, 'missing');
   assert.throws(() => importProjectDirectory(archive, missing, true)); assert.equal(fs.existsSync(missing), false);
   assert.throws(() => importProjectDirectory(archive, missing)); assert.equal(fs.existsSync(missing), false);
+});
+
+test('failed copies remove only the fresh import directory', () => {
+  const source = directory(); const parent = directory(); const target = path.join(parent, 'target');
+  const other = path.join(parent, 'other'); fs.mkdirSync(other); fs.writeFileSync(path.join(other, 'keep'), 'keep');
+  fs.writeFileSync(path.join(source, 'package.json'), '{}');
+  fs.symlinkSync(other, path.join(source, '.aily'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => importProjectDirectory(source, target), /metadata/);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.readFileSync(path.join(other, 'keep'), 'utf8'), 'keep');
+  assert.equal(fs.lstatSync(path.join(source, '.aily')).isSymbolicLink(), true);
 });
 
 test('imports create missing parents only after validating the source and resolved destination', () => {

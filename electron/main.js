@@ -471,9 +471,10 @@ ipcMain.handle('project-repair-fork-policy', (event, params) => {
 });
 let pendingRoute = null;
 let pendingQueryParams = null;
-/** 当前主进程已持有的项目锁（规范化路径） */
+/** 当前选中的项目。主进程可能还持有其他标签页或切换目标的锁。 */
 let heldProjectLockNormalized = null;
 const projectViewNavigation = createProjectViewNavigation(projectLock);
+const provisionalProjectViews = new Map();
 
 /** 主进程读取 i18n JSON：开发态在仓库 public；打包后 Angular 资源在 app.asar/renderer */
 function getMainProcessI18nJsonPath(pack) {
@@ -482,36 +483,6 @@ function getMainProcessI18nJsonPath(pack) {
     return path.join(__dirname, "..", "renderer", "i18n", file);
   }
   return path.join(__dirname, "..", "public", "i18n", file);
-}
-
-function getProjectLockStringsForMain() {
-  const defaults = {
-    LOCK_CONFLICT_TITLE: "Project already open",
-    LOCK_CONFLICT_MESSAGE: "Another window or version may be editing this project.",
-    LOCK_CANCEL: "Cancel",
-    LOCK_FOCUS_OTHER: "Bring to front",
-    LOCK_FORCE_OPEN: "Open anyway",
-  };
-  try {
-    const loc = (app.getLocale() || "").toLowerCase();
-    const pack = loc.startsWith("zh") ? "zh_cn" : "en";
-    const fp = getMainProcessI18nJsonPath(pack);
-    if (!fs.existsSync(fp)) {
-      return defaults;
-    }
-    const j = JSON.parse(fs.readFileSync(fp, "utf8"));
-    const P = j.PROJECT || {};
-    return {
-      LOCK_CONFLICT_TITLE: P.LOCK_CONFLICT_TITLE || defaults.LOCK_CONFLICT_TITLE,
-      LOCK_CONFLICT_MESSAGE: P.LOCK_CONFLICT_MESSAGE || defaults.LOCK_CONFLICT_MESSAGE,
-      LOCK_CANCEL: P.LOCK_CANCEL || defaults.LOCK_CANCEL,
-      LOCK_FOCUS_OTHER: P.LOCK_FOCUS_OTHER || defaults.LOCK_FOCUS_OTHER,
-      LOCK_FORCE_OPEN: P.LOCK_FORCE_OPEN || defaults.LOCK_FORCE_OPEN,
-    };
-  } catch (e) {
-    console.warn("getProjectLockStringsForMain:", e);
-    return defaults;
-  }
 }
 
 function getMenuStringForMain(key, fallback) {
@@ -529,46 +500,6 @@ function getMenuStringForMain(key, fallback) {
     console.warn("getMenuStringForMain:", e);
     return fallback;
   }
-}
-
-/**
- * 打开项目目录前获取锁；冲突时弹出主进程对话框。
- * @returns {Promise<{ proceed: boolean }>}
- */
-async function resolveProjectLockOrPrompt(projectDir, parentWindow) {
-  const r = projectLock.tryAcquireLock(projectDir);
-  if (r.ok) {
-    heldProjectLockNormalized = r.normalizedPath;
-    return { proceed: true };
-  }
-  if (r.conflict && r.holder) {
-    const s = getProjectLockStringsForMain();
-    const detail = `${s.LOCK_CONFLICT_MESSAGE}\nPID: ${r.holder.pid}\n${r.holder.execPath || ""}\n${r.holder.appVersion || ""}`;
-    const { response } = await dialog.showMessageBox(parentWindow || undefined, {
-      type: "warning",
-      title: s.LOCK_CONFLICT_TITLE,
-      message: s.LOCK_CONFLICT_TITLE,
-      detail,
-      buttons: [s.LOCK_CANCEL, s.LOCK_FOCUS_OTHER, s.LOCK_FORCE_OPEN],
-      defaultId: 1,
-      cancelId: 0,
-    });
-    if (response === 0) {
-      return { proceed: false };
-    }
-    if (response === 1) {
-      projectLock.focusProcessByPid(r.holder.pid);
-      return { proceed: false };
-    }
-    const r2 = projectLock.tryAcquireLock(projectDir, { force: true });
-    if (r2.ok) {
-      heldProjectLockNormalized = r2.normalizedPath;
-      return { proceed: true };
-    }
-    return { proceed: false };
-  }
-  console.warn("project lock failed:", r.error || r);
-  return { proceed: false };
 }
 
 // File association and companion-app handoff both use the renderer's guarded open entry.
@@ -1856,6 +1787,11 @@ function invalidateRendererGeneration(reason) {
   }
   dispatchedProjectCreates.clear();
   projectViewNavigation.retireGeneration(rendererGeneration);
+  for (const [project, pending] of provisionalProjectViews) {
+    if (pending.generation !== rendererGeneration) continue;
+    projectLock.releaseLock(project, { viewToken: pending.viewToken });
+    provisionalProjectViews.delete(project);
+  }
   readyRendererGeneration = 0;
   console.info('[RendererLifecycle] unavailable', {
     generation: rendererGeneration,
@@ -3682,14 +3618,9 @@ app.on("will-quit", () => {
 
   releaseAllAuthCredentialsLocks();
 
-  if (heldProjectLockNormalized) {
-    try {
-      projectLock.releaseLock(heldProjectLockNormalized);
-    } catch (e) {
-      console.warn("will-quit release project lock:", e);
-    }
-    heldProjectLockNormalized = null;
-  }
+  projectLock.releaseAll();
+  provisionalProjectViews.clear();
+  heldProjectLockNormalized = null;
   // The profile's native lease is released by process teardown. Its PID
   // publication is retained until then; the next allocator reclaims it safely.
 });
@@ -3806,26 +3737,35 @@ ipcMain.handle('project-commands-stop', async (event, data) => {
 });
 
 ipcMain.handle("project-lock-try", (event, data) => {
-  const { projectPath, force, provisional } = data || {};
+  const { projectPath, provisional, auxiliary } = data || {};
+  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+    || typeof projectPath !== 'string' || !path.isAbsolute(projectPath))
+    return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The current project view did not request this lock.' };
   if (projectViewNavigation.isClaimed(projectPath)) {
-    if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
-      || projectViewNavigation.currentProject() !== projectLock.normalizeProjectPathLoose(projectPath))
+    if (projectViewNavigation.currentProject() !== projectLock.normalizeProjectPathLoose(projectPath))
       return { ok: false, code: 'PROJECT_VIEW_BUSY', error: 'Another navigation owns this view reservation.' };
   }
   if (repairBootstrap) {
     const rejection = checkRepairProjectOpen(repairBootstrap.record, projectPath);
     if (rejection) return rejection;
   }
-  const r = projectLock.tryAcquireLock(projectPath, { force: !!force, strict: !!repairBootstrap });
-  if (r.ok && provisional !== true) {
-    heldProjectLockNormalized = r.normalizedPath;
-    projectViewNavigation.selectLegacy(r.normalizedPath, rendererGeneration);
+  const r = projectLock.tryAcquireLock(projectPath, { strict: !!repairBootstrap });
+  if (r.ok && provisional === true && !r.alreadyHeld) {
+    provisionalProjectViews.set(r.normalizedPath, { viewToken: r.viewToken, generation: rendererGeneration });
+  } else if (r.ok && provisional !== true) {
+    provisionalProjectViews.delete(r.normalizedPath);
+    if (auxiliary !== true) {
+      heldProjectLockNormalized = r.normalizedPath;
+      projectViewNavigation.selectLegacy(r.normalizedPath, rendererGeneration);
+    }
   }
   return r;
 });
 
 ipcMain.handle("project-lock-release", (event, data) => {
-  const { projectPath } = data || {};
+  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame)
+    return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The current project view did not request this release.' };
+  const { projectPath, viewToken } = data || {};
   const target = projectPath || heldProjectLockNormalized;
   if (!target) {
     return { ok: true };
@@ -3834,11 +3774,12 @@ ipcMain.handle("project-lock-release", (event, data) => {
     return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The project view requires its original reservation.' };
   }
   const beforeHeld = heldProjectLockNormalized;
-  const r = projectLock.releaseLock(target);
-  if (r.ok && beforeHeld) {
-    const nt = projectLock.normalizeProjectPathLoose(target);
-    const nh = projectLock.normalizeProjectPathLoose(beforeHeld);
-    if (nt === nh) {
+  const normalized = projectLock.normalizeProjectPathLoose(target);
+  const pending = provisionalProjectViews.get(normalized);
+  const r = projectLock.releaseLock(target, viewToken ? { viewToken } : pending);
+  if (!projectLock.isHeld(normalized)) {
+    if (pending) provisionalProjectViews.delete(normalized);
+    if (beforeHeld === normalized) {
       heldProjectLockNormalized = null;
       projectViewNavigation.selectLegacy(null);
     }
@@ -3861,7 +3802,7 @@ ipcMain.handle('project-view-navigation', (event, request) => {
       }
       if (projectViewNavigation.currentProject() !== heldProjectLockNormalized)
         projectViewNavigation.selectLegacy(heldProjectLockNormalized, rendererGeneration);
-      return projectViewNavigation.reserve(request, { strict: !!repairBootstrap, force: request.force === true });
+      return projectViewNavigation.reserve(request, { strict: !!repairBootstrap });
     }
     case 'promote': {
       const result = projectViewNavigation.promote(request);
@@ -3884,7 +3825,8 @@ ipcMain.handle('project-view-navigation', (event, request) => {
 // program version, recover a transaction or open a copy. Reloads retain them.
 function ownsProjectNavigation(projectPath) {
   return typeof projectPath === 'string' && path.isAbsolute(projectPath) && !!heldProjectLockNormalized
-    && projectLock.normalizeProjectPathLoose(projectPath) === projectLock.normalizeProjectPathLoose(heldProjectLockNormalized);
+    && projectLock.normalizeProjectPathLoose(projectPath) === projectLock.normalizeProjectPathLoose(heldProjectLockNormalized)
+    && projectLock.isHeld(projectPath);
 }
 
 ipcMain.on('project-navigation-startup-cancel', (event) => {
@@ -3961,8 +3903,16 @@ ipcMain.handle('project-navigation-clear', (event, projectPath, options) => {
 });
 
 ipcMain.handle("project-lock-focus", (event, data) => {
-  const pid = data && data.pid;
-  return projectLock.focusProcessByPid(pid);
+  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+    || typeof data?.projectPath !== 'string' || !path.isAbsolute(data.projectPath) || typeof data.viewToken !== 'string')
+    return { ok: false, reason: 'unknown' };
+  return projectLock.focusProjectOwner(data.projectPath, data.viewToken);
+});
+
+ipcMain.handle('project-import-archive', (event, { archivePath, destination } = {}) => {
+  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame)
+    throw new Error('Project import requires the current main window.');
+  return require('./project-archive-import').importProjectArchive(archivePath, destination);
 });
 
 // 另存为用
