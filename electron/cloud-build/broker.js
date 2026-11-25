@@ -45,6 +45,10 @@ const abortFault = () => protocol.error('CANCELLED', 'Cloud build cancelled.');
 const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled', 'timed_out']);
 const staleSource = (sourceReason, message) => Object.assign(protocol.error('BUILD_SOURCE_STALE', message), { sourceReason });
 const AUTH_USER = Symbol('cloud-build-user');
+function buildCatalogScope(settings, board) {
+  return JSON.stringify([gatewayUrl(settings.gatewayUrl).url, settings.publicKey, settings[AUTH_USER],
+    board.boardModule, board.boardVersion, board.boardDigest]);
+}
 const CLIENT_INPUT_METRICS = ['captureMs', 'identityMs', 'manifestPrepareMs', 'manifestResolveMs', 'blobUploadMs', 'commitMs', 'encodingMs',
   'rawBytes', 'uniqueBytes', 'uploadedBytes', 'transferredBytes', 'reusedBytes', 'fileCount', 'blobCount', 'libraryCount', 'libraryHits', 'encodedFiles'];
 function clientInputMetrics(value) {
@@ -65,6 +69,23 @@ function targetProfileDigest(profile) {
   const value = profile?.digest || profile?.profileDigest;
   return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
     && (profile.digest === undefined || profile.profileDigest === undefined || profile.digest === profile.profileDigest) ? value : undefined;
+}
+// A digest covers the static Worker profile. Only the Gateway's capacity and priority
+// are dynamic. If any live digest or metric is unknown, fetch the complete directory.
+function profilesFromBoardSupport(support, boardDigest, known) {
+  if (support.boardDigest !== boardDigest || !Array.isArray(support.profiles) || !support.profiles.length) return;
+  const profiles = [], seen = new Set();
+  for (const entry of support.profiles) {
+    const digest = entry?.profileDigest, availability = entry?.availability, profile = known.get(digest);
+    if (!profile || profile.capabilities?.compile !== true || seen.has(digest)
+      || !['onlineNodes', 'freeSlots', 'idleNodes', 'priority'].every(key =>
+        Number.isSafeInteger(availability?.[key]) && availability[key] >= 0)
+      || availability.priority > 100 || availability.idleNodes > availability.onlineNodes) return;
+    seen.add(digest);
+    profiles.push({ ...profile, availability });
+  }
+  if (profiles.some(profile => profile.availability.freeSlots > 0) !== support.available) return;
+  return profiles;
 }
 function targetSelectionCandidates(caps, catalog, reference, action) {
   const selection = caps?.targetSelection;
@@ -209,6 +230,7 @@ class CloudBuildBroker {
     this.artifactRetryDelayMs = options.artifactRetryDelayMs ?? 250;
     this.retention = options.retention || {};
     this.requests = new Map(); this.active = new Map(); this.artifactUsers = new Map(); this.catalogCapabilities = new Map();
+    this.buildCatalogs = new Map();
   }
   async authorization(settings, signal, refresh) {
     const destination = gatewayUrl(settings.gatewayUrl);
@@ -285,6 +307,7 @@ class CloudBuildBroker {
       if (error.code === 'ARTIFACT_INVALID') throw error;
       throw Object.assign(protocol.error('GATEWAY_UNREACHABLE', 'Gateway response was interrupted.'), { cause: error });
     }
+    bodyOptions.onResponseSize?.(bytes.length);
     let value;
     try { value = JSON.parse(bytes.toString('utf8')); }
     catch { throw Object.assign(protocol.error(response.ok ? 'PROTOCOL_UNSUPPORTED' : 'GATEWAY_HTTP_ERROR',
@@ -296,7 +319,7 @@ class CloudBuildBroker {
     return value;
   }
   capabilities(settings, signal) { return this.request(settings, '/api/v1/build/capabilities', undefined, signal); }
-  async boardSupport(settings, selector, signal) {
+  async boardSupport(settings, selector, signal, exact = false) {
     const { boardModule, boardVersion } = selector;
     if (typeof boardModule !== 'string' || boardModule.length > 256
         || !/^@[^/\\]+\/(?:board|coder)-[A-Za-z0-9_.-]+$/u.test(boardModule) || /[\x00-\x1f]/u.test(boardModule)
@@ -304,6 +327,7 @@ class CloudBuildBroker {
       throw protocol.error('TARGET_UNSUPPORTED', 'Invalid board support selector.');
     }
     const query = new URLSearchParams({ boardModule, boardVersion });
+    if (exact) query.set('boardDigest', selector.boardDigest);
     const support = await this.request(settings, `/api/v1/build/board-support?${query}`, undefined, signal,
       { maxResponseBytes: 1024 * 1024 });
     if (support.boardModule !== boardModule || support.boardVersion !== boardVersion
@@ -450,7 +474,7 @@ class CloudBuildBroker {
     // 网关可连接且签名身份可信即可启用，节点忙碌或离线不等于网关故障。
     return { healthy: true, settings: { gatewayUrl: settings.gatewayUrl, publicKey: publicKey.trim() } };
   }
-  targets(settings, signal, profileDigest, selector = {}) {
+  targets(settings, signal, profileDigest, selector = {}, owner) {
     if (profileDigest !== undefined && (typeof profileDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(profileDigest))) throw protocol.error('TARGET_UNSUPPORTED', 'Invalid target profile digest.');
     const params = new URLSearchParams();
     if (profileDigest !== undefined) params.set('profileDigest', profileDigest);
@@ -469,8 +493,9 @@ class CloudBuildBroker {
       return this.request(settings, '/api/v1/build/targets' + query, undefined, signal);
     }
     return (async () => {
-      // 先按板包名称和已安装版本检查支持，再保留内容摘要及编译环境的精确匹配。
-      this.assertBoardSupported(await this.boardSupport(settings, selector, signal));
+      const forBuild = !!owner && selector.forBuild === true && profileDigest === undefined;
+      const checkSupport = async () => this.assertBoardSupported(await this.boardSupport(settings, selector, signal));
+      if (!forBuild) await checkSupport();
       // 旧网关可能拒绝未知筛选参数，先协商能力，再选择服务端或本地筛选。
       const key = gatewayUrl(settings.gatewayUrl).url;
       let cached = this.catalogCapabilities.get(key);
@@ -482,12 +507,74 @@ class CloudBuildBroker {
       }
       const caps = await cached.promise;
       signal?.throwIfAborted();
+      // The priority-idle gateway publishes only board-authorized profiles. Its exact
+      // compile match already proves module support. Keep detailed reasons on a miss.
+      const supportsExactAdmission = forBuild && caps.targetLookupByBoard === true
+        && caps.targetSelection?.version === 1 && caps.targetSelection.policy === 'priority-idle-v1';
+      if (forBuild && !supportsExactAdmission) await checkSupport();
+      const ownerCurrent = () => owner && owner.isCurrent?.() !== false
+        && this.getOwner(owner.sender)?.generation === owner.generation && !owner.sender.isDestroyed?.();
+      const known = this.lastBoardCatalog;
+      const action = selector.compileAction === 'analysis' ? 'analysis' : 'compile';
+      let checkedExactSupport = false;
+      if (supportsExactAdmission && action === 'compile'
+          && known && known.sender === owner.sender && known.generation === owner.generation && known.publicKey === caps.publicKey) {
+        if (this.getAuth) await this.authorization(settings, signal);
+        if (known.scope === buildCatalogScope(settings, selector) && ownerCurrent()) {
+          const support = await this.boardSupport(settings, selector, signal, true);
+          checkedExactSupport = true;
+          if (support.boardDigest === selector.boardDigest) {
+            if (!support.supported && support.reason === 'identity_mismatch') {
+              throw protocol.error('CLOUD_TARGET_UNAVAILABLE', 'No cloud compiler matches the installed board contents.');
+            }
+            this.assertBoardSupported(support);
+            const profiles = profilesFromBoardSupport(support, selector.boardDigest, known.byDigest);
+            if (profiles && ownerCurrent()) {
+              return this.issueBuildCatalog(owner, known.scope, { ...known.catalog, profiles }, action, caps.publicKey);
+            }
+          }
+        }
+      }
       const endpoint = caps.targetLookupByBoard === true ? '/api/v1/build/targets' + query
         : '/api/v1/build/targets' + (profileDigest ? `?profileDigest=${profileDigest}` : '');
-      const catalog = await this.request(settings, endpoint, undefined, signal);
+      let responseSize;
+      const catalog = await this.request(settings, endpoint, undefined, signal,
+        owner ? { onResponseSize: size => { responseSize = size; } } : undefined);
       if (!Array.isArray(catalog.profiles)) throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid target catalog.');
-      return { ...catalog, profiles: catalog.profiles.filter(profile => ['boardModule', 'boardVersion', 'boardDigest'].every(key => selector[key] === undefined || profile[key] === selector[key])) };
+      const result = { ...catalog, profiles: catalog.profiles.filter(profile => boardKeys.every(key => profile[key] === selector[key])) };
+      delete result.catalogTicket;
+      const hasCompiler = result.profiles.some(profile => targetProfileDigest(profile)
+        && profile.runner === 'aily-builder' && profile.capabilities?.compile === true && profile.metadata?.fixture !== true);
+      if (supportsExactAdmission && !hasCompiler && !checkedExactSupport) await checkSupport();
+      if (!profileDigest && hasCompiler && responseSize <= 4 * 1024 * 1024 && ownerCurrent()) {
+        const scope = buildCatalogScope(settings, selector);
+        this.lastBoardCatalog = { sender: owner.sender, generation: owner.generation, scope, publicKey: caps.publicKey, catalog: result,
+          byDigest: new Map(result.profiles.map(profile => [targetProfileDigest(profile), profile]).filter(([digest]) => digest)) };
+        if (forBuild) return this.issueBuildCatalog(owner, scope, result, action, caps.publicKey);
+      }
+      return result;
     })();
+  }
+  issueBuildCatalog(owner, scope, catalog, action, publicKey) {
+    const ticket = crypto.randomUUID(), ttl = 30000;
+    if (this.buildCatalogs.size >= 4) this.discardBuildCatalog(this.buildCatalogs.keys().next().value);
+    const timer = setTimeout(() => this.discardBuildCatalog(ticket), ttl);
+    timer.unref?.();
+    this.buildCatalogs.set(ticket, { sender: owner.sender, generation: owner.generation, scope, action, publicKey,
+      expiresAt: Date.now() + ttl, timer, profiles: catalog.profiles });
+    return { ...catalog, catalogTicket: ticket };
+  }
+  discardBuildCatalog(ticket) {
+    clearTimeout(this.buildCatalogs.get(ticket)?.timer);
+    this.buildCatalogs.delete(ticket);
+  }
+  consumeBuildCatalog(ticket, record, board, action = 'compile') {
+    const saved = this.buildCatalogs.get(ticket);
+    if (!saved || saved.sender !== record.sender || saved.generation !== record.generation) return;
+    this.discardBuildCatalog(ticket);
+    if (saved.expiresAt > Date.now() && saved.action === action && saved.scope === buildCatalogScope(record.settings, board)) {
+      return { profiles: saved.profiles, publicKey: saved.publicKey };
+    }
   }
   owner(sender) {
     const owner = this.getOwner(sender);
@@ -619,12 +706,13 @@ class CloudBuildBroker {
       const discovery = new AbortController(), discoverySignal = AbortSignal.any([record.controller.signal, discovery.signal]);
       let caps, catalog;
       try {
+        const board = { boardModule: record.config.boardModule, boardVersion: boardPackage.version, boardDigest: identity };
+        const handoff = this.consumeBuildCatalog(input.catalogTicket, record, board, input.action || 'compile');
         [caps, catalog] = await Promise.all([this.capabilities(record.settings, discoverySignal),
-          this.targets(record.settings, discoverySignal, undefined, {
-            boardModule: record.config.boardModule, boardVersion: boardPackage.version, boardDigest: identity,
-          })]);
+          handoff ?? this.targets(record.settings, discoverySignal, undefined, board)]);
+        record.publicKey = trustedGateway(record.settings, caps);
+        if (handoff && handoff.publicKey !== caps.publicKey) catalog = await this.targets(record.settings, discoverySignal, undefined, board);
       } catch (error) { discovery.abort(error); throw error; }
-      record.publicKey = trustedGateway(record.settings, caps);
       // Respect a stricter advertised budget; older gateways retain their 128 MiB input default.
       const advertisedLimits = protocol.inputLimits(caps.limits === undefined ? { maxInputBytes: protocol.MAX_BYTES } : caps.limits);
       const largeInputs = caps.inputTransport?.version === 2 && caps.inputTransport.manifestFirst === true
@@ -1227,6 +1315,10 @@ class CloudBuildBroker {
     } catch { /* 项目已不存在或页面已失效，无需继续撤销。 */ }
   }
   invalidateOwner(sender, generation) {
+    if (this.lastBoardCatalog?.sender === sender && this.lastBoardCatalog.generation === generation) this.lastBoardCatalog = undefined;
+    for (const [ticket, saved] of this.buildCatalogs) {
+      if (saved.sender === sender && saved.generation === generation) this.discardBuildCatalog(ticket);
+    }
     const roots = new Set(), cancelled = [];
     for (const [root, record] of this.active) if (record.sender === sender && record.generation === generation) {
       roots.add(root); record.controller.abort(protocol.error('BUILD_OWNER_EXPIRED', 'Build owner changed.')); this.active.delete(root);
@@ -1239,6 +1331,8 @@ class CloudBuildBroker {
     return Promise.allSettled(cancelled);
   }
   invalidateAll({ keepCompleted = false } = {}) {
+    this.lastBoardCatalog = undefined;
+    for (const ticket of this.buildCatalogs.keys()) this.discardBuildCatalog(ticket);
     const roots = new Set([...this.requests.values()].map(record => record.root)), cancelled = [];
     for (const [root, record] of this.active) {
       // Results published by a still-pending request have not cleared its final checks yet.

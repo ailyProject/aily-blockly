@@ -2353,7 +2353,7 @@ export class _BuilderService {
         state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(requestId) });
       const dependencySession = this.projectService.getProjectDependencySession(config.currentProjectPath);
       const result = await runCloudBuildWithProgress({ requestId, buildRequestId: requestLog?.requestId || requestId,
-        config, settings, profileDigest: profile.profileDigest, action: 'compile' }, bridge, {
+        config, settings, profileDigest: profile.profileDigest, catalogTicket: profile.catalogTicket, action: 'compile' }, bridge, {
         prepareTool: async tool => {
           await checkCurrent();
           await this.npmService.installCloudUploadTool(tool, dependencySession);

@@ -22,6 +22,7 @@ import { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogRefere
 import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, buildSourceStale, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
+import type { CloudBoardProfile } from '../../../utils/cloud-build-settings.utils';
 import { canRetryCloudBuildLocally, isUnsupportedCloudBuild, runCloudBuildWithProgress, cloudBuildProgressPresentation, type BuildLocalFallbackControl, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
@@ -389,14 +390,14 @@ export class CompileService {
       }
 
       const boardName = boardModule.replace('@aily-project/board-', '').replace('@aily-project/coder-', '');
-      let cloudProfile: Awaited<ReturnType<ProjectService['getCloudBoardProfile']>> | undefined;
+      const action = options.preprocessOnly ? 'analysis' : 'compile';
+      let cloudProfile: CloudBoardProfile | undefined;
       // 云模式按目标能力准备源码和元数据，不检查或安装本机编译器路径。
       if (context.cloud) {
         await this.npmService.ensureCloudLibrarySources(root);
         assertManifest(); assertCloudContext();
-        cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true });
+        cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true, compileAction: action });
         assertManifest(); assertCloudContext();
-        const action = options.preprocessOnly ? 'analysis' : 'compile';
         if (context.cloud && cloudProfile?.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
         if (context.cloud && cloudProfile?.capabilities?.[action] !== true) {
           if (options.preprocessOnly) throw new Error('当前云编译节点不支持预处理/代码分析，请选择支持 analysis 的节点。');
@@ -454,7 +455,7 @@ export class CompileService {
             let result: any;
             try {
               result = await this.runCloudCompile(root, { ...buildConfig, sourceCapture }, context.settings!,
-                cloudProfile!.profileDigest, options.preprocessOnly ? 'analysis' : 'compile', boardName, context.settingsKey);
+                cloudProfile!, action, boardName, context.settingsKey);
             } catch (error) {
               if (error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
               assertCloudContext(); assertManifest();
@@ -612,10 +613,10 @@ export class CompileService {
           context.cloud = await this.npmService.prepareCloudCompileBackend(root, () => this.cancelled);
           assertCloudContext(); assertManifest();
           if (context.cloud) {
-            cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true });
+            cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true, compileAction: action });
             assertCloudContext(); assertManifest();
             if (cloudProfile?.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
-            if (cloudProfile?.capabilities?.[options.preprocessOnly ? 'analysis' : 'compile'] !== true) {
+            if (cloudProfile?.capabilities?.[action] !== true) {
               if (options.preprocessOnly) throw new Error('This cloud target does not support the requested build action.');
               throw Object.assign(new Error('This cloud target does not support compilation.'), { code: 'CLOUD_COMPILE_UNSUPPORTED' });
             }
@@ -732,7 +733,7 @@ export class CompileService {
   /** Coder 与 Blockly 共用进度合并工具，状态立即刷新、日志批量显示，完成仍以主进程结果为准。 */
   private async runCloudCompile(
     root: string, config: unknown, settings: NonNullable<DiskCompileContext['settings']>,
-    profileDigest: string, action: 'compile' | 'analysis', boardName: string, settingsKey?: string,
+    profile: CloudBoardProfile, action: 'compile' | 'analysis', boardName: string, settingsKey?: string,
   ): Promise<any> {
     const requestLog = this.activeBuildLog;
     const gateway = window['cloudBuild'];
@@ -746,7 +747,8 @@ export class CompileService {
     };
     try {
       const dependencySession = this.projectService.getProjectDependencySession(root);
-      return await runCloudBuildWithProgress({ requestId, config, settings, profileDigest, action }, gateway, {
+      return await runCloudBuildWithProgress({ requestId, config, settings, action,
+        profileDigest: profile.profileDigest, catalogTicket: profile.catalogTicket }, gateway, {
         prepareTool: tool => this.npmService.installCloudUploadTool(tool, dependencySession),
         localSwitch: request => {
           switchToLocal = request;

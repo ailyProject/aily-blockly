@@ -100,7 +100,12 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       }
       else if (request.action === 'completeCIToolPreparation') result = broker.completeCIToolPreparation(event.sender, request);
       else if (request.action === 'boardSupport') result = await broker.boardSupport(request.settings || request, request);
-      else if (request.action === 'targets') result = await broker.targets(request.settings || request, undefined, request.profileDigest, request);
+      else if (request.action === 'targets') {
+        const catalogOwner = currentBackend === 'cloud' ? { sender: event.sender, generation: owner.generation,
+          isCurrent: () => revision === backendRevision } : undefined;
+        result = await broker.targets(request.settings, undefined, request.profileDigest, request, catalogOwner);
+        if (catalogOwner && request.forBuild === true) assertRevision(revision);
+      }
       else if (request.action === 'compile' || request.action === 'analysis') {
         const stopped = () => { void broker.cancel(event.sender, request.requestId); };
         event.sender.once('destroyed', stopped);

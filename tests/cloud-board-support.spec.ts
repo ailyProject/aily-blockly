@@ -199,6 +199,33 @@ describe('board cloud support and local fallback', () => {
       expect(targets).toHaveBeenCalledTimes(3);
     });
 
+    it('reuses exact support and gives only the new build its catalog ticket', async () => {
+      const session = project.getProjectDependencySession('/project');
+      const bridge = window['cloudBuild'];
+      const targets = bridge.targets = jasmine.createSpy('targets').and.callFake(async identity => ({
+        ...(identity.forBuild ? { catalogTicket: 'single-use' } : {}),
+        profiles: [{ boardModule, boardVersion: identity.boardVersion, boardDigest: identity.boardDigest,
+          runner: 'aily-builder', fqbn: 'esp32:esp32:p4', profileDigest: 'a'.repeat(64),
+          capabilities: { compile: true }, metadata: { defaults: {}, boardOptions: {} } }],
+      }));
+      await project.getCloudBoardProfile({}, session);
+      await npm.prepareCompileBackend('/project');
+      expect(bridge.boardSupport).not.toHaveBeenCalled();
+      const menu = await project.getCloudBoardProfile();
+      expect(menu.catalogTicket).toBeUndefined();
+      expect(targets.calls.count()).toBe(1);
+      const build = await project.getCloudBoardProfile({ refresh: true }, session);
+      expect(build.catalogTicket).toBe('single-use');
+      expect((await project.getCloudBoardProfile()).catalogTicket).toBeUndefined();
+      expect(targets.calls.allArgs().map(args => !!args[0].forBuild)).toEqual([false, true]);
+
+      // A modified board at the same package version needs its own support check.
+      files.set(`/project/node_modules/${boardModule}/board.json`, '{"name":"Modified"}');
+      await expectAsync(npm.prepareCompileBackend('/project'))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_BOARD_UNSUPPORTED' }));
+      expect(bridge.boardSupport).toHaveBeenCalledTimes(1);
+    });
+
     it('lets waiting readers follow a fresh build lookup before a delayed old response arrives', async () => {
       let release!: () => void;
       let started!: () => void;

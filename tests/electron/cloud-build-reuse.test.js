@@ -73,6 +73,41 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
 });
 
+test('handed-off targets still negotiate compatible candidates and verify the result of the gateway-selected compiler', async t => {
+  const f = fixture(t), broker = f.broker;
+  f.profile.fqbn = 'test:board:test';
+  const alternative = { ...f.profile, profileDigest: 'b'.repeat(64), platform: 'win32' };
+  const wrongMetadata = { ...f.profile, profileDigest: 'c'.repeat(64), metadata: { ...f.profile.metadata, defaults: {} } };
+  const baseCapabilities = broker.capabilities, baseRequest = broker.request, baseFetch = broker.fetch;
+  broker.capabilities = async (...args) => ({ ...await baseCapabilities(...args), targetLookupByBoard: true,
+    targetSelection: { version: 1, policy: 'priority-idle-v1', maxCandidates: 64 } });
+  delete broker.targets;
+  let catalogs = 0;
+  broker.fetch = async (url, options) => {
+    if (!url.pathname.endsWith('/targets')) return baseFetch(url, options);
+    catalogs++;
+    return Response.json({ profiles: [f.profile, alternative, wrongMetadata] });
+  };
+  broker.request = async (settings, endpoint, body, ...rest) => {
+    if (endpoint.startsWith('/api/v1/build/targets')) return CloudBuildBroker.prototype.request.call(broker, settings, endpoint, body, ...rest);
+    const response = await baseRequest(settings, endpoint, body, ...rest);
+    if (endpoint === '/api/v1/build/jobs') {
+      assert.deepEqual(body.candidateProfileDigests, [f.profile.profileDigest, alternative.profileDigest]);
+      response.profileDigest = alternative.profileDigest;
+      f.profile = alternative; // The fixture signs its result with the admitted digest.
+    }
+    return response;
+  };
+  const initialDigest = f.profile.profileDigest;
+  const { catalogTicket } = await broker.targets(f.settings, undefined, undefined, { ...f.profile, forBuild: true }, { sender: f.sender, generation: f.generation });
+  assert.equal(typeof catalogTicket, 'string');
+  const result = await broker.run(f.sender, { requestId: 'ticket-signed', action: 'compile', catalogTicket,
+    profileDigest: initialDigest, config: f.config, settings: f.settings }, () => {});
+  assert.equal(result.success, true);
+  assert.equal(catalogs, 1);
+  assert.equal(broker.active.get(f.root).manifest.profileDigest, alternative.profileDigest);
+});
+
 for (const reuse of [false, true]) {
   test(`a manual switch revokes only firmware granted by its completed cloud request (reuse=${reuse})`, async t => {
     const f = fixture(t);

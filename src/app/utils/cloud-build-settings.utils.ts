@@ -75,6 +75,7 @@ export interface CloudBoardProfile {
   boardVersion: string;
   boardDigest: string;
   profileDigest: string;
+  catalogTicket?: string;
   fqbn: string;
   capabilities?: { compile?: boolean; analysis?: boolean; simulator?: boolean; delivery?: boolean };
   metadata: CloudBoardMetadata;

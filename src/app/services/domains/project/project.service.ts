@@ -4542,8 +4542,20 @@ export class ProjectService {
     const boardModule = await this.getBoardModule();
     guard();
     if (!boardModule) return 'local';
-    const boardVersion = (await this.getBoardPackageJson(boardModule)).version;
+    const boardPackage = await this.getBoardPackageJson(boardModule);
+    const boardVersion = boardPackage.version;
     guard();
+    // A successful full catalog already established support for this exact installed board.
+    // The new job will still discover live targets before generating code.
+    const known = this.cloudBoardProfileCache;
+    if (refresh && known?.profile.boardModule === boardModule && known.profile.boardVersion === boardVersion) {
+      const board = JSON.parse(this.electronService.readFile(`${projectPath}/node_modules/${boardModule}/board.json`));
+      const digest = await sha256Hex(canonicalCloudJson({ package: boardPackage, board }));
+      guard();
+      const owner = this.dependencyLifecycle.get(projectPath);
+      if (known === this.cloudBoardProfileCache && known.key === this.cloudBoardProfileKey(
+        settingsKey, projectPath, owner, boardModule, boardVersion, digest)) return 'cloud';
+    }
     const cached = this.boardCompileBackends?.get(projectPath);
     if (!refresh && cached?.settingsKey === settingsKey && cached.boardModule === boardModule && cached.boardVersion === boardVersion) {
       if (!cached.cloud) throw this.unsupportedCloudBoard(boardModule, boardVersion);
@@ -4590,9 +4602,15 @@ export class ProjectService {
     followRefresh: (result: Promise<CloudBoardProfile>) => void;
   }>;
 
+  private cloudBoardProfileKey(settings: string, path: string, session: ProjectDependencySession | undefined,
+    module: string, version: string, digest: string): string {
+    return JSON.stringify([settings, path, session?.projectSessionId, module, version, digest]);
+  }
+
   /** 根据已安装开发板包和原始 board.json 的内容摘要，匹配 Gateway 已注册的精确编译目标。 */
   async getCloudBoardProfile(
-    options: { refresh?: boolean; projection?: Map<string, Promise<CloudBoardProfile>> } = {}, session?: ProjectDependencySession,
+    options: { refresh?: boolean; compileAction?: 'compile' | 'analysis'; projection?: Map<string, Promise<CloudBoardProfile>> } = {},
+    session?: ProjectDependencySession,
   ): Promise<CloudBoardProfile> {
     if (!this.isCloudBuild()) throw new Error('Cloud compilation is not selected.');
     const settingsKey = this.getCompileBackendKey();
@@ -4621,7 +4639,7 @@ export class ProjectService {
     const originalBoardInput = canonicalCloudJson({ package: boardPackage, board });
     const boardDigest = await sha256Hex(originalBoardInput);
     guard();
-    const key = JSON.stringify([settingsKey, projectPath, ownerSession?.projectSessionId, boardModule, boardVersion, boardDigest]);
+    const key = this.cloudBoardProfileKey(settingsKey, projectPath, ownerSession, boardModule, boardVersion, boardDigest);
     const projection = options.projection;
     if (projection?.size && !projection.has(key)) {
       throw Object.assign(new Error('Board changed during runtime configuration.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
@@ -4639,12 +4657,15 @@ export class ProjectService {
       projection?.set(key, existing);
       try { return await existing; } finally { guard(); }
     }
+    let catalogTicket: string | undefined;
     const lookupResult = (async () => {
       const gateway = window['cloudBuild'];
       if (!gateway?.targets) throw new Error(this.translate.instant('PROJECT.CLOUD_BRIDGE_RESTART_REQUIRED'));
       const settings = getCloudBuildSettings(this.configService?.data);
       const lookup = async (): Promise<CloudBoardProfile | undefined> => {
-        const targets = await gateway.targets({ ...settings, boardModule, boardVersion, boardDigest });
+        const targets = await gateway.targets({ ...settings, boardModule, boardVersion, boardDigest,
+          ...(options.refresh ? { forBuild: true, compileAction: options.compileAction ?? 'compile' } : {}) });
+        if (options.refresh && typeof targets?.catalogTicket === 'string') catalogTicket = targets.catalogTicket;
         guard();
         const currentModule = await this.getBoardModule();
         guard();
@@ -4687,8 +4708,10 @@ export class ProjectService {
     try {
       const profile = await promise;
       guard();
-      if (pending.get(key) === request) this.cloudBoardProfileCache = { key, profile };
-      return profile;
+      if (pending.get(key) !== request) return profile;
+      this.cloudBoardProfileCache = { key, profile };
+      // Only the foreground caller owns this single-use main-process catalog.
+      return catalogTicket ? { ...profile, catalogTicket } : profile;
     } finally {
       if (pending.get(key) === request) pending.delete(key);
     }
