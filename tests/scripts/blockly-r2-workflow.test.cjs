@@ -148,12 +148,19 @@ test('retry after a manifest failure restores this run\'s logs even after an old
   for (const name of metadataFiles) assert.equal(remote(name), `B:${name}`);
 });
 
-test('stable metadata follows both packages and supplies the sole dependency of domestic sync', () => {
+test('stable metadata follows both packages before dispatching the domestic feed', () => {
   for (const platform of ['windows', 'macos']) {
     assert.deepEqual(workflow.jobs[`upload-${platform}-to-r2`].needs, ['release']);
   }
   assert.deepEqual(workflow.jobs[metadataJob].needs, ['prepare', 'upload-windows-to-r2', 'upload-macos-to-r2']);
-  assert.deepEqual(workflow.jobs['trigger-server-script'].needs, [metadataJob]);
+  const sync = workflow.jobs['trigger-server-script'];
+  assert.deepEqual(sync.needs, ['prepare', metadataJob]);
+  assert.equal(sync['runs-on'], 'ubuntu-latest');
+  const dispatch = sync.steps.find(step => step.run);
+  assert.equal(dispatch.run, 'bash scripts/dispatch-cn-feed.sh blockly "$RELEASE_VERSION"');
+  assert.deepEqual(dispatch.env, {
+    GH_TOKEN: '${{ secrets.CN_FEED_DISPATCH_TOKEN }}', RELEASE_VERSION: '${{ needs.prepare.outputs.version }}',
+  });
   for (const name of ['upload-windows-to-r2', 'upload-macos-to-r2', metadataJob, 'trigger-server-script']) {
     assert.equal(workflow.jobs[name].if, "github.ref_name == 'deploy'");
   }
@@ -167,4 +174,15 @@ test('stable metadata follows both packages and supplies the sole dependency of 
     step.with.name === archived.with.name);
   assert.equal(downloaded.with.path, './manifests');
   assert.equal(uploadStep(metadataJob).env.RELEASE_VERSION, '${{ needs.prepare.outputs.version }}');
+});
+
+test('domestic archives contain the signed update files without unpacked app directories', () => {
+  for (const [job, files] of [
+    ['build-windows-cn', ['*.exe', 'latest-cn.yml']],
+    ['build-macos-cn', ['*.dmg', '*.zip', 'latest-mac-cn.yml']],
+  ]) {
+    const archive = workflow.jobs[job].steps.at(-1);
+    assert.equal(archive.uses, 'actions/upload-artifact@v4');
+    assert.deepEqual(archive.with.path.trim().split('\n'), files.map(file => 'dist/aily-blockly/' + file));
+  }
 });

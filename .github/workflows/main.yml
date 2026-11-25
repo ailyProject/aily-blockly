@@ -301,7 +301,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AilyBlockly-Windows-Package-cn
-          path: dist/aily-blockly/
+          path: |
+            dist/aily-blockly/*.exe
+            dist/aily-blockly/latest-cn.yml
           overwrite: true
           if-no-files-found: error
   
@@ -535,7 +537,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AilyBlockly-macOS-Package-cn
-          path: dist/aily-blockly/
+          path: |
+            dist/aily-blockly/*.dmg
+            dist/aily-blockly/*.zip
+            dist/aily-blockly/latest-mac-cn.yml
           overwrite: true
           if-no-files-found: error
 
@@ -1156,20 +1161,20 @@ jobs:
   #         fi
   #         echo "✓ 文件上传完成"
 
-  # 任务 5：触发服务器脚本
   trigger-server-script:
-    needs: [publish-update-metadata]
+    name: Publish domestic Blockly feed
+    needs: [prepare, publish-update-metadata]
     if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      contents: read
     steps:
-      - name: Trigger Server Script
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Dispatch and wait for domestic publication
         env:
-          SERVER_HOST: ${{ secrets.TRIGGER_SERVER_HOST }}
-          SERVER_USER: ${{ secrets.TRIGGER_SERVER_USER }}
-          SERVER_PASSWORD: ${{ secrets.TRIGGER_SERVER_PASSWORD }}
-          SERVER_SCRIPT_PATH: ${{ secrets.TRIGGER_SERVER_SCRIPT_PATH }}
-        run: |
-          sudo apt-get update && sudo apt-get install -y sshpass
-          echo "触发服务器脚本..."
-          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" "bash $SERVER_SCRIPT_PATH"
-          echo "✓ 脚本执行完成"
+          GH_TOKEN: ${{ secrets.CN_FEED_DISPATCH_TOKEN }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/dispatch-cn-feed.sh blockly "$RELEASE_VERSION"
