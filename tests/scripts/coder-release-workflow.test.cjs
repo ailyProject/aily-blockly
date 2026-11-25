@@ -258,6 +258,7 @@ test('artifacts support same-run retries and stable baselines wait for domestic 
   }
   const syncWorkflow = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/workflows/coder-sync.yml'), 'utf8'));
   assert.equal(syncWorkflow.on.workflow_dispatch.inputs.source_run_id.required, true);
+  assert.equal(syncWorkflow.on.workflow_dispatch.inputs.use_r2.default, false);
   const repair = syncWorkflow.jobs['sync-stable-feed'];
   assert.equal(repair.if, "github.ref == 'refs/heads/deploy-coder'");
   const sources = [workflow.jobs['sync-stable-feed'], repair];
@@ -267,6 +268,8 @@ test('artifacts support same-run retries and stable baselines wait for domestic 
     assert.equal(dispatch.env.GH_TOKEN, '${{ secrets.CN_FEED_DISPATCH_TOKEN }}');
   }
   assert.equal(sources[0].steps.at(-1).env.RELEASE_VERSION, '${{ needs.prepare.outputs.version }}');
+  assert.equal(sources[0].steps.at(-1).env.USE_R2, undefined);
+  assert.equal(repair.steps.at(-1).env.USE_R2, '${{ inputs.use_r2 }}');
   assert.equal(repair.steps.at(-1).env.SOURCE_RUN_ID, '${{ inputs.source_run_id }}');
   assert.equal(repair.steps.at(-1).env.SOURCE_SHA, '${{ steps.source.outputs.sha }}');
   assert.equal(repair.steps.at(-1).env.SOURCE_ATTEMPT, '${{ steps.source.outputs.attempt }}');

@@ -7,12 +7,16 @@ source_run_id=${SOURCE_RUN_ID:-${GITHUB_RUN_ID:?}}
 source_attempt=${SOURCE_ATTEMPT:-${GITHUB_RUN_ATTEMPT:?}}
 source_sha=${SOURCE_SHA:-${GITHUB_SHA:?}}
 repository=ailyProject/aily-services
+r2_input=()
+if [[ ${USE_R2:-false} == true ]]; then
+  r2_input=(-f 'inputs[use_r2]=true')
+fi
 
 run_id=$(gh api --method POST "repos/$repository/actions/workflows/domestic-feed.yml/dispatches" \
   -H 'X-GitHub-Api-Version: 2022-11-28' -f ref=main -F return_run_details=true \
   -f "inputs[product]=$product" -f "inputs[version]=$version" \
   -f "inputs[source_run_id]=$source_run_id" -f "inputs[source_attempt]=$source_attempt" \
-  -f "inputs[source_sha]=$source_sha" --jq '.workflow_run_id')
+  -f "inputs[source_sha]=$source_sha" "${r2_input[@]}" --jq '.workflow_run_id')
 if [[ ! $run_id =~ ^[1-9][0-9]*$ ]]; then
   echo 'GitHub did not return a domestic feed workflow run ID' >&2
   exit 1

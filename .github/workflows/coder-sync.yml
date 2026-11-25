@@ -7,6 +7,11 @@ on:
         description: Aily Coder Package run ID on deploy-coder
         required: true
         type: string
+      use_r2:
+        description: Recover this release from R2 when its Actions artifacts have expired
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -43,4 +48,5 @@ jobs:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
           RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          USE_R2: ${{ inputs.use_r2 }}
         run: bash scripts/dispatch-cn-feed.sh coder "$RELEASE_VERSION"
