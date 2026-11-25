@@ -104,6 +104,7 @@ interface ProjectPackageData {
   board?: string;
   type?: string;
   framework?: string;
+  projectConfig?: Record<string, unknown>;
   cloudId?: string; // 云端项目ID
   blocklyToolboxOrder?: string[];
 }
@@ -701,6 +702,7 @@ export class ProjectService {
     const context: ProjectService = Object.assign(Object.create(ProjectService.prototype), this);
     Object.assign(context, {
       isCoderProjectContext: true,
+      boardMenuSnapshots: undefined,
       disposeLibraryChanges: undefined,
       currentProjectPathSubject: new BehaviorSubject(path),
       currentPackageData: JSON.parse(this.electronService.readFile(window['path'].join(path, 'package.json'))),
@@ -1093,6 +1095,7 @@ export class ProjectService {
   private projectCommandStopCloud?: WeakMap<ProjectDependencySession, Promise<void>>;
   private projectCommandStopObservation?: WeakMap<ProjectDependencySession, Promise<boolean>>;
   private boardSwitchLifecycle: { projectPath: string; token: symbol } | null = null;
+  private boardSwitchNotice?: { projectPath: string; messageId: string };
   private loadingBlocklyProjectPath = '';
   private loadedBlocklyProjectPath = '';
   private blocklyProjectLoadFailure: { path: string; error: string } | null = null;
@@ -1125,6 +1128,10 @@ export class ProjectService {
   }
 
   set currentProjectPath(path: string) {
+    if (this.boardSwitchNotice && (this.boardSwitchNotice.projectPath !== path || !this.boardSwitchLifecycle)) {
+      this.clearBoardSwitchMessage();
+      this.boardSwitchNotice = undefined;
+    }
     if (path && this.getProjectMode(path) === 'coder') {
       this.registerCoderProject(path);
     }
@@ -5242,6 +5249,13 @@ export class ProjectService {
     return options;
   }
 
+  private boardMenuSnapshots?: WeakMap<readonly IMenuItem[], () => boolean>;
+
+  /** Checked synchronously before painting a previously opened menu. */
+  isBoardConfigMenuSnapshotCurrent(rows: readonly IMenuItem[]): boolean {
+    return this.boardMenuSnapshots?.get(rows)?.() ?? false;
+  }
+
   /** Build the current board's configuration menu from its root menu.json. */
   async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}, runtimeBoard?: any,
     readProfile: (() => Promise<CloudBoardProfile>) | null = () => this.getCloudBoardProfile()): Promise<IMenuItem[]> {
@@ -5249,7 +5263,12 @@ export class ProjectService {
       const path = this.currentProjectPath;
       const context = this.getCoderProjectContext(path);
       const menu = await context.getBoardConfigMenu(options);
-      if (path === this.currentProjectPath) this.currentPackageData = context.currentPackageData;
+      if (path === this.currentProjectPath) {
+        this.currentPackageData = context.currentPackageData;
+        const key = this.normalizeProjectPath(path);
+        (this.boardMenuSnapshots ??= new WeakMap()).set(menu, () => this.currentProjectPath === path
+          && this.coderProjectContexts.get(key) === context && context.isBoardConfigMenuSnapshotCurrent(menu));
+      }
       return menu;
     }
     // Merely opening Coder's menu must not change its board/source outside the
@@ -5265,9 +5284,13 @@ export class ProjectService {
         throw Object.assign(new Error('Board menu session was replaced.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
       }
     };
+    const board = this.currentBoardConfig;
+    const declaration = this.currentBoardMenuConfig;
+    const cloud = this.isCloudBuild();
+    const language = this.translate.currentLang;
     const menu = this.cloneCurrentBoardMenuConfig();
     let cloudProfile: CloudBoardProfile | undefined;
-    if (readProfile && this.isCloudBuild()) {
+    if (readProfile && cloud) {
       // 云端元数据补齐 SDK 原本提供的菜单；目标不可用时禁用选项，避免写入未经验证的默认值。
       try {
         cloudProfile = await readProfile();
@@ -5282,13 +5305,27 @@ export class ProjectService {
         if (code === 'PROJECT_DEPENDENCY_CANCELLED' || options.requireCloudTarget) throw error;
         const label = isUnsupportedCloudBuild(error) ? 'PROJECT.CLOUD_TARGET_UNAVAILABLE'
           : code === 'CLOUD_BOARD_OFFLINE' ? 'PROJECT.CLOUD_BOARD_OFFLINE' : 'PROJECT.CLOUD_TARGET_LOOKUP_FAILED';
-        return [{ name: label, disabled: true,
+        return [{ name: label, type: 'board-config-unavailable', disabled: true,
           tooltip: this.translate.instant(label), icon: 'fa-light fa-triangle-exclamation' },
           ...menu.map(item => ({ ...item, disabled: true }))];
       }
     }
+    const profileIsCurrent = () => {
+      const live = this.cloudBoardProfileCache?.profile;
+      return !cloud || !!live && !!cloudProfile
+        && live.profileDigest === cloudProfile.profileDigest && live.boardDigest === cloudProfile.boardDigest;
+    };
+    const checkedProfile = cloud && profileIsCurrent();
+    const remember = (selection: string) => {
+      (this.boardMenuSnapshots ??= new WeakMap()).set(menu, () => projectCurrent()
+        && settingsKey === this.getCompileBackendKey() && cloud === this.isCloudBuild()
+        && board === this.currentBoardConfig && declaration === this.currentBoardMenuConfig
+        && language === this.translate.currentLang && profileIsCurrent()
+        && selection === canonicalCloudJson(this.currentPackageData?.projectConfig ?? {}));
+    };
     if (menu.length === 0) {
-      return [];
+      remember(canonicalCloudJson(this.currentPackageData?.projectConfig ?? {}));
+      return menu;
     }
 
     let packageJson: any = {};
@@ -5442,13 +5479,17 @@ export class ProjectService {
 
     if (sdkUnavailable) {
       menu.unshift({
-        name: 'PROJECT.SDK_CONFIG_NOT_READY',
+        name: 'PROJECT.SDK_CONFIG_NOT_READY', type: 'board-config-unavailable',
         tooltip: this.translate.instant('PROJECT.SDK_CONFIG_NOT_READY'),
         icon: 'fa-light fa-triangle-exclamation',
         disabled: true,
       });
     }
 
+    if (checkedProfile && !profileIsCurrent()) {
+      throw Object.assign(new Error('Cloud board options changed while loading the menu.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    }
+    if (!sdkUnavailable) remember(canonicalCloudJson(currentProjectConfig));
     return menu;
   }
 
@@ -5747,6 +5788,14 @@ export class ProjectService {
     }
   }
 
+  private clearBoardSwitchMessage(): void {
+    const notice = this.boardSwitchNotice;
+    if (notice?.messageId) {
+      this.message.remove(notice.messageId);
+      notice.messageId = '';
+    }
+  }
+
   async changeBoard(boardInfo: {
     name: string;
     version: string;
@@ -5761,12 +5810,15 @@ export class ProjectService {
     const lifecycle = this.acquireProjectLifecycle([projectPath]);
     this.boardSwitchLifecycle = { projectPath, token: lifecycle.token };
     this.isBoardSwitchInProgress = true;
+    this.clearBoardSwitchMessage();
+    const notice = this.boardSwitchNotice = { projectPath, messageId: '' };
     let reloadPromise: Promise<void> | null = null;
     let nativePublication: Record<string, unknown> | undefined;
     try {
       if (!this.currentProjectPath) {
         throw new Error('当前项目路径未设置');
       }
+      notice.messageId = this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD'), { nzDuration: 0 }).messageId;
       const currentPackageJson = await this.getPackageJson();
       assertCurrentProject();
       const currentProjectMode = normalizeProjectMode(currentPackageJson) || 'arduino';
@@ -5788,13 +5840,12 @@ export class ProjectService {
           );
         }
       }
-      // 0. 保存当前项目
+      // The board-switch notice also covers Coder's required pre-save.
       if (isAilyCode) {
-        const saved = await this.save();
+        const saved = await this.saveInBackground(projectPath);
         if (!saved.success) throw new Error(`切换开发板前保存项目失败：${saved.error || '未确认保存完成'}`);
       }
       assertCurrentProject();
-      this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD'), { nzDuration: 5000 });
 
       // 记录开发板使用次数
       this.configService.recordBoardUsage(normalizedBoardInfo.name);
@@ -5913,12 +5964,21 @@ export class ProjectService {
       assertCurrentProject();
 
       this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.BOARD_SWITCH_COMPLETE') });
-      this.message.success(this.translate.instant('PROJECT.BOARD_SWITCH_SUCCESS'), { nzDuration: 3000 });
+      if (this.boardSwitchNotice === notice) {
+        this.clearBoardSwitchMessage();
+        notice.messageId = this.message.success(this.translate.instant('PROJECT.BOARD_SWITCH_SUCCESS'),
+          { nzDuration: 4000, nzAnimate: false }).messageId;
+      }
       return nativePublication;
     } catch (error) {
       this.rejectBoardSwitchReload(error);
       console.error('切换开发板失败:', error);
-      this.message.error(this.translate.instant('PROJECT.BOARD_SWITCH_FAILED') + error.message);
+      if (this.boardSwitchNotice === notice) {
+        this.clearBoardSwitchMessage();
+        if (this.currentProjectPath === projectPath) {
+          notice.messageId = this.message.error(this.translate.instant('PROJECT.BOARD_SWITCH_FAILED') + error.message).messageId;
+        }
+      }
       throw error;
     } finally {
       this.isBoardSwitchInProgress = false;

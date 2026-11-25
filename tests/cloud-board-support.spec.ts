@@ -114,7 +114,7 @@ describe('board cloud support and local fallback', () => {
 
     const menu = await project.getBoardConfigMenu({ persistDefaults: true });
     expect(menu).toEqual([
-      jasmine.objectContaining({ name: scenario.label, tooltip: scenario.label, disabled: true }),
+      jasmine.objectContaining({ name: scenario.label, type: 'board-config-unavailable', tooltip: scenario.label, disabled: true }),
       jasmine.objectContaining({ key: 'CPUFreq', disabled: true }),
     ]);
     expect(project.setPackageJson).not.toHaveBeenCalled();
@@ -188,14 +188,18 @@ describe('board cloud support and local fallback', () => {
           } } }],
       }));
       await project.hydrateCloudBoardAfterOpen(displayed, () => {});
-      for (let i = 0; i < 2; i++) {
-        expect((await project.getBoardConfigMenu()).map(item => item.key)).toContain('Speed');
-      }
+      const menu = await project.getBoardConfigMenu();
+      expect(menu.map(item => item.key)).toContain('Speed');
+      expect(project.isBoardConfigMenuSnapshotCurrent(menu)).toBeTrue();
+      expect((await project.getBoardConfigMenu()).map(item => item.key)).toContain('Speed');
       expect(targets).toHaveBeenCalledTimes(1);
       targets.and.resolveTo({ profiles: [] });
       await expectAsync(project.prepareCloudBoardForBuild(project.currentBoardConfig, () => {}))
         .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_TARGET_UNAVAILABLE' }));
-      expect((await project.getBoardConfigMenu())[0].name).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+      expect(project.isBoardConfigMenuSnapshotCurrent(menu)).toBeFalse();
+      const unavailable = await project.getBoardConfigMenu();
+      expect(unavailable[0].name).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+      expect(project.isBoardConfigMenuSnapshotCurrent(unavailable)).toBeFalse();
       expect(targets).toHaveBeenCalledTimes(3);
     });
 

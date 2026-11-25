@@ -1128,6 +1128,8 @@
         "SWITCHING_BOARD": "جاري تغيير اللوحة...",
         "UNINSTALLING_CURRENT_BOARD": "جاري إلغاء تثبيت اللوحة الحالية...",
         "INSTALLING_NEW_BOARD": "جاري تثبيت اللوحة الجديدة...",
+        "APPLYING_BOARD_SETTINGS": "جارٍ تطبيق إعدادات اللوحة",
+        "BOARD_SETTINGS_APPLIED": "تم تطبيق إعدادات اللوحة",
         "UPDATING_PROJECT_CONFIG": "جاري تحديث إعدادات المشروع...",
         "BOARD_SWITCH_FAILED": "فشل تغيير اللوحة: ",
         "LOCK_CONFLICT_TITLE": "Project already open",

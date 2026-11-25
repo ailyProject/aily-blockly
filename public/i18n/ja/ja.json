@@ -1128,6 +1128,8 @@
         "SWITCHING_BOARD": "ボードを切り替え中...",
         "UNINSTALLING_CURRENT_BOARD": "現在のボードをアンインストール中...",
         "INSTALLING_NEW_BOARD": "新しいボードをインストール中...",
+        "APPLYING_BOARD_SETTINGS": "ボード設定を適用しています",
+        "BOARD_SETTINGS_APPLIED": "ボード設定を適用しました",
         "UPDATING_PROJECT_CONFIG": "プロジェクト設定を更新中...",
         "BOARD_SWITCH_FAILED": "ボードの切り替えに失敗しました: ",
         "LOCK_CONFLICT_TITLE": "プロジェクトは既に別のウィンドウで開かれています",

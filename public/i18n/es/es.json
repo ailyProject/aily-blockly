@@ -1128,6 +1128,8 @@
         "SWITCHING_BOARD": "Cambiando placa...",
         "UNINSTALLING_CURRENT_BOARD": "Desinstalando placa actual...",
         "INSTALLING_NEW_BOARD": "Instalando nueva placa...",
+        "APPLYING_BOARD_SETTINGS": "Aplicando los ajustes de la placa",
+        "BOARD_SETTINGS_APPLIED": "Ajustes de la placa aplicados",
         "UPDATING_PROJECT_CONFIG": "Actualizando configuración del proyecto...",
         "BOARD_SWITCH_FAILED": "Error al cambiar la placa: ",
         "LOCK_CONFLICT_TITLE": "Project already open",

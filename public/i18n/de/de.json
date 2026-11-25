@@ -1128,6 +1128,8 @@
         "SWITCHING_BOARD": "Board wird gewechselt...",
         "UNINSTALLING_CURRENT_BOARD": "Aktuelles Board wird deinstalliert...",
         "INSTALLING_NEW_BOARD": "Neues Board wird installiert...",
+        "APPLYING_BOARD_SETTINGS": "Board-Einstellungen werden angewendet",
+        "BOARD_SETTINGS_APPLIED": "Board-Einstellungen übernommen",
         "UPDATING_PROJECT_CONFIG": "Projektkonfiguration wird aktualisiert...",
         "BOARD_SWITCH_FAILED": "Board-Wechsel fehlgeschlagen: ",
         "LOCK_CONFLICT_TITLE": "Project already open",

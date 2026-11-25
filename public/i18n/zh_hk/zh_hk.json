@@ -371,7 +371,7 @@
     "MAIN_WINDOW": {
         "PROJECT_LOADING": "專案載入中...",
         "PROJECT_LOADED": "專案已載入",
-        "PROJECT_SAVING": "專案儲存中...",
+        "PROJECT_SAVING": "正在儲存專案",
         "PROJECT_SAVED": "專案已儲存",
         "PROJECT_CLOSED": "專案已關閉",
         "LOG_TAB": "日誌",
@@ -1216,6 +1216,8 @@
         "SWITCHING_BOARD": "正在切換開發板...",
         "UNINSTALLING_CURRENT_BOARD": "正在卸載當前開發板...",
         "INSTALLING_NEW_BOARD": "正在安裝新開發板...",
+        "APPLYING_BOARD_SETTINGS": "正在套用開發板設定",
+        "BOARD_SETTINGS_APPLIED": "已套用開發板設定",
         "UPDATING_PROJECT_CONFIG": "正在更新專案配置...",
         "BOARD_SWITCH_FAILED": "開發板切換失敗: ",
         "LOCK_CONFLICT_TITLE": "專案已在其他視窗開啟",

@@ -1128,6 +1128,8 @@
         "SWITCHING_BOARD": "보드 전환 중...",
         "UNINSTALLING_CURRENT_BOARD": "현재 보드 제거 중...",
         "INSTALLING_NEW_BOARD": "새 보드 설치 중...",
+        "APPLYING_BOARD_SETTINGS": "보드 설정을 적용하는 중",
+        "BOARD_SETTINGS_APPLIED": "보드 설정을 적용했습니다",
         "UPDATING_PROJECT_CONFIG": "프로젝트 구성 업데이트 중...",
         "BOARD_SWITCH_FAILED": "보드 전환 실패: ",
         "LOCK_CONFLICT_TITLE": "Project already open",

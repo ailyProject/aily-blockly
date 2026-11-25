@@ -149,6 +149,26 @@ describe('project title unsaved marker', () => {
     await view.refreshProjectUnsavedState(); expect(view.hasUnsavedProjectChanges).toBeTrue();
   });
 
+  it('removes the old board settings message as soon as the displayed project changes', fakeAsync(() => {
+    const h = watchingFixture(false), view = h.view;
+    let finish!: (receipt: { changed: boolean }) => void;
+    view.message = { loading: jasmine.createSpy('loading').and.returnValue({ messageId: 'old-board-setting' }),
+      remove: jasmine.createSpy('remove') };
+    view.projectService.isAilyCodeProject = () => false;
+    view.projectService.applyBoardConfiguration = () => new Promise(resolve => { finish = resolve; });
+    const content = { project: view.projectService.currentProjectPath };
+    view.boardChoiceIsCurrent = () => content.project === view.projectService.currentProjectPath;
+    void view.applyPortBoardChoice(content, { key: 'UploadSpeed', data: '115200' });
+    tick(1000);
+    expect(view.message.loading).toHaveBeenCalledTimes(1);
+    view.projectService.currentProjectPath = '/replacement';
+    view.projectService.currentProjectPath$.next('/replacement');
+    expect(view.message.remove).toHaveBeenCalledOnceWith('old-board-setting');
+    finish({ changed: true }); tick();
+    expect(view.message.remove).toHaveBeenCalledTimes(1);
+    h.dispose();
+  }));
+
   it('does no polling work for idle Blockly and schedules Coder only while active', fakeAsync(() => {
     const view = fixture(); view.unsavedSubscriptions = { add() {} };
     view.projectService.currentProjectPath$ = new Subject();

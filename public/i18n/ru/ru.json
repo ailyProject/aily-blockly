@@ -1128,6 +1128,8 @@
         "SWITCHING_BOARD": "Смена платы...",
         "UNINSTALLING_CURRENT_BOARD": "Удаление текущей платы...",
         "INSTALLING_NEW_BOARD": "Установка новой платы...",
+        "APPLYING_BOARD_SETTINGS": "Применяются настройки платы",
+        "BOARD_SETTINGS_APPLIED": "Настройки платы применены",
         "UPDATING_PROJECT_CONFIG": "Обновление конфигурации проекта...",
         "BOARD_SWITCH_FAILED": "Ошибка смены платы: ",
         "LOCK_CONFLICT_TITLE": "Project already open",

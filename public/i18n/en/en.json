@@ -408,7 +408,7 @@
     "MAIN_WINDOW": {
         "PROJECT_LOADING": "Project Loading...",
         "PROJECT_LOADED": "Project Loaded",
-        "PROJECT_SAVING": "Project Saving...",
+        "PROJECT_SAVING": "Saving project",
         "PROJECT_SAVED": "Project Saved",
         "PROJECT_CLOSED": "Project Closed",
         "LOG_TAB": "Log",
@@ -1295,6 +1295,8 @@
         "SWITCHING_BOARD": "Switching board...",
         "UNINSTALLING_CURRENT_BOARD": "Uninstalling current board...",
         "INSTALLING_NEW_BOARD": "Installing new board...",
+        "APPLYING_BOARD_SETTINGS": "Applying board settings",
+        "BOARD_SETTINGS_APPLIED": "Board settings applied",
         "UPDATING_PROJECT_CONFIG": "Updating project configuration...",
         "BOARD_SWITCH_FAILED": "Board switch failed: ",
         "LOCK_CONFLICT_TITLE": "Project already open",

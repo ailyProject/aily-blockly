@@ -1128,6 +1128,8 @@
         "SWITCHING_BOARD": "Changement de carte...",
         "UNINSTALLING_CURRENT_BOARD": "Désinstallation de la carte actuelle...",
         "INSTALLING_NEW_BOARD": "Installation de la nouvelle carte...",
+        "APPLYING_BOARD_SETTINGS": "Application des paramètres de la carte en cours",
+        "BOARD_SETTINGS_APPLIED": "Paramètres de la carte appliqués",
         "UPDATING_PROJECT_CONFIG": "Mise à jour de la configuration du projet...",
         "BOARD_SWITCH_FAILED": "Échec du changement de carte: ",
         "LOCK_CONFLICT_TITLE": "Project already open",

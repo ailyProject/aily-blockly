@@ -404,7 +404,7 @@
     "MAIN_WINDOW": {
         "PROJECT_LOADING": "项目加载中...",
         "PROJECT_LOADED": "项目已加载",
-        "PROJECT_SAVING": "项目保存中...",
+        "PROJECT_SAVING": "正在保存项目",
         "PROJECT_SAVED": "项目已保存",
         "PROJECT_CLOSED": "项目已关闭",
         "LOG_TAB": "日志",
@@ -1291,6 +1291,8 @@
         "SWITCHING_BOARD": "正在切换开发板...",
         "UNINSTALLING_CURRENT_BOARD": "正在卸载当前开发板...",
         "INSTALLING_NEW_BOARD": "正在安装新开发板...",
+        "APPLYING_BOARD_SETTINGS": "正在应用开发板设置",
+        "BOARD_SETTINGS_APPLIED": "开发板设置已应用",
         "UPDATING_PROJECT_CONFIG": "正在更新项目配置...",
         "BOARD_SWITCH_FAILED": "开发板切换失败: ",
         "LOCK_CONFLICT_TITLE": "项目已在其他窗口打开",

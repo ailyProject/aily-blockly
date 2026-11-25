@@ -7,6 +7,7 @@ describe('Header board configuration in Coder and Blockly', () => {
     header.projectService = {
       currentProjectPath: '/a', currentBoardConfig: { core: 'esp32', type: 'esp32:esp32:esp32s3' },
       getRuntimeBoardModule: () => '@aily-project/board-test',
+      isBoardConfigMenuSnapshotCurrent: () => true,
       isAilyCodeProject: () => coder, captureCurrentProjectGuard: () => () => true,
       applyBoardConfiguration: jasmine.createSpy('persist Blockly configuration').and.resolveTo({ changed: true }),
       getBoardConfigMenu: async () => [{ name: 'CDC', key: 'CDCOnBoot', children: [{ key: 'CDCOnBoot', data: 'cdc' }] }],
@@ -25,7 +26,10 @@ describe('Header board configuration in Coder and Blockly', () => {
     header.cachedDebuggerItems = [];
     header.coderBoardConfig = { select: jasmine.createSpy('coder config').and.resolveTo(true) };
     header.builderService = { triggerPreprocess: jasmine.createSpy('blockly preprocess') };
-    header.message = { error: jasmine.createSpy('error') };
+    let messageCount = 0;
+    header.message = { error: jasmine.createSpy('error'), remove: jasmine.createSpy('remove'),
+      success: jasmine.createSpy('success').and.returnValue({ messageId: 'board-complete' }),
+      loading: jasmine.createSpy('loading').and.callFake(() => ({ messageId: 'board-' + ++messageCount })) };
     return header;
   }
   it('uses identical board menu entries for the same board in both editors', async () => {
@@ -133,6 +137,7 @@ describe('Header board configuration in Coder and Blockly', () => {
     void header.getDevicePortList(); flushMicrotasks();
     const old = header.portMenuContent.boardOptions[0].children[0];
     header.closePortList();
+    header.projectService.isBoardConfigMenuSnapshotCurrent = () => false;
     const target = deferred<any[]>();
     header.projectService.getBoardConfigMenu = () => target.promise;
     void header.getDevicePortList();
@@ -250,6 +255,68 @@ describe('Header board configuration in Coder and Blockly', () => {
     return { key, name: key, children: ['off', 'on'].map(data => ({ key, name: data, data,
       check: value === data, disabled: disabled === data })) };
   }
+
+  it('starts each board settings spinner as its queued write begins', fakeAsync(() => {
+    const h = fixture(false), first = deferred<any>(), second = deferred<any>();
+    h.projectService.getBoardConfigMenu = async () => [boardRow('USB', 'off'), boardRow('Flash', 'off')];
+    h.projectService.applyBoardConfiguration.and.returnValues(first.promise, second.promise);
+    void h.getDevicePortList(); flushMicrotasks();
+    for (const row of h.portMenuContent.boardOptions) h.selectSubItem(row.children[1]);
+    tick(499);
+    expect(h.message.loading).not.toHaveBeenCalled();
+    tick(1);
+    expect(h.message.loading).toHaveBeenCalledOnceWith('PROJECT.APPLYING_BOARD_SETTINGS', { nzDuration: 0 });
+    first.resolve({ changed: true }); flushMicrotasks();
+    expect(h.message.remove.calls.allArgs()).toEqual([['board-1'], ['board-complete']]);
+    expect(h.message.success).toHaveBeenCalledOnceWith('PROJECT.BOARD_SETTINGS_APPLIED', { nzDuration: 4000, nzAnimate: false });
+    expect(h.message.loading).toHaveBeenCalledTimes(2);
+    second.reject(new Error('flash setting failed')); flushMicrotasks();
+    expect(h.message.remove.calls.allArgs()).toEqual([['board-1'], ['board-complete'], ['board-2']]);
+    expect(h.message.success).toHaveBeenCalledTimes(1);
+    expect(h.message.error).toHaveBeenCalledOnceWith('flash setting failed');
+  }));
+
+  it('dismisses the previous confirmation on a new choice and leaves an unchanged setting unconfirmed', fakeAsync(() => {
+    const h = fixture(true), first = deferred<boolean>(), second = deferred<boolean>();
+    h.coderBoardConfig.select.and.returnValues(first.promise, second.promise);
+    void h.getDevicePortList(); flushMicrotasks();
+    h.selectSubItem(h.portMenuContent.boardOptions[0].children[0]); tick(500);
+    first.resolve(true); flushMicrotasks();
+    expect(h.message.success).toHaveBeenCalledTimes(1);
+    h.selectSubItem(h.portMenuContent.boardOptions[0].children[0]);
+    expect(h.message.remove.calls.allArgs()).toEqual([['board-1'], ['board-complete']]);
+    tick(500); second.resolve(false); flushMicrotasks();
+    expect(h.message.remove.calls.mostRecent().args).toEqual(['board-2']);
+    expect(h.message.success).toHaveBeenCalledTimes(1);
+  }));
+
+  it('shows progress even for a short write and confirms it only after success', fakeAsync(() => {
+    const h = fixture(false), write = deferred<any>();
+    h.projectService.applyBoardConfiguration.and.returnValue(write.promise);
+    void h.getDevicePortList(); flushMicrotasks();
+    h.selectSubItem(h.portMenuContent.boardOptions[0].children[0]); tick(500);
+    expect(h.message.loading).toHaveBeenCalledOnceWith('PROJECT.APPLYING_BOARD_SETTINGS', { nzDuration: 0 });
+    expect(h.message.success).not.toHaveBeenCalled();
+    tick(20); write.resolve({ changed: true }); flushMicrotasks();
+    expect(h.message.remove).toHaveBeenCalledOnceWith('board-1');
+    expect(h.message.success).toHaveBeenCalledOnceWith('PROJECT.BOARD_SETTINGS_APPLIED', { nzDuration: 4000, nzAnimate: false });
+  }));
+
+  it('cancels queued feedback and removes an active spinner when the header is destroyed', fakeAsync(() => {
+    for (const started of [false, true]) {
+      const h = fixture(false), write = deferred<any>();
+      h.electronService = { isElectron: false };
+      h.projectService.applyBoardConfiguration.and.returnValue(write.promise);
+      void h.getDevicePortList(); flushMicrotasks();
+      h.selectSubItem(h.portMenuContent.boardOptions[0].children[0]); tick(started ? 500 : 499);
+      h.ngOnDestroy();
+      write.resolve({ changed: true }); flushMicrotasks(); tick(2000);
+      expect(h.message.loading.calls.count()).toBe(started ? 1 : 0);
+      expect(h.message.remove.calls.allArgs()).toEqual(started ? [['board-1']] : []);
+      expect(h.message.success).not.toHaveBeenCalled();
+      expect(h.message.error).not.toHaveBeenCalled();
+    }
+  }));
 
   it('keeps the live parent and device rows while a saved choice projects a new runtime board', fakeAsync(() => {
     const header = fixture(false), refreshed = deferred<any[]>();
@@ -378,6 +445,149 @@ describe('Header board configuration in Coder and Blockly', () => {
       reopened.resolve([boardRow('USB', 'on'), boardRow('Flash', 'off', allowed ? undefined : 'on')]);
       flushMicrotasks();
       expect(header.projectService.applyBoardConfiguration.calls.count()).toBe(allowed ? 2 : 1);
+    }
+  }));
+
+  it('paints verified board options, serial, OTA and probes together on every warm open while sources refresh', fakeAsync(() => {
+    const h = fixture(false), lateRows = deferred<any[]>(), latePorts = deferred<any[]>(), lateOta = deferred<any[]>(), lateProbes = deferred<any>();
+    const rows = [boardRow('UploadSpeed', 'off')];
+    h.projectService.currentBoardConfig.linkUploadParam = '--probe';
+    h.projectService.isBoardConfigMenuSnapshotCurrent = value => value === rows;
+    h.projectService.getBoardConfigMenu = jasmine.createSpy('options').and.returnValues(Promise.resolve(rows), lateRows.promise, lateRows.promise);
+    h.serialService.getSerialPorts = jasmine.createSpy('ports').and.returnValues(Promise.resolve([{ name: 'COM8' }]), latePorts.promise, latePorts.promise);
+    h.getOtaPortMenuItems = jasmine.createSpy('OTA').and.returnValues(Promise.resolve([{ name: 'WiFi' }]), lateOta.promise, lateOta.promise);
+    h.probeRsService = { listProbes: jasmine.createSpy('probes').and.returnValues(Promise.resolve({ success: true, probes: [{ type: 'Debug' }] }), lateProbes.promise, lateProbes.promise) };
+    h.calculatePortListPosition = () => {};
+    const open = () => h.openPortList(new MouseEvent('click'));
+    const names = () => h.configList.filter(x => !x.sep).map(x => x.name);
+    open();
+    expect(names()).toEqual(['BOARD_SELECTOR.TITLE']);
+    flushMicrotasks();
+    const complete = ['COM8', 'WiFi', 'Debug', 'UploadSpeed', 'BOARD_SELECTOR.TITLE'];
+    expect(names()).toEqual(complete);
+    h.closePortList(); open();
+    expect(names()).toEqual(complete);
+    h.closePortList(); open();
+    expect(names()).toEqual(complete);
+    expect(h.projectService.getBoardConfigMenu).toHaveBeenCalledTimes(3);
+    lateRows.resolve([boardRow('USB', 'off')]); latePorts.resolve([{ name: 'COM9' }]); lateOta.resolve([]); lateProbes.resolve({success: true, probes: []}); flushMicrotasks();
+    expect(names()).toEqual(['COM9', 'USB', 'BOARD_SELECTOR.TITLE']);
+  }));
+
+  it('uses the verified result of a warm refresh before applying a displayed choice', fakeAsync(() => {
+    for (const allowed of [true, false]) {
+      const h = fixture(false), next = deferred<any[]>();
+      const row = boardRow('USB', 'off');
+      h.projectService.getBoardConfigMenu = jasmine.createSpy('options').and.returnValues(Promise.resolve([row]), next.promise, Promise.resolve([row]));
+      void h.getDevicePortList(); flushMicrotasks(); h.closePortList(); h.showPortList = true;
+      void h.getDevicePortList(); expect(h.configList).toContain(row);
+      h.selectSubItem(row.children[1]); tick(500);
+      expect(h.projectService.applyBoardConfiguration).not.toHaveBeenCalled();
+      next.resolve([boardRow('USB', 'off', allowed ? undefined : 'on')]); flushMicrotasks();
+      expect(h.projectService.applyBoardConfiguration.calls.count()).toBe(allowed ? 1 : 0);
+    }
+  }));
+
+  it('reopens confirmed cloud and SDK unavailability with every row read-only until the next lookup completes', fakeAsync(() => {
+    for (const status of ['PROJECT.CLOUD_BOARD_OFFLINE', 'PROJECT.SDK_CONFIG_NOT_READY']) {
+      const h = fixture(false), lookup = deferred<any[]>();
+      const recovered = boardRow('USB', 'off');
+      // With no SDK, the board package can still supply a static menu option.
+      const initial = { ...boardRow('USB', 'off'), disabled: status === 'PROJECT.CLOUD_BOARD_OFFLINE' };
+      const warning = { type: 'board-config-unavailable', name: status, disabled: true };
+      const ready = [recovered];
+      h.projectService.isBoardConfigMenuSnapshotCurrent = rows => rows === ready;
+      h.projectService.getBoardConfigMenu = jasmine.createSpy('options').and.returnValues(
+        Promise.resolve([warning, initial]), lookup.promise, Promise.resolve(ready));
+      h.showPortList = true; void h.getDevicePortList(); flushMicrotasks();
+      const names = () => h.configList.filter(item => !item.sep).map(item => item.name);
+      const before = names();
+      h.closePortList(); h.showPortList = true; void h.getDevicePortList();
+      expect(names()).withContext(status).toEqual(before);
+      expect(h.configList.find(item => item.key === 'USB').disabled).withContext(status).toBeTrue();
+      h.selectSubItem(initial.children[1]); tick(500);
+      expect(h.projectService.applyBoardConfiguration).not.toHaveBeenCalled();
+      lookup.resolve(ready); flushMicrotasks();
+      expect(names()).not.toContain(status);
+      expect(h.configList.find(item => item.key === 'USB').disabled).toBeFalsy();
+      h.selectSubItem(recovered.children[1]); tick(500);
+      expect(h.projectService.applyBoardConfiguration).toHaveBeenCalledTimes(1);
+    }
+  }));
+
+  it('reopens against settled disk state after the choice succeeds or fails while the menu is closed', fakeAsync(() => {
+    for (const succeeds of [true, false]) {
+      const h = fixture(false), write = deferred<any>(), latest = deferred<any[]>();
+      const initial = boardRow('USB', 'off');
+      h.projectService.getBoardConfigMenu = jasmine.createSpy('options').and.returnValues(
+        Promise.resolve([initial]), latest.promise, new Promise(() => {}));
+      h.projectService.applyBoardConfiguration.and.returnValue(write.promise);
+      h.showPortList = true; void h.getDevicePortList(); flushMicrotasks();
+      initial.children[0].check = false; initial.children[1].check = true;
+      h.selectSubItem(initial.children[1]); h.closePortList(); tick(500);
+      if (succeeds) write.resolve({ changed: true }); else write.reject(new Error('save failed'));
+      flushMicrotasks(); expect(h.projectService.getBoardConfigMenu).toHaveBeenCalledTimes(2);
+      latest.resolve([boardRow('USB', succeeds ? 'on' : 'off')]); flushMicrotasks();
+      h.showPortList = true; void h.getDevicePortList();
+      expect(h.configList.find(x => x.key === 'USB').children.map(child => child.check)).toEqual([!succeeds, succeeds]);
+    }
+  }));
+
+  it('invalidates a closed board snapshot on an external board-change notification even with the same runtime object', fakeAsync(() => {
+    const h = fixture(false), oldRead = deferred<any[]>(), read = deferred<any[]>();
+    h.projectService.getBoardConfigMenu = jasmine.createSpy('options').and.returnValues(
+      Promise.resolve([boardRow('USB', 'off')]), oldRead.promise, read.promise);
+    void h.getDevicePortList(); flushMicrotasks(); h.closePortList();
+    h.showPortList = true; void h.getDevicePortList(); h.closePortList();
+    void h.resetDebuggerSelectionAfterBoardChange(); flushMicrotasks();
+    oldRead.resolve([boardRow('USB', 'on')]); flushMicrotasks();
+    h.showPortList = true; void h.getDevicePortList();
+    expect(h.configList.some(x => x.key === 'USB')).toBeFalse();
+    read.resolve([boardRow('Flash', 'on')]); flushMicrotasks();
+    expect(h.configList.some(x => x.key === 'Flash')).toBeTrue();
+  }));
+
+  it('cancels a superseded custom partition action while the warm menu verifies both choices', fakeAsync(() => {
+    const h = fixture(false), lookup = deferred<any[]>();
+    const row = () => ({ key: 'PartitionScheme', children: ['custom', 'default'].map(data => ({ key: 'PartitionScheme', data })) });
+    const old = row();
+    h.projectService.getBoardConfigMenu = jasmine.createSpy('options').and.returnValues(Promise.resolve([old]), lookup.promise, Promise.resolve([row()]));
+    h.openPartitionManager = jasmine.createSpy('partition manager').and.resolveTo();
+    void h.getDevicePortList(); flushMicrotasks(); h.closePortList(); h.showPortList = true; void h.getDevicePortList();
+    h.selectSubItem(old.children[0]); h.selectSubItem(old.children[1]); tick(500);
+    lookup.resolve([row()]); flushMicrotasks();
+    expect(h.openPartitionManager).not.toHaveBeenCalled();
+    expect(h.projectService.applyBoardConfiguration).toHaveBeenCalledOnceWith(jasmine.objectContaining({ data: 'default' }));
+  }));
+
+  it('keeps every row and the pending radio check when reopening during debounce, publication and its readback', fakeAsync(() => {
+    for (const stage of ['debounce', 'publishing', 'readback']) {
+      const h = fixture(false), write = deferred<any>(), background = deferred<any[]>(), settled = deferred<any[]>();
+      let proof = true;
+      const original = boardRow('USB', 'off');
+      const rows = () => [boardRow('USB', 'on'), boardRow('Flash', 'off')];
+      h.projectService.isBoardConfigMenuSnapshotCurrent = () => proof;
+      h.projectService.getBoardConfigMenu = jasmine.createSpy('options').and.returnValues(
+        Promise.resolve([original, boardRow('Flash', 'off')]), background.promise, settled.promise);
+      h.projectService.applyBoardConfiguration.and.returnValue(write.promise);
+      h.showPortList = true; void h.getDevicePortList(); flushMicrotasks();
+      const names = () => h.configList.filter(i => !i.sep).map(i => i.name);
+      const usb = () => h.configList.find(i => i.key === 'USB');
+      const before = names();
+      original.children[0].check = false; original.children[1].check = true;
+      h.selectSubItem(original.children[1]);
+      if (stage !== 'debounce') tick(500);
+      if (stage === 'readback') { proof = false; write.resolve({ changed: true }); flushMicrotasks(); }
+      h.closePortList(); h.showPortList = true; void h.getDevicePortList();
+      expect(names()).withContext(stage).toEqual(before);
+      expect(usb().children.map(c => c.check)).withContext(stage).toEqual([false, true]);
+      expect(!!usb().disabled).withContext(stage).toBe(stage === 'readback');
+      proof = true;
+      background.resolve(rows()); settled.resolve(rows()); flushMicrotasks(); tick(500);
+      write.resolve({ changed: true }); flushMicrotasks();
+      expect(usb().disabled).withContext(stage).toBeFalsy();
+      expect(usb().children.map(c => c.check)).withContext(stage).toEqual([false, true]);
+      expect(h.projectService.applyBoardConfiguration).toHaveBeenCalledTimes(1);
     }
   }));
 
