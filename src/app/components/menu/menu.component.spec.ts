@@ -322,6 +322,58 @@ describe('MenuComponent submenu switching', () => {
     expect(submenu()?.textContent).toContain('QIO 80MHz');
   }));
 
+  it('keeps the open board group, scroll position and clicked row while updating its choices', fakeAsync(() => {
+    tick();
+    const group = items[0];
+    group.children = Array.from({ length: 80 }, (_, i) => ({
+      key: group.key, data: i, name: `Option ${i}`, check: i === 0,
+    }));
+    enter(0);
+    fixture.detectChanges();
+    const panel = submenu()!;
+    panel.scrollTop = panel.scrollHeight;
+    const scroll = panel.scrollTop;
+    expect(scroll).toBeGreaterThan(0);
+    const row = panel.querySelector<HTMLElement>('.menu-item:last-child')!;
+    row.click();
+    fixture.detectChanges();
+    expect(row.classList.contains('checked')).toBeTrue();
+
+    const oldChoice = group.children[79];
+    group.children = group.children.map(child => ({ ...child }));
+    fixture.componentRef.setInput('menuList', [...items]);
+    fixture.detectChanges();
+    tick(600);
+    expect(submenu()).toBe(panel);
+    expect(panel.scrollTop).toBe(scroll);
+    expect(getComputedStyle(panel).visibility).toBe('visible');
+    expect(panel.querySelector('.menu-item:last-child')).toBe(row);
+    expect(panel.querySelectorAll('.checked').length).toBe(1);
+    const selected = jasmine.createSpy('selected');
+    menu.subItemClickEvent.subscribe(selected);
+    menu.subItemClick(new MouseEvent('click'), oldChoice);
+    expect(selected).not.toHaveBeenCalled();
+    row.click();
+    expect(selected.calls.mostRecent().args[0]).toBe(group.children[79]);
+  }));
+
+  it('keeps board option labels stationary when moving the check between detailed choices', fakeAsync(() => {
+    tick();
+    fixture.nativeElement.classList.add('ports');
+    for (const child of items[0].children!) child.extra = { detail: 'Board option details' };
+    enter(0);
+    fixture.detectChanges();
+    const panel = submenu()!;
+    const labels = [...panel.querySelectorAll<HTMLElement>('.submenu-hover-scroll')];
+    const widths = () => labels.map(label => label.getBoundingClientRect().width);
+    const before = widths();
+    panel.querySelectorAll<HTMLElement>('.menu-item')[1].click();
+    fixture.detectChanges();
+    expect(widths()).toEqual(before);
+    expect(panel.querySelectorAll('.checked').length).toBe(1);
+    expect(getComputedStyle(panel).visibility).toBe('visible');
+  }));
+
   it('renders hover changes for a menu created outside Angular by a host callback', async () => {
     const zone = TestBed.inject(NgZone);
     const app = TestBed.inject(ApplicationRef);

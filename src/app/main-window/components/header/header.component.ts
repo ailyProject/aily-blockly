@@ -44,10 +44,10 @@ import {
   mainMenuAutomationRejection,
 } from '@integration/automation/public-api';
 import {
-  persistBoardConfigSelection,
   shouldRunBoardConfigSelectionEffects,
 } from './board-config-selection';
 import {
+  SerialOperationQueue,
   type LinuxBoardConnector,
   normalizeProjectMode,
   resolveLinuxBoardExecutionRoute,
@@ -60,15 +60,24 @@ import {
 import { ConnectorSettingDialogComponent } from '../connector-setting-dialog/connector-setting-dialog.component';
 import { ProjectAutoSave, type AutoSaveState } from './project-auto-save';
 
+interface BoardMenuChoice {
+  item: IMenuItem;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 interface PortMenuContent {
   project: string;
-  board: unknown;
+  board: ProjectService['currentBoardConfig'];
+  boardModule?: string;
   settings: string;
   connectors: string;
   currentProject: () => boolean;
   serial?: IMenuItem[];
   ota?: IMenuItem[];
   boardOptions?: IMenuItem[];
+  optionsRequest?: Promise<IMenuItem[]>;
+  publish?: () => void;
+  choices?: Map<string, BoardMenuChoice>;
 }
 
 interface NetworkOtaTarget {
@@ -146,7 +155,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private networkOtaScanCancelled = false;
   private networkOtaScanStreamId: string | null = null;
   private unsaveDialogOpen = false; // 标记未保存对话框是否已打开
-  private selectDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private boardChoiceQueue?: SerialOperationQueue;
+  private applyingBoardChoice?: PortMenuContent;
   private openingPartitionManager = false;
   private destroyed = false;
   private partitionInstallSubscription?: Subscription;
@@ -647,6 +657,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   private async resetDebuggerSelectionAfterBoardChange(): Promise<void> {
+    // The configuration publisher also raises boardChange after a menu choice.
+    if (this.applyingBoardChoice && this.portMenuMatchesContext(this.applyingBoardChoice)) return;
     // Invalidate an in-flight probe scan and never carry probe cache across boards.
     this.portListGeneration += 1;
     this.cachedDebuggerItems = [];
@@ -961,9 +973,19 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   private portMenuMatchesContext(content?: PortMenuContent): boolean {
-    return !!content && content.currentProject() && content.project === this.projectService.currentProjectPath
-      && content.board === this.projectService.currentBoardConfig && content.settings === this.configService.getCompileSettingsKey()
-      && content.connectors === this.linuxBoardConnectors.join(',');
+    if (!content || !content.currentProject() || content.project !== this.projectService.currentProjectPath
+      || content.settings !== this.configService.getCompileSettingsKey()
+      || content.connectors !== this.linuxBoardConnectors.join(',')) return false;
+    const board = this.projectService.currentBoardConfig;
+    if (content.board === board) return true;
+    // Saving a choice projects new pins/CDC onto a fresh runtime object. Only
+    // adopt it for the active write to this exact installed board and route.
+    if (this.applyingBoardChoice !== content || this.projectService.isBoardSwitchInProgress
+      || !content.boardModule || this.projectService.getRuntimeBoardModule() !== content.boardModule
+      || content.board?.type !== board?.type || content.board?.version !== board?.version
+      || hasLinkUploadParam(content.board) !== hasLinkUploadParam(board)) return false;
+    content.board = board;
+    return true;
   }
 
   async getDevicePortList(devicesOnly = false): Promise<void> {
@@ -973,6 +995,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       devicesOnly = false;
       this.cachedDebuggerItems = [];
       this.portMenuContent = { project: this.projectService.currentProjectPath, board,
+        boardModule: this.projectService.getRuntimeBoardModule(),
         settings: this.configService.getCompileSettingsKey(), connectors: connectors.join(','),
         currentProject: this.projectService.captureCurrentProjectGuard() };
     }
@@ -1019,6 +1042,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     // The board selector is actionable immediately. Only reuse rows belonging
     // to this project, board and backend while their independent sources refresh.
+    content.publish = publish;
     publish();
     if (supportsSsh && !supportsSerial) return;
     const ports = this.serialService.getSerialPorts().catch(error => {
@@ -1045,15 +1069,38 @@ export class HeaderComponent implements OnInit, OnDestroy {
       await Promise.all([ports, ota]);
       return;
     }
-    const options = this.projectService.getBoardConfigMenu().catch(error => {
+    await Promise.all([ports, ota, this.refreshPortBoardOptions(content)]);
+  }
+
+  private async refreshPortBoardOptions(content: PortMenuContent): Promise<void> {
+    const generation = this.portListGeneration;
+    const request = content.optionsRequest = this.projectService.getBoardConfigMenu().catch(error => {
       console.warn('读取主板选项失败:', error);
-      return [];
-    }).then(items => {
-      if (!isCurrent()) return;
-      content.boardOptions = items;
-      publish();
+      return [] as IMenuItem[];
     });
-    await Promise.all([ports, ota, options]);
+    const rows = await request;
+    if (this.destroyed || (generation !== this.portListGeneration && (this.showPortList || !content.choices?.size))
+      || request !== content.optionsRequest
+      || content !== this.portMenuContent || !this.portMenuMatchesContext(content)) return;
+    const previous = content.boardOptions;
+    content.boardOptions = rows.map(row => {
+      if (!row.key || row.disabled) return row;
+      const pending = content.choices?.get(row.key)?.item;
+      const choice = pending && row.children?.find(child => !child.disabled && child.key === pending.key
+        && child.data === pending.data);
+      if (choice) row.children!.forEach(child => child.check = child === choice);
+
+      // An open flyout belongs to its parent object. Keep a unique live row,
+      // replacing all its fields (including removed permissions and old children).
+      const matches = previous?.filter(item => item.key === row.key);
+      if (matches?.length !== 1 || matches[0].disabled || rows.filter(item => item.key === row.key).length !== 1) return row;
+      const parent = matches[0];
+      for (const key of Object.keys(parent) as (keyof IMenuItem)[]) {
+        if (!(key in row)) delete parent[key];
+      }
+      return Object.assign(parent, row);
+    });
+    content.publish?.();
   }
 
   private async getOtaPortMenuItems(): Promise<IMenuItem[]> {
@@ -1659,6 +1706,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.destroyed = true;
+    for (const choice of this.portMenuContent?.choices?.values() ?? []) clearTimeout(choice.timer);
     this.unsubscribeWindowStateChanged?.();
     this.unsavedSubscriptions?.unsubscribe();
     this.autoSave?.dispose();
@@ -2246,64 +2294,77 @@ export class HeaderComponent implements OnInit, OnDestroy {
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
     const content = this.portMenuContent;
-    if (!content || !this.portMenuMatchesContext(content) || subItem.disabled) return;
+    if (!content || this.projectService.isBoardSwitchInProgress || !this.portMenuMatchesContext(content) || subItem.disabled) return;
     const parent = content.boardOptions?.find(row => !row.disabled && row.children?.includes(subItem));
     if (!parent) return;
-    const projectPath = this.projectService.currentProjectPath;
-    if (this.selectDebounceTimer !== null) {
-      clearTimeout(this.selectDebounceTimer);
-    }
-
+    const key = parent.key || subItem.key;
+    if (!key) return;
+    const choices = content.choices ??= new Map();
+    clearTimeout(choices.get(key)?.timer);
     if (this.isCustomPartitionSubItem(subItem)) {
-      this.selectDebounceTimer = null;
-      if (!subItem.disabled) await this.openPartitionManager();
+      choices.delete(key);
+      await this.openPartitionManager();
       return;
     }
 
-    this.selectDebounceTimer = setTimeout(async () => {
-      this.selectDebounceTimer = null;
-      if (this.destroyed || this.portMenuContent !== content || !this.portMenuMatchesContext(content)) return;
-      const latestParent = content.boardOptions?.find(row => !row.disabled
-        && (row === parent || !!parent.key && row.key === parent.key));
-      const selected = latestParent?.children?.find(child => !child.disabled
-        && (child === subItem || !!subItem.key && child.key === subItem.key && child.data === subItem.data));
-      if (!selected) return;
-      try {
-        const coder = this.projectService.isAilyCodeProject(projectPath);
-
-        const configChanged = coder
-          ? await this.coderBoardConfig.select(projectPath, selected)
-          : (await this.projectService.applyBoardConfiguration(selected)).changed;
-        const shouldRunEffects = shouldRunBoardConfigSelectionEffects(
-          configChanged,
-          selected,
-        );
-        if (!shouldRunEffects) {
-          return;
-        }
-
-        if (selected.extra?.selectAction === 'flash-softdevice') {
-          if (projectPath !== this.projectService.currentProjectPath) return;
-          if (!this.serialService.currentPort) {
-            const messageKey = selected.extra?.selectPortMessage;
-            this.message.warning(messageKey ? this.translate.instant(messageKey) : 'Please select a port first');
-            return;
+    const choice: BoardMenuChoice = { item: subItem };
+    choices.set(key, choice);
+    choice.timer = setTimeout(() => {
+      const queue = this.boardChoiceQueue ??= new SerialOperationQueue();
+      void queue.run(async () => {
+        try {
+          const current = () => !this.destroyed && !this.projectService.isBoardSwitchInProgress
+            && choices.get(key) === choice && this.portMenuContent === content && this.portMenuMatchesContext(content);
+          // Reopening clears options until its own authoritative request returns.
+          // A choice which was already accepted must revalidate against that result.
+          while (current() && !content.boardOptions && content.optionsRequest) {
+            const loading = content.optionsRequest;
+            await loading;
+            if (loading === content.optionsRequest) break;
           }
-          await this.uploaderService.flashSoftdevice(selected.data, this.serialService.currentPort);
-          if (coder && configChanged) await this.coderRuntime.build(projectPath, { preprocessOnly: true });
-        }
+          if (!current()) return;
+          const latest = content.boardOptions?.find(row => !row.disabled && (row === parent || row.key === key));
+          const selected = latest?.children?.find(child => !child.disabled && child.key === subItem.key
+            && child.data === subItem.data);
+          if (!selected) return;
 
-        if (configChanged && !coder) {
-          this.builderService.triggerPreprocess('config-changed');
+          this.applyingBoardChoice = content;
+          await this.applyPortBoardChoice(content, selected);
+        } catch (error) {
+          this.message.error(error instanceof Error ? error.message : String(error));
+        } finally {
+          if (choices.get(key) === choice) choices.delete(key);
+          if (this.applyingBoardChoice === content) {
+            // Re-read dependent options before dispatching the next choice, even
+            // after a failure. Pending choices retain their optimistic check.
+            const refresh = !this.destroyed && content === this.portMenuContent && this.portMenuMatchesContext(content)
+              && (this.showPortList || choices.size);
+            this.applyingBoardChoice = undefined;
+            if (refresh) await this.refreshPortBoardOptions(content);
+          }
         }
-      } catch (error) {
-        this.message.error(error instanceof Error ? error.message : String(error));
-      } finally {
-        if (!this.destroyed && this.showPortList && projectPath === this.projectService.currentProjectPath) {
-          await this.getDevicePortList().catch(error => console.warn('刷新主板配置菜单失败:', error));
-        }
-      }
+      });
     }, 500);
+  }
+
+  private async applyPortBoardChoice(content: PortMenuContent, selected: IMenuItem): Promise<void> {
+    const projectPath = content.project;
+    const current = () => !this.destroyed && !this.projectService.isBoardSwitchInProgress && this.portMenuMatchesContext(content);
+    const coder = this.projectService.isAilyCodeProject(projectPath);
+    const changed = coder ? await this.coderBoardConfig.select(projectPath, selected)
+      : (await this.projectService.applyBoardConfiguration(selected)).changed;
+    if (!current() || !shouldRunBoardConfigSelectionEffects(changed, selected)) return;
+    if (selected.extra?.selectAction === 'flash-softdevice') {
+      if (!this.serialService.currentPort) {
+        const messageKey = selected.extra?.selectPortMessage;
+        this.message.warning(messageKey ? this.translate.instant(messageKey) : 'Please select a port first');
+        return;
+      }
+      await this.uploaderService.flashSoftdevice(selected.data, this.serialService.currentPort);
+      if (!current()) return;
+      if (coder && changed) await this.coderRuntime.build(projectPath, { preprocessOnly: true });
+    }
+    if (changed && !coder) this.builderService.triggerPreprocess('config-changed');
   }
 
   showUser = false;

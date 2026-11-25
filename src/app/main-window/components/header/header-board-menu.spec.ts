@@ -6,6 +6,7 @@ describe('Header board configuration in Coder and Blockly', () => {
     const header: any = Object.create(HeaderComponent.prototype);
     header.projectService = {
       currentProjectPath: '/a', currentBoardConfig: { core: 'esp32', type: 'esp32:esp32:esp32s3' },
+      getRuntimeBoardModule: () => '@aily-project/board-test',
       isAilyCodeProject: () => coder, captureCurrentProjectGuard: () => () => true,
       applyBoardConfiguration: jasmine.createSpy('persist Blockly configuration').and.resolveTo({ changed: true }),
       getBoardConfigMenu: async () => [{ name: 'CDC', key: 'CDCOnBoot', children: [{ key: 'CDCOnBoot', data: 'cdc' }] }],
@@ -25,7 +26,6 @@ describe('Header board configuration in Coder and Blockly', () => {
     header.coderBoardConfig = { select: jasmine.createSpy('coder config').and.resolveTo(true) };
     header.builderService = { triggerPreprocess: jasmine.createSpy('blockly preprocess') };
     header.message = { error: jasmine.createSpy('error') };
-    header.selectDebounceTimer = null;
     return header;
   }
   it('uses identical board menu entries for the same board in both editors', async () => {
@@ -246,4 +246,139 @@ describe('Header board configuration in Coder and Blockly', () => {
     tick(500); flushMicrotasks();
     expect(header.message.error).toHaveBeenCalledOnceWith('save failed');
   }));
+  function boardRow(key: string, value: string, disabled?: string) {
+    return { key, name: key, children: ['off', 'on'].map(data => ({ key, name: data, data,
+      check: value === data, disabled: disabled === data })) };
+  }
+
+  it('keeps the live parent and device rows while a saved choice projects a new runtime board', fakeAsync(() => {
+    const header = fixture(false), refreshed = deferred<any[]>();
+    header.showPortList = true;
+    const first = { ...boardRow('USB', 'off'), tooltip: 'old metadata' };
+    header.serialService.getSerialPorts = jasmine.createSpy('ports').and.resolveTo([{ name: 'COM4' }]);
+    header.getOtaPortMenuItems = jasmine.createSpy('OTA').and.resolveTo([]);
+    header.projectService.getBoardConfigMenu = jasmine.createSpy('board').and.returnValues(Promise.resolve([first]), refreshed.promise);
+    header.projectService.applyBoardConfiguration.and.callFake(async () => {
+      header.projectService.currentBoardConfig = { ...header.projectService.currentBoardConfig, _cdcEnabled: true };
+      await header.resetDebuggerSelectionAfterBoardChange();
+      return { changed: true };
+    });
+    void header.getDevicePortList(); flushMicrotasks();
+    const device = header.configList.find(row => row.name === 'COM4');
+    header.selectSubItem(first.children[1]);
+    tick(500);
+    expect(header.configList).toContain(first);
+    expect(header.portMenuContent.board).toBe(header.projectService.currentBoardConfig);
+    expect(header.serialService.getSerialPorts).toHaveBeenCalledTimes(1);
+    expect(header.getOtaPortMenuItems).toHaveBeenCalledTimes(1);
+    refreshed.resolve([boardRow('USB', 'on')]); flushMicrotasks();
+    const row = header.configList.find(row => row.key === 'USB');
+    expect(row).toBe(first); expect(row.tooltip).toBeUndefined();
+    expect(row.children.map(child => child.check)).toEqual([false, true]);
+    expect(header.configList.find(row => row.name === 'COM4')).toBe(device);
+  }));
+
+  it('debounces each key and serializes publications without rolling back a newer optimistic check', fakeAsync(() => {
+    const header = fixture(false), firstWrite = deferred<void>();
+    const state = { USB: 'off', Flash: 'off' }, writes: string[] = [];
+    header.showPortList = true;
+    header.projectService.getBoardConfigMenu = async () => [boardRow('USB', state.USB), boardRow('Flash', state.Flash)];
+    header.projectService.applyBoardConfiguration.and.callFake(async choice => {
+      writes.push(choice.key + ':' + choice.data);
+      if (writes.length === 1) await firstWrite.promise;
+      state[choice.key] = choice.data;
+      return { changed: true };
+    });
+    void header.getDevicePortList(); flushMicrotasks();
+    const [usb, flash] = header.portMenuContent.boardOptions;
+    header.selectSubItem(usb.children[0]); tick(100);
+    header.selectSubItem(usb.children[1]); tick(100);
+    header.selectSubItem(flash.children[1]); tick(400);
+    expect(writes).toEqual(['USB:on']);
+    header.selectSubItem(usb.children[0]); firstWrite.resolve(); flushMicrotasks();
+    expect(usb.children.map(child => child.check)).toEqual([true, false]);
+    expect(flash.children.map(child => child.check)).toEqual([false, true]);
+    tick(500);
+    expect(writes).toEqual(['USB:on', 'Flash:on', 'USB:off']);
+    expect(state).toEqual({ USB: 'off', Flash: 'on' });
+  }));
+
+  it('restores authoritative checks after a failed write, and drops a disabled dependent choice after closing', fakeAsync(() => {
+    const header = fixture(false), reread = deferred<any[]>();
+    const usb = boardRow('USB', 'off'), flash = boardRow('Flash', 'off');
+    header.showPortList = true;
+    header.projectService.getBoardConfigMenu = jasmine.createSpy('board').and.returnValues(Promise.resolve([usb, flash]), reread.promise);
+    header.projectService.applyBoardConfiguration.and.rejectWith(new Error('save failed'));
+    void header.getDevicePortList(); flushMicrotasks();
+    usb.children[0].check = false; usb.children[1].check = true;
+    header.selectSubItem(usb.children[1]); tick(100);
+    header.selectSubItem(flash.children[1]); tick(400);
+    header.closePortList();
+    reread.resolve([boardRow('USB', 'off'), boardRow('Flash', 'off', 'on')]); flushMicrotasks();
+    expect(usb.children.map(child => child.check)).toEqual([true, false]);
+    expect(flash.children[1].disabled).toBeTrue();
+    tick(500);
+    expect(header.projectService.applyBoardConfiguration).toHaveBeenCalledTimes(1);
+    expect(header.message.error).toHaveBeenCalledOnceWith('save failed');
+  }));
+
+  it('cannot adopt a different board package, even if a save is in progress and its FQBN matches', fakeAsync(() => {
+    const header = fixture(false), write = deferred<any>();
+    const usb = boardRow('USB', 'off');
+    header.showPortList = true;
+    header.projectService.getBoardConfigMenu = jasmine.createSpy('board').and.resolveTo([usb]);
+    header.projectService.applyBoardConfiguration.and.returnValue(write.promise);
+    void header.getDevicePortList(); flushMicrotasks();
+    header.selectSubItem(usb.children[1]); tick(500);
+    header.projectService.currentBoardConfig = { ...header.projectService.currentBoardConfig };
+    header.projectService.getRuntimeBoardModule = () => '@aily-project/board-different';
+    const newMenu = deferred<any[]>();
+    header.projectService.getBoardConfigMenu.and.returnValue(newMenu.promise);
+    void header.resetDebuggerSelectionAfterBoardChange(); flushMicrotasks();
+    expect(header.configList).not.toContain(usb);
+    write.resolve({ changed: true }); newMenu.resolve([boardRow('other', 'off')]); flushMicrotasks();
+    expect(header.configList.some(row => row.key === 'other')).toBeTrue();
+    expect(header.projectService.getBoardConfigMenu).toHaveBeenCalledTimes(2);
+  }));
+
+  it('cancels pending writes and post-save hardware actions when a real board switch starts', fakeAsync(() => {
+    for (const before of [true, false]) {
+      const header = fixture(false), write = deferred<any>();
+      const row = boardRow('SoftDevice', 'off');
+      Object.assign(row.children[1], { extra: { selectAction: 'flash-softdevice' } });
+      header.projectService.getBoardConfigMenu = async () => [row];
+      header.projectService.applyBoardConfiguration.and.returnValue(write.promise);
+      header.serialService.currentPort = 'COM4';
+      header.uploaderService = { flashSoftdevice: jasmine.createSpy('flash') };
+      void header.getDevicePortList(); flushMicrotasks();
+      header.selectSubItem(row.children[1]);
+      if (before) header.projectService.isBoardSwitchInProgress = true;
+      tick(500);
+      header.projectService.isBoardSwitchInProgress = true;
+      write.resolve({ changed: true }); flushMicrotasks();
+      expect(header.projectService.applyBoardConfiguration.calls.count()).toBe(before ? 0 : 1);
+      expect(header.uploaderService.flashSoftdevice).not.toHaveBeenCalled();
+      expect(header.builderService.triggerPreprocess).not.toHaveBeenCalled();
+    }
+  }));
+
+  it('waits for a reopened menu to verify an already queued choice against its latest options', fakeAsync(() => {
+    for (const allowed of [true, false]) {
+      const header = fixture(false), readAfterWrite = deferred<any[]>(), reopened = deferred<any[]>();
+      const initial = [boardRow('USB', 'off'), boardRow('Flash', 'off')];
+      header.showPortList = true;
+      header.projectService.getBoardConfigMenu = jasmine.createSpy('menu').and.returnValues(
+        Promise.resolve(initial), readAfterWrite.promise, reopened.promise, Promise.resolve(initial));
+      void header.getDevicePortList(); flushMicrotasks();
+      header.selectSubItem(initial[0].children[1]); header.selectSubItem(initial[1].children[1]); tick(500);
+      header.closePortList(); header.showPortList = true;
+      void header.getDevicePortList();
+      readAfterWrite.resolve(initial); flushMicrotasks();
+      expect(header.projectService.applyBoardConfiguration).toHaveBeenCalledTimes(1);
+      reopened.resolve([boardRow('USB', 'on'), boardRow('Flash', 'off', allowed ? undefined : 'on')]);
+      flushMicrotasks();
+      expect(header.projectService.applyBoardConfiguration.calls.count()).toBe(allowed ? 2 : 1);
+    }
+  }));
+
 });
