@@ -1301,6 +1301,14 @@
         "PROTOCOL_DESYNC": "Le protocole de communication de la carte a perdu sa synchronisation. Reconnectez-vous et réessayez"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "L’IA est en cours d’exécution",
+        "AI_STOPPING": "Arrêt de l’IA",
+        "AI_STOPPING_DETAIL": "L’arrêt a été demandé. L’étape en cours doit se terminer.",
+        "AI_SYNCHRONIZING": "Synchronisation de la tâche",
+        "AI_SYNCHRONIZING_DETAIL": "Reconnexion à la conversation pour vérifier l’état de la tâche.",
+        "AI_SETTLING": "Application des modifications au canevas",
+        "AI_RECOVERY": "L’espace de travail doit être restauré",
+        "AI_RECOVERY_DETAIL": "Le contenu du canevas a été préservé. Suivez les instructions dans la conversation pour reprendre la modification.",
         "STOP": "Arrêter",
         "RETRY": "Réessayer",
         "VIEW_DETAIL": "Voir les détails",

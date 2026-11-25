@@ -1301,6 +1301,14 @@
         "PROTOCOL_DESYNC": "Das Kommunikationsprotokoll des Boards ist nicht mehr synchron. Verbinden Sie sich erneut und versuchen Sie es noch einmal"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "KI arbeitet",
+        "AI_STOPPING": "KI wird gestoppt",
+        "AI_STOPPING_DETAIL": "Der Stopp wurde angefordert. Der aktuelle Schritt wird noch beendet.",
+        "AI_SYNCHRONIZING": "Aufgabenstatus wird synchronisiert",
+        "AI_SYNCHRONIZING_DETAIL": "Die Verbindung zum Chat wird wiederhergestellt, um den Aufgabenstatus zu prüfen.",
+        "AI_SETTLING": "Änderungen an der Arbeitsfläche werden angewendet",
+        "AI_RECOVERY": "Arbeitsbereich muss wiederhergestellt werden",
+        "AI_RECOVERY_DETAIL": "Der Inhalt der Arbeitsfläche ist erhalten. Folge den Anweisungen im Chat, um weiterzuarbeiten.",
         "STOP": "Stoppen",
         "RETRY": "Erneut versuchen",
         "VIEW_DETAIL": "Details anzeigen",

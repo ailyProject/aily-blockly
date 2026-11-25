@@ -1301,6 +1301,14 @@
         "PROTOCOL_DESYNC": "ボード通信プロトコルの同期が失われました。再接続してもう一度お試しください"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "AI が処理中です",
+        "AI_STOPPING": "AI を停止しています",
+        "AI_STOPPING_DETAIL": "停止を要求しました。現在のステップが終了するまでお待ちください。",
+        "AI_SYNCHRONIZING": "タスクの状態を同期しています",
+        "AI_SYNCHRONIZING_DETAIL": "タスクの状態を確認するため、チャットに再接続しています。",
+        "AI_SETTLING": "キャンバスに変更を適用しています",
+        "AI_RECOVERY": "ワークスペースの復旧が必要です",
+        "AI_RECOVERY_DETAIL": "キャンバスの内容は保持されています。チャットの案内に従って編集を再開してください。",
         "STOP": "停止",
         "RETRY": "再試行",
         "VIEW_DETAIL": "詳細を表示",

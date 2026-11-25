@@ -1396,6 +1396,14 @@
         "PROTOCOL_DESYNC": "開發板通訊協定失去同步，請重新連接後再試"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "AI 正在操作",
+        "AI_STOPPING": "正在停止 AI",
+        "AI_STOPPING_DETAIL": "已要求停止，正在等候目前的步驟結束。",
+        "AI_SYNCHRONIZING": "正在同步 AI 狀態",
+        "AI_SYNCHRONIZING_DETAIL": "正在重新連接對話，以確認任務進度。",
+        "AI_SETTLING": "正在套用畫布變更",
+        "AI_RECOVERY": "工作區需要復原",
+        "AI_RECOVERY_DETAIL": "畫布內容已保留。請依照對話中的提示恢復編輯。",
         "STOP": "終止",
         "RETRY": "重試",
         "VIEW_DETAIL": "查看詳情",

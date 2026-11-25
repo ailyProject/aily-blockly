@@ -1471,6 +1471,14 @@
         "PROTOCOL_DESYNC": "开发板通信协议失去同步，请重新连接后重试"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "AI正在操作",
+        "AI_STOPPING": "正在停止 AI",
+        "AI_STOPPING_DETAIL": "已请求停止，正在等待当前步骤结束。",
+        "AI_SYNCHRONIZING": "正在同步 AI 状态",
+        "AI_SYNCHRONIZING_DETAIL": "正在重新连接对话，以确认任务进度。",
+        "AI_SETTLING": "正在应用画布更改",
+        "AI_RECOVERY": "工作区需要恢复",
+        "AI_RECOVERY_DETAIL": "画布内容已保留。请按对话中的提示恢复编辑。",
         "STOP": "终止",
         "RETRY": "重试",
         "VIEW_DETAIL": "查看详情",

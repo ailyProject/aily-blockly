@@ -1301,6 +1301,14 @@
         "PROTOCOL_DESYNC": "O protocolo de comunicação da placa perdeu a sincronização. Volte a ligar e tente novamente"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "A IA está trabalhando",
+        "AI_STOPPING": "Parando a IA",
+        "AI_STOPPING_DETAIL": "A parada foi solicitada. Aguardando a conclusão da etapa atual.",
+        "AI_SYNCHRONIZING": "Sincronizando o estado da tarefa",
+        "AI_SYNCHRONIZING_DETAIL": "Reconectando ao chat para verificar o andamento da tarefa.",
+        "AI_SETTLING": "Aplicando alterações à área de edição",
+        "AI_RECOVERY": "É necessário recuperar o espaço de trabalho",
+        "AI_RECOVERY_DETAIL": "O conteúdo da área de edição foi preservado. Siga as instruções no chat para retomar a edição.",
         "STOP": "Parar",
         "RETRY": "Tentar novamente",
         "VIEW_DETAIL": "Ver detalhes",

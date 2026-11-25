@@ -365,6 +365,8 @@ export class BlocklyService {
 
   private _aiWriting = new BehaviorSubject<boolean>(false);
   aiWriting$ = this._aiWriting.asObservable();
+  private readonly aiOperationWritingSubject = new BehaviorSubject(false);
+  readonly aiOperationWriting$ = this.aiOperationWritingSubject.asObservable();
   private readonly aiWritingSources = new Set<string>();
   private _aiExecutionActive = new BehaviorSubject<boolean>(false);
   /** AI 回合 / 子应用操作进行中。与 `aiWaiting` getter/setter 同源。 */
@@ -425,7 +427,11 @@ export class BlocklyService {
     this.setAiWritingActive('legacy-aily-chat', value);
   }
 
-  /** 积木写入态多源合并，供遮罩 / 「AI正在操作」通知使用。 */
+  get aiOperationWriting(): boolean {
+    return this.aiOperationWritingSubject.value;
+  }
+
+  /** 普通工作区租约参与画布保护。只有自动化桥或旧版对话实际发起的写入才参与 AI 通知。 */
   setAiWritingActive(source: string, value: boolean): void {
     const normalizedSource = String(source || '').trim();
     if (!normalizedSource) {
@@ -438,6 +444,8 @@ export class BlocklyService {
       this.aiWritingSources.delete(normalizedSource);
     }
 
+    const aiWriter = this.aiWritingSources.has('live-blockly-operation') || this.aiWritingSources.has('legacy-aily-chat');
+    if (this.aiOperationWriting !== aiWriter) this.aiOperationWritingSubject.next(aiWriter);
     const active = this.aiWritingSources.size > 0;
     if (this._aiWriting.value !== active) {
       this._aiWriting.next(active);

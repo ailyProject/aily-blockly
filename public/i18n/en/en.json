@@ -1475,6 +1475,14 @@
         "PROTOCOL_DESYNC": "The board communication protocol lost synchronization. Reconnect and try again"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "AI is working",
+        "AI_STOPPING": "Stopping AI",
+        "AI_STOPPING_DETAIL": "Stop requested. Waiting for the current step to finish.",
+        "AI_SYNCHRONIZING": "Reconnecting to the AI task",
+        "AI_SYNCHRONIZING_DETAIL": "Reconnecting to the chat to check the task’s progress.",
+        "AI_SETTLING": "Applying canvas changes",
+        "AI_RECOVERY": "Workspace recovery needed",
+        "AI_RECOVERY_DETAIL": "Your canvas has been preserved. Follow the instructions in the chat to resume editing.",
         "STOP": "Stop",
         "RETRY": "Retry",
         "VIEW_DETAIL": "View Details",

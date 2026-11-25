@@ -1301,6 +1301,14 @@
         "PROTOCOL_DESYNC": "보드 통신 프로토콜의 동기화가 끊어졌습니다. 다시 연결한 후 재시도하세요"
     },
     "NOTIFICATION": {
+        "AI_RUNNING": "AI 작업 중",
+        "AI_STOPPING": "AI 중지 중",
+        "AI_STOPPING_DETAIL": "중지를 요청했습니다. 현재 단계가 끝날 때까지 기다려 주세요.",
+        "AI_SYNCHRONIZING": "작업 상태 동기화 중",
+        "AI_SYNCHRONIZING_DETAIL": "작업 상태를 확인하기 위해 채팅에 다시 연결하고 있습니다.",
+        "AI_SETTLING": "캔버스 변경 사항 적용 중",
+        "AI_RECOVERY": "작업 공간 복구 필요",
+        "AI_RECOVERY_DETAIL": "캔버스 내용은 보존되었습니다. 채팅의 안내에 따라 편집을 재개하세요.",
         "STOP": "중지",
         "RETRY": "다시 시도",
         "VIEW_DETAIL": "상세 보기",
