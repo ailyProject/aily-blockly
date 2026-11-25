@@ -302,8 +302,7 @@ export class GuideComponent implements OnInit, OnDestroy {
         // this.uiService.openWindow(item.data);
         break;
       case 'project-open':
-      case 'project-import-zip':
-        void this.projectService.selectAndOpenProject({ archive: item.action === 'project-import-zip' });
+        void this.projectService.selectAndOpenProject();
         break;
       case 'browser-open':
         this.electronService.openUrl(item.data.url);

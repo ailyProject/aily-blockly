@@ -769,7 +769,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
           ...(rejection
             ? { automationBlockedReason: String(rejection['reason']) }
             : {}),
-          mayPrompt: ['project-new', 'project-open', 'project-import-zip', 'recent-project-open', 'project-close']
+          mayPrompt: ['project-new', 'project-open', 'recent-project-open', 'project-close']
             .includes(item.action || ''),
           ...(children.length ? { children } : {}),
         };
@@ -1287,9 +1287,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
     return folderPath;
   }
 
-  async openProject(archive = false) {
+  async openProject() {
     return this.projectService.selectAndOpenProject({
-      defaultPath: this.projectData.path, archive,
+      defaultPath: this.projectData.path,
       beforeOpen: async () => !this.isLoaded() || this.checkUnsavedChanges('open'),
     });
   }
@@ -1481,8 +1481,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.uiService.openWindow(item.data);
         break;
       case 'project-open':
-      case 'project-import-zip':
-        await this.openProject(item.action === 'project-import-zip');
+        await this.openProject();
         break;
       case 'project-add':
         await this.addCoderProjects();

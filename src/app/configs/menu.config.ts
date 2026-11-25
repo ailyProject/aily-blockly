@@ -83,11 +83,6 @@ export let HEADER_MENU: IMenuItem[] = [
     icon: 'fa-light fa-folder-open',
   },
   {
-    name: 'MENU.PROJECT_IMPORT_ZIP',
-    action: 'project-import-zip',
-    icon: 'fa-light fa-file-zipper',
-  },
-  {
     name: 'MENU.PROJECT_ADD',
     action: 'project-add',
     icon: 'fa-light fa-folder-plus',
@@ -204,11 +199,6 @@ export let GUIDE_MENU: IMenuItem[] = [
     action: 'project-open',
     data: { type: 'explorer', data: 'project-open' },
     icon: 'fa-light fa-folder-open',
-  },
-  {
-    name: 'MENU.PROJECT_IMPORT_ZIP',
-    action: 'project-import-zip',
-    icon: 'fa-light fa-file-zipper',
   },
   // {
   //   name: 'MENU.USER_MANUAL',

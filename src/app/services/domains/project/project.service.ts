@@ -2048,8 +2048,8 @@ export class ProjectService {
     } finally { lifecycle.release(); }
   }
 
-  async selectAndOpenProject({ defaultPath, archive = false, beforeOpen }: {
-    defaultPath?: string; archive?: boolean; beforeOpen?: () => Promise<boolean>;
+  async selectAndOpenProject({ defaultPath, beforeOpen }: {
+    defaultPath?: string; beforeOpen?: () => Promise<boolean>;
   } = {}): Promise<boolean> {
     const current = this.captureCurrentProjectGuard();
     const revision = this.projectNavigationIntentRevision;
@@ -2057,32 +2057,29 @@ export class ProjectService {
     try {
       const selection = await window['ipcRenderer'].invoke('dialog-select-files', {
         defaultPath,
-        title: this.translate.instant(archive ? 'MENU.PROJECT_IMPORT_ZIP' : 'MENU.PROJECT_OPEN'),
-        properties: [archive ? 'openFile' : 'openDirectory'],
-        ...(archive ? { filters: [{ name: 'ZIP', extensions: ['zip'] }] } : {}),
+        title: this.translate.instant('MENU.PROJECT_OPEN'),
+        properties: ['openDirectory'],
       });
       const selected = selection?.filePaths?.[0];
       if (selection?.canceled || !selected || !stillCurrent()) return false;
       if ((beforeOpen && !await beforeOpen()) || !stillCurrent()) return false;
-      return archive ? await this.openImportedProject(selected, true, stillCurrent) : await this.projectOpen(selected);
+      return await this.projectOpen(selected);
     } catch (error) {
       this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + (error instanceof Error ? error.message : String(error)));
       return false;
     }
   }
 
-  private async openImportedProject(source: string, archive: boolean, stillCurrent: () => boolean): Promise<boolean> {
+  private async openProjectCopy(source: string, stillCurrent: () => boolean): Promise<boolean> {
     let imported: string | undefined;
     try {
       const parent = await this.getDefaultProjectParentPath();
       if (!stillCurrent()) return false;
       const path = window['path'];
-      const name = path.basename(source, archive ? path.extname(source) : undefined)
+      const name = path.basename(source)
         .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 60) || 'project';
       const destination = path.join(parent, `${name}_${crypto.randomUUID().slice(0, 8)}`);
-      imported = archive
-        ? await window['ipcRenderer'].invoke('project-import-archive', { archivePath: source, destination })
-        : this.importProjectDirectory(source, destination);
+      imported = this.importProjectDirectory(source, destination);
       if (!imported) throw new Error('Project import did not produce a directory.');
       const opened = stillCurrent() && await this.projectOpen(imported);
       if (!opened) this.message.info(this.translate.instant('PROJECT.IMPORT_PROJECT_CREATED', { path: imported }));
@@ -2187,7 +2184,7 @@ export class ProjectService {
       signal?.removeEventListener('abort', release);
       release();
     }
-    return this.openImportedProject(projectPath, false, () => navigationRevision === this.projectNavigationIntentRevision);
+    return this.openProjectCopy(projectPath, () => navigationRevision === this.projectNavigationIntentRevision);
   }
 
   private beginExplicitNavigation(): number {

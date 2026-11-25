@@ -3909,12 +3909,6 @@ ipcMain.handle("project-lock-focus", (event, data) => {
   return projectLock.focusProjectOwner(data.projectPath, data.viewToken);
 });
 
-ipcMain.handle('project-import-archive', (event, { archivePath, destination } = {}) => {
-  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame)
-    throw new Error('Project import requires the current main window.');
-  return require('./project-archive-import').importProjectArchive(archivePath, destination);
-});
-
 // 另存为用
 ipcMain.handle("select-folder-saveAs", async (event, data) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);

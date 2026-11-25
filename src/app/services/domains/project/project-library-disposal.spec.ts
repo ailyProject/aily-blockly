@@ -183,8 +183,8 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     service.electronService = { exists: () => true, isElectron: true };
     service.ensureProjectModeAllowed = async () => true;
     service.promptProjectLockConflict = jasmine.createSpy('conflict').and.resolveTo('copy');
-    service.openImportedProject = jasmine.createSpy('import').and.callFake(async (source: string, archive: boolean, stillCurrent: () => boolean) => {
-      expect(source).toBe('/target'); expect(archive).toBeFalse(); expect(stillCurrent()).toBeTrue();
+    service.openProjectCopy = jasmine.createSpy('open copy').and.callFake(async (source: string, stillCurrent: () => boolean) => {
+      expect(source).toBe('/target'); expect(stillCurrent()).toBeTrue();
       expect(service.projectOpenTask).toBeNull();
       expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
       expect(mounted()).toBeTrue();
@@ -193,12 +193,12 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     try {
       expect(await service.projectOpen('/target')).toBeTrue();
       expect(service.promptProjectLockConflict).toHaveBeenCalledOnceWith(true, true, false);
-      expect(service.openImportedProject).toHaveBeenCalledTimes(1);
+      expect(service.openProjectCopy).toHaveBeenCalledTimes(1);
       expect(focusProcess).not.toHaveBeenCalled();
     } finally { window['projectLock'] = previous; }
   });
 
-  it('leaves the current project untouched when the ZIP picker is cancelled', async () => {
+  it('leaves the current project untouched when the directory picker is cancelled', async () => {
     const { service, mounted } = fixture();
     const previous = window['ipcRenderer'];
     const invoke = jasmine.createSpy('picker').and.resolveTo({ canceled: true, filePaths: [] });
@@ -206,12 +206,29 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     service.translate = { instant: (key: string) => key };
     const beforeOpen = jasmine.createSpy('unsaved-project check');
     try {
-      expect(await service.selectAndOpenProject({ archive: true, beforeOpen })).toBeFalse();
+      expect(await service.selectAndOpenProject({ beforeOpen })).toBeFalse();
       expect(invoke).toHaveBeenCalledOnceWith('dialog-select-files', jasmine.objectContaining({
-        properties: ['openFile'], filters: [{ name: 'ZIP', extensions: ['zip'] }],
+        properties: ['openDirectory'],
       }));
       expect(beforeOpen).not.toHaveBeenCalled();
       expect(mounted()).toBeTrue();
+    } finally { window['ipcRenderer'] = previous; }
+  });
+
+  it('opens a selected project directory in place after checking unsaved changes', async () => {
+    const { service } = fixture();
+    const previous = window['ipcRenderer'];
+    window['ipcRenderer'] = { invoke: jasmine.createSpy('picker').and.resolveTo({ canceled: false, filePaths: ['/target'] }) };
+    service.translate = { instant: (key: string) => key };
+    service.projectOpen = jasmine.createSpy('open').and.resolveTo(true);
+    const beforeOpen = jasmine.createSpy('unsaved-project check').and.callFake(async () => {
+      expect(service.projectOpen).not.toHaveBeenCalled();
+      return true;
+    });
+    try {
+      expect(await service.selectAndOpenProject({ beforeOpen })).toBeTrue();
+      expect(beforeOpen).toHaveBeenCalledTimes(1);
+      expect(service.projectOpen).toHaveBeenCalledOnceWith('/target');
     } finally { window['ipcRenderer'] = previous; }
   });
 

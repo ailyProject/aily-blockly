@@ -29,12 +29,6 @@ export function mainMenuAutomationRejection(
     nextAction: { tool: lifecycleTool },
     message: `请使用 ${lifecycleTool} 工具，先保留当前项目的待应用草稿，再执行项目操作；不得让用户通过菜单对话接手内部恢复。`,
   };
-  if (action === 'project-import-zip') return {
-    ok: false, operation: 'main_menu_execute', itemId, action,
-    code: 'PROJECT_IMPORT_REQUIRES_FILE_PICKER', reason: 'project_import_requires_file_picker',
-    requiresUserAction: true, retryable: false, commandDispatched: false,
-    message: '请从「导入项目 ZIP」选择要复制到项目目录的压缩包。',
-  };
   if (action !== 'app-exit') {
     return null;
   }
