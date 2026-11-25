@@ -16,6 +16,7 @@
     "forceCodeSigning": false,
     "beforePack": "scripts/prepare-windows-process-runtime.cjs",
     "afterPack": "scripts/package-child-resources.js",
+    "artifactBuildStarted": "scripts/prepare-windows-nsis.cjs",
     "asar": true,
     "asarUnpack": [
       ".aily/windows-process-runtime/**/*.{node,exe,json}",
