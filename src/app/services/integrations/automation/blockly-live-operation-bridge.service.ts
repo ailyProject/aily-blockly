@@ -223,6 +223,7 @@ export class BlocklyLiveOperationBridgeService {
     if (payload.operation === 'project_fork') return forkProject(this.projectService, payload.path, payload.params || {});
     if (payload.operation === 'project_canvas_status') return this.observeCanvasVersion(payload);
     if (payload.operation === 'abs_admission_status') return this.observeApplicationAdmission(payload);
+    if (payload.operation === 'abs_cancel_unstarted') return this.cancelUnstartedApplication(payload);
     if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'observe_state')
       return this.observeStatePublication(payload);
     if (payload.operation === 'project_navigation_workspace_mode') return this.observeClosedWorkspaceMode(payload);
@@ -474,6 +475,32 @@ export class BlocklyLiveOperationBridgeService {
       }
     } catch { /* Keep the result unknown without an exact original proof. */ }
     return { ...unknown, code: 'ABS_APPLY_OBSERVATION_UNKNOWN' };
+  }
+
+  private async cancelUnstartedApplication(payload: BlocklyLiveOperationPayload) {
+    const project = payload.path, { version, requestId, originalTargetPid, candidateHash } = payload.params ?? {};
+    const unknown = { ok: false, operation: 'abs_apply', project, publication: { status: 'UNKNOWN' },
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false } };
+    if (typeof project !== 'string' || !window['path']?.isAbsolute(project) || version !== 2
+      || typeof requestId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(requestId)
+      || !Number.isSafeInteger(originalTargetPid) || originalTargetPid <= 0
+      || typeof candidateHash !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(candidateHash)
+      || Object.keys(payload.params ?? {}).some(key => !['version', 'requestId', 'originalTargetPid', 'candidateHash'].includes(key))) {
+      return { ...unknown, code: 'ABS_APPLY_REVOCATION_INVALID' };
+    }
+    const unavailable = { ...unknown, code: 'ABS_APPLY_REVOCATION_UNAVAILABLE' };
+    try {
+      const scope = await this.admissionGuard(project);
+      if (!scope || this.projectService.getProjectMode(scope.project) !== 'blockly') return unavailable;
+      const pending = { ...unknown, code: 'ABS_APPLY_OBSERVATION_PENDING' };
+      if (this.pendingOriginalAdmissions.has(scope.project + '\0' + requestId)) return pending;
+      const port = await openAbsHostStorage(scope.project, scope.guard);
+      const result = await new OriginalRequestAdmissions(port, port.attachment?.root ?? scope.project)
+        .cancelUnstartedApplication(requestId, candidateHash, originalTargetPid, scope.guard);
+      if (result === 'pending') return pending;
+      if (result) return observedApplicationAdmission(result, port.executor);
+    } catch { /* A cancellation without an exact durable proof remains uncertain. */ }
+    return unavailable;
   }
 
   private async executeBoardEnvironmentSettlement(payload: BlocklyLiveOperationPayload, blocklyProgram: boolean) {

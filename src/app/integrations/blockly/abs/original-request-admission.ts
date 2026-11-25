@@ -90,6 +90,29 @@ export class OriginalRequestAdmissions {
     return this.port.withLock(storage => this.rejectLocked(request, failure, guard, storage));
   }
 
+  /** Cancel only the exact live reservation before it acquires an application
+   * index. The application journal checks this refusal under the same lock. */
+  async cancelUnstartedApplication(requestId: string, candidateHash: string, originalTargetPid: number,
+    guard: () => void): Promise<AdmissionRecord | 'pending' | null> {
+    const context = nativeSaveCapability(this.port);
+    if (context.executor.hostPid !== originalTargetPid) return null;
+    const request = { operation: 'abs_apply' as const, requestId };
+    const matchesWriter = async (storage: Pick<AbsSyncStorageAccess, 'read'>) => {
+      const retained = await this.applicationWriter(requestId, storage);
+      return retained !== null && retained.writer.candidateHash === candidateHash
+        && absJson(retained.writer.executor) === absJson(context.executor);
+    };
+    if (!await matchesWriter(this.port)) return null;
+    return this.port.withLock(async storage => {
+      guard();
+      if (!await matchesWriter(storage)) return null;
+      const result = await this.rejectLocked(request, { code: 'ABS_APPLY_CANCELLED_BEFORE_START',
+        message: 'The original application was withdrawn before it could start.' }, guard, storage);
+      if (!result) return 'pending';
+      return absJson(result.executor) === absJson(context.executor) ? result : null;
+    });
+  }
+
   private async rejectLocked(request: OriginalRequestAdmissionIdentity, failure: { code: string; message: string },
     guard: () => void, storage: AbsSyncStorageAccess): Promise<AdmissionRecord | null> {
     guard();

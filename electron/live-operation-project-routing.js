@@ -4,7 +4,7 @@ const { rootAttachment } = require('./project-file-lock-owner');
 
 const parameterScopedProjects = new Set([
   'project_fork_status', 'project_recovery_open', 'project_save_status', 'project_publication_status',
-  'project_board_environment_settle', 'project_navigation_status', 'abs_admission_status',
+  'project_board_environment_settle', 'project_navigation_status', 'abs_admission_status', 'abs_cancel_unstarted',
 ]);
 
 /** Recovery observation names its protected source in params.project. The
@@ -16,7 +16,7 @@ function routeLiveOperationProject(operation, requestedPath, currentProject, res
   const retireLock = operation === 'abs_recovery' && ['retire_empty_project_lock', 'retire_project_file_lock'].includes(params?.action);
   const recoveryControl = retireLock || operation === 'abs_recovery' && params?.action === 'cancel_project';
   const parameterScoped = stateObservation || recoveryControl || parameterScopedProjects.has(operation);
-  const explicitPath = (stateObservation || recoveryControl || operation === 'abs_admission_status')
+  const explicitPath = (stateObservation || recoveryControl || ['abs_admission_status', 'abs_cancel_unstarted'].includes(operation))
     && !path.isAbsolute(requestedPath || '') ? '' : requestedPath;
   const project = explicitPath ? resolve(explicitPath) : parameterScoped ? '' : (currentProject || '');
   const originalPublication = isOriginalPublicationRequest(operation, params);

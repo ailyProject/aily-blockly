@@ -130,6 +130,31 @@ test('old migration metadata does not gate program writes; a migration refusal s
   assert.equal(await store.read('history-workspace.json'), migration);
 });
 
+test('a live ABS cancellation receipt requires its exact unindexed writer in native storage', async () => {
+  const store = await openProjectSyncStorage(project(), guard), requestId = randomUUID();
+  const digest = hash(requestId).slice(7);
+  const admission = `recoveries/admission-${hash('abs-apply\0' + requestId).slice(7)}.json`;
+  const writer = `recoveries/application-writer-${digest}.json`;
+  const index = `recoveries/request-${digest}.json`;
+  const { attachment, executor } = store, projectPath = attachment.root;
+  const receipt = { version: 1, kind: 'not-started', operationId: randomUUID(),
+    project: projectPath, request: { operation: 'abs_apply', requestId }, attachment, executor,
+    code: 'ABS_APPLY_CANCELLED_BEFORE_START', message: 'The original application was withdrawn before it could start.' };
+  await store.withLock(async storage => {
+    const reject = changes => assert.rejects(storage.replace(admission, null, JSON.stringify({ ...receipt, ...changes })),
+      { code: 'ABS_ADMISSION_INVALID' });
+    await reject({});
+    assert.equal(await storage.replace(writer, null, JSON.stringify({ version: 1, kind: 'validated-writer',
+      project: projectPath, requestId, candidateHash: hash('selected draft'), attachment, executor })), true);
+    await reject({ request: { requestId, operation: 'project_save' } });
+    await reject({ request: undefined });
+    await reject({ executor: { ...executor, instanceId: randomUUID() } });
+    assert.equal(await storage.replace(admission, null, JSON.stringify(receipt)), true);
+  });
+  assert.equal(await store.read(admission), JSON.stringify(receipt));
+  assert.equal(await store.read(index), null);
+});
+
 test('invalid UTF-8 is attributed to the specific private navigation journal', async () => {
   const root = project(), invalid = Buffer.from([0x7b, 0xff, 0xfd]);
   const sync = path.join(root, '.aily', 'abs-sync');

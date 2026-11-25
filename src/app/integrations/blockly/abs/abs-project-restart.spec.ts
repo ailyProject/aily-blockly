@@ -7,6 +7,7 @@ import { SerialOperationQueue } from '@shared/public-api';
 import { AbsApplicationJournal } from './abs-application-journal';
 import { generationEvidence } from './abs-generation-protocol';
 import { inspectAbsBaselineRecovery, recoverAbsBaseline } from './abs-baseline-recovery';
+import { OriginalRequestAdmissions } from './original-request-admission';
 
 describe('same-project durable operation recovery', () => {
   const project = 'same-project', scope = { projectKey: project, pageId: 'main' };
@@ -193,13 +194,14 @@ describe('same-project durable operation recovery', () => {
     expect([...files]).toEqual(before);
   });
 
-  async function prepareApplication() {
+  async function prepareApplication(reservations?: OriginalRequestAdmissions) {
     const previous = await save('previous'); await previous.commit();
     const source = 'exact complete candidate', requestId = 'original-apply-request-001';
     const validation = { version: 2, requestId, base: (await generationEvidence(previous.projection, previous.abi)).binding,
       candidate: { hash: await hashAbsText(source), bytes: source.length }, workspaceRevision: 1,
       sourceEdits: { exact: 'full original source edit payload is retained' } };
     const journal = new AbsOperationJournal(port, project);
+    await reservations?.reserveApplication(requestId, validation.candidate.hash, () => {});
     const id = await journal.begin({ kind: 'abs-apply', document: document('unsaved before'), disk: await previous.store.captureDisk(),
       candidate: { source, generation: previous.generation, hash: validation.candidate.hash }, application: { requestId, validation } }, () => {});
     const next = await save('requested candidate');
@@ -227,6 +229,22 @@ describe('same-project durable operation recovery', () => {
     expect(observed.result.ok).toBeTrue(); expect(observed.result.receipt.sourceEdits).toEqual(original.validation.sourceEdits);
     expect(observed.result.historyBase).toEqual(original.outcome.historyBase);
     expect(observed.result.applicationObservation.current).toBeTrue(); expect([...files]).toEqual(before);
+  });
+  it('never withdraws an indexed ABS application whose committed response was lost', async () => {
+    port = { ...port, attachment: { version: 1, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } },
+      executor: { version: 1, hostPid: 101, storagePid: 102, instanceId: 'test', processIdentity: 'test-process', bootId: 'test-boot' } };
+    const admissions = new OriginalRequestAdmissions(port, project);
+    const original = await prepareApplication(admissions);
+    await original.next.commit();
+    const before = [...files];
+    expect(await admissions.cancelUnstartedApplication(original.requestId, original.validation.candidate.hash, 101, () => {}))
+      .toBe('pending');
+    const observed = await new AbsApplicationJournal(port, project).observe(original.requestId, () => {}, 101);
+    expect(observed.result).toEqual(jasmine.objectContaining({ ok: true,
+      publication: jasmine.objectContaining({ status: 'COMMITTED', generation: original.next.generation }),
+      applicationObservation: jasmine.objectContaining({ requestId: original.requestId, resultKnown: true }),
+    }));
+    expect([...files]).toEqual(before);
   });
   it('recovers the commit-to-receipt crash gap and keeps historical proof through later editing', async () => {
     const original = await prepareApplication(); fail = 'project.abs.map.json'; await original.next.commit(); fail = undefined;

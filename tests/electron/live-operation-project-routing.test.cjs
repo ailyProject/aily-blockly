@@ -43,6 +43,21 @@ test('ABS admission status routes only the absolute original project regardless 
   });
 });
 
+test('ABS withdrawal requires the explicit absolute request project on the main bridge', async () => {
+  const operation = 'abs_cancel_unstarted', project = path.resolve('explicit-original');
+  const current = path.resolve('different-current-project');
+  const params = { version: 2, requestId: '00000000-0000-4000-8000-000000000abc', originalTargetPid: 101,
+    candidateHash: 'sha256:' + '1'.repeat(64) };
+  const host = mainRouteFixture(current);
+  await host.handleCliBridgeCommand('blockly-live-operation', { path: project, operation, params });
+  assert.equal(host.calls.length, 1);
+  assert.equal(host.calls[0].path, project);
+  assert.equal(host.calls[0].params, params);
+  for (const requested of [undefined, '', 'relative-source']) {
+    assert.deepEqual(routeLiveOperationProject(operation, requested, current), { path: '', parameterScoped: true });
+  }
+});
+
 test('state publication read routes to its original project without an attached canvas', async () => {
   const operation = 'abs_recovery', project = path.resolve('state-show-original');
   const params = { version: 2, action: 'observe_state' };
