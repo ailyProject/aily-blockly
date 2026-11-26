@@ -37,7 +37,7 @@ import { assertAbsContractsCompatible } from './abs-contract-compatibility';
 import { inspectAbsDraft, canInspectAbsDraft, AbsDraftReadiness } from './abs-draft-readiness';
 import { orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
 import { createAbsProjectSnapshotGuard } from './abs-project-snapshot-guard';
-import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey, type AbsCommittedProgramSnapshot, type AbsMergedAuthorObservation, type AbsSyncStoragePort, type AbsViewResolutionRecord } from './abs-baseline-store';
+import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey, type AbsCommittedProgramSnapshot, type AbsHistoryAuthorTarget, type AbsMergedAuthorObservation, type AbsSyncStoragePort, type AbsViewResolutionRecord } from './abs-baseline-store';
 import { openAbsHostStorage } from './abs-host-storage';
 import { absJson, assertAbsBaselineContext, assertCurrentAbsProjection, createAbsProjection, hashAbsText } from './abs-identity-map';
 import { AbsProjection, AbsProjectionContracts, AbsSyncError, type AbsIdentityMap } from './abs-state';
@@ -217,6 +217,7 @@ export class AbsWorkspaceSyncService {
       if (!admitted.created) return { original: await application.observeNativeSave(identity, context.assertCurrent), project, identity, port };
       const checkpoint: AbsDocumentSaveCheckpoint = { journal, id: admitted.ref.operationId, native: { ref: admitted.ref, application } };
       let transformed = false;
+      let historyTarget: AbsHistoryAuthorTarget | undefined;
       try {
         if (change) {
           // Runtime replacement is an owned phase, not permission for a stale
@@ -228,7 +229,9 @@ export class AbsWorkspaceSyncService {
             this.project.assertProjectDirectory?.(path);
           };
           guard();
-          const target = history ? await this.prepareHistoryDocument(history, document, store, guard) : undefined;
+          const historyDocument = history ? await this.prepareHistoryDocument(history, document, store, guard) : undefined;
+          const target = historyDocument?.document;
+          historyTarget = historyDocument?.authorTarget;
           transformed = true; storageGuard = assertOwner;
           if (history) {
             if (history.history.environment) {
@@ -265,7 +268,7 @@ export class AbsWorkspaceSyncService {
           finally { runtime.Events.setGroup(group); }
           guard(); // A layout change is allowed; a program/owner change is not.
         }
-        const outcome = await this.exportInContext(context, lease, store, { save: true }, undefined, checkpoint, computation, !!history);
+        const outcome = await this.exportInContext(context, lease, store, { save: true }, undefined, checkpoint, computation, historyTarget);
         if (outcome.publication.status !== 'COMMITTED' || outcome.requiresReload || !outcome.evidence) {
           throw Object.assign(new AbsSyncError('ABS_SAVE_INCOMPLETE', outcome.publication.error ?? 'The original native publication is not complete.'),
             { publication: outcome.publication, projectSaved: outcome.publication.abiSaved === true,
@@ -475,7 +478,7 @@ export class AbsWorkspaceSyncService {
   }
 
   private async prepareHistoryDocument(request: AbsHistoryPublicationRequest<HistoryEnvironmentPlan>, working: unknown,
-    store: AbsBaselineStore, guard: () => void): Promise<BlocklyProjectDocument> {
+    store: AbsBaselineStore, guard: () => void): Promise<{ document: BlocklyProjectDocument; authorTarget: AbsHistoryAuthorTarget }> {
     const saved = await store.readCommittedSnapshot(); guard();
     if (!saved || saved.abi === null || absJson((await generationEvidence(saved.projection, saved.abi)).binding) !== absJson(request.history.expected)) {
       throw new AbsSyncError('ABS_HISTORY_BASELINE_STALE', 'The saved head changed before history publication; the original Working document is retained.');
@@ -494,7 +497,8 @@ export class AbsWorkspaceSyncService {
       assertBlocklyDocumentIdentities(document); return document;
     };
     const base = await decode(request.history.base.source!, request.history.base.format);
-    const target = await decode(request.history.source!, request.history.candidate.format);
+    const source = request.history.source!, format = request.history.candidate.format;
+    const target = await decode(source, format);
     const materialize = (document: unknown) => materializeGenericProjectDataValues(document, {
       resolve: async <T>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<T>(ref); guard(); return value; },
     });
@@ -505,7 +509,7 @@ export class AbsWorkspaceSyncService {
       || typeof desired.activePageId !== 'string' || !desired.pages.some(page => page.id === desired.activePageId)) {
       throw new AbsSyncError('ABS_HISTORY_DOCUMENT_INVALID', 'History did not contain a complete project document; its original bytes are retained.');
     }
-    return this.editor.normalizeProjectAbiForLoad(desired);
+    return { document: this.editor.normalizeProjectAbiForLoad(desired), authorTarget: { source, format, document: target } };
   }
 
   private async verifyHistoryDocument(document: BlocklyProjectDocument,
@@ -890,8 +894,9 @@ export class AbsWorkspaceSyncService {
   private exportInContext(context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease,
     store: AbsBaselineStore, options: AbsExportOptions,
     input?: { expected: AbsDiskSnapshot; generation: string | null }, checkpoint?: AbsDocumentSaveCheckpoint, computation?: AbsBackgroundComputation,
-    preserveAuthor = false): Promise<AbsWorkspaceSyncOutcome> {
+    historyTarget?: AbsHistoryAuthorTarget): Promise<AbsWorkspaceSyncOutcome> {
     const initialize = options.initialize === true || options.save === true;
+    const preserveAuthor = historyTarget !== undefined;
     return this.withoutViewChecks(async (): Promise<AbsWorkspaceSyncOutcome> => {
       let saveCheckpoint = checkpoint;
       try {
@@ -1056,7 +1061,8 @@ export class AbsWorkspaceSyncService {
         ...(inspection || archiveCurrentDraft || legacy?.retainMap ? { inputMap: expected.map } : {}),
         ...(legacy?.retainDraft ? { legacyMirrorArchive: true as const } : {}),
         ...(options.preserveDraft || archiveCurrentDraft ? { draftBaseGeneration: committed!.map.generation } : {}) },
-        input?.generation === null || legacy && !savedCommit ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash);
+        input?.generation === null || legacy && !savedCommit ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash,
+        projectTree && historyTarget ? { historyTarget } : undefined);
       if (saveCheckpoint?.native) await saveCheckpoint.native.application.stageNativeSave({
         ref: saveCheckpoint.native.ref, evidence, inputAbiHash: expected.abi === null ? null : await hashAbsText(expected.abi),
         ...(saveCheckpoint.native.blockState ? { blockState: saveCheckpoint.native.blockState(evidence) } : {}),
