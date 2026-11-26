@@ -371,7 +371,9 @@ export class CloudSpaceComponent {
   }
 
   // 打包项目
-  async packageProject(prjPath: string, { detachCloudProject = false } = {}): Promise<string | undefined> {
+  async packageProject(
+    prjPath: string, { detachCloudProject = false, archivePath = `${prjPath}/project.7z` } = {},
+  ): Promise<string | undefined> {
     // 判断路径是否存在
     if (!await window['fs'].existsSync(prjPath)) {
       this.message.error('当前未打开项目，无法同步');
@@ -379,7 +381,6 @@ export class CloudSpaceComponent {
       return;
     }
 
-    const archivePath = `${prjPath}/project.7z`;
     await this.delete7zFile(archivePath);
 
     // 检查要打包的文件是否存在
@@ -651,7 +652,7 @@ export class CloudSpaceComponent {
     this.isSyncing = true;
     const scope = this.cloudScope();
     let identity: string;
-    let archivePath: string | undefined;
+    let tempDir: string | undefined;
     let synced = false;
     try {
       if (!scope) throw new Error('请登录后同步项目');
@@ -666,10 +667,6 @@ export class CloudSpaceComponent {
         if (!active()) throw new Error('当前项目已切换，请重新同步');
         assertSource();
       };
-      if (readCloudSyncState(projectPath, identity, scope).pending) {
-        this.message.warning('此工程还有待确认的云同步，已保留原请求和归档。');
-        return;
-      }
       const packagePath = `${projectPath}/package.json`;
       const readManifest = () => JSON.parse(this.electronService.readFile(packagePath));
       const cloudId = String(readManifest().cloudId ?? '');
@@ -680,8 +677,11 @@ export class CloudSpaceComponent {
       const save = await this.projectService.save(projectPath);
       if (!save.success) throw new Error(`项目保存失败：${save.error || '未确认保存'}`);
       assertActive();
-      archivePath = `${projectPath}/project.7z`;
-      if (!await this.packageProject(projectPath)) return;
+      const directory = window['path'].join(window['os'].tmpdir(), `aily-cloud-legacy-${crypto.randomUUID()}`);
+      window['fs'].mkdirSync(directory);
+      tempDir = directory;
+      const archivePath = window['path'].join(tempDir, 'project.7z');
+      if (!await this.packageProject(projectPath, { archivePath })) return;
       assertActive();
       const manifest = readManifest();
       if (String(manifest.cloudId ?? '') !== cloudId) throw new Error('当前工程的云端关联已变化');
@@ -712,9 +712,9 @@ export class CloudSpaceComponent {
       const detail = error instanceof Error ? error.message : String(error);
       this.message.error(synced ? `云端同步成功，本地关联更新失败：${detail}` : `同步失败：${detail}`);
     } finally {
-      if (archivePath) {
+      if (tempDir) {
         try {
-          if (projectCloudIdentity(projectPath) === identity) await this.delete7zFile(archivePath);
+          window['fs'].rmSync(tempDir, { recursive: true, force: true });
         } catch (error) {
           console.warn('云同步临时归档清理失败', error);
         }
