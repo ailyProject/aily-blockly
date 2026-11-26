@@ -634,7 +634,96 @@ export class CloudSpaceComponent {
     return response.data;
   }
 
-  async syncToCloud(studentProject?): Promise<void> {
+  private cloudSyncReceiptsEnabled(): boolean {
+    // Retain the existing Workspace sync protocol during the server rollout.
+    return false;
+  }
+
+  syncToCloud(studentProject?): Promise<void> {
+    return this.cloudSyncReceiptsEnabled()
+      ? this.syncCloudWithReceipts(studentProject)
+      : this.syncCloudLegacy(studentProject);
+  }
+
+  private async syncCloudLegacy(studentProject?): Promise<void> {
+    const projectPath = this.projectService.currentProjectPath;
+    if (this.isSyncing || !projectPath) return;
+    this.isSyncing = true;
+    const scope = this.cloudScope();
+    let identity: string;
+    let archivePath: string | undefined;
+    let synced = false;
+    try {
+      if (!scope) throw new Error('请登录后同步项目');
+      identity = projectCloudIdentity(projectPath);
+      const active = this.projectService.captureCurrentProjectGuard();
+      const assertSource = () => {
+        if (this.cloudScope() !== scope || projectCloudIdentity(projectPath) !== identity) {
+          throw new Error('同步来源目录或账号已切换');
+        }
+      };
+      const assertActive = () => {
+        if (!active()) throw new Error('当前项目已切换，请重新同步');
+        assertSource();
+      };
+      if (readCloudSyncState(projectPath, identity, scope).pending) {
+        this.message.warning('此工程还有待确认的云同步，已保留原请求和归档。');
+        return;
+      }
+      const packagePath = `${projectPath}/package.json`;
+      const readManifest = () => JSON.parse(this.electronService.readFile(packagePath));
+      const cloudId = String(readManifest().cloudId ?? '');
+      if (studentProject && (cloudId !== String(studentProject.id) || !this.canEditProject(studentProject))) {
+        throw new Error('当前本地项目与学生项目不一致，请重新打开学生项目');
+      }
+
+      const save = await this.projectService.save(projectPath);
+      if (!save.success) throw new Error(`项目保存失败：${save.error || '未确认保存'}`);
+      assertActive();
+      archivePath = `${projectPath}/project.7z`;
+      if (!await this.packageProject(projectPath)) return;
+      assertActive();
+      const manifest = readManifest();
+      if (String(manifest.cloudId ?? '') !== cloudId) throw new Error('当前工程的云端关联已变化');
+      delete manifest[AILY_LOCAL_LIBRARY_SOURCES_KEY];
+      const response = await firstValueFrom(this.cloudService.syncProject({
+        pid: manifest.cloudId, projectData: manifest, archive: archivePath,
+        category: this.projectService.getProjectMode(projectPath) === 'coder' ? 'coder' : 'blockly',
+      }));
+      if (response?.status !== 200) throw new Error(response?.errorMessage || response?.messages || '云端拒绝此同步');
+      synced = true;
+      const resultId = response.data?.id;
+      if ((typeof resultId !== 'number' && typeof resultId !== 'string') || !String(resultId).trim()) {
+        throw new Error('云端未返回项目编号');
+      }
+
+      assertSource();
+      const original = this.electronService.readFile(packagePath);
+      const current = JSON.parse(original);
+      if (String(current.cloudId ?? '') !== cloudId) throw new Error('本地工程的云端关联已变化');
+      current.cloudId = resultId;
+      const updated = JSON.stringify(current, null, 2);
+      if (updated !== original) await publishProjectText(projectPath, 'package.json', updated, original, assertSource);
+      assertSource();
+      if (this.projectService.currentProjectPath === projectPath) this.projectService.currentPackageData = current;
+      this.message.success('同步成功');
+      await this.getCloudProjects();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.message.error(synced ? `云端同步成功，本地关联更新失败：${detail}` : `同步失败：${detail}`);
+    } finally {
+      if (archivePath) {
+        try {
+          if (projectCloudIdentity(projectPath) === identity) await this.delete7zFile(archivePath);
+        } catch (error) {
+          console.warn('云同步临时归档清理失败', error);
+        }
+      }
+      this.isSyncing = false;
+    }
+  }
+
+  private async syncCloudWithReceipts(studentProject?): Promise<void> {
     if (this.isSyncing || !this.projectService.currentProjectPath) return;
     this.isSyncing = true;
     const projectPath = this.projectService.currentProjectPath;

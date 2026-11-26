@@ -1,5 +1,6 @@
 import { firstValueFrom, of } from 'rxjs';
 import { CloudService } from './cloud.service';
+import { SKIP_CONNECTIVITY_RETRY } from '../../../interceptors/retry.interceptor';
 
 describe('CloudService Coder category isolation', () => {
   let service: CloudService;
@@ -78,11 +79,12 @@ describe('CloudService Coder category isolation', () => {
   it('sends the Coder upload category as a multipart field alongside projectData and pid', () => {
     const projectData = { name: 'demo', type: 'coder', entry: 'src/main.cpp' };
     service.syncProject({ pid: 'cloud-id', projectData, category: 'coder' });
-    const [url, body] = http.post.calls.mostRecent().args;
+    const [url, body, options] = http.post.calls.mostRecent().args;
     expect(url).toMatch(/\/cloud\/sync$/);
     expect(body.get('category')).toBe('coder');
     expect(body.get('pid')).toBe('cloud-id');
     expect(body.has('expectedArchiveRevision')).toBeFalse();
+    expect(options.context).toBeUndefined();
     expect(JSON.parse(body.get('projectData'))).toEqual(projectData);
     expect(Object.keys(projectData)).toEqual(['name', 'type', 'entry']);
   });
@@ -103,6 +105,7 @@ describe('CloudService Coder category isolation', () => {
     expect(body.get('requestId')).toBe('sync-request-id');
     expect(body.get('expectedArchiveSha256')).toBe(archiveSha256);
     expect(body.get('expectedArchiveRevision')).toBe(archiveRevision);
+    expect(http.post.calls.mostRecent().args[2].context.get(SKIP_CONNECTIVITY_RETRY)).toBeTrue();
   });
 
   it('retains binary archive content in the Coder multipart upload', () => {

@@ -107,9 +107,12 @@ export class CloudService {
     });
 
     console.log('发送请求到:', this.apiUrl);
-    return this.http.post<any>(this.apiUrl, formData, {
-      headers, context: new HttpContext().set(SKIP_CONNECTIVITY_RETRY, true),
-    });
+    if (params.requestId) {
+      return this.http.post<any>(this.apiUrl, formData, {
+        headers, context: new HttpContext().set(SKIP_CONNECTIVITY_RETRY, true),
+      });
+    }
+    return this.http.post<any>(this.apiUrl, formData, { headers }).pipe(catchError(this.handleError));
   }
 
   observeSyncRequest(requestId: string): Observable<any> {
