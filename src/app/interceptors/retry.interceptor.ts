@@ -1,7 +1,9 @@
-import { HttpInterceptorFn, HttpRequest, HttpHandlerFn, HttpEvent, HttpErrorResponse } from '@angular/common/http';
+import { HttpInterceptorFn, HttpRequest, HttpHandlerFn, HttpEvent, HttpErrorResponse, HttpContextToken } from '@angular/common/http';
 import { Observable, throwError, from } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { getServerUrl } from '../configs/api.config';
+
+export const SKIP_CONNECTIVITY_RETRY = new HttpContextToken(() => false);
 
 const RETRIABLE_STATUSES = new Set([0, 502, 503, 504]);
 const PING_DELAYS_MS = [500, 1000, 2000];
@@ -36,7 +38,7 @@ async function pingUntilOk(healthUrl: string): Promise<boolean> {
 
 export const retryInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: HttpHandlerFn): Observable<HttpEvent<any>> => {
   const serverUrl = getServerUrl();
-  if (!req.url.startsWith(serverUrl)) {
+  if (req.context.get(SKIP_CONNECTIVITY_RETRY) || !req.url.startsWith(serverUrl)) {
     return next(req);
   }
 

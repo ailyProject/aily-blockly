@@ -147,7 +147,9 @@ describe('CloudService downloaded ABI-only archives', () => {
   afterEach(() => Object.assign(window, previous));
 
   it('preserves a legacy map before returning the downloaded project to either cloud import caller', async () => {
-    expect(await firstValueFrom(service.openProjectArchive('cloud-id'))).toBe(extracted);
+    expect(await firstValueFrom(service.openProjectArchive('cloud-id'))).toEqual({
+      path: extracted, archiveSha256: jasmine.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(service.downloadProject).toHaveBeenCalledOnceWith('cloud-id');
     expect(files.get(extracted + '/project.abi')).toBe(abi);
     expect(files.has(extracted + '/project.abs.map.json')).toBeFalse();
@@ -157,7 +159,9 @@ describe('CloudService downloaded ABI-only archives', () => {
 
   it('returns a current ABI-only cloud package without creating recovery files', async () => {
     includeMap = false;
-    expect(await firstValueFrom(service.openProjectArchive('new-cloud-id'))).toBe(extracted);
+    expect(await firstValueFrom(service.openProjectArchive('new-cloud-id'))).toEqual({
+      path: extracted, archiveSha256: jasmine.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(files.get(extracted + '/project.abi')).toBe(abi);
     expect([...directories].some(name => name.includes('.cloud-import-backup'))).toBeFalse();
   });
