@@ -475,6 +475,155 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(files.has(`${root}/project.7z`)).toBeFalse();
   });
 
+  const conflictingArchive = 'b'.repeat(64);
+  const observedRevision = 'c'.repeat(64);
+  const nextRevision = 'd'.repeat(64);
+  const conflictResponse = (revision = observedRevision) => ({ status: 409,
+    errorCode: 'WORKSPACE_PROJECT_SOURCE_CHANGED',
+    data: { project_id: 'existing-id', archive_sha256: conflictingArchive, archive_revision: revision },
+  });
+
+  function configureConflictChoices(choices: string[], approvals: boolean[] = []) {
+    component.modal = {
+      create: jasmine.createSpy('conflict').and.returnValues(...choices.map(choice => ({ afterClose: of(choice) }))),
+      confirm: jasmine.createSpy('confirmOverwrite').and.returnValues(...approvals.map(choice => ({ afterClose: of(choice) }))),
+    };
+  }
+
+  it('requires separate confirmation before sending an overwrite against the displayed revision', async () => {
+    configureConflictChoices(['overwrite']);
+    const confirmation = new Subject<boolean>();
+    let shown: () => void;
+    const confirming = new Promise<void>(resolve => { shown = resolve; });
+    component.modal.confirm.and.callFake(() => { shown(); return { afterClose: confirmation }; });
+    component.cloudService.syncProject.and.callFake(request => request.expectedArchiveRevision
+      ? from(committed(request)) : of(conflictResponse()));
+
+    const sync = component.syncToCloud();
+    await confirming;
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+    confirmation.next(true);
+    await sync;
+
+    const [original, overwrite] = component.cloudService.syncProject.calls.allArgs().map(([request]) => request);
+    expect(overwrite).toEqual(jasmine.objectContaining({
+      pid: 'existing-id', expectedArchiveSha256: conflictingArchive, expectedArchiveRevision: observedRevision,
+    }));
+    expect(overwrite.requestId).not.toBe(original.requestId);
+    expect(overwrite.archiveContents).toBe(original.archiveContents);
+    expect(component.message.success).toHaveBeenCalledWith('同步成功');
+  });
+
+  it('asks again when another same-project revision replaces the displayed version during confirmation', async () => {
+    configureConflictChoices(['overwrite', 'overwrite'], [true, true]);
+    component.cloudService.syncProject.and.callFake(request => {
+      if (!request.expectedArchiveRevision) return of(conflictResponse());
+      if (request.expectedArchiveRevision === observedRevision) return of(conflictResponse(nextRevision));
+      return from(committed(request));
+    });
+
+    await component.syncToCloud();
+
+    const requests = component.cloudService.syncProject.calls.allArgs().map(([request]) => request);
+    expect(requests.map(request => request.expectedArchiveRevision)).toEqual([undefined, observedRevision, nextRevision]);
+    expect(new Set(requests.map(request => request.requestId)).size).toBe(3);
+    expect(component.modal.create.calls.mostRecent().args[0].nzTitle).toBe('云端工程再次更新');
+    expect(component.modal.confirm).toHaveBeenCalledTimes(2);
+    expect(component.message.success).toHaveBeenCalledOnceWith('同步成功');
+  });
+
+  for (const choice of ['cancel', 'overwrite']) {
+    it(`leaves the original binding and does not upload again after cancelling ${choice}`, async () => {
+      configureConflictChoices([choice], [false]);
+      component.cloudService.syncProject.and.returnValue(of(conflictResponse()));
+
+      await component.syncToCloud();
+
+      expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+      expect(component.modal.confirm).toHaveBeenCalledTimes(choice === 'overwrite' ? 1 : 0);
+      expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('existing-id');
+      expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).pending).toBeUndefined();
+      expect(files.has(`${root}/project.7z`)).toBeFalse();
+    });
+  }
+
+  it('creates a cloud project from a detached archive and binds it after the matching receipt', async () => {
+    configureConflictChoices(['save-new']);
+    component.cloudService.syncProject.and.callFake(request => request.pid
+      ? of(conflictResponse()) : from(committed(request)));
+
+    await component.syncToCloud();
+
+    const [original, copy] = component.cloudService.syncProject.calls.allArgs().map(([request]) => request);
+    expect(copy).toEqual(jasmine.objectContaining({
+      pid: undefined, expectedArchiveSha256: undefined, expectedArchiveRevision: undefined,
+    }));
+    expect(copy.projectData.cloudId).toBeUndefined();
+    expect(copy.requestId).not.toBe(original.requestId);
+    const [, stagedManifest] = window['fs'].writeFileSync.calls.allArgs()
+      .find(([path]) => path.startsWith('/tmp/aily-cloud-package-') && path.endsWith('/package.json'));
+    expect(JSON.parse(stagedManifest).cloudId).toBeUndefined();
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('created-id');
+    expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).binding.cloudId).toBe('created-id');
+    expect(component.message.success).toHaveBeenCalledOnceWith('已另存为新云工程');
+    expect(component.modal.confirm).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing cloud association and local files when the new cloud project exceeds the quota', async () => {
+    configureConflictChoices(['save-new']);
+    component.cloudService.syncProject.and.callFake(request => request.pid ? of(conflictResponse()) : of({
+      status: 403, errorCode: 'WORKSPACE_STORAGE_PROJECT_LIMIT_REACHED', data: { used: 12, limit: 12 },
+    }));
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(2);
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/云空间项目已达上限.*12\/12/));
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('existing-id');
+    const state = JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!);
+    expect(state.binding.archiveSha256).toBe(baseline);
+    expect(state.pending).toBeUndefined();
+    expect(files.get(`${root}/sketch/src/main.cpp`)).toBe('saved code');
+  });
+
+  it('recovers the original new-cloud-project receipt after a lost response without creating another copy', async () => {
+    configureConflictChoices(['save-new']);
+    let receipt: any;
+    let online = true;
+    component.cloudService.syncProject.and.callFake(request => request.pid ? of(conflictResponse()) : from((async () => {
+      receipt = await committed(request);
+      online = false;
+      throw { status: 0 };
+    })()));
+    component.cloudService.observeSyncRequest.and.callFake(requestId => online
+      ? of(receipt ?? { status: 200, data: { request_id: requestId, state: 'unconfirmed' } })
+      : throwError(() => ({ status: 0 })));
+
+    await component.syncToCloud();
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('existing-id');
+    expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).pending.resolution.kind).toBe('save-new');
+    online = true;
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('created-id');
+    expect(component.message.success).toHaveBeenCalledOnceWith('已另存为新云工程');
+  });
+
+  it('does not submit an overwrite if the local project changed while the dialog was open', async () => {
+    configureConflictChoices(['overwrite']);
+    component.modal.confirm.and.callFake(() => {
+      files.set(`${root}/sketch/src/main.cpp`, 'edited while confirming');
+      return { afterClose: of(true) };
+    });
+    component.cloudService.syncProject.and.returnValue(of(conflictResponse()));
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/本地工程在确认期间已修改/));
+  });
+
   it('does not open an older deferred download and reuses the newer copy after open fails', async () => {
     const first = new Subject();
     const second = { id: 'new', category: 'coder', name: 'latest' };

@@ -3,12 +3,21 @@ export interface CloudSyncBinding {
   archiveSha256: string;
 }
 
+export interface CloudSyncConflict extends CloudSyncBinding {
+  archiveRevision: string;
+}
+
+export type CloudSyncResolution =
+  | { kind: 'overwrite'; remote: CloudSyncConflict }
+  | { kind: 'save-new' };
+
 export interface CloudSyncPending {
   requestId: string;
   archiveSha256: string;
   category: 'blockly' | 'coder';
   projectData: Record<string, unknown>;
   before: string;
+  resolution?: CloudSyncResolution;
 }
 
 export interface CloudSyncState {
@@ -21,6 +30,14 @@ export interface CloudSyncState {
 
 export const archiveHash = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+
+export function readCloudSyncConflict(value: unknown, cloudId: string): CloudSyncConflict | undefined {
+  const data = value as Record<string, unknown> | null | undefined;
+  const projectId = data?.['project_id'];
+  if (!data || (typeof projectId !== 'string' && typeof projectId !== 'number') || String(projectId) !== cloudId
+    || !archiveHash(data['archive_sha256']) || !archiveHash(data['archive_revision'])) return;
+  return { cloudId, archiveSha256: data['archive_sha256'], archiveRevision: data['archive_revision'] };
+}
 
 export function projectCloudIdentity(projectPath: string): string {
   return JSON.stringify(window['fs'].captureProjectAttachment(projectPath));
@@ -48,6 +65,12 @@ export function readCloudSyncState(projectPath: string, identity: string, scope:
     || !state.pending.projectData || typeof state.pending.projectData !== 'object'
     || !['coder', 'blockly'].includes(state.pending.category))) {
     throw new Error('云工程原同步请求记录不完整，请核对云空间后再操作');
+  }
+  const resolution = state.pending?.resolution;
+  if (resolution !== undefined && (!state.binding || (resolution?.kind !== 'save-new'
+    && (resolution?.kind !== 'overwrite' || resolution.remote?.cloudId !== state.binding.cloudId
+      || !archiveHash(resolution.remote.archiveSha256) || !archiveHash(resolution.remote.archiveRevision))))) {
+    throw new Error('云工程冲突处理记录不完整，请核对云空间后再操作');
   }
   return state;
 }

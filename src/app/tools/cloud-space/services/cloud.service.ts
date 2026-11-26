@@ -72,6 +72,7 @@ export class CloudService {
     category?: 'blockly' | 'coder';
     requestId?: string;
     expectedArchiveSha256?: string;
+    expectedArchiveRevision?: string;
   }): Observable<any> {
     const formData = new FormData();
     if (params.category) formData.append('category', params.category);
@@ -81,6 +82,7 @@ export class CloudService {
     if (params.pid) formData.append('pid', params.pid);
     if (params.requestId) formData.append('requestId', params.requestId);
     if (params.expectedArchiveSha256) formData.append('expectedArchiveSha256', params.expectedArchiveSha256);
+    if (params.expectedArchiveRevision) formData.append('expectedArchiveRevision', params.expectedArchiveRevision);
     if (params.archive) {
       // 读取二进制文件（不指定编码参数，返回原始Buffer）
       const fileBuffer = params.archiveContents ?? window['fs'].readFileSync(params.archive, null);

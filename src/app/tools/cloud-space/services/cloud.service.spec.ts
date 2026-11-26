@@ -82,6 +82,7 @@ describe('CloudService Coder category isolation', () => {
     expect(url).toMatch(/\/cloud\/sync$/);
     expect(body.get('category')).toBe('coder');
     expect(body.get('pid')).toBe('cloud-id');
+    expect(body.has('expectedArchiveRevision')).toBeFalse();
     expect(JSON.parse(body.get('projectData'))).toEqual(projectData);
     expect(Object.keys(projectData)).toEqual(['name', 'type', 'entry']);
   });
@@ -91,6 +92,17 @@ describe('CloudService Coder category isolation', () => {
     const body: FormData = http.post.calls.mostRecent().args[1];
     expect(body.get('category')).toBe('blockly');
     expect(JSON.parse(body.get('projectData') as string)).toEqual({ name: 'blockly' });
+  });
+
+  it('sends the confirmed archive revision only on a requested overwrite', () => {
+    const archiveSha256 = 'a'.repeat(64);
+    const archiveRevision = 'b'.repeat(64);
+    service.syncProject({ pid: 'cloud-id', requestId: 'sync-request-id', projectData: { name: 'demo' },
+      expectedArchiveSha256: archiveSha256, expectedArchiveRevision: archiveRevision });
+    const body: FormData = http.post.calls.mostRecent().args[1];
+    expect(body.get('requestId')).toBe('sync-request-id');
+    expect(body.get('expectedArchiveSha256')).toBe(archiveSha256);
+    expect(body.get('expectedArchiveRevision')).toBe(archiveRevision);
   });
 
   it('retains binary archive content in the Coder multipart upload', () => {

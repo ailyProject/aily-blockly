@@ -26,9 +26,10 @@ import { TranslateService } from '@ngx-translate/core';
 import { ConfigService } from '@core/preferences/public-api';
 import { readSavedProjectProgram, type SavedProjectProgram } from '../../integrations/blockly/abs/abs-program-reader';
 import { publishProjectText } from '../../services/core/platform/project-file-publication';
+import { chooseCloudSyncConflictAction, confirmCloudSyncOverwrite } from './services/cloud-sync-conflict';
 import {
   archiveHash, cloudSourceStamp, projectCloudIdentity, readLocalCloudArchive,
-  readCloudSyncState, writeCloudSyncState, type CloudSyncState,
+  readCloudSyncConflict, readCloudSyncState, writeCloudSyncState, type CloudSyncState,
 } from './services/cloud-sync-state';
 
 
@@ -370,7 +371,7 @@ export class CloudSpaceComponent {
   }
 
   // 打包项目
-  async packageProject(prjPath: string): Promise<string | undefined> {
+  async packageProject(prjPath: string, { detachCloudProject = false } = {}): Promise<string | undefined> {
     // 判断路径是否存在
     if (!await window['fs'].existsSync(prjPath)) {
       this.message.error('当前未打开项目，无法同步');
@@ -451,6 +452,8 @@ export class CloudSpaceComponent {
       AILY_LOCAL_LIBRARY_SOURCES_KEY,
     );
     delete cloudPackageJson[AILY_LOCAL_LIBRARY_SOURCES_KEY];
+    if (detachCloudProject) delete cloudPackageJson.cloudId;
+    const replacePackage = hasLocalLibrarySources || detachCloudProject;
 
     // console.log('开始打包项目:', prjPath);
 
@@ -478,7 +481,7 @@ export class CloudSpaceComponent {
       ];
       packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * ${exclusions.map(value => `"${value}"`).join(' ')}`;
     }
-    if (hasLocalLibrarySources && isCoder) {
+    if (replacePackage && isCoder) {
       packCommand += ` "-x!package.json"`;
     }
     
@@ -494,7 +497,7 @@ export class CloudSpaceComponent {
       return;
     }
 
-    if (savedProgram || hasLocalLibrarySources) {
+    if (savedProgram || replacePackage) {
       const stagingDir = window['path'].join(
         window['os'].tmpdir(),
         `aily-cloud-package-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -578,9 +581,15 @@ export class CloudSpaceComponent {
 
   private async finishCloudSync(projectPath: string, state: CloudSyncState, result: any): Promise<void> {
     const pending = state.pending;
+    const savedAsNew = pending?.resolution?.kind === 'save-new';
+    const previousCloudId = state.binding?.cloudId;
+    const resultId = String(result?.id ?? '');
     if (!pending || result?.request_id !== pending.requestId || result.state !== 'committed'
-      || !result.id || result.archive_sha256 !== pending.archiveSha256
-      || (state.binding && String(result.id) !== state.binding.cloudId)) throw new Error('云端返回的同步回执无法确认');
+      || !resultId || (typeof result.id !== 'number' && typeof result.id !== 'string')
+      || result.archive_sha256 !== pending.archiveSha256
+      || (savedAsNew ? !previousCloudId || resultId === previousCloudId : previousCloudId && resultId !== previousCloudId)) {
+      throw new Error('云端返回的同步回执无法确认');
+    }
 
     const assertSource = () => {
       if (this.cloudScope() !== state.scope || projectCloudIdentity(projectPath) !== state.identity) {
@@ -594,21 +603,25 @@ export class CloudSpaceComponent {
     const packagePath = `${projectPath}/package.json`;
     assertSource();
     const original = this.electronService.readFile(packagePath), manifest = JSON.parse(original);
-    if (manifest.cloudId && String(manifest.cloudId) !== String(result.id)) throw new Error('本地工程已关联其他云项目');
+    const localCloudId = String(manifest.cloudId ?? '');
+    if (localCloudId !== resultId && localCloudId !== (previousCloudId ?? '')) {
+      throw new Error('本地工程的云端关联已变化');
+    }
     manifest.cloudId = result.id;
     const updated = JSON.stringify(manifest, null, 2);
     if (updated !== original) await publishProjectText(projectPath, 'package.json', updated, original, assertSource);
     assertSource();
     writeCloudSyncState(projectPath, { version: 1, identity: state.identity, scope: state.scope,
-      binding: { cloudId: String(result.id), archiveSha256: result.archive_sha256 } });
+      binding: { cloudId: resultId, archiveSha256: result.archive_sha256 } });
     if (this.projectService.currentProjectPath === projectPath) this.projectService.currentPackageData = manifest;
     try {
       await this.delete7zFile(`${projectPath}/project.7z`);
     } catch (error) {
       console.warn('云同步临时归档清理失败', error);
     }
-    if (changed) this.message.warning('上次提交已同步，工程还有新的本地修改，尚未同步');
-    else this.message.success('同步成功');
+    if (changed) this.message.warning(savedAsNew ? '已另存为新云工程，还有新的本地修改待同步'
+      : '上次提交已同步，工程还有新的本地修改，尚未同步');
+    else this.message.success(savedAsNew ? '已另存为新云工程' : '同步成功');
     await this.getCloudProjects();
   }
 
@@ -691,41 +704,89 @@ export class CloudSpaceComponent {
         retainArchive = true;
       }
       assertActive();
-      let response: any;
-      try {
-        response = await firstValueFrom(this.cloudService.syncProject({ pid: state.binding?.cloudId,
-          expectedArchiveSha256: state.binding?.archiveSha256, requestId: pending.requestId,
-          projectData: pending.projectData, archive: archivePath, archiveContents: archive.contents, category: pending.category }));
-      } catch (error) {
-        response = error?.error;
-        if (response?.status === undefined) {
-          response = { status: -1 };
+      while (true) {
+        const saveNew = pending.resolution?.kind === 'save-new';
+        const overwrite = pending.resolution?.kind === 'overwrite' ? pending.resolution.remote : undefined;
+        const cloudId = state.binding?.cloudId;
+        assertActive();
+        if (String(readManifest().cloudId ?? '') !== (cloudId ?? '')) throw new Error('当前工程的云端关联已变化');
+        let response: any;
+        try {
+          response = await firstValueFrom(this.cloudService.syncProject({
+            pid: saveNew ? undefined : cloudId,
+            expectedArchiveSha256: saveNew ? undefined : overwrite?.archiveSha256 ?? state.binding?.archiveSha256,
+            expectedArchiveRevision: overwrite?.archiveRevision,
+            requestId: pending.requestId, projectData: pending.projectData,
+            archive: archivePath, archiveContents: archive.contents, category: pending.category,
+          }));
+        } catch (error) {
+          response = error?.error;
         }
-      }
-      if (response?.status === 200) {
-        await this.finishCloudSync(projectPath, state, response.data);
-        return;
-      }
-      if (response?.status >= 400 && response.status < 500 && response.errorCode !== 'WORKSPACE_SYNC_REQUEST_RUNNING') {
+        if (response?.status === 200) {
+          await this.finishCloudSync(projectPath, state, response.data);
+          return;
+        }
+        if (!(response?.status >= 400 && response.status < 500) || response.errorCode === 'WORKSPACE_SYNC_REQUEST_RUNNING') {
+          // A transport failure only observes the original request.
+          const observed = await this.observeCloudSync(pending.requestId).catch(() => undefined);
+          if (observed?.state === 'committed') await this.finishCloudSync(projectPath, state, observed);
+          else this.message.warning('上次同步结果待确认，已保留原请求。可再次点同步，先检查原结果。');
+          return;
+        }
+
         if (this.cloudScope() === scope && projectCloudIdentity(projectPath) === identity) {
           delete state.pending;
           writeCloudSyncState(projectPath, state);
           retainArchive = false;
         }
-        throw new Error(response.errorCode === 'WORKSPACE_PROJECT_SOURCE_CHANGED'
-          ? '云端工程已更新。本地修改已保留，请重新下载云端版本进行比较，或另存为新工程。'
-          : response.errorMessage || response.messages || '云端拒绝此同步');
+        if (saveNew && response.errorCode === 'WORKSPACE_STORAGE_PROJECT_LIMIT_REACHED') {
+          const { used, limit } = response.data ?? {};
+          const usage = Number.isInteger(used) && Number.isInteger(limit) && limit >= 0 ? `（已使用 ${used}/${limit} 个）` : '';
+          throw new Error(`云空间项目已达上限${usage}，无法另存为新云工程。本地修改已保留。`);
+        }
+        if (response.errorCode !== 'WORKSPACE_PROJECT_SOURCE_CHANGED') {
+          throw new Error(response.errorMessage || response.messages || '云端拒绝此同步');
+        }
+        const conflict = !saveNew && cloudId ? readCloudSyncConflict(response.data, cloudId) : undefined;
+        if (!conflict) {
+          throw new Error(response.errorMessage || '云端工程已更新，本地修改已保留。请重新下载云端版本进行比较，再同步。');
+        }
+        assertActive();
+        const action = await chooseCloudSyncConflictAction(this.modal, !!overwrite);
+        if (action === 'cancel') return;
+        assertActive();
+        if (action === 'overwrite' && !await confirmCloudSyncOverwrite(this.modal)) return;
+
+        const assertSnapshot = async () => {
+          const unsaved = await this.projectService.hasUnsavedChanges();
+          assertActive();
+          if (unsaved || cloudSourceStamp(projectPath, pending.category) !== pending.before) {
+            throw new Error('本地工程在确认期间已修改，请重新同步。');
+          }
+        };
+        await assertSnapshot();
+        const projectData = { ...pending.projectData };
+        if (action === 'save-new') {
+          delete projectData['cloudId'];
+          if (!await this.packageProject(projectPath, { detachCloudProject: true })) return;
+          archive = await readLocalCloudArchive(archivePath);
+        } else if ((await readLocalCloudArchive(archivePath)).sha256 !== archive.sha256) {
+          throw new Error('待同步的本地归档已变化，请重新同步。');
+        }
+        await assertSnapshot();
+        pending = {
+          ...pending, requestId: crypto.randomUUID(), archiveSha256: archive.sha256, projectData,
+          resolution: action === 'overwrite' ? { kind: 'overwrite', remote: conflict } : { kind: 'save-new' },
+        };
+        state.pending = pending;
+        writeCloudSyncState(projectPath, state);
+        retainArchive = true;
       }
-      // Transport failure never sends a second POST from the same click.
-      const observed = await this.observeCloudSync(pending.requestId).catch(() => undefined);
-      if (observed?.state === 'committed') await this.finishCloudSync(projectPath, state, observed);
-      else this.message.warning('上次同步结果待确认，已保留原请求。可再次点同步，先检查原结果。');
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       if (retainArchive) this.message.warning(`上次同步结果待处理：${detail}。已保留原请求。`);
       else this.message.error(`同步未完成：${detail}`);
     } finally {
-      this.isSyncing = false;
       if (archiveOwned && !retainArchive) {
         try {
           if (projectCloudIdentity(projectPath) === identity) await this.delete7zFile(archivePath);
@@ -733,6 +794,7 @@ export class CloudSpaceComponent {
           console.warn('云同步临时归档清理失败', error);
         }
       }
+      this.isSyncing = false;
     }
   }
 
