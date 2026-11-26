@@ -184,12 +184,49 @@ export class UploaderService {
     }
   }
 
-  async upload(projectPath = this.projectService.currentProjectPath, port?: string, firmware?: FirmwareUploadOptions) {
+  async uploadManual() {
+    const project = this.projectService.currentProjectPath;
+    const port = this.serialService.currentPort;
+    const selected = this.serialService.currentPortInfo;
+    const record = window['uploader']?.manualReceipt;
+    if (!record || !project || !port || this.projectService.isAilyCodeProject(project) || this.isPythonProject()) {
+      return this.upload();
+    }
+
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    const device = {
+      name: port, type: selected?.type, serialNumber: selected?.serialNumber,
+      vendorId: selected?.vendorId, productId: selected?.productId, pnpId: selected?.pnpId,
+    };
+    const request = await record({ action: 'begin', project, device }).catch(() => null);
+    const finish = (result: Record<string, unknown>) => request
+      ? record({ action: 'finish', project, request, result }).catch(() => undefined)
+      : undefined;
+    const current = () => {
+      const active = this.serialService.currentPortInfo;
+      return projectCurrent() && this.serialService.currentPort === port && active?.serialNumber === device.serialNumber
+        && active?.vendorId === device.vendorId && active?.productId === device.productId && active?.pnpId === device.pnpId;
+    };
+    try {
+      const result = await this.upload(project, port, undefined, current);
+      await finish(result);
+      return result;
+    } catch (error: any) {
+      await finish({ state: error?.state ?? 'error', notStarted: error?.uploadStarted === false });
+      throw error;
+    }
+  }
+
+  async upload(projectPath = this.projectService.currentProjectPath, port?: string, firmware?: FirmwareUploadOptions,
+    manualTargetCurrent?: () => boolean) {
     if (this.configService.isCoderProduct() && !await this.projectService.ensureCoderBoardSelected(projectPath)) {
       return { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' };
     }
     const projectCurrent = firmware ? this.projectService.captureCurrentProjectGuard() : undefined;
     const assertUploadCurrent = () => {
+      if (manualTargetCurrent && !manualTargetCurrent()) {
+        throw Object.assign(new Error(this.translate.instant('SERIAL.SELECT_PORT_FIRST')), { uploadStarted: false });
+      }
       if (firmware && (this.projectService.isAilyCodeProject(projectPath) || this.isPythonProject()
         || !projectCurrent?.() || this.projectService.currentProjectPath !== projectPath
         || this.serialService.currentPort !== port)) {

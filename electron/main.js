@@ -31,6 +31,8 @@ const { createProjectCrashResume, readProjectCreateRecovery, readProjectNavigati
 const { observeProjectWorkspaceMigration, replacePreparedWorkspaceMigration } = require('./project-workspace-mode');
 const { startCliBridge } = require("./cli-bridge");
 const { routeLiveOperationProject, routeProjectReload, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
+const { createProjectUploadReceipts } = require('./project-upload-receipts');
+let projectUploadReceipts;
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
 const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
@@ -1221,6 +1223,19 @@ async function handleCliBridgeCommand(action, payload, commandSignal) {
     }
     case 'blockly-live-operation': {
       const operation = payload && payload.operation;
+      if (operation === 'project_upload_status') {
+        projectUploadReceipts ??= createProjectUploadReceipts(process.env.AILY_APPDATA_PATH);
+        return projectUploadReceipts.status(requestedPath, payload?.params);
+      }
+      if (operation === 'project_manual_upload_latest') {
+        try {
+          if (!requestedPath || projectLock.normalizeProjectPathLoose(requestedPath)
+            !== projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow())) return { ok: false, operation };
+          projectUploadReceipts ??= createProjectUploadReceipts(process.env.AILY_APPDATA_PATH);
+          return projectUploadReceipts.latestManual(path.resolve(requestedPath), payload?.params)
+            ?? { ok: false, operation };
+        } catch { return { ok: false, operation }; }
+      }
       if (operation === 'project_repair_inspect' || operation === 'project_repair_resume' || operation === 'project_repair_handoff_prepare') {
         repairContinuationController ??= createRepairContinuationController({ appDataPath: process.env.AILY_APPDATA_PATH,
           execPath: process.execPath, appPath: app.getAppPath(), serve,
@@ -1306,14 +1321,16 @@ async function handleCliBridgeCommand(action, payload, commandSignal) {
         return { ok: false, operation, commandDispatched: false, code: 'PROJECT_SAVE_RECEIPT_INVALID' };
       }
       const route = routeLiveOperationProject(prepareSave || preparedBoardSave ? saveRequest.operation : operation,
-        requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params);
+        requestedPath, getOpenedProjectPathFromWindow(), path.resolve, payload?.params,
+        project => projectLock.captureHeldView(project)?.attachment);
       const dir = route.path;
       if (saveWriterEnabled && operation === 'blocks_set_state' && route.originalPublication && !route.originalAdmissionAttachment)
         return { ok: false, operation, commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE' };
       let nativeSaveWriter = suppliedSaveWriter, saveLifecycle;
       if (prepareSave || originalSave && saveWriterEnabled && !suppliedSaveWriter) {
         if (!route.originalAdmissionAttachment || originalSave && saveRequest.operation !== operation) {
-          return { ok: false, operation, commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE' };
+          return { ok: false, operation, commandDispatched: false, code: 'PROJECT_ADMISSION_CONTEXT_STALE',
+            message: 'The original project directory no longer matches the open view. Restore or reopen the original directory before saving.' };
         }
         const prepared = await requestMainWindow(
           'cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
@@ -1418,13 +1435,14 @@ async function handleCliBridgeCommand(action, payload, commandSignal) {
       const onDispatch = operation === 'project_create' ? generation => retainDispatchedProjectCreate(payload, generation)
         : durableNavigation || navigationRequest ? dispatchNavigation
         : route.originalPublication ? () => { rendererSendStarted = true; } : undefined;
-      const result = await requestMainWindow(
+      const dispatch = () => requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
         {
           path: dir || '',
           operation,
-          params: cliParams,
+          params: operation === 'project_upload' && cliParams?.uploadRequest
+            ? Object.fromEntries(Object.entries(cliParams).filter(([name]) => name !== 'uploadRequest')) : cliParams,
           ...(nativeSaveWriter ? { nativeSaveWriter } : {}),
           ...(originalAdmissionAttachment ? { originalAdmissionAttachment } : {}),
           ...(payload.lifecycle !== undefined || saveLifecycle ? { lifecycle: payload.lifecycle ?? saveLifecycle } : {}),
@@ -1434,6 +1452,10 @@ async function handleCliBridgeCommand(action, payload, commandSignal) {
         releasePreparation,
         onDispatch,
       ).finally(() => { if (notifyNavigationStop) commandSignal?.removeEventListener('abort', notifyNavigationStop); });
+      const result = operation === 'project_upload' && cliParams?.uploadRequest !== undefined
+        ? await (projectUploadReceipts ??= createProjectUploadReceipts(process.env.AILY_APPDATA_PATH))
+          .run(dir, cliParams.uploadRequest, cliParams, dispatch)
+        : await dispatch();
       if (route.originalPublication && !rendererSendStarted && result?.ok === false)
         return { ...result, commandDispatched: false };
       if (durableNavigation && result?.navigationReceipt) {
@@ -3734,6 +3756,20 @@ ipcMain.handle('project-commands-stop', async (event, data) => {
     killOwnerProjectNpmProcesses(event.sender, scope.projectPath, scope.projectSessionId),
   ]);
   return { ok: stopped.every(Boolean) };
+});
+
+ipcMain.handle('project-manual-upload-receipt', (event, input) => {
+  const owner = getCurrentRendererOwner(event.sender);
+  if (!owner || event.senderFrame !== mainWindow.webContents.mainFrame
+    || typeof input?.project !== 'string' || !path.isAbsolute(input.project)) return null;
+  const project = path.resolve(input.project);
+  projectUploadReceipts ??= createProjectUploadReceipts(process.env.AILY_APPDATA_PATH);
+  if (input.action === 'begin'
+    && projectLock.normalizeProjectPathLoose(project) === projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow()))
+    return projectUploadReceipts.beginManual(project, input.device, owner.generation);
+  if (input.action === 'finish')
+    projectUploadReceipts.finishManual(project, input.request, input.result, owner.generation);
+  return null;
 });
 
 ipcMain.handle("project-lock-try", (event, data) => {

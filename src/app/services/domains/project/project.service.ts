@@ -630,6 +630,7 @@ export class ProjectService {
   async discardLibraryChanges(projectPath = this.currentProjectPath, reconcile = false, historyRestored = false,
     allowInstallFailure = false): Promise<string | undefined> {
     if (!projectPath || !window['libraryDependencies']) return;
+    if (projectPath === this.currentProjectPath && !this.projectDirectoryMatches(projectPath, this.activeProjectDirectory)) return;
     const restoreCoderSources = !reconcile && this.hasCachedLibraryChanges(projectPath)
       && this.getProjectMode(projectPath) === 'coder';
     const status = await window['libraryDependencies'].discard(projectPath, {
@@ -671,6 +672,8 @@ export class ProjectService {
   }
 
   private async discardDepartingBlocklyProject(projectPath: string, reconcile = false, recovery?: 'discard' | 'reload'): Promise<boolean> {
+    if (projectPath === this.currentProjectPath && !this.projectDirectoryMatches(projectPath, this.activeProjectDirectory))
+      return this.retireBlocklyEditor(projectPath);
     const discard = recovery && await this.application.prepareBlocklyRecoveryDiscard?.(projectPath, recovery);
     try {
       if (!(await this.retireBlocklyEditor(projectPath))) return false;
@@ -1088,6 +1091,7 @@ export class ProjectService {
   private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease;
     startupRestore?: string; startupPreparation?: AbortController; navigation?: ProjectNavigationTransition } | null = null;
   private activeProjectViewReservation?: ProjectViewReservation;
+  private activeProjectDirectory?: ProjectStorageAttachment;
   private projectNavigationIntentRevision = 0;
   private closedRestartSession?: { project: string; sessionId: string };
   private readonly projectLifecycle = new ProjectLifecycleGate();
@@ -1128,6 +1132,11 @@ export class ProjectService {
   }
 
   set currentProjectPath(path: string) {
+    this.setActiveProjectPath(path, path === this.currentProjectPath ? this.activeProjectDirectory : undefined);
+  }
+
+  private setActiveProjectPath(path: string, attachment?: ProjectStorageAttachment): void {
+    this.activeProjectDirectory = attachment;
     if (this.boardSwitchNotice && (this.boardSwitchNotice.projectPath !== path || !this.boardSwitchLifecycle)) {
       this.clearBoardSwitchMessage();
       this.boardSwitchNotice = undefined;
@@ -1372,13 +1381,31 @@ export class ProjectService {
   }
 
   /** A delayed UI answer belongs to one activation, not just its reusable path. */
-  captureCurrentProjectGuard(): () => boolean {
+  captureCurrentProjectGuard(requireOriginalDirectory = true): () => boolean {
     const path = this.currentProjectPath;
+    const attachment = this.activeProjectDirectory;
     const session = this.dependencyLifecycleState?.get(path);
     const aborted = session?.signal.aborted;
     return () => this.currentProjectPath === path
+      && (!requireOriginalDirectory || this.projectDirectoryMatches(path, attachment))
       && this.dependencyLifecycleState?.get(path) === session
       && session?.signal.aborted === aborted;
+  }
+
+  private projectDirectoryMatches(path: string, attachment?: ProjectStorageAttachment): boolean {
+    if (!attachment) return true;
+    try { return sameRecoveryAttachment(attachment, window['fs']?.captureProjectAttachment?.(path)); }
+    catch { return false; }
+  }
+
+  private assertProjectDirectory(path: string, attachment?: ProjectStorageAttachment): void {
+    if (!this.projectDirectoryMatches(path, attachment))
+      throw Object.assign(new Error(this.translate.instant('PROJECT.DIRECTORY_REPLACED')),
+        { code: 'PROJECT_VIEW_ATTACHMENT_CHANGED' });
+  }
+
+  assertActiveProjectDirectory(path = this.currentProjectPath): void {
+    if (path === this.currentProjectPath) this.assertProjectDirectory(path, this.activeProjectDirectory);
   }
 
   assertProjectDependencySession(session: ProjectDependencySession): void {
@@ -2325,6 +2352,7 @@ export class ProjectService {
 
   async acknowledgeBlocklyRecoveryDiscard(path = this.currentProjectPath): Promise<void> {
     if (!path || !this.isSameProjectPath(path, this.currentProjectPath) || this.getProjectMode(path) === 'coder') return;
+    if (!this.projectDirectoryMatches(path, this.activeProjectDirectory)) return;
     await this.application.acknowledgeBlocklyRecoveryDiscard?.(path);
   }
 
@@ -2584,6 +2612,7 @@ export class ProjectService {
       ? { requestId: options.navigation!.requestId, rendererGeneration, sourceProject: previousProjectPath, projectPath }
       : undefined;
     let promoted = false;
+    let targetDirectory: ProjectStorageAttachment | undefined;
     const sourceView = this.projectViewRevision;
     const assertSourceView = () => {
       navigation?.assertCurrent();
@@ -2634,6 +2663,7 @@ export class ProjectService {
           await this.resolveProjectLockConflict(projectPath, r, requestCopy);
           return false;
         }
+        targetDirectory = r.attachment;
         if (creation || startup || prepareBeforeHandoff) {
           ownsNewTargetLock = !r.alreadyHeld;
           targetViewToken = r.viewToken;
@@ -2647,6 +2677,7 @@ export class ProjectService {
         const check = () => {
           creation?.assertCurrent();
           assertSourceView();
+          this.assertProjectDirectory(projectPath, targetDirectory);
           this.assertProjectDependencySession(session);
         };
         const abort = () => {
@@ -2728,6 +2759,7 @@ export class ProjectService {
           ? await this.observeProjectViewPromotion(reservation)
           : await window['projectLock'].tryAcquire(projectPath);
         if (!selected.ok || reservation && selected.selected !== true) throw projectViewOpenError(projectPath, selected);
+        this.assertProjectDirectory(projectPath, targetDirectory);
         assertSourceView();
         if (reservation) this.activeProjectViewReservation = reservation;
         promoted = true;
@@ -2769,7 +2801,11 @@ export class ProjectService {
       this.assertProjectDependencySession(session);
     };
     try {
-      const guard = () => { this.assertProjectDependencySession(session); assertStartup(); };
+      const guard = () => {
+        this.assertProjectDirectory(projectPath, targetDirectory);
+        this.assertProjectDependencySession(session);
+        assertStartup();
+      };
       const preparing = () => { guard(); recovery?.assertCurrent(); };
       if (!preparedSession && abiIsExist) {
         preparing();
@@ -2823,7 +2859,8 @@ export class ProjectService {
     }
     if (creation || startup) this.beginBlocklyProjectLoad(projectPath);
     this.closedRestartSession = undefined;
-    this.currentProjectPath = projectPath;
+    this.assertProjectDirectory(projectPath, targetDirectory);
+    this.setActiveProjectPath(projectPath, targetDirectory);
     await options.onViewActivated?.(projectPath, this.projectViewRevision);
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
     this.projectActivationSubject.next({
@@ -2991,6 +3028,9 @@ export class ProjectService {
 
   private async saveWithPresentation(path: string, publicationRequest: ProjectSaveRequest | undefined, background: boolean): ReturnType<ProjectService['save']> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
+    try { this.assertActiveProjectDirectory(path); }
+    catch (error) { return { success: false, path, code: (error as { code?: string }).code,
+      error: error instanceof Error ? error.message : String(error) }; }
     if (this.getProjectMode(path) !== 'coder') {
       try { requireProjectProgramPublication(); }
       catch (error) { return { success: false, path, code: (error as any)?.code,
@@ -3041,7 +3081,9 @@ export class ProjectService {
     if (current() && !background) this.stateSubject.next('saving');
     let outcome: Partial<ProjectSaveOutcome> = {};
     try {
+      this.assertActiveProjectDirectory(path);
       if (await this.prepareResolvedLibraryChangesForSave(path) && this.getProjectMode(path) !== 'coder') await this.ensureBlocklyLibraryRuntimeReady(path);
+      this.assertActiveProjectDirectory(path);
       const result = background ? await this.application.dispatchProjectSave(path, 0, request, true)
         : request ? await this.application.dispatchProjectSave(path, 0, request)
         : await this.application.dispatchProjectSave(path, 0);
@@ -3050,7 +3092,7 @@ export class ProjectService {
         typeof result?.code === 'string' ? { code: result.code } : {});
       // Saving an inactive Coder tab is valid. Its acknowledgement must not
       // change a replacement project's status or read that project's manifest.
-      if (current()) {
+      if (current() && this.projectDirectoryMatches(path, this.activeProjectDirectory)) {
         const manifest = await this.getPackageJson();
         if (current()) {
           this.currentPackageData = manifest;
@@ -3430,6 +3472,7 @@ export class ProjectService {
       if (this.currentProjectPath !== sourceProjectPath || projectDataRuntime.getSessionToken() !== session) {
         throw new Error('当前项目会话已切换，请重新执行另存为');
       }
+      this.assertActiveProjectDirectory(sourceProjectPath);
       if (runtimeSnapshot && !this.hasBlocklyRuntimeRecovery(sourceProjectPath)) {
         throw Object.assign(new Error('The retained full runtime snapshot changed; no partial-canvas fallback is allowed.'),
           { code: 'PROJECT_RECOVERY_SOURCE_CHANGED' });
@@ -4231,6 +4274,7 @@ export class ProjectService {
     // them from the activation, even when a broken manifest cannot report a mode.
     // A loaded workspace's serialization error still needs the user's decision.
     const path = this.currentProjectPath;
+    this.assertActiveProjectDirectory(path);
     const status = this.getBlocklyProjectLoadStatus(path);
     if (!status.ready && (this.stateSubject.value === 'loading'
       && this.isSameProjectPath(path, this.loadingBlocklyProjectPath)

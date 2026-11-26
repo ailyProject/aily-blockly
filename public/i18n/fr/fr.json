@@ -1048,6 +1048,7 @@
             "PREPARING_DATA": "Préparation des données...",
             "PROCESS_ERROR": "Une erreur est survenue pendant le téléversement",
             "PROCESS_EXITED_WITH_CODE": "Le processus de téléversement s’est terminé de façon inattendue, code de sortie: {{code}}",
+            "SERIAL_PORT_BUSY": "Le port série {{port}} est utilisé. Fermez le moniteur série ou le logiciel qui l’utilise, puis relancez le téléversement.",
             "PROCESS_SIGNAL_TERMINATED": "Le processus de téléversement a été arrêté par le signal: {{signal}}",
             "PROCESS_START_FAILED": "Impossible de démarrer le processus de téléversement",
             "RESETTING_DEVICE": "Réinitialisation de l’appareil...",

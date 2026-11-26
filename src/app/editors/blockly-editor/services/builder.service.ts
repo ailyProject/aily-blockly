@@ -72,6 +72,7 @@ export class _BuilderService {
   private isolatedBuilds(): boolean { return window['builder']?.isolatedBuildExecutionVersion === 1; }
 
   private async prepareExecution(config: any, workspace?: PreparedBlocklyCode['sourceWorkspace'], operation: 'compile' | 'preprocess' = 'compile'): Promise<any> {
+    this.projectService.assertActiveProjectDirectory?.(config.currentProjectPath);
     return this.isolatedBuilds() ? window['builder'].prepareBuildExecution(config, workspace, operation) : config;
   }
 

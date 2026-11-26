@@ -748,6 +748,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   uploader: {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
+    manualReceipt: (input) => ipcRenderer.invoke('project-manual-upload-receipt', input),
   },
   fs: {
     projectRecoveryReceipts: recoveryReceipts,

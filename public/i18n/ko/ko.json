@@ -1048,6 +1048,7 @@
             "PREPARING_DATA": "데이터 준비 중...",
             "PROCESS_ERROR": "업로드 중 오류가 발생했습니다",
             "PROCESS_EXITED_WITH_CODE": "업로드 프로세스가 예기치 않게 종료되었습니다. 종료 코드: {{code}}",
+            "SERIAL_PORT_BUSY": "직렬 포트 {{port}}을(를) 사용 중입니다. 시리얼 모니터나 해당 포트를 사용하는 앱을 닫은 후 다시 업로드하세요.",
             "PROCESS_SIGNAL_TERMINATED": "업로드 프로세스가 신호로 종료되었습니다: {{signal}}",
             "PROCESS_START_FAILED": "업로드 프로세스를 시작하지 못했습니다",
             "RESETTING_DEVICE": "장치 재설정 중...",

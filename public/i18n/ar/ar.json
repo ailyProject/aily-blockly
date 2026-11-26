@@ -1048,6 +1048,7 @@
             "PREPARING_DATA": "جاري تجهيز البيانات...",
             "PROCESS_ERROR": "حدث خطأ أثناء الرفع",
             "PROCESS_EXITED_WITH_CODE": "خرجت عملية الرفع بشكل غير متوقع، رمز الخروج: {{code}}",
+            "SERIAL_PORT_BUSY": "المنفذ التسلسلي {{port}} قيد الاستخدام. أغلق مراقب المنفذ التسلسلي أو التطبيق الذي يستخدمه، ثم أعد الرفع.",
             "PROCESS_SIGNAL_TERMINATED": "تم إنهاء عملية الرفع بإشارة: {{signal}}",
             "PROCESS_START_FAILED": "فشل بدء عملية الرفع",
             "RESETTING_DEVICE": "جاري إعادة ضبط الجهاز...",

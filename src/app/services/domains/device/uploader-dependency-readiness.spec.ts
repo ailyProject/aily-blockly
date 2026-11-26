@@ -103,3 +103,62 @@ describe('Coder upload dependency preflight', () => {
     expect(uploader.uploadCurrentProject).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('manual Blockly upload receipt', () => {
+  let uploader: any;
+  let bridge: any;
+  const request = { version: 1, requestId: 'd839ad93-3b31-4701-a72f-87bc9e5e6d32' };
+
+  beforeEach(() => {
+    bridge = window['uploader'];
+    uploader = Object.assign(Object.create(UploaderService.prototype), {
+      projectService: {
+        currentProjectPath: '/project',
+        isAilyCodeProject: () => false,
+        captureCurrentProjectGuard: () => () => true,
+        beginCoderOperation: () => () => {},
+      },
+      serialService: { currentPort: 'TEST', currentPortInfo: { type: 'serial', serialNumber: 'original' } },
+      translate: { instant: (key: string) => key },
+      isPythonProject: () => false,
+      configService: { isCoderProduct: () => false },
+      uploadCurrentProject: jasmine.createSpy('upload').and.resolveTo({ state: 'done', firmwareBuildRequestId: 'build-5' }),
+    });
+  });
+
+  afterEach(() => { window['uploader'] = bridge; });
+
+  it('begins a receipt before dispatch and confirms exactly what the uploader returned', async () => {
+    const stages: string[] = [];
+    const manualReceipt = jasmine.createSpy('manual receipt').and.callFake(async (input: any) => {
+      stages.push(input.action);
+      return request;
+    });
+    uploader.uploadCurrentProject.and.callFake(async () => {
+      stages.push('upload');
+      return { state: 'done', firmwareBuildRequestId: 'build-5' };
+    });
+    window['uploader'] = { manualReceipt };
+    await uploader.uploadManual();
+    expect(manualReceipt.calls.first().args[0]).toEqual(jasmine.objectContaining({
+      action: 'begin', project: '/project', device: jasmine.objectContaining({ name: 'TEST', serialNumber: 'original' }),
+    }));
+    expect(stages).toEqual(['begin', 'upload', 'finish']);
+    expect(manualReceipt.calls.mostRecent().args[0]).toEqual({
+      action: 'finish', project: '/project', request, result: { state: 'done', firmwareBuildRequestId: 'build-5' },
+    });
+  });
+
+  it('does not dispatch when another device with the same port name replaces the selected board', async () => {
+    const manualReceipt = jasmine.createSpy('manual receipt').and.callFake(async (input: any) => {
+      if (input.action === 'begin') uploader.serialService.currentPortInfo = { type: 'serial', serialNumber: 'replacement' };
+      return request;
+    });
+    window['uploader'] = { manualReceipt };
+    await expectAsync(uploader.uploadManual()).toBeRejected();
+    expect(uploader.uploadCurrentProject).not.toHaveBeenCalled();
+    expect(manualReceipt.calls.mostRecent().args[0]).toEqual({
+      action: 'finish', project: '/project', request, result: { state: 'error', notStarted: true },
+    });
+  });
+});

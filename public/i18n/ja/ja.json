@@ -1048,6 +1048,7 @@
             "PREPARING_DATA": "データを準備中...",
             "PROCESS_ERROR": "アップロード中にエラーが発生しました",
             "PROCESS_EXITED_WITH_CODE": "アップロードプロセスが予期せず終了しました。終了コード: {{code}}",
+            "SERIAL_PORT_BUSY": "シリアルポート {{port}} は使用中です。シリアルモニターまたはポートを使用しているアプリを閉じてから、もう一度アップロードしてください。",
             "PROCESS_SIGNAL_TERMINATED": "アップロードプロセスはシグナルで終了しました: {{signal}}",
             "PROCESS_START_FAILED": "アップロードプロセスを開始できませんでした",
             "RESETTING_DEVICE": "デバイスをリセット中...",

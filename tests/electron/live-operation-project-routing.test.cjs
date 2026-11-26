@@ -6,6 +6,7 @@ const test = require('node:test');
 const { routeLiveOperationProject, routeProjectReload } = require('../../electron/live-operation-project-routing');
 const { rootAttachment } = require('../../electron/project-file-lock-owner');
 const { mainRouteFixture } = require('./fixtures/bootstrap-host-source.cjs');
+const loadNativeLock = require('./fixtures/project-view-locks.cjs');
 
 for (const operation of ['project_fork_status', 'project_recovery_open', 'project_save_status']) {
   test(`${operation} keeps params.project authority after the active view has changed`, () => {
@@ -144,6 +145,35 @@ test('versioned publication routing captures only the current physical project a
   assert.equal(routeLiveOperationProject('abs_apply', a, a, path.resolve, { version: 1 }).originalAdmissionAttachment, undefined);
   assert.equal(routeLiveOperationProject('blocks_set_state', a, a, path.resolve, { version: 2, action: 'inspect' }).originalAdmissionAttachment, undefined);
   assert.equal(routeLiveOperationProject('project_build', a, a, path.resolve, { version: 2 }).originalAdmissionAttachment, undefined);
+});
+
+test('an active path now occupied by another directory cannot receive a save preparation', async t => {
+  const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'aily-view-replacement-')));
+  const project = path.join(parent, 'project'), moved = path.join(parent, 'original');
+  fs.mkdirSync(project);
+  const lock = loadNativeLock();
+  t.after(() => { lock.releaseAll(); fs.rmSync(parent, { recursive: true, force: true }); });
+  const opened = lock.tryAcquireLock(project);
+  assert.equal(opened.ok, true);
+  assert.deepEqual(opened.attachment, rootAttachment(project));
+  assert.deepEqual(lock.captureHeldView(project).attachment, opened.attachment);
+  const host = mainRouteFixture(project, async () => ({ ok: true, saveWriter: {} }), lock);
+  const request = { operation: 'project_save', path: project, params: {
+    saveRequest: { version: 2, requestId: 'pub2-00000000-0000-4000-8000-000000000abc', operation: 'project_save' },
+  } };
+  fs.renameSync(project, moved);
+  fs.mkdirSync(project);
+  fs.writeFileSync(path.join(project, 'project.abi'), 'replacement');
+  const refused = await host.handleCliBridgeCommand('blockly-live-operation', request);
+  assert.equal(refused.code, 'PROJECT_ADMISSION_CONTEXT_STALE');
+  assert.equal(refused.commandDispatched, false);
+  assert.equal(host.calls.length, 0);
+  assert.deepEqual(fs.readdirSync(project), ['project.abi']);
+  assert.equal(fs.readFileSync(path.join(project, 'project.abi'), 'utf8'), 'replacement');
+  fs.renameSync(project, path.join(parent, 'replacement'));
+  fs.renameSync(moved, project);
+  assert.equal((await host.handleCliBridgeCommand('blockly-live-operation', request)).ok, true);
+  assert.deepEqual(host.calls[0].originalAdmissionAttachment, opened.attachment);
 });
 
 test('only a renderer command stopped before sending its original publication records non-dispatch', async () => {

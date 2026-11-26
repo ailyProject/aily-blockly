@@ -20,6 +20,7 @@ describe('Project command lifecycle during close', () => {
     }) };
     service = Object.create(ProjectService.prototype);
     service.projectLifecycle = new ProjectLifecycleGate();
+    service.projectNavigationIntentRevision = 0;
     service.currentProjectPathSubject = new BehaviorSubject('/active');
     service.coderProjectsSubject = new BehaviorSubject([]);
     service.coderWorkspaceSubject = new BehaviorSubject(null);

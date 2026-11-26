@@ -751,6 +751,10 @@ export class _UploaderService {
           await assertFirmwareSourceCurrent();
           assertContext();
         }
+        selectedFirmware ??= {
+          firmwareBackend: cloud ? 'cloud' : 'local',
+          ...(verifiedExecution?.buildRequestId ? { firmwareBuildRequestId: verifiedExecution.buildRequestId } : {}),
+        };
 
         // 检查是否在编译期间被取消
         if (this.cancelled) {
@@ -1451,14 +1455,20 @@ export class _UploaderService {
 
               this._builderService.isUploading = false;
 
-              this.handleUploadError(this.uploadT('PROCESS_ERROR'), this.uploadT('FAILED_TITLE'), fullErrorText || errorText || this.uploadT('PROCESS_ERROR'));
-              this.workflowService.finishUpload(false, errorText);
+              const serialBusy = capturedSerialPort && (!capturedPortInfo?.type || capturedPortInfo.type === 'serial')
+                && /(?:could not|cannot|failed to|unable to) open[^\r\n]*(?:resource busy|\bEBUSY\b|already in use)/i.test(fullErrorText);
+              const summary = serialBusy ? this.uploadT('SERIAL_PORT_BUSY', { port: capturedSerialPort }) : undefined;
+              const failureText = summary || errorText || this.uploadT('PROCESS_ERROR');
+              this.handleUploadError(summary || this.uploadT('PROCESS_ERROR'), this.uploadT('FAILED_TITLE'),
+                fullErrorText || failureText);
+              this.workflowService.finishUpload(false, failureText);
 
               this.uploadPromiseReject = null;
 
               reject({
                 state: 'error',
-                text: errorText || this.uploadT('PROCESS_ERROR'),
+                text: failureText,
+                ...(serialBusy ? { code: 'SERIAL_PORT_BUSY' } : {}),
                 ...(resourceRecovery ? { resourceRecovery } : {}),
               });
             } else if (this.uploadCompleted) {

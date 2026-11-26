@@ -1048,6 +1048,7 @@
             "PREPARING_DATA": "Preparando dados...",
             "PROCESS_ERROR": "Ocorreu um erro durante o upload",
             "PROCESS_EXITED_WITH_CODE": "O processo de upload terminou inesperadamente, código de saída: {{code}}",
+            "SERIAL_PORT_BUSY": "A porta serial {{port}} está em uso. Feche o monitor serial ou o aplicativo que a está usando e tente carregar o programa novamente.",
             "PROCESS_SIGNAL_TERMINATED": "O processo de upload foi encerrado pelo sinal: {{signal}}",
             "PROCESS_START_FAILED": "Falha ao iniciar o processo de upload",
             "RESETTING_DEVICE": "Reiniciando dispositivo...",

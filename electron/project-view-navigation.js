@@ -40,6 +40,7 @@ function createProjectViewNavigation(lock) {
     reservations.set(projectPath, {
       requestId: request.requestId, rendererGeneration: request.rendererGeneration,
       projectPath, sourceProject, source: selected, sourceLease, targetLease: { viewToken: result.viewToken },
+      attachment: result.attachment,
     });
     return { ...result, reserved: true };
   }
@@ -53,13 +54,14 @@ function createProjectViewNavigation(lock) {
     selected = entry;
     entry.source = undefined;
     entry.sourceLease = undefined;
-    return { ok: true, selected: true, normalizedPath: entry.projectPath };
+    return { ok: true, selected: true, normalizedPath: entry.projectPath, ...(entry.attachment && { attachment: entry.attachment }) };
   }
 
   function observe(request) {
     const entry = reservations.get(normalize(request.projectPath));
-    if (!exact(entry, request)) return stale();
-    return { ok: true, reserved: true, selected: selected === entry, normalizedPath: entry.projectPath };
+    if (!exact(entry, request) || lock.captureHeldView(entry.projectPath)?.viewToken !== entry.targetLease.viewToken) return stale();
+    return { ok: true, reserved: true, selected: selected === entry, normalizedPath: entry.projectPath,
+      ...(entry.attachment && { attachment: entry.attachment }) };
   }
 
   function release(request, pendingOnly = false) {

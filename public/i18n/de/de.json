@@ -1048,6 +1048,7 @@
             "PREPARING_DATA": "Daten werden vorbereitet...",
             "PROCESS_ERROR": "Beim Upload ist ein Fehler aufgetreten",
             "PROCESS_EXITED_WITH_CODE": "Upload-Prozess wurde unerwartet beendet, Exit-Code: {{code}}",
+            "SERIAL_PORT_BUSY": "Die serielle Schnittstelle {{port}} wird verwendet. Schließen Sie den seriellen Monitor oder das Programm, das sie verwendet, und laden Sie das Programm erneut hoch.",
             "PROCESS_SIGNAL_TERMINATED": "Upload-Prozess wurde durch Signal beendet: {{signal}}",
             "PROCESS_START_FAILED": "Upload-Prozess konnte nicht gestartet werden",
             "RESETTING_DEVICE": "Gerät wird zurückgesetzt...",

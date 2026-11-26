@@ -1331,6 +1331,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
       // Observe the original save task until it settles. A feedback deadline
       // cannot prove that persistence failed or release this UI submission.
       const saved = await this.projectService.save(path);
+      if (saved?.code === 'PROJECT_VIEW_ATTACHMENT_CHANGED' && this.projectService.currentProjectPath === path) {
+        this.message.error(saved.error);
+        return false;
+      }
       if (!unchanged()) return false;
       // The editable document is committed. Its derived outputs are queued
       // until the active build releases ownership; this is not a failed save.
@@ -1570,7 +1574,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
         }
         if (item.state === 'doing') return;
         item.state = 'doing';
-        this.uploaderService.upload().then(result => {
+        const upload = source === 'manual' ? this.uploaderService.uploadManual() : this.uploaderService.upload();
+        upload.then(result => {
           item.state = result.state || 'done';
         }).catch(err => {
           // console.log("上传未完成: ", JSON.stringify(err));
@@ -1934,7 +1939,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     // Coder activation retains each iframe, including its unsaved editor buffers.
     if (action !== 'close' && this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return true;
     if (this.projectSavingFromUi || this.projectSavingAs || this.projectConflictResolving) return false;
-    const unchanged = this.projectService.captureCurrentProjectGuard();
+    const unchanged = this.projectService.captureCurrentProjectGuard(false);
     let checkError: string | undefined;
     let runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
     if (runtimeRecovery) {

@@ -1048,6 +1048,7 @@
             "PREPARING_DATA": "Preparando datos...",
             "PROCESS_ERROR": "Se produjo un error durante la carga",
             "PROCESS_EXITED_WITH_CODE": "El proceso de carga terminó inesperadamente, código de salida: {{code}}",
+            "SERIAL_PORT_BUSY": "El puerto serie {{port}} está en uso. Cierra el monitor serie o la aplicación que lo está usando y vuelve a cargar el programa.",
             "PROCESS_SIGNAL_TERMINATED": "El proceso de carga fue terminado por la señal: {{signal}}",
             "PROCESS_START_FAILED": "No se pudo iniciar el proceso de carga",
             "RESETTING_DEVICE": "Reiniciando dispositivo...",

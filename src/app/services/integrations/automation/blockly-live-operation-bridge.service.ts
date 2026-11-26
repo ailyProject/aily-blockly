@@ -1503,7 +1503,7 @@ export class BlocklyLiveOperationBridgeService {
           ? { projectNavigationSettlement: 1, ...(window['projectLock']?.recordNavigation ? { projectNavigationRecovery: 1 } : {}) } : {}),
         ...(window['projectLock']?.recordCreatedActive && this.configService.getPreferredChatAgentRuntimeMode() === 'blockly'
           ? { projectCreateRecovery: 1 } : {}),
-        projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1,
+        projectPreparedFirmwareUpload: 1, projectCloudFirmwareReuse: 1, projectUploadReceipts: 1,
         ...(blocklyFirmware ? { projectExistingFirmwareReuse: 1, projectCrossBackendFirmwareReuse: 1 } : {}) },
       lifecycle: { version: 1, sourceProject: project || null },
       projectViewRevision: this.projectService.projectViewRevision,

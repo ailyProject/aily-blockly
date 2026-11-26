@@ -225,6 +225,7 @@ export class AbsWorkspaceSyncService {
             lease.assertCurrent();
             if (this.project.currentProjectPath !== path || this.editor.workspace !== initialContext.workspace)
               throw new AbsSyncError('ABS_CONTEXT_STALE', 'The runtime mutation changed its project or workspace owner.');
+            this.project.assertProjectDirectory?.(path);
           };
           guard();
           const target = history ? await this.prepareHistoryDocument(history, document, store, guard) : undefined;
@@ -316,7 +317,10 @@ export class AbsWorkspaceSyncService {
     if ('facts' in prepared && prepared.facts) return nativeSaveResult(prepared.project, prepared.identity, prepared.facts);
     const result = prepared.outcome!;
     let dependencyError = prepared.linkedEnvironmentError;
-    try { if (!dependencyError) await window['libraryDependencies']?.save(path); }
+    try {
+      this.project.assertProjectDirectory?.(path);
+      if (!dependencyError) await window['libraryDependencies']?.save(path);
+    }
     catch (error) { dependencyError = error instanceof Error ? error.message : String(error); }
     const generatedCodePublished = result.derivedOutputs?.published ?? result.warnings.length === 0;
     const partial = !generatedCodePublished || !!dependencyError;
@@ -2699,6 +2703,7 @@ export class AbsWorkspaceSyncService {
       && session === projectDataRuntime.getSessionToken();
     const assertCurrent = () => {
       if (!isCurrent()) throw new AbsSyncError('ABS_CONTEXT_STALE', 'ABS operation belongs to a stale project/page/runtime.');
+      this.project.assertProjectDirectory?.(path);
       definitions.assertCurrent();
     };
     assertCurrent();

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
 const { createHash, randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { childScriptPath } = require('./child-script-path');
 const { rootAttachment } = require('./project-file-lock-owner');
 const { tryAcquireFileLock } = require(childScriptPath('native-file-lock.js'));
@@ -174,10 +175,14 @@ function tryAcquireLock(projectPath, options = {}) {
     const existing = heldViews.get(root);
     if (existing) {
       if (!isHeld(root, existing.viewToken) || !matchesSnapshot(root, existing.snapshot)) return viewRecordChanged();
-      return { ok: true, normalizedPath: root, lockPath: getLockPath(root), viewToken: existing.viewToken, alreadyHeld: true };
+      return { ok: true, normalizedPath: root, lockPath: getLockPath(root), viewToken: existing.viewToken,
+        attachment: existing.attachment, alreadyHeld: true };
     }
+    const attachment = rootAttachment(root);
+    if (!attachment) return viewRecordChanged();
     guard = takeGuard(root);
     if (!guard) return busyView(root);
+    if (!isDeepStrictEqual(rootAttachment(root), attachment)) return viewRecordChanged();
     let snapshot;
     try { snapshot = readSnapshotAt(root); }
     catch { return describeConflict(root, undefined, { state: 'unknown', reason: 'invalid-owner-record' }); }
@@ -192,10 +197,10 @@ function tryAcquireLock(projectPath, options = {}) {
     const owner = makeOwner(root, viewToken);
     if (!publishOwner(root, guard, snapshot, owner)) return viewRecordChanged();
     const published = readSnapshotAt(root);
-    if (published?.owner?.viewToken !== viewToken) return viewRecordChanged();
-    heldViews.set(root, { guard, viewToken, snapshot: published });
+    if (published?.owner?.viewToken !== viewToken || !isDeepStrictEqual(rootAttachment(root), attachment)) return viewRecordChanged();
+    heldViews.set(root, { guard, viewToken, snapshot: published, attachment });
     guard = undefined;
-    return { ok: true, normalizedPath: root, lockPath: getLockPath(root), viewToken,
+    return { ok: true, normalizedPath: root, lockPath: getLockPath(root), viewToken, attachment,
       ...(snapshot && { recoveredStale: true }) };
   } catch (error) { return viewError(error); }
   finally { guard?.close(); }
@@ -203,10 +208,10 @@ function tryAcquireLock(projectPath, options = {}) {
 
 function isHeld(projectPath, viewToken) {
   try {
-    const owner = heldViews.get(normalizeProjectPathLoose(projectPath));
+    const root = normalizeProjectPathLoose(projectPath), owner = heldViews.get(root);
     if (!owner || viewToken !== undefined && owner.viewToken !== viewToken) return false;
     owner.guard.assertHeld();
-    return true;
+    return isDeepStrictEqual(rootAttachment(root), owner.attachment);
   } catch { return false; }
 }
 
@@ -214,7 +219,7 @@ function captureHeldView(projectPath) {
   try {
     const root = normalizeProjectPathLoose(projectPath), current = heldViews.get(root);
     if (current && isHeld(root, current.viewToken) && matchesSnapshot(root, current.snapshot)) {
-      return { viewToken: current.viewToken };
+      return { viewToken: current.viewToken, attachment: current.attachment };
     }
   } catch { /* The original handle or record changed. */ }
 }
@@ -236,7 +241,8 @@ function releaseHeldView(root, current, retainOnFailure = false) {
   let removed = false;
   try {
     current.guard.assertHeld();
-    if (!matchesSnapshot(root, current.snapshot)) return viewRecordChanged();
+    if (!isDeepStrictEqual(rootAttachment(root), current.attachment) ||
+        !matchesSnapshot(root, current.snapshot)) return viewRecordChanged();
     fs.unlinkSync(getLockPath(root));
     removed = true;
     return { ok: true };
