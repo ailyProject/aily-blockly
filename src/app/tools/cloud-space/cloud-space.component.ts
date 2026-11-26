@@ -195,6 +195,7 @@ export class CloudSpaceComponent {
           return;
         }
         this.modal.confirm({
+          nzClassName: 'cloud-space-confirm-modal',
           nzTitle: '更新学生原项目',
           nzContent: `将用当前本地项目更新 ${target.student.nickname || target.student.email} 的“${target.nickname || target.name}”，项目仍归该学生所有。`,
           nzOkText: '更新原项目',
@@ -991,6 +992,7 @@ export class CloudSpaceComponent {
   deleteCloudProject(item) {
     if (!item?.id || !this.canEditProject(item)) return;
     this.modal.confirm({
+      nzClassName: 'cloud-space-confirm-modal',
       nzTitle: '删除云端项目',
       nzContent: `确定删除“${item.nickname || item.name}”吗？${item.student ? '此操作将删除学生的原项目。' : ''}删除后无法恢复。`,
       nzOkText: '删除',
