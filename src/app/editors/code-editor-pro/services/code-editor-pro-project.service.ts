@@ -130,6 +130,17 @@ export class CodeEditorProProjectService {
     return this.persistenceBridges.get(key)?.bridge === bridge && dirty === false;
   }
 
+  /** Recheck the same mounted editor without saving or inspecting unrelated projects. */
+  captureBuildBuffer(path: string): (() => Promise<boolean>) | undefined {
+    const key = this.key(path), entry = this.persistenceBridges.get(key);
+    if (!entry) return undefined;
+    return async () => {
+      if (this.persistenceBridges.get(key) !== entry) return false;
+      const dirty = await entry.bridge.hasUnsavedChanges();
+      return this.persistenceBridges.get(key) === entry && dirty === false;
+    };
+  }
+
   private async hasUnsavedChanges(): Promise<boolean> {
     const states = await Promise.all([...this.persistenceBridges.values()].map(async ({ path, bridge }) =>
       await this.projectService.hasUnsavedLibraryChanges(path) || await bridge.hasUnsavedChanges()));

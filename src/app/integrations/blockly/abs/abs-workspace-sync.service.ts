@@ -204,7 +204,7 @@ export class AbsWorkspaceSyncService {
       const guard = this.atRevision(context.assertCurrent, lease, before);
       if (repairMirrors && !computation) store = new AbsBaselineStore(port, context.scope, true);
       if (repairMirrors && await store.workspaceMode() === 'project-v1')
-        await this.ensureSavedProjection(context, store, guard);
+        await this.ensureSavedProjection(context, store, guard, { retireCleanRuntimeRebuild: true });
       const disk = repairMirrors ? await this.captureRepairableDisk(context, store, port, before.document, guard, {
         repairLocation: () => computation ? computation.recoverLocation()
           : this.withoutViewChecks(() => recoverAbsLocationMetadata(port, context.scope, guard, store)),
@@ -1349,14 +1349,18 @@ export class AbsWorkspaceSyncService {
     });
   }
 
-  private ensureSavedProjection(context: ReturnType<AbsWorkspaceSyncService['context']>, store: AbsBaselineStore, guard: () => void) {
+  private ensureSavedProjection(context: ReturnType<AbsWorkspaceSyncService['context']>, store: AbsBaselineStore, guard: () => void,
+    { retireCleanRuntimeRebuild = false } = {}) {
     return store.ensureSavedProjection(async abi => {
       const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions, guard);
       const parsed = JSON.parse(abi);
       const { $ailyProjectData, ...saved } = parsed;
       const document = saved.schemaVersion === 3 && Array.isArray(saved.pages) ? saved : this.editor.normalizeProjectAbi(parsed);
       return this.projection(document, runtime.contracts, abi, context.scope, guard);
-    }, async port => !(await new AbsOperationJournal(port, context.path).inspect()), guard);
+    }, async port => {
+      const journal = new AbsOperationJournal(port, context.path);
+      return retireCleanRuntimeRebuild ? journal.retireCleanRuntimeRebuild(guard) : !await journal.inspect();
+    }, guard);
   }
 
   private async captureCandidateHistory(port: AbsSyncStoragePort, context: ReturnType<AbsWorkspaceSyncService['context']>,

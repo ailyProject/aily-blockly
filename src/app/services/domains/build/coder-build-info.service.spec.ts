@@ -412,6 +412,35 @@ describe('Coder build metadata', () => {
     expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
   });
 
+  for (const backend of ['local', 'cloud']) it(`rejects a Coder buffer edited during a ${backend} compile`, async () => {
+    let saved = true;
+    const compiler: any = backend === 'cloud' ? createSwitchingCompiler().compiler : createCompiler(() => {
+      saved = false;
+      return 0;
+    });
+    if (backend === 'cloud') compiler.runCloudCompile.and.callFake(async () => {
+      saved = false;
+      return { success: true };
+    });
+    const check = jasmine.createSpy('buffer is saved').and.callFake(async () => saved);
+    compiler.application.captureCoderBuildBuffer = jasmine.createSpy('capture buffer').and.returnValue(check);
+    const validate = spyOn(compiler.compileValidationService, 'triggerAfterSuccessfulCompile');
+
+    const result = await compiler.runCompileFromDisk();
+
+    expect(compiler.application.captureCoderBuildBuffer).toHaveBeenCalledOnceWith(root);
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(result).toEqual(jasmine.objectContaining({ success: false, result: jasmine.objectContaining({
+      state: 'error', code: 'BUILD_SOURCE_STALE', text: 'BLOCKLY_EDITOR.BUILD.SOURCE_STALE.inputs',
+      fullStdErr: jasmine.stringMatching('The Coder editor changed during compilation'),
+    }) }));
+    expect(compiler.handleFailNotice.calls.mostRecent().args.slice(2, 5)).toEqual([
+      'BLOCKLY_EDITOR.BUILD.SOURCE_STALE.inputs', jasmine.stringMatching('BUILD_SOURCE_STALE:'), undefined,
+    ]);
+    expect(validate).not.toHaveBeenCalled();
+    expect(readManifest().buildInfo.lastBuildStatus).toBe('failed');
+  });
+
   it('reports an uncompiled cloud profile with its capability detail and a manual local action', async () => {
     const { compiler } = createSwitchingCompiler();
     project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', capabilities: { compile: false } });
@@ -841,7 +870,7 @@ describe('Coder build metadata', () => {
       return '@aily-project/board-test';
     });
     const result = await service.runCompileFromDisk();
-    expect(result.success).toBeFalse(); expect(result.result.text).toContain('BUILD_SOURCE_STALE');
+    expect(result.success).toBeFalse(); expect(result.result.code).toBe('BUILD_SOURCE_STALE');
     expect((service as any).runOneShotCommand).not.toHaveBeenCalled();
   });
 
@@ -860,7 +889,7 @@ describe('Coder build metadata', () => {
       if (filename.includes('compile-request-')) writeManifest({ ...readManifest(), entry: 'src/other.cpp' });
     };
     const result = await service.runCompileFromDisk();
-    expect(result.success).toBeFalse(); expect(result.result.text).toContain('BUILD_SOURCE_STALE');
+    expect(result.success).toBeFalse(); expect(result.result.code).toBe('BUILD_SOURCE_STALE');
     expect((service as any).runOneShotCommand).not.toHaveBeenCalled();
   });
 

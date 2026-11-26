@@ -133,6 +133,10 @@ function trustedGateway(settings, caps) {
   return publicKey;
 }
 const usesIsolatedArtifacts = config => config?.isolatedCloudBuild === true;
+function sameBlocklyDocument(left, right) {
+  if (!left || !right) return left === right;
+  return left.scope === right.scope && left.pageId === right.pageId && left.documentSha256 === right.documentSha256;
+}
 function retainedBuildConfig(config) {
   const retained = Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
     .filter(key => config[key] !== undefined).map(key => [key, config[key]]));
@@ -581,7 +585,7 @@ class CloudBuildBroker {
     if (!owner || sender?.isDestroyed?.()) throw protocol.error('BUILD_OWNER_EXPIRED', 'The current application owner is unavailable.');
     return owner;
   }
-  async assertCurrent(record, config = record.config) {
+  async assertCurrent(record, config = record.config, workspace = record.config.sourceCapture?.workspace) {
     // 编译前后及烧录前复核页面、编辑器和实际文件，源码变化时禁止发布或复用旧产物。
     if (Number.isFinite(record.startedAt) && Date.now() - record.startedAt >= this.deadlineMs && !record.controller.signal.aborted) {
       record.controller.abort(protocol.error('BUILD_TIMEOUT', 'Cloud task exceeded its client deadline.'));
@@ -604,7 +608,7 @@ class CloudBuildBroker {
       if (source.mode === 'coder' && source.saved !== true) {
         throw protocol.error('BUILD_SOURCE_STALE', 'The Coder editor is unavailable or has unsaved changes.');
       }
-      const captured = record.config.sourceCapture?.workspace;
+      const captured = workspace;
       if (captured) {
         const live = source.workspace;
         if (live?.scope !== captured.scope) throw staleSource('workspace', 'Blockly workspace source is unavailable.');
@@ -975,7 +979,7 @@ class CloudBuildBroker {
     finally { lease?.release(); }
     this.active.set(record.root, { ...previous, requestId: record.requestId, config: retainedBuildConfig(record.config), settings: record.settings,
       activationId: record.activationId, controller: new AbortController(), profile: record.profile,
-      ciPreparation: record.ciPreparation, inputLimits: record.inputLimits });
+      ciPreparation: record.ciPreparation, inputLimits: record.inputLimits, uploadWorkspace: undefined });
     this.progress(record, { stage: 'complete', progress: 100, reused: true });
     // This is the original completed job, not a newly executed cloud task.
     return { success: true, state: 'done', reused: true, text: 'Reused verified cloud build result.',
@@ -1215,7 +1219,10 @@ class CloudBuildBroker {
     const root = fs.realpathSync(projectPath), record = this.active.get(root);
     if (!record || record.sender !== sender) return null;
     // 复用权限只存在于当前进程的活动记录，磁盘上残留的结果文件不能自动恢复烧录权限。
-    await this.assertCurrent(record, config);
+    return this.checkedArtifactPath(record, config, record.uploadWorkspace);
+  }
+  async checkedArtifactPath(record, config, workspace) {
+    await this.assertCurrent(record, config, workspace);
     if (fs.realpathSync(record.directory) !== record.directory || fs.lstatSync(record.directory).isSymbolicLink()) throw protocol.error('UNSAFE_PATH', 'Active artifact directory changed.');
     return record.directory;
   }
@@ -1225,19 +1232,27 @@ class CloudBuildBroker {
         || config.code !== record.config.code || config.boardModule !== record.config.boardModule
         || usesIsolatedArtifacts(config) !== usesIsolatedArtifacts(record.config)
         || (profileDigest !== undefined && profileDigest !== record.manifest.profileDigest)) return false;
+    const original = record.config.sourceCapture?.workspace;
+    const workspace = config === record.config ? record.uploadWorkspace ?? original : config.sourceCapture?.workspace;
+    if (!sameBlocklyDocument(workspace, original)) return false;
+    // A backend refresh can replace the generator with an equivalent runtime.
+    // Verify the new live stamp and the complete build input before using it.
+    if (!this.querySource && original && (workspace.revision !== original.revision
+        || workspace.runtimeRevision !== original.runtimeRevision)) return false;
     try {
       const capabilities = await this.capabilities(record.settings, record.controller.signal);
       if (trustedGateway(record.settings, capabilities).trim() !== record.publicKey.trim()
           || negotiatedUploadPlan(capabilities, record.manifest.action) !== record.uploadPlan
           || !matchesUploadPlan(record.uploadPlan, record.manifest)) return false;
-      if (protocol.canonicalJson(config.sourceCapture?.workspace || null) !== protocol.canonicalJson(record.config.sourceCapture?.workspace || null)) return false;
-      if (!await this.artifactPath(sender, root, config)) return false;
+      await this.checkedArtifactPath(record, config, workspace);
       protocol.verifyManifest(record.manifest, record.signature, record.publicKey);
       for (const artifact of record.manifest.artifacts) {
         const filename = path.join(record.directory, ...artifact.path.split('/'));
         const stat = fs.lstatSync(filename);
         if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return false;
       }
+      if (this.active.get(root) !== record) return false;
+      if (workspace) record.uploadWorkspace = { ...workspace };
       return true;
     } catch { return false; }
   }
@@ -1276,9 +1291,10 @@ class CloudBuildBroker {
     try {
       releaseArtifact = this.protectArtifact(record);
       if (!await this.reusable(sender, record.config)) throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+      const workspace = record.uploadWorkspace;
       // consume launches the native uploader; a verify lease is not read-only here.
       workspaceLease.markDelegated();
-      return await consume(record, () => this.assertCurrent(record));
+      return await consume(record, () => this.assertCurrent(record, record.config, workspace));
     } finally {
       try { workspaceLease.release(); } finally { releaseArtifact?.(); }
     }
@@ -1291,9 +1307,10 @@ class CloudBuildBroker {
     try {
       releaseArtifact = this.protectArtifact(record);
       if (!await this.reusable(sender, record.config)) throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+      const workspace = record.uploadWorkspace;
       const identity = ciResources.overlaySnapshot(captureIdentity(record.config, record.profile), record.ciPreparation, { identityOnly: true, limits: record.inputLimits });
       let released = false;
-      return { record, identity, assertCurrent: () => this.assertCurrent(record), markDelegated: () => workspaceLease.markDelegated(), release: () => {
+      return { record, identity, assertCurrent: () => this.assertCurrent(record, record.config, workspace), markDelegated: () => workspaceLease.markDelegated(), release: () => {
         if (released) return; released = true;
         try { workspaceLease.release(); } finally { releaseArtifact?.(); }
       } };

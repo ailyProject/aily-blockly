@@ -520,6 +520,28 @@ export class AbsOperationJournal {
     return retained?.operation ?? null;
   }
 
+  /** A restored runtime rebuild with an exact saved document contains no
+   * unsaved state to recover. Retire only this checkpoint, leaving its
+   * snapshot and any independent ABS author draft intact. */
+  async retireCleanRuntimeRebuild(guard: () => void): Promise<boolean> {
+    return this.port.withLock(async storage => {
+      const lockedPort = { ...this.port, read: (key: string) => storage.read(key) };
+      const retained = await new AbsOperationJournal(lockedPort, this.project).inspectLocation();
+      if (!retained) return true;
+      const { operation } = retained;
+      const pointer = this.pointer(retained.pointer);
+      if (pointer.state !== 'restored' || operation.kind !== 'runtime-rebuild' || operation.project !== this.project
+        || operation.disk.abi === null || await storage.read('project.abi') !== operation.disk.abi
+        || await storage.read('committed.json') !== operation.committed || await storage.read('prepared.json') !== null) return false;
+      try { if (absJson(JSON.parse(operation.disk.abi)) !== absJson(operation.document)) return false; }
+      catch { return false; }
+      guard();
+      if (!await storage.replace(currentKey, await hashAbsText(retained.pointer), absJson({ ...pointer, state: 'completed' })))
+        throw conflict();
+      return true;
+    });
+  }
+
   /** Independent current-Working readback, never a terminal result for the old
    * application. Only a new attachment-bound operation with an exited storage
    * executor qualifies. The caller verifies complete live S1 under this one

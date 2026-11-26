@@ -444,8 +444,16 @@ export class _UploaderService {
         const cloudCandidate = reuseCloud || (!firmware && (window['cloudBuild']?.hasArtifact
           ? await window['cloudBuild'].hasArtifact({ projectPath }) : initialCloud));
         const candidateBackend = cloudCandidate ? 'cloud' : 'local';
-        const selectReusableFirmware = () => {
-          cloud = cloudCandidate;
+        const findReusableFirmware = async (verify: (backend: 'cloud' | 'local') => Promise<boolean>) => {
+          if (await verify(candidateBackend)) return candidateBackend;
+          // An active cloud record is only a hint. A stale cloud result must
+          // not hide a verified local result for the current source.
+          if (candidateBackend === 'cloud' && !reuseCloud && await verify('local')) return 'local';
+        };
+        const verifyBlocklyFirmware = (backend: 'cloud' | 'local') => this._builderService.canReuseBuildForUpload(
+          () => this.cancelled, captureExecution, backend, assertFresh => { assertFirmwareSourceCurrent = assertFresh; });
+        const selectReusableFirmware = (backend: 'cloud' | 'local') => {
+          cloud = backend === 'cloud';
           if (!cloud && initialCloud) backendOperation.useLocal();
           this.cloudUploadInProgress = cloud;
         };
@@ -453,17 +461,17 @@ export class _UploaderService {
         assertContext();
         if (prepared) {
           this._builderService.isUploading = true;
-          if (!await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution, candidateBackend,
-            assertFresh => { assertFirmwareSourceCurrent = assertFresh; })) {
+          const reusableBackend = await findReusableFirmware(verifyBlocklyFirmware);
+          if (!reusableBackend) {
             const message = 'No verified firmware matches the current Blockly project.';
             throw Object.assign(new Error(message), {
               code: prepared.reuseExistingFirmware ? 'PROJECT_REUSABLE_FIRMWARE_REQUIRED' : 'BUILD_ARTIFACT_STALE',
             });
           }
           assertContext();
-          selectReusableFirmware();
+          selectReusableFirmware(reusableBackend);
           selectedFirmware = {
-            firmwareBackend: candidateBackend,
+            firmwareBackend: reusableBackend,
             ...(firmware || verifiedExecution
               ? { firmwareBuildRequestId: firmware?.buildRequestId ?? verifiedExecution?.buildRequestId } : {}),
           };
@@ -553,13 +561,14 @@ export class _UploaderService {
           try {
             this.coderBuildActive = true;
 
-            const reusable = (cloudCandidate || verifyLocalCoderBuild)
-              && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled, candidateBackend);
+            const reusableBackend = await findReusableFirmware(async backend =>
+              (backend === 'cloud' || verifyLocalCoderBuild)
+              && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled, backend));
 
             assertContext();
 
-            if (reusable) {
-              selectReusableFirmware();
+            if (reusableBackend) {
+              selectReusableFirmware(reusableBackend);
             } else {
               if (this.projectService.isCoderProjectContext && this.projectService.getProjectDependencyStatus(projectPath) === 'idle') {
                 const ready = await this.npmService.ensureProjectAndBoardDeps(projectPath, undefined, dependencySession);
@@ -627,14 +636,12 @@ export class _UploaderService {
 
           assertContext();
 
-          const reusable = !!prepared || await this._builderService.canReuseBuildForUpload(
-            () => this.cancelled, captureExecution, candidateBackend);
+          const reusableBackend = prepared ? undefined : await findReusableFirmware(verifyBlocklyFirmware);
 
           assertContext();
 
-          if (reusable) {
-            if (!prepared) selectReusableFirmware();
-          } else {
+          if (reusableBackend) selectReusableFirmware(reusableBackend);
+          if (!prepared && !reusableBackend) {
             try {
               const buildResult = await this._builderService.build();
 
@@ -646,7 +653,7 @@ export class _UploaderService {
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
               if ((cloud || window['builder']?.canReuseBlocklyUpload)
-                && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution, cloud ? 'cloud' : 'local')) {
+                && !await verifyBlocklyFirmware(cloud ? 'cloud' : 'local')) {
                 throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
               }
               if ((verifiedExecution?.layout === 'shared' || verifiedExecution?.isolatedRecovery)

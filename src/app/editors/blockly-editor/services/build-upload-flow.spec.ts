@@ -129,7 +129,7 @@ describe('Blockly compile and upload handoff', () => {
     f.uploader.workflowService.startUpload = () => true;
     f.uploader.uploadByBle = jasmine.createSpy('uploadByBle').and.resolveTo({ state: 'done' });
 
-    expect(await f.run()).toEqual({ state: 'done' });
+    expect(await f.run()).toEqual({ state: 'done', firmwareBackend: 'local', firmwareBuildRequestId: selected.buildRequestId });
     expect(resolveExecution).toHaveBeenCalledOnceWith('/project', jasmine.objectContaining({ code: f.prepared.code }));
     expect(f.uploader.uploadByBle.calls.mostRecent().args[3]).toBe(selected);
     expect(f.builder.build).not.toHaveBeenCalled();
@@ -215,6 +215,25 @@ describe('Blockly compile and upload handoff', () => {
       .toEqual({ state: 'done', firmwareBackend: 'local', firmwareBuildRequestId: firmware.buildRequestId });
     expect(f.uploader.uploadByBle.calls.mostRecent().args[3].buildRequestId).toBe(firmware.buildRequestId);
     expect(resolve).toHaveBeenCalledOnceWith('/project', jasmine.objectContaining({ code: f.prepared.code }));
+    expect(f.builder.build).not.toHaveBeenCalled();
+    expect(f.project.isCloudBuild()).toBeTrue();
+  });
+
+  it('checks a matching local build when the cloud artifact hint is stale', async () => {
+    const f = uploadFixture();
+    useCloudPreference(f);
+    window['cloudBuild'] = { hasArtifact: async () => true };
+    const verify = jasmine.createSpy('canReuseBuild')
+      .and.callFake(async (_cancel, _capture, backend) => backend === 'local');
+    f.builder.canReuseBuildForUpload = verify;
+    f.uploader.serialService.currentPortInfo = { type: 'ble' };
+    f.uploader.uploaderBleService = { authorizeDevice: async () => {} };
+    f.uploader.workflowService.startUpload = () => true;
+    f.uploader.uploadByBle = jasmine.createSpy('uploadByBle').and.resolveTo({ state: 'done' });
+
+    expect(await f.uploader.upload({ projectPath: '/project', port: 'TEST-NO-DEVICE', reuseExistingFirmware: true }))
+      .toEqual(jasmine.objectContaining({ state: 'done', firmwareBackend: 'local' }));
+    expect(verify.calls.allArgs().map(args => args[2])).toEqual(['cloud', 'local']);
     expect(f.builder.build).not.toHaveBeenCalled();
     expect(f.project.isCloudBuild()).toBeTrue();
   });

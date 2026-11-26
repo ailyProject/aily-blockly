@@ -6,6 +6,7 @@ import 'blockly/blocks';
 import '../../../editors/blockly-editor/components/blockly/plugins/block-plus-minus/src/index.js';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { AbsBaselineStore, AbsSyncStoragePort, AbsSyncStorageAccess, absBaselineKey } from './abs-baseline-store';
+import { AbsOperationJournal } from './abs-operation-journal';
 import { readWorkingCandidate } from './abs-working-candidate';
 import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { absJson, createAbsProjection, hashAbsText, indexAbsSyntax } from './abs-identity-map';
@@ -5162,6 +5163,47 @@ describe('v2 actual workspace generation coordinator', () => {
 
   describe('project-v1 author tree', () => {
     const select = () => disk.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
+    for (const checkpoint of ['clean restored', 'dirty restored', 'pending'] as const) {
+      it(`saves the latest canvas with a missing projection only when its runtime checkpoint is safe (${checkpoint})`, async () => {
+        select();
+        const saved = editor.captureProjectSnapshot().document;
+        const abi = absJson(saved);
+        const draft = '# Keep the independently authored draft';
+        disk.set('project.abi', abi);
+        disk.set('project.abs', draft);
+        window['fs'].readFileSync = () => disk.get('project.abi');
+        editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+        project.rememberLoadedProject(scope.projectKey, abi, saved);
+        const journal = new AbsOperationJournal(port, scope.projectKey);
+        const check = () => {};
+        if (checkpoint === 'dirty restored') roots().setFieldValue('unsaved before runtime rebuild', 'TEXT');
+        const id = await journal.begin({ kind: 'runtime-rebuild', document: editor.captureProjectSnapshot().document,
+          disk: { abi, abs: draft, map: null } }, check);
+        if (checkpoint !== 'pending') await journal.restored(id, check);
+        const retained = [...disk];
+        roots().setFieldValue('edited while compiling', 'TEXT');
+        const request = { version: 2 as const, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' as const };
+
+        if (checkpoint !== 'clean restored') {
+          await expectAsync(project.save(scope.projectKey, request))
+            .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_TRANSACTION_PENDING' }));
+          expect([...disk]).toEqual(retained);
+          expect(roots().getFieldValue('TEXT')).toBe('edited while compiling');
+          return;
+        }
+
+        const result = await project.save(scope.projectKey, request);
+        expect(result.projectSaved).toBeTrue();
+        expect(disk.get('project.abi')).toContain('edited while compiling');
+        expect(disk.get('project.abs')).toBe(draft);
+        expect(disk.get('project.abs.map.json')).toBeDefined();
+        const receipt = await service.observeNativeSave(scope.projectKey, request, port.executor!.hostPid!);
+        expect(receipt?.saveReceipt.state).toBe('completed');
+        expect(receipt?.result?.['projectSaved']).toBeTrue();
+        expect(disk.get(`recoveries/operation-${id}.json`)).toBeDefined();
+      });
+    }
+
     it('acknowledges an unchanged author-tree save without creating another immutable generation', async () => {
       await baseline(); select();
       const first = await service.exportGeneration({ save: true });

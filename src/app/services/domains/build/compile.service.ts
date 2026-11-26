@@ -352,6 +352,8 @@ export class CompileService {
   ): Promise<DiskCompileResult> {
     const packagePath = this.electronService.pathJoin(root, 'package.json');
     const isAilyCodeProject = this.projectService.isAilyCodeProject(root);
+    const bufferIsSaved = isAilyCodeProject && !options.preprocessOnly
+      ? this.application.captureCoderBuildBuffer?.(root) : undefined;
     const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
     if (source.success === false) {
       this.handleFailNotice(root, this.t('FAILED_TITLE'), source.error, source.error, context.cloud ? context.retryLocally : undefined);
@@ -365,6 +367,11 @@ export class CompileService {
     const cloudOrigin = context.cloud || options.localFallback?.local !== undefined;
 
     try {
+      const assertBufferCurrent = async () => {
+        if (bufferIsSaved && !await bufferIsSaved().catch(() => false) && !this.cancelled) {
+          throw buildSourceStale('inputs', 'The Coder editor changed during compilation or could not be checked. Save and build again.');
+        }
+      };
       const assertCloudContext = () => {
         if (!cloudOrigin) return;
         if (this.configService.getCompileSettingsKey() !== context.settingsKey
@@ -454,6 +461,9 @@ export class CompileService {
           if (context.cloud) {
             let result: any;
             try {
+              await assertBufferCurrent();
+              assertCloudContext(); assertManifest();
+              if (this.cancelled) throw new Error('Build cancelled before launch.');
               result = await this.runCloudCompile(root, { ...buildConfig, sourceCapture }, context.settings!,
                 cloudProfile!, action, boardName, context.settingsKey);
             } catch (error) {
@@ -467,6 +477,7 @@ export class CompileService {
               buildConfig.ailyBuilderPath = ailyBuilderPath;
             }
             if (result) {
+              await assertBufferCurrent();
               assertCloudContext(); assertManifest();
               if (this.cancelled) throw new Error('Cloud build cancelled.');
               if (result?.success !== true) throw new Error(result?.text || 'Cloud compilation failed.');
@@ -499,6 +510,7 @@ export class CompileService {
             write: (filename, text) => window['fs'].writeFileSync(filename, text),
           });
           await options.localFallback?.local?.assertCurrent();
+          await assertBufferCurrent();
           assertManifest();
           assertCloudContext();
           if (this.cancelled) throw new Error('Build cancelled before launch.');
@@ -571,6 +583,7 @@ export class CompileService {
           }, executionRoot, allowCloudSwitch ? localSwitch : undefined);
           const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
 
+          if (!this.cancelled) await assertBufferCurrent();
           if (this.cancelled) {
             finishReason = 'Cancelled';
             const text = this.t('CANCELLED_WITH_TIME', { seconds: buildDuration });
@@ -581,6 +594,11 @@ export class CompileService {
 
           if (cmp.exitCode !== 0) {
             const detail = cmp.combined || cmp.stderr + cmp.stdout;
+            if (isAilyCodeProject && /\bBUILD_SOURCE_STALE:/.test(detail)) {
+              throw Object.assign(buildSourceStale('inputs', 'The Coder build inputs changed. Save and build again.'), {
+                fullStdErr: detail, buildOutputAlreadyLogged: true,
+              });
+            }
             finishReason = 'Compile failed';
             const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
             this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail, undefined, true);
@@ -628,7 +646,8 @@ export class CompileService {
       }
     } catch (e: any) {
       const rawMessage = e?.message || String(e);
-      const msg = context.cloud && isUnsupportedCloudBuild(e)
+      const stale = isAilyCodeProject && e?.code === 'BUILD_SOURCE_STALE';
+      const msg = stale ? this.t('SOURCE_STALE.inputs') : context.cloud && isUnsupportedCloudBuild(e)
         ? this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE') : rawMessage;
       buildStatus = 'failed';
       finishReason = this.cancelled ? 'Cancelled' : msg;
@@ -640,7 +659,7 @@ export class CompileService {
       }
       this.message.error(msg);
       const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : rawMessage;
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud && !stale ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
       if (context.cloud && context.assertCloudFailureSource) options.localFallback?.recordCloudFailure?.(e, context.assertCloudFailureSource);
       return { success: false, result: { state: 'error', text: msg, fullStdErr: detail,
         ...(typeof e?.code === 'string' ? { code: e.code } : {}), ...(e?.buildOutcome ? { buildOutcome: e.buildOutcome } : {}) } };
