@@ -83,6 +83,11 @@ export let HEADER_MENU: IMenuItem[] = [
     icon: 'fa-light fa-folder-open',
   },
   {
+    name: 'PROJECT.LOCK_OPEN_COPY',
+    action: 'project-open-as-copy',
+    icon: 'fa-light fa-folder-plus',
+  },
+  {
     name: 'MENU.PROJECT_ADD',
     action: 'project-add',
     icon: 'fa-light fa-folder-plus',

@@ -68,6 +68,38 @@ describe('ABS immutable baseline and commit recovery', () => {
     expect(host.files.get('project.abi')).toBe('{"external":"newer"}');
     expect(host.files.has('prepared.json')).toBeFalse();
   });
+
+  it('writes the application stage under the same lock before preparing or saving the ABI', async () => {
+    await store.stage(input);
+    const lock = spyOn(host, 'withLock').and.callThrough();
+    const staged = 'recoveries/application-first.json';
+    let writer: AbsSyncStorageAccess;
+    const result = await store.commit('g1', assertCurrent, async (text, expected, storage) => {
+      expect(storage).toBe(writer);
+      expect(await storage.read(staged)).toBe('validated');
+      expect(await storage.read('prepared.json')).not.toBeNull();
+      expect(await storage.replace('project.abi', expected, text)).toBeTrue();
+    }, async storage => {
+      writer = storage;
+      expect(await storage.read('project.abi')).toBe(input.expected.abi);
+      expect(await storage.read('prepared.json')).toBeNull();
+      expect(await storage.replace(staged, null, 'validated')).toBeTrue();
+    });
+    expect(result.status).toBe('COMMITTED');
+    expect(lock).toHaveBeenCalledTimes(1);
+    expect(host.writes.slice(1, 4)).toEqual([staged, 'prepared.json', 'project.abi']);
+  });
+
+  it('leaves the original project and prepared pointer untouched if the application stage fails', async () => {
+    await store.stage(input);
+    await expectAsync(store.commit('g1', assertCurrent, save, async () => {
+      throw new Error('application stage failed');
+    })).toBeRejectedWithError('application stage failed');
+    expect(save).not.toHaveBeenCalled();
+    expect(await store.captureDisk()).toEqual(input.expected);
+    expect(host.files.has('prepared.json')).toBeFalse();
+    expect(host.writes).toEqual([absBaselineKey('g1')]);
+  });
   it('still rejects a different scope after verified record bytes change', async () => {
     const background = new AbsBaselineStore(host, scope, true);
     await background.stage(input);

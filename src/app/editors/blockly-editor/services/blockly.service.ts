@@ -24,6 +24,7 @@ import { beginNativeFieldDependencies } from './blockly-native-field-dependencie
 import { BlocklyCommentLoading } from './blockly-comment-loading';
 import { loadAbsWorkspaceInChunks } from '../../../integrations/blockly/abs/abs-chunk-loader';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
+import { forgetSavedBoardSelections, recordBoardDropdowns, rememberSavedBoardSelections } from './blockly-board-dropdowns';
 import { adaptLegacyDhtRuntimeState } from './blockly-legacy-dht-runtime';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import {
@@ -94,6 +95,7 @@ interface LoadedBlocklyLibraryInfo {
   packageName: string;
   blockTypes: string[];
   generatorPath: string;
+  localPath?: string;
 }
 
 export interface BlocklyLibraryRuntimeRebuildOptions {
@@ -363,6 +365,8 @@ export class BlocklyService {
 
   private _aiWriting = new BehaviorSubject<boolean>(false);
   aiWriting$ = this._aiWriting.asObservable();
+  private readonly aiOperationWritingSubject = new BehaviorSubject(false);
+  readonly aiOperationWriting$ = this.aiOperationWritingSubject.asObservable();
   private readonly aiWritingSources = new Set<string>();
   private _aiExecutionActive = new BehaviorSubject<boolean>(false);
   /** AI 回合 / 子应用操作进行中。与 `aiWaiting` getter/setter 同源。 */
@@ -423,7 +427,11 @@ export class BlocklyService {
     this.setAiWritingActive('legacy-aily-chat', value);
   }
 
-  /** 积木写入态多源合并，供遮罩 / 「AI正在操作」通知使用。 */
+  get aiOperationWriting(): boolean {
+    return this.aiOperationWritingSubject.value;
+  }
+
+  /** 普通工作区租约参与画布保护。只有自动化桥或旧版对话实际发起的写入才参与 AI 通知。 */
   setAiWritingActive(source: string, value: boolean): void {
     const normalizedSource = String(source || '').trim();
     if (!normalizedSource) {
@@ -436,6 +444,8 @@ export class BlocklyService {
       this.aiWritingSources.delete(normalizedSource);
     }
 
+    const aiWriter = this.aiWritingSources.has('live-blockly-operation') || this.aiWritingSources.has('legacy-aily-chat');
+    if (this.aiOperationWriting !== aiWriter) this.aiOperationWritingSubject.next(aiWriter);
     const active = this.aiWritingSources.size > 0;
     if (this._aiWriting.value !== active) {
       this._aiWriting.next(active);
@@ -1038,7 +1048,9 @@ export class BlocklyService {
   /** Initial opens can yield while the existing edit lease fences incomplete
    * topology. Publish readiness only after complete native readback. */
   async loadProjectDocumentForOpen(document: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease,
-    assertCurrent: () => void): Promise<void> {
+    assertCurrent: () => void, preserveBoardSelections = false): Promise<void> {
+    if (preserveBoardSelections) rememberSavedBoardSelections(this.workspace, document);
+    else forgetSavedBoardSelections(this.workspace);
     return this.loadProjectDocumentSettled(document, owner, assertCurrent);
   }
 
@@ -1825,6 +1837,7 @@ export class BlocklyService {
           packageName: libPackageName,
           blockTypes: loadedBlockTypes,
           generatorPath: generatorFilePath,
+          localPath: libLocalPath,
         });
       }
       // 补发Blockly.Events.FINISHED_LOADING
@@ -2087,6 +2100,7 @@ export class BlocklyService {
       );
       this.registerBlockFieldInputIncrementPolicy(block);
       Blockly.defineBlocksWithJsonArray([block]);
+      recordBoardDropdowns(Blockly.Blocks[block.type], blocks[index]);
       this.declarativeBlocks.record(block, Blockly.Blocks[block.type]);
       this.generatorRuntime.recordNativeBlockDefinitions([block], libPackageName);
     }
@@ -2298,7 +2312,8 @@ export class BlocklyService {
     setTimeout(apply, 150);
   }
 
-  refreshBoardDependentBlockDefinitions(): void {
+  refreshBoardDependentBlockDefinitions(changed?: ReadonlySet<string>): void {
+    if (changed && !changed.size) return;
     for (const [libPackagePath, libraryInfo] of this.loadedLibraryInfos.entries()) {
       const blockJsonPath = this.electronService.pathJoin(libPackagePath, 'block.json');
       if (!this.electronService.exists(blockJsonPath)) {
@@ -2307,6 +2322,13 @@ export class BlocklyService {
 
       try {
         let blocks = JSON.parse(this.electronService.readFile(blockJsonPath));
+        if (changed) {
+          blocks = blocks.filter(block => {
+            const source = JSON.stringify(block);
+            return [...changed].some(key => source.includes('"${board.' + key + '}"'));
+          });
+          if (!blocks.length) continue;
+        }
         const i18nFilePath = this.electronService.pathJoin(
           libPackagePath,
           'i18n',
@@ -2331,7 +2353,7 @@ export class BlocklyService {
           })()
           : '';
 
-        this.loadLibBlocks(blocks, staticPath, libraryInfo.packageName, libVersion);
+        this.loadLibBlocks(blocks, staticPath, libraryInfo.packageName, libVersion, libraryInfo.localPath);
       } catch (error) {
         console.warn('[BlocklyService] failed to refresh board-dependent blocks:', libPackagePath, error);
       }

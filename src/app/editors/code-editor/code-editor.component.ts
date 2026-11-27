@@ -48,6 +48,7 @@ export interface OpenedFile {
   styleUrl: './code-editor.component.scss'
 })
 export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
+  private currentBoardLoad?: object;
   // Monaco编辑器组件引用
   @ViewChild(MonacoEditorComponent) monacoEditorRef!: MonacoEditorComponent;
 
@@ -111,6 +112,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.currentBoardLoad = undefined;
     // 注销当前组件
     this._ProjectService.unregisterCodeEditor();
 
@@ -202,10 +204,16 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.projectService.currentPackageData = packageJson;
     this.projectService.currentProjectPath = projectPath;
 
+    const load = this.currentBoardLoad = {};
+    const isCurrent = () => this.currentBoardLoad === load && this.projectService.currentProjectPath === projectPath;
     try {
-      const boardJson = await this.projectService.resolveBoardConfigForRuntime();
+      const boardJson = await this.projectService.resolveBoardConfigForRuntime(undefined, null);
+      if (!isCurrent()) return;
       this.projectService.currentBoardConfig = boardJson;
       window['boardConfig'] = boardJson;
+      if (this.projectService.isCloudBuild()) void this.projectService.hydrateCloudBoardAfterOpen(boardJson, () => {
+        if (!isCurrent()) throw new Error('Code editor replaced.');
+      });
     } catch (error) {
       console.warn('[CodeEditor] failed to load board config:', error);
     }

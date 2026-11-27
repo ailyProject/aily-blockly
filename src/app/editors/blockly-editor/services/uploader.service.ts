@@ -49,6 +49,8 @@ interface Esp32UploadProgressState {
 
 interface UploadActionState extends ActionState {
   resourceRecovery?: UploadRecoveryPolicy;
+  firmwareBackend?: 'local' | 'cloud';
+  firmwareBuildRequestId?: string;
 }
 
 type FirmwareUploadRequest = FirmwareUploadOptions & {
@@ -145,7 +147,7 @@ export class _UploaderService {
 
     this.actionService.listen('upload-begin', async (action) => {
       try {
-        const result = action.payload?.preparedFirmware || action.payload?.reuseCloudFirmware
+        const result = action.payload?.preparedFirmware || action.payload?.reuseCloudFirmware || action.payload?.reuseExistingFirmware
           ? await this.upload(action.payload) : await this.upload();
 
         return { success: true, result };
@@ -359,6 +361,7 @@ export class _UploaderService {
     let backendOperation: ReturnType<ProjectService['beginBuildBackendOperation']> | undefined;
     let cloudLocalUpload: any;
     let disposeCloudInvalidation: (() => void) | undefined;
+    let selectedFirmware: Pick<UploadActionState, 'firmwareBackend' | 'firmwareBuildRequestId'> | undefined;
 
     return new Promise<UploadActionState>(async (resolve, reject) => {
       // 保存 reject 函数，以便 cancel() 方法可以立即中断
@@ -384,7 +387,7 @@ export class _UploaderService {
 
           if (initialCloud || cloud) this.projectService.assertProjectDependencySession(dependencySession);
           if (prepared && (prepared.projectPath !== projectPath || prepared.port !== this.serialService.currentPort
-            || this.projectService.isAilyCodeProject(projectPath) || this.projectService.isCloudBuild() !== reuseCloud)) {
+            || this.projectService.isAilyCodeProject(projectPath))) {
             throw Object.assign(new Error('Prepared firmware upload no longer owns the requested project and port.'),
               { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
           }
@@ -432,18 +435,46 @@ export class _UploaderService {
 
         const boardJson = await this.projectService.getBoardJson();
         let verifiedExecution: ResolvedBuildExecution | undefined;
+        let assertFirmwareSourceCurrent: (() => void | Promise<void>) | undefined;
         const captureExecution = window['builder']?.sharedBuildExecutionVersion === 1
           ? (execution: ResolvedBuildExecution) => { verifiedExecution = execution; } : undefined;
 
+        // A local build retires the prior cloud result. The receipt selects a
+        // candidate; the active source and firmware checks below authorize reuse.
+        const cloudCandidate = reuseCloud || (!firmware && (window['cloudBuild']?.hasArtifact
+          ? await window['cloudBuild'].hasArtifact({ projectPath }) : initialCloud));
+        const candidateBackend = cloudCandidate ? 'cloud' : 'local';
+        const findReusableFirmware = async (verify: (backend: 'cloud' | 'local') => Promise<boolean>) => {
+          if (await verify(candidateBackend)) return candidateBackend;
+          // An active cloud record is only a hint. A stale cloud result must
+          // not hide a verified local result for the current source.
+          if (candidateBackend === 'cloud' && !reuseCloud && await verify('local')) return 'local';
+        };
+        const verifyBlocklyFirmware = (backend: 'cloud' | 'local') => this._builderService.canReuseBuildForUpload(
+          () => this.cancelled, captureExecution, backend, assertFresh => { assertFirmwareSourceCurrent = assertFresh; });
+        const selectReusableFirmware = (backend: 'cloud' | 'local') => {
+          cloud = backend === 'cloud';
+          if (!cloud && initialCloud) backendOperation.useLocal();
+          this.cloudUploadInProgress = cloud;
+        };
+
         assertContext();
-        if (firmware || reuseCloud) {
+        if (prepared) {
           this._builderService.isUploading = true;
-          if (!await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution)) {
-            const message = reuseCloud ? 'No reusable cloud firmware is available for the current Blockly project.'
-              : 'The active Blockly project changed after compilation.';
-            throw Object.assign(new Error(message), { code: 'BUILD_ARTIFACT_STALE' });
+          const reusableBackend = await findReusableFirmware(verifyBlocklyFirmware);
+          if (!reusableBackend) {
+            const message = 'No verified firmware matches the current Blockly project.';
+            throw Object.assign(new Error(message), {
+              code: prepared.reuseExistingFirmware ? 'PROJECT_REUSABLE_FIRMWARE_REQUIRED' : 'BUILD_ARTIFACT_STALE',
+            });
           }
           assertContext();
+          selectReusableFirmware(reusableBackend);
+          selectedFirmware = {
+            firmwareBackend: reusableBackend,
+            ...(firmware || verifiedExecution
+              ? { firmwareBuildRequestId: firmware?.buildRequestId ?? verifiedExecution?.buildRequestId } : {}),
+          };
         }
 
         const isDebuggerUpload = capturedPortInfo?.type === 'debugger';
@@ -511,21 +542,15 @@ export class _UploaderService {
         let buildPath: string;
         let sharedExecution: SharedBuildExecution | undefined;
 
-        // A local build retires the previous cloud receipt. A live receipt
-        // identifies the downloaded candidate; the input check still owns reuse.
-        const cloudCandidate = !prepared && window['cloudBuild']?.hasArtifact
-          ? await window['cloudBuild'].hasArtifact({ projectPath }) : initialCloud;
         assertContext();
-        const candidateBackend = cloudCandidate ? 'cloud' : 'local';
-        const selectReusableFirmware = () => {
-          cloud = cloudCandidate;
-          if (!cloud && initialCloud) backendOperation.useLocal();
-          this.cloudUploadInProgress = cloud;
-        };
 
         if (firmware) {
           const execution = requirePreparedBuildExecution(projectPath, firmware);
           buildPath = execution.buildPath;
+          if (captureExecution && (verifiedExecution?.buildRequestId !== execution.buildRequestId
+            || verifiedExecution?.inputDigest !== execution.inputDigest)) {
+            throw Object.assign(new Error('Prepared firmware changed during verification.'), { code: 'BUILD_ARTIFACT_STALE' });
+          }
           if (isSharedBuildExecution(execution)) {
             if (verifiedExecution?.executionId !== execution.executionId) {
               throw Object.assign(new Error('Prepared firmware changed during verification.'), { code: 'BUILD_ARTIFACT_STALE' });
@@ -536,13 +561,14 @@ export class _UploaderService {
           try {
             this.coderBuildActive = true;
 
-            const reusable = (cloudCandidate || verifyLocalCoderBuild)
-              && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled, candidateBackend);
+            const reusableBackend = await findReusableFirmware(async backend =>
+              (backend === 'cloud' || verifyLocalCoderBuild)
+              && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled, backend));
 
             assertContext();
 
-            if (reusable) {
-              selectReusableFirmware();
+            if (reusableBackend) {
+              selectReusableFirmware(reusableBackend);
             } else {
               if (this.projectService.isCoderProjectContext && this.projectService.getProjectDependencyStatus(projectPath) === 'idle') {
                 const ready = await this.npmService.ensureProjectAndBoardDeps(projectPath, undefined, dependencySession);
@@ -610,14 +636,12 @@ export class _UploaderService {
 
           assertContext();
 
-          const reusable = reuseCloud || await this._builderService.canReuseBuildForUpload(
-            () => this.cancelled, captureExecution, candidateBackend);
+          const reusableBackend = prepared ? undefined : await findReusableFirmware(verifyBlocklyFirmware);
 
           assertContext();
 
-          if (reusable) {
-            selectReusableFirmware();
-          } else {
+          if (reusableBackend) selectReusableFirmware(reusableBackend);
+          if (!prepared && !reusableBackend) {
             try {
               const buildResult = await this._builderService.build();
 
@@ -629,7 +653,7 @@ export class _UploaderService {
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
               if ((cloud || window['builder']?.canReuseBlocklyUpload)
-                && !await this._builderService.canReuseBuildForUpload(() => this.cancelled, captureExecution, cloud ? 'cloud' : 'local')) {
+                && !await verifyBlocklyFirmware(cloud ? 'cloud' : 'local')) {
                 throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
               }
               if ((verifiedExecution?.layout === 'shared' || verifiedExecution?.isolatedRecovery)
@@ -657,8 +681,14 @@ export class _UploaderService {
                 return;
               } else {
                 const buildErrorDetails = (error?.fullStdErr || error?.text || error?.message || error || '').toString();
+                // The cloud build already reported its cause and owns the explicit local retry.
+                if (initialCloud && this.noticeService.data?.state === 'error' && this.noticeService.data.onRetryLocally) {
+                  this.appendUploadLog(buildErrorDetails, 'ERROR');
+                  this.isErrored = true;
+                  reject(error);
+                  return;
+                }
                 const message = this.uploadT('BUILD_FAILED_CHECK_CODE');
-
                 this.handleUploadError(message, this.uploadT('BUILD_FAILED_TITLE'), buildErrorDetails);
                 reject({ state: 'error', text: message });
 
@@ -724,6 +754,15 @@ export class _UploaderService {
           assertContext();
         }
         
+        if (assertFirmwareSourceCurrent) {
+          await assertFirmwareSourceCurrent();
+          assertContext();
+        }
+        selectedFirmware ??= {
+          firmwareBackend: cloud ? 'cloud' : 'local',
+          ...(verifiedExecution?.buildRequestId ? { firmwareBuildRequestId: verifiedExecution.buildRequestId } : {}),
+        };
+
         // 检查是否在编译期间被取消
         if (this.cancelled) {
           this.uploadInProgress = false;
@@ -838,6 +877,11 @@ export class _UploaderService {
 
         const cdcOnBoot = !isDebuggerUpload
           && await this.projectService.isCdcOnBootEnabledForProject(boardJson);
+
+        if (assertFirmwareSourceCurrent) {
+          await assertFirmwareSourceCurrent();
+          assertContext();
+        }
 
         resourceRecovery = resolveUploadRecoveryPolicy({
           boardJson,
@@ -1418,14 +1462,20 @@ export class _UploaderService {
 
               this._builderService.isUploading = false;
 
-              this.handleUploadError(this.uploadT('PROCESS_ERROR'), this.uploadT('FAILED_TITLE'), fullErrorText || errorText || this.uploadT('PROCESS_ERROR'));
-              this.workflowService.finishUpload(false, errorText);
+              const serialBusy = capturedSerialPort && (!capturedPortInfo?.type || capturedPortInfo.type === 'serial')
+                && /(?:could not|cannot|failed to|unable to) open[^\r\n]*(?:resource busy|\bEBUSY\b|already in use)/i.test(fullErrorText);
+              const summary = serialBusy ? this.uploadT('SERIAL_PORT_BUSY', { port: capturedSerialPort }) : undefined;
+              const failureText = summary || errorText || this.uploadT('PROCESS_ERROR');
+              this.handleUploadError(summary || this.uploadT('PROCESS_ERROR'), this.uploadT('FAILED_TITLE'),
+                fullErrorText || failureText);
+              this.workflowService.finishUpload(false, failureText);
 
               this.uploadPromiseReject = null;
 
               reject({
                 state: 'error',
-                text: errorText || this.uploadT('PROCESS_ERROR'),
+                text: failureText,
+                ...(serialBusy ? { code: 'SERIAL_PORT_BUSY' } : {}),
                 ...(resourceRecovery ? { resourceRecovery } : {}),
               });
             } else if (this.uploadCompleted) {
@@ -1487,6 +1537,12 @@ export class _UploaderService {
         this.uploadInProgress = false;
         this._builderService.isUploading = false; // 确保在异常情况下设置为false
 
+        if (error?.code === 'PROJECT_REUSABLE_FIRMWARE_REQUIRED') {
+          this.uploadPromiseReject = null;
+          reject({ state: 'error', text: error.message, code: error.code });
+          return;
+        }
+
         if (this.cancelled) {
           this.workflowService.finishUpload(false, 'Cancelled');
 
@@ -1511,7 +1567,7 @@ export class _UploaderService {
           ...(resourceRecovery ? { resourceRecovery } : {}),
         });
       }
-    }).finally(async () => {
+    }).then(result => selectedFirmware && result.state === 'done' ? { ...result, ...selectedFirmware } : result).finally(async () => {
       disposeCloudInvalidation?.();
 
       if (cloudLocalUpload) await window['cloudBuild'].finishArtifactUpload({ requestId: cloudLocalUpload.requestId }).catch(() => undefined);

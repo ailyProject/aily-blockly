@@ -6,6 +6,7 @@ const uploadRuntime = require('./cloud-upload-runtime');
 const cloudRecipe = require('./cloud-recipe-upload');
 const { nativeSerialExecutable } = require('./cloud-native-upload');
 const ciResources = require('./ci-resource-preparation');
+const { SDK_TOOLCHAIN_UNSUPPORTED } = require('./ci-resource-contract');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const { confirmBuildSource } = require(path.join(childRoot, 'scripts/build-source-capture'));
 const { CloudBuildBroker } = require('./broker');
@@ -99,13 +100,20 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       }
       else if (request.action === 'completeCIToolPreparation') result = broker.completeCIToolPreparation(event.sender, request);
       else if (request.action === 'boardSupport') result = await broker.boardSupport(request.settings || request, request);
-      else if (request.action === 'targets') result = await broker.targets(request.settings || request, undefined, request.profileDigest, request);
+      else if (request.action === 'targets') {
+        const catalogOwner = currentBackend === 'cloud' ? { sender: event.sender, generation: owner.generation,
+          isCurrent: () => revision === backendRevision } : undefined;
+        result = await broker.targets(request.settings, undefined, request.profileDigest, request, catalogOwner);
+        if (catalogOwner && request.forBuild === true) assertRevision(revision);
+      }
       else if (request.action === 'compile' || request.action === 'analysis') {
         const stopped = () => { void broker.cancel(event.sender, request.requestId); };
         event.sender.once('destroyed', stopped);
         try { result = await broker.run(event.sender, request, send); }
         finally { event.sender.removeListener('destroyed', stopped); }
-      } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId);
+      } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId, {
+        discardCompletedArtifact: request.discardCompletedArtifact === true,
+      });
       else if (request.action === 'hasArtifact') result = broker.hasArtifact(event.sender, request.projectPath);
       else if (request.action === 'artifactPath') result = await broker.artifactPath(event.sender, request.projectPath);
       else if (request.action === 'artifactUploadInfo') {
@@ -220,6 +228,8 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
     } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
       ...(Number.isInteger(error.httpStatus) ? { httpStatus: error.httpStatus } : {}),
       ...(error.code === 'BUILD_SOURCE_STALE' && error.sourceReason ? { sourceReason: error.sourceReason } : {}),
+      ...(error.code === 'CI_RESOURCE_UNSUPPORTED' && error.ciResourceReason === SDK_TOOLCHAIN_UNSUPPORTED
+        ? { ciResourceReason: SDK_TOOLCHAIN_UNSUPPORTED } : {}),
       ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
       ...(error.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(error.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),

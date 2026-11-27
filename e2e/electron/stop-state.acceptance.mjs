@@ -159,8 +159,20 @@ try {
 
   await stage('normal-writer-control')
   await page.evaluate(() => { const s = window.__stopStateAcceptance; s.begin(); s.lease = s.editor.acquireWorkspaceEditLease(); s.report(null) })
-  assert.equal((await state()).notice.title, '正在结束工作区操作')
-  await page.evaluate(() => { const s = window.__stopStateAcceptance; try {} finally { s.lease.release(); s.lease = null } })
+  const manual = await state()
+  assert.equal(manual.notice, null, 'A manual write coinciding with a completed chat turn stays silent')
+  assert.equal(manual.inputFenced, true)
+  await page.evaluate(() => {
+    const s = window.__stopStateAcceptance
+    s.editor.setAiWritingActive('live-blockly-operation', true)
+    s.begin(); s.report(null)
+  })
+  assert.equal((await state()).notice.title, '正在应用画布更改')
+  await page.evaluate(() => window.__stopStateAcceptance.editor.setAiWritingActive('live-blockly-operation', false))
+  const released = await state()
+  assert.equal(released.notice, null)
+  assert.equal(released.inputFenced, true, 'Withdrawing the automation notice must preserve the manual lock')
+  await page.evaluate(() => { const s = window.__stopStateAcceptance; s.lease.release(); s.lease = null })
   const normal = await state()
   assert.equal(normal.aiWriting, false); assert.equal(normal.busy, false); assert.equal(normal.blocked, false)
   assert.equal(normal.notice, null); assert.equal(normal.inputFenced, false)

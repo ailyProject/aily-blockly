@@ -31,12 +31,14 @@ export class AbsApplicationJournal {
   completeNativeSave(ref: NativeSaveOperationRef, facts: NativeSaveResultFacts, guard: () => void) { return this.native().completeNativeSave(ref, facts, guard); }
   observeNativeSave(request: NativeSaveIdentity, guard: () => void) { return this.native().observeNativeSave(request, guard); }
 
-  async stage(operationId: string, validation: any, outcome: any, assertCurrent: () => void) {
+  async stage(operationId: string, validation: any, outcome: any, assertCurrent: () => void, locked?: AbsSyncStorageAccess) {
     const record = absJson({ version: 1, project: this.project, operationId, validation, outcome });
-    await this.port.withLock(async storage => {
+    const writeStage = async (storage: AbsSyncStorageAccess) => {
       assertCurrent();
       if (!await storage.replace(stageKey(operationId), null, record)) throw fail('The staged application result already exists.');
-    });
+    };
+    if (locked) return writeStage(locked);
+    return this.port.withLock(writeStage);
   }
 
   async complete(operationId: string, outcome: any, assertCurrent: () => void) {
@@ -124,6 +126,14 @@ export class AbsApplicationJournal {
     return { abi, abs, map };
   }
 
+  private unchangedStagedPreimage(snapshot: AbsOperationSnapshot, committed: string | null, generation: string, operationId: string) {
+    if (snapshot?.version !== 1 || snapshot.kind !== 'abs-apply' || snapshot.project !== this.project || snapshot.id !== operationId
+      || snapshot.sourceStageVersion !== 1 || committed === null || committed !== snapshot.committed) return false;
+    const head = JSON.parse(committed);
+    return head?.schemaVersion === 1 && typeof head.generation === 'string' && head.generation !== generation
+      && /^sha256:[a-f0-9]{64}$/.test(head.hash);
+  }
+
   /** Also used on restart in the commit->reply gap. This never writes ABI,
    * applies a candidate, or infers history from an unrelated current project. */
   async seal(operationId: string, assertCurrent: () => void): Promise<boolean> {
@@ -133,6 +143,9 @@ export class AbsApplicationJournal {
     const record = JSON.parse(staged), binding = record.outcome?.evidence?.binding;
     if (record.version !== 1 || record.project !== this.project || record.operationId !== operationId || !binding
       || binding.scope.projectKey !== this.project) throw fail('The staged application scope is invalid.');
+    const snapshotText = await this.port.read(`recoveries/operation-${operationId}.json`);
+    const sourcePointer = await this.port.read('committed.json');
+    if (snapshotText !== null && this.unchangedStagedPreimage(JSON.parse(snapshotText), sourcePointer, binding.generation, operationId)) return false;
     const store = new AbsBaselineStore(this.port, binding.scope), committed = await this.ancestor(store, binding.generation);
     if (!committed) return false;
     const currentPointer = await this.port.read('committed.json');
@@ -187,10 +200,17 @@ export class AbsApplicationJournal {
     }
     const historical = (result: any) => publicationObservation ? { ...result, publicationObservation,
       applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false } } : result;
-    const recordedFinalText = await this.port.read(resultKey(index.operationId));
-    if (recordedFinalText !== null && JSON.parse(recordedFinalText).kind === 'rolled-back') {
+    let recordedFinalText = await this.port.read(resultKey(index.operationId));
+    let recordedFinal = recordedFinalText === null ? null : JSON.parse(recordedFinalText);
+    const proofText = await this.port.read(proofKey(index.operationId));
+    if (recordedFinal?.coldRecovery !== undefined && proofText !== null) {
+      // A positive original commit proof takes precedence over negative recovery evidence.
+      recordedFinal = null;
+      recordedFinalText = null;
+    }
+    if (recordedFinalText !== null && recordedFinal.kind === 'rolled-back') {
       this.assertRollbackSnapshot(snapshot, index.operationId);
-      const context = nativeSaveCapability(this.port), final = JSON.parse(recordedFinalText), pointer = JSON.parse(final.operationPointer);
+      const context = nativeSaveCapability(this.port), final = recordedFinal, pointer = JSON.parse(final.operationPointer);
       const digest = (value: string | null) => value === null ? Promise.resolve(null) : hashAbsText(value);
       const saved = { abiHash: await digest(snapshot.disk.abi), absHash: await digest(snapshot.disk.abs),
         mapHash: await digest(snapshot.disk.map), committedHash: await digest(snapshot.committed) };
@@ -204,7 +224,13 @@ export class AbsApplicationJournal {
         || final.outcome?.ok !== false || final.outcome?.operation !== 'abs_apply' || final.outcome?.project !== this.project
         || final.outcome?.publication?.status !== 'NOT_COMMITTED' || final.outcome?.application?.status !== 'ROLLED_BACK'
         || final.outcome?.application?.requestId !== requestId || final.outcome?.requiresReload !== false
-        || final.outcome?.candidateApplied !== false || typeof final.outcome?.code !== 'string') throw fail('The original rollback terminal result changed.');
+        || final.outcome?.candidateApplied !== false || typeof final.outcome?.code !== 'string'
+        || (final.coldRecovery !== undefined || final.outcome?.code === 'ABS_APPLICATION_COLD_ROLLBACK')
+          && (final.outcome?.code !== 'ABS_APPLICATION_COLD_ROLLBACK' || final.coldRecovery == null
+            || index.sourceStageVersion !== 1
+            || !await new AbsOperationJournal(this.port, this.project).verifyColdApplicationRollback(snapshot, final.operationPointer, final.coldRecovery, saved))) {
+        throw fail('The original rollback terminal result changed.');
+      }
       assertCurrent();
       return { result: historical({ ...final.outcome, receipt: { ...snapshot.application.validation, rollback: { version: 1,
         operationId: index.operationId, snapshotHash: index.snapshotHash, recordHash: await hashAbsText(recordedFinalText),
@@ -219,12 +245,13 @@ export class AbsApplicationJournal {
       || validation.requestId !== requestId || validation.candidate.hash !== snapshot.candidate?.hash
       || await hashAbsText(snapshot.candidate.source) !== validation.candidate.hash || validation.base.generation !== snapshot.candidate.generation
       || !binding || staged.project !== this.project || staged.operationId !== index.operationId) throw fail('Original candidate or intent binding differs from the staged result.');
-    const proofText = await this.port.read(proofKey(index.operationId));
     let proof: any;
     if (proofText !== null) proof = JSON.parse(proofText);
     else {
       // Read-only observation in the acknowledgement gap. Restart recovery
       // seals this evidence durably before admitting another document writer.
+      const sourcePointer = await this.port.read('committed.json');
+      if (this.unchangedStagedPreimage(snapshot, sourcePointer, binding.generation, index.operationId)) return unknown('ABS_APPLY_OBSERVATION_PENDING', index.operationId);
       const currentStore = new AbsBaselineStore(this.port, binding.scope), committed = await this.ancestor(currentStore, binding.generation);
       if (!committed) return unknown('ABS_APPLY_OBSERVATION_PENDING', index.operationId);
       const committedPointer = await this.port.read('committed.json');
@@ -242,7 +269,7 @@ export class AbsApplicationJournal {
     if (absJson(await generationEvidence(projection, abi)) !== absJson(staged.outcome.evidence)) throw fail('Original saved document readback differs from its result.');
     let outcome = staged.outcome;
     const finalText = recordedFinalText ?? await this.port.read(resultKey(index.operationId));
-    if (finalText !== null) {
+    if (finalText !== null && !(proofText !== null && JSON.parse(finalText).coldRecovery !== undefined)) {
       const final = JSON.parse(finalText);
       if (final.version !== 1 || final.project !== this.project || final.operationId !== index.operationId
         || final.stageHash !== proof.stageHash || absJson(final.outcome?.evidence) !== absJson(outcome.evidence)

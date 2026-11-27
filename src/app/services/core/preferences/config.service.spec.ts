@@ -380,6 +380,7 @@ describe('ConfigService project compile backend startup', () => {
     });
     const ready = service.initializeProjectCompileBackend();
     await authStarted;
+    expect(auth.initializeAuth).toHaveBeenCalledOnceWith('identity');
     expect(service.getCompileBackend()).toBe('local');
     auth.canUseCloudCompilation = true;
     releaseAuth();

@@ -7,7 +7,7 @@ import { NzResizableModule, NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { NzTabsModule } from 'ng-zorro-antd/tabs';
 import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
-import { UiService, UpdateService, OnboardingService } from '@core/app-shell/public-api';
+import { UiService, UpdateService, OnboardingService, ProjectSaveMessageService, type ProjectSaveMessage } from '@core/app-shell/public-api';
 import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '@domain/project/public-api';
@@ -19,7 +19,7 @@ import { AppStoreService } from '../tools/app-store/app-store.service';
 import { NzModalModule, NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import { NpmService } from '@domain/dependencies/public-api';
 import { NavigationEnd, Router, RouterModule } from '@angular/router';
-import { combineLatest, distinctUntilChanged, filter, map, merge, Subscription, take } from 'rxjs';
+import { combineLatest, distinctUntilChanged, filter, map, merge, skip, Subscription, take } from 'rxjs';
 import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
@@ -131,8 +131,9 @@ export class MainWindowComponent implements OnDestroy {
   private configNoticeSubscription: Subscription | null = null;
   private projectContextSubscription: Subscription | null = null;
   private projectStateSubscription: Subscription | null = null;
-  private projectLoadingMessageTimer: ReturnType<typeof setTimeout> | null = null;
+  private projectProgressMessageTimer: ReturnType<typeof setTimeout> | null = null;
   private projectProgressMessageId: string | null = null;
+  private projectSaveMessage?: ProjectSaveMessage;
   private loginDialogSubscription: Subscription | null = null;
   private loginModalRef: NzModalRef<LoginComponent> | null = null;
   private authSessionInvalidationSubscription: Subscription | null = null;
@@ -169,6 +170,7 @@ export class MainWindowComponent implements OnDestroy {
     private cloudProjectOpen: CloudProjectOpenService,
     private metrics: MetricsService,
     private serialService: SerialService,
+    private projectSaveMessages: ProjectSaveMessageService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -647,41 +649,49 @@ export class MainWindowComponent implements OnDestroy {
     this.projectStateSubscription = this.projectService.stateSubject.pipe(
       distinctUntilChanged(),
     ).subscribe((state) => {
-      this.clearProjectProgressMessage();
+      this.clearProjectProgressMessage(state === 'saved');
       switch (state) {
         case 'loading':
-          this.projectLoadingMessageTimer = setTimeout(() => {
-            this.projectLoadingMessageTimer = null;
+          this.projectProgressMessageTimer = setTimeout(() => {
+            this.projectProgressMessageTimer = null;
             if (this.projectService.stateSubject.value !== 'loading') return;
             this.projectProgressMessageId = this.message.loading(
               this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'), { nzDuration: 0 },
             ).messageId;
           }, 20);
           break;
-        case 'loaded':
-          this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_LOADED'));
-          void this.reloadTerminalAfterProjectOpen();
-          break;
         case 'saving':
-          this.projectProgressMessageId = this.message.loading(
-            this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'), { nzDuration: 0 },
-          ).messageId;
+          this.projectSaveMessage = this.projectSaveMessages.saving(this.projectService.currentProjectPath);
           break;
         case 'saved':
-          this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_SAVED'));
+          this.projectSaveMessage = this.projectSaveMessages.saved(this.projectService.currentProjectPath, this.projectSaveMessage);
+          break;
+        case 'loaded':
+          this.projectProgressMessageId = this.message.success(
+            this.translate.instant('MAIN_WINDOW.PROJECT_LOADED'),
+            { nzDuration: 4000, nzAnimate: false },
+          ).messageId;
+          void this.reloadTerminalAfterProjectOpen();
           break;
         default:
           break;
       }
       this.cd.detectChanges();
     });
-
+    this.projectStateSubscription.add(this.projectService.currentProjectPath$.pipe(skip(1)).subscribe(() => {
+      // Opening a project starts loading before the new path is published.
+      if (this.projectService.stateSubject.value !== 'loading') this.clearProjectProgressMessage();
+    }));
   }
 
-  private clearProjectProgressMessage(): void {
-    if (this.projectLoadingMessageTimer != null) {
-      clearTimeout(this.projectLoadingMessageTimer);
-      this.projectLoadingMessageTimer = null;
+  private clearProjectProgressMessage(keepSave = false): void {
+    if (this.projectSaveMessage && !keepSave) {
+      this.projectSaveMessages.clear(this.projectSaveMessage);
+      this.projectSaveMessage = undefined;
+    }
+    if (this.projectProgressMessageTimer != null) {
+      clearTimeout(this.projectProgressMessageTimer);
+      this.projectProgressMessageTimer = null;
     }
     if (this.projectProgressMessageId != null) {
       this.message.remove(this.projectProgressMessageId);

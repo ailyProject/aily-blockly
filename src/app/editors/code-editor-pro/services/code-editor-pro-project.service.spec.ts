@@ -36,4 +36,21 @@ describe('CodeEditorProProjectService host paths', () => {
     await service.saveAll(projectPath.toLowerCase() + '/');
     expect(project.saveLibraryChanges).toHaveBeenCalledOnceWith(projectPath);
   });
+
+  it('rejects dirty Coder History buffers before reserving a new project', async () => {
+    const previousPath = window['path'];
+    window['path'] = { relative: (from: string, to: string) => to.slice(from.length + 1) };
+    bridge.captureCopy = jasmine.createSpy('capture');
+    bridge.checkCopy = jasmine.createSpy('check').and.resolveTo();
+    try {
+      for (const relative of ['.workspace-history/workspace.json', '.aily/workspace-mode.json', '.aily/history-recovery/copy-1/workspace-mode.json']) {
+        bridge.captureCopy.and.resolveTo({ token: 'copy', files: [{ path: `${projectPath}/${relative}`, bytes: new Uint8Array() }] });
+        await expectAsync(service.prepareCopy(projectPath)).toBeRejectedWithError(/工程历史文件/);
+      }
+      bridge.captureCopy.and.resolveTo({ token: 'copy', files: [{ path: `${projectPath}/src/main.cpp`, bytes: new Uint8Array() }] });
+      expect(await service.prepareCopy(projectPath)).toEqual(jasmine.objectContaining({ write: jasmine.any(Function) }));
+    } finally {
+      window['path'] = previousPath;
+    }
+  });
 });

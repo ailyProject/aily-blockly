@@ -1,6 +1,7 @@
 import type { IMenuItem } from '../../configs/menu.config';
 import { Injectable, Injector } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
+import { TranslateService } from '@ngx-translate/core';
 import { NoticeService, WorkflowService } from '@core/app-shell/public-api';
 import { CmdService, LogService } from '@core/platform/public-api';
 import { ProjectService, CODER_BOARD_REQUIRED_MESSAGE, type CoderExecutionPort } from '@domain/project/public-api';
@@ -48,6 +49,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     private readonly serial: SerialService,
     private readonly notices: NoticeService,
     private readonly logs: LogService,
+    private readonly translate: TranslateService,
   ) {
     projects.currentProjectPath$.subscribe(path => {
       if (this.key(path) === this.key(this.activePath)) return;
@@ -123,15 +125,20 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
           return this.run(path, 'build', async () => {
             await retry();
             return { state: session.state.notice?.state || 'error' };
-          }, true).catch(() => undefined);
+          }, { repairLocalDependencies: true }).catch(() => undefined);
         } };
       }
+      const previous = session.state.notice;
       session.state = { ...session.state, notice };
       session.noticePresented = false;
       this.publish();
       if (this.isActive(path)) {
-        notice ? this.notices.update({ ...notice, sendToLog: false }) : this.notices.clear();
-        if (notice) session.noticePresented = true;
+        if (notice) {
+          this.notices.update({ ...notice, sendToLog: false });
+          session.noticePresented = true;
+        } else if (!previous?.preparationId || previous.preparationId === this.notices.data?.preparationId) {
+          this.notices.clear();
+        }
       }
     });
     session.log.stateSubject.subscribe(log => {
@@ -149,7 +156,8 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     this.states$.next(new Map([...this.sessions].map(([path, session]) => [path, session.state])));
   }
 
-  private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>, repairLocalDependencies = false): Promise<any> {
+  private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>,
+    { repairLocalDependencies = false, preprocessOnly = false } = {}): Promise<any> {
     if (this.projects.isProjectTransitionInProgress(path)) throw new Error('工程配置正在更新，请完成后再编译或上传。');
     const dependencyBlock = this.projects.getProjectDependencyBlockMessage(path);
     if (dependencyBlock && !repairLocalDependencies) throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
@@ -159,7 +167,15 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     session.state = { ...session.state, [kind]: 'doing' };
     const finish = this.projects.beginCoderOperation(kind, path);
     this.publish();
+    const visible = this.isActive(path);
+    const showPreparation = !preprocessOnly && !repairLocalDependencies && !(visible && this.notices.data?.state === 'doing');
+    const preparation = showPreparation ? session.notice.beginPreparation({
+      title: this.translate.instant(kind === 'build' ? 'BLOCKLY_EDITOR.BUILD.PREPARING_TITLE' : 'BLOCKLY_EDITOR.UPLOAD.UPLOADING_TITLE'),
+      ...(kind === 'upload' ? { text: this.translate.instant('BLOCKLY_EDITOR.UPLOAD.PREPARING_DATA') } : {}),
+      state: 'doing', showProgress: false,
+    }, visible) : undefined;
     try {
+      if (preparation) await preparation.painted;
       if (!repairLocalDependencies) await session.project.syncCurrentBoardConfig();
       if (!session.builderObserved) {
         session.builderObserved = true;
@@ -175,6 +191,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
       session.state = { ...session.state, [kind]: error?.state || 'error' };
       throw error;
     } finally {
+      preparation?.close();
       finish();
       session.busy = null;
       this.publish();
@@ -186,7 +203,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);
       return builder.build(path, options);
-    });
+    }, { preprocessOnly: options.preprocessOnly });
   }
 
   async resolvePort(path: string, requestedPort?: string) {

@@ -456,7 +456,7 @@ for (const state of [true, 'unknown']) test(`an uncommitted reservation held by 
 test('active project writers still prevent new owner adoption even when a prior claim is uncommitted', async t => {
   const { f, p, options, claim, bytes } = await uncommittedAdoption(t);
   const filename = path.join(f.target, '.aily', 'project-files.write.lock');
-  const writer = JSON.stringify({ pid: 200, token: 'preserve-live-writer' }); fs.writeFileSync(filename, writer);
+  const writer = JSON.stringify({ pid: process.pid, token: 'preserve-live-writer' }); fs.writeFileSync(filename, writer);
   const controller = createRepairContinuationController({ ...options, pid: 102, processState: pid => pid === 100 || pid === 101 ? false : true });
   const result = await controller.resume({ ...f.resume, resumeRequestId: 'claim-with-active-writer' });
   assert.equal(result.code, 'PROJECT_REPAIR_TARGET_BUSY'); assert.equal(read(p.current).epoch, 1);

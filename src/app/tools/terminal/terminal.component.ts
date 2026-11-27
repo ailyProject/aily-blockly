@@ -29,6 +29,8 @@ export class TerminalComponent {
   private isCapturingSizeCommand = false;
   private ptyOperation: Promise<void> = Promise.resolve();
   private isDestroyed = false;
+  private ptyPid?: number;
+  private unsubscribePtyData?: () => void;
 
   constructor(
     private electronService: ElectronService,
@@ -113,9 +115,6 @@ export class TerminalComponent {
       void this.handleTerminalInput(input);
     });
 
-    window['terminal'].onData((data) => {
-      this.terminal.write(data);
-    })
   }
 
   ngOnDestroy(): void {
@@ -124,6 +123,7 @@ export class TerminalComponent {
       void this.runPtyOperation(async () => this.closeNodePty());
     }
     this.terminalEl.nativeElement.removeEventListener('contextmenu', this.contextMenuListener);
+    clearTimeout(this.resizeTimeout);
     this.resizeObserver?.disconnect();
     this.terminal.dispose();
   }
@@ -385,10 +385,20 @@ export class TerminalComponent {
   }
 
   async nodePtyInit() {
-    await this.terminalService.create({
+    if (this.isDestroyed) return;
+    const pid = await this.terminalService.create({
       cols: 120,
       rows: 200,
       cwd: this.projectService.currentProjectPath
+    });
+    if (this.isDestroyed) {
+      this.terminalService.close(pid);
+      return;
+    }
+    this.ptyPid = pid;
+    // Bind output and teardown to this incarnation, including after a reload.
+    this.unsubscribePtyData = this.terminalService.listen(pid, data => {
+      if (!this.isDestroyed && this.ptyPid === pid) this.terminal.write(data);
     });
   }
 
@@ -397,7 +407,10 @@ export class TerminalComponent {
   }
 
   closeNodePty(): void {
-    this.terminalService.close();
+    this.unsubscribePtyData?.();
+    this.unsubscribePtyData = undefined;
+    if (this.ptyPid !== undefined) this.terminalService.close(this.ptyPid);
+    this.ptyPid = undefined;
   }
 
   private runPtyOperation(operation: () => Promise<void>): Promise<void> {

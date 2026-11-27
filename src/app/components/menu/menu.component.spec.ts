@@ -57,6 +57,7 @@ describe('MenuComponent submenu switching', () => {
     document.body.append(frame);
     const active = spyOnProperty(document, 'activeElement', 'get').and.returnValue(document.body);
     try {
+      frame.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
       const blur = new Event('blur', {cancelable: true});
       window.dispatchEvent(blur);
       expect(closed).not.toHaveBeenCalled();
@@ -65,6 +66,56 @@ describe('MenuComponent submenu switching', () => {
       tick();
       expect(closed).toHaveBeenCalledTimes(1);
       expect(blur.defaultPrevented).toBeFalse();
+    } finally { frame.remove(); }
+  }));
+
+  it('keeps the menu open through background iframe autofocus and hover until a real click', fakeAsync(() => {
+    tick();
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const closed = jasmine.createSpy('closed');
+    menu.closeEvent.subscribe(closed);
+    const active = spyOnProperty(document, 'activeElement', 'get').and.returnValue(document.body);
+    try {
+      // The pointer stays over the host button while Chat initializes.
+      document.body.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      window.dispatchEvent(new Event('blur'));
+      active.and.returnValue(frame);
+      tick();
+      expect(closed).not.toHaveBeenCalled();
+
+      const releaseFocus = spyOn(frame, 'blur').and.callFake(() => { active.and.returnValue(document.body); });
+      const enter = new PointerEvent('pointerover', { bubbles: true, cancelable: true });
+      frame.dispatchEvent(enter);
+      tick();
+      expect(closed).not.toHaveBeenCalled();
+      expect(releaseFocus).toHaveBeenCalledTimes(1);
+      expect(enter.defaultPrevented).toBeFalse();
+
+      window.dispatchEvent(new Event('blur')); // The user's click focuses the editor again.
+      active.and.returnValue(frame);
+      tick();
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(frame);
+    } finally { frame.remove(); }
+  }));
+
+  it('dismisses on keyboard navigation into an external frame without taking focus back', fakeAsync(() => {
+    tick();
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const closed = jasmine.createSpy('closed');
+    menu.closeEvent.subscribe(closed);
+    const active = spyOnProperty(document, 'activeElement', 'get').and.returnValue(document.body);
+    try {
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      document.body.dispatchEvent(tab);
+      window.dispatchEvent(new Event('blur'));
+      active.and.returnValue(frame);
+      tick();
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(tab.defaultPrevented).toBeFalse();
+      expect(document.activeElement).toBe(frame);
     } finally { frame.remove(); }
   }));
 
@@ -87,7 +138,9 @@ describe('MenuComponent submenu switching', () => {
     tick();
     const closed = jasmine.createSpy('closed');
     menu.closeEvent.subscribe(closed);
-    spyOnProperty(document, 'activeElement', 'get').and.returnValue(document.createElement('iframe'));
+    const frame = document.createElement('iframe');
+    spyOnProperty(document, 'activeElement', 'get').and.returnValue(frame);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
     window.dispatchEvent(new Event('blur'));
     fixture.destroy();
     tick();
@@ -234,6 +287,29 @@ describe('MenuComponent submenu switching', () => {
     expect(submenu()?.classList.contains('ready')).toBeTrue();
   }));
 
+  it('keeps an unchanged hovered row when devices arrive and retires its children when the board menu is replaced', fakeAsync(() => {
+    tick();
+    enter(0);
+    fixture.detectChanges();
+    const oldChild = items[0].children![0];
+    const selected = jasmine.createSpy('selected');
+    menu.subItemClickEvent.subscribe(selected);
+    fixture.componentRef.setInput('menuList', [{ name: 'USB port' }, ...items]);
+    fixture.detectChanges();
+    expect(menu.activeSubmenuItem).toBe(items[0]);
+    menu.hideSubMenu(new MouseEvent('mouseleave'), 0);
+    fixture.componentRef.setInput('menuList', [{ ...items[0], disabled: true }, items[1]]);
+    fixture.detectChanges();
+    expect(menu.activeSubmenuItem).toBeNull();
+    expect(submenu()).toBeNull();
+    menu.subItemClick(new MouseEvent('click'), oldChild);
+    expect(selected).not.toHaveBeenCalled();
+    enter(1);
+    fixture.detectChanges();
+    tick(150);
+    expect(menu.activeSubmenuItem).toBe(items[1]);
+  }));
+
   it('keeps the newly entered submenu open after leaving the previous row', fakeAsync(() => {
     tick();
     enter(0);
@@ -244,6 +320,58 @@ describe('MenuComponent submenu switching', () => {
     tick(150);
     expect(menu.activeSubmenuItem).toBe(items[1]);
     expect(submenu()?.textContent).toContain('QIO 80MHz');
+  }));
+
+  it('keeps the open board group, scroll position and clicked row while updating its choices', fakeAsync(() => {
+    tick();
+    const group = items[0];
+    group.children = Array.from({ length: 80 }, (_, i) => ({
+      key: group.key, data: i, name: `Option ${i}`, check: i === 0,
+    }));
+    enter(0);
+    fixture.detectChanges();
+    const panel = submenu()!;
+    panel.scrollTop = panel.scrollHeight;
+    const scroll = panel.scrollTop;
+    expect(scroll).toBeGreaterThan(0);
+    const row = panel.querySelector<HTMLElement>('.menu-item:last-child')!;
+    row.click();
+    fixture.detectChanges();
+    expect(row.classList.contains('checked')).toBeTrue();
+
+    const oldChoice = group.children[79];
+    group.children = group.children.map(child => ({ ...child }));
+    fixture.componentRef.setInput('menuList', [...items]);
+    fixture.detectChanges();
+    tick(600);
+    expect(submenu()).toBe(panel);
+    expect(panel.scrollTop).toBe(scroll);
+    expect(getComputedStyle(panel).visibility).toBe('visible');
+    expect(panel.querySelector('.menu-item:last-child')).toBe(row);
+    expect(panel.querySelectorAll('.checked').length).toBe(1);
+    const selected = jasmine.createSpy('selected');
+    menu.subItemClickEvent.subscribe(selected);
+    menu.subItemClick(new MouseEvent('click'), oldChoice);
+    expect(selected).not.toHaveBeenCalled();
+    row.click();
+    expect(selected.calls.mostRecent().args[0]).toBe(group.children[79]);
+  }));
+
+  it('keeps board option labels stationary when moving the check between detailed choices', fakeAsync(() => {
+    tick();
+    fixture.nativeElement.classList.add('ports');
+    for (const child of items[0].children!) child.extra = { detail: 'Board option details' };
+    enter(0);
+    fixture.detectChanges();
+    const panel = submenu()!;
+    const labels = [...panel.querySelectorAll<HTMLElement>('.submenu-hover-scroll')];
+    const widths = () => labels.map(label => label.getBoundingClientRect().width);
+    const before = widths();
+    panel.querySelectorAll<HTMLElement>('.menu-item')[1].click();
+    fixture.detectChanges();
+    expect(widths()).toEqual(before);
+    expect(panel.querySelectorAll('.checked').length).toBe(1);
+    expect(getComputedStyle(panel).visibility).toBe('visible');
   }));
 
   it('renders hover changes for a menu created outside Angular by a host callback', async () => {

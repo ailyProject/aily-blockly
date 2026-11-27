@@ -1,8 +1,189 @@
 import { BehaviorSubject, Subject, of } from 'rxjs';
 import { ProjectService } from '@domain/project/public-api';
+import { ProjectSaveMessageService } from '@core/app-shell/public-api';
+import { MainWindowComponent } from '../../main-window/main-window.component';
+import { HeaderComponent } from '../../main-window/components/header/header.component';
 import { CodeEditorProComponent } from './code-editor-pro.component';
 import { CodeEditorFrameComponent } from './code-editor-frame.component';
 import { CodeEditorProProjectService } from './services/code-editor-pro-project.service';
+
+describe('Coder iframe project-save command', () => {
+  function fixture(active = true) {
+    const view: any = Object.create(CodeEditorFrameComponent.prototype);
+    const project = '/work/shortcut-project', frame = {};
+    const bridge = { saveAll: jasmine.createSpy('save buffers').and.resolveTo({ ok: true }),
+      hasUnsavedChanges: async () => false };
+    const files = { saveLibraryChanges: jasmine.createSpy('save libraries').and.resolveTo(), isAilyCodeProject: () => true };
+    const build = { updateCodeHash: jasmine.createSpy('update code hash').and.resolveTo('hash') };
+    const persistence = new CodeEditorProProjectService({} as any, files as any, build as any);
+    persistence.registerPersistenceBridge(project, bridge);
+    let id = 0;
+    const notice = { loading: jasmine.createSpy('loading').and.callFake(() => ({ messageId: 'save-' + ++id })),
+      success: jasmine.createSpy('success').and.callFake(() => ({ messageId: 'saved-' + ++id, onClose: new Subject() })),
+      remove: jasmine.createSpy('remove'), error: jasmine.createSpy('error') };
+    Object.assign(view, { projectPath: project, coderEmbedWorkspaceRoot: project, coderFrameProjectPath: project,
+      active, coderEmbedFrameReady: true, coderEmbedFrame: { nativeElement: { contentWindow: frame } },
+      projectSaveMessages: new ProjectSaveMessageService(notice as any, { instant: (key: string) => key } as any),
+      proProject: persistence, message: notice, translate: { instant: (key: string) => key } });
+    const send = (source: unknown = frame) => view.onCoderNativeFsMessage({
+      source, data: { channel: 'aily-coder-editor-project-save', projectPath: '/untrusted' },
+    });
+    return { view, project, bridge, files, build, notice, send };
+  }
+
+  it('immediately shows the active shortcut and waits for buffers, libraries and the code hash before showing completion', async () => {
+    const h = fixture();
+    let finish!: () => void;
+    h.build.updateCodeHash.and.returnValue(new Promise<void>(resolve => { finish = resolve; }));
+    const saving = h.send();
+    expect(h.notice.loading).toHaveBeenCalledOnceWith('MAIN_WINDOW.PROJECT_SAVING', { nzDuration: 0 });
+    await Promise.resolve(); await Promise.resolve();
+    expect(h.bridge.saveAll).toHaveBeenCalledTimes(1);
+    expect(h.files.saveLibraryChanges).toHaveBeenCalledOnceWith(h.project);
+    expect(h.build.updateCodeHash).toHaveBeenCalledOnceWith(h.project);
+    expect(h.notice.success).not.toHaveBeenCalled();
+    finish(); await saving;
+    expect(h.notice.remove).toHaveBeenCalledOnceWith('save-1');
+    expect(h.notice.success).toHaveBeenCalledOnceWith('MAIN_WINDOW.PROJECT_SAVED', { nzDuration: 4000, nzAnimate: false });
+  });
+
+  it('accepts the explicit save command posted by the mounted browser iframe', async () => {
+    const h = fixture(), frame = document.createElement('iframe');
+    frame.hidden = true;
+    h.view.coderEmbedFrame = { nativeElement: frame };
+    const received = new Promise<void>((resolve, reject) => {
+      const listen = (event: MessageEvent) => {
+        if (event.source !== frame.contentWindow || event.data?.channel !== 'aily-coder-editor-project-save') return;
+        window.removeEventListener('message', listen);
+        h.view.onCoderNativeFsMessage(event).then(resolve, reject);
+      };
+      window.addEventListener('message', listen);
+    });
+    frame.srcdoc = '<script>parent.postMessage({channel:"aily-coder-editor-project-save"}, "*")</script>';
+    document.body.appendChild(frame);
+    try {
+      await received;
+      expect(h.bridge.saveAll).toHaveBeenCalledTimes(1);
+      expect(h.notice.loading).toHaveBeenCalledTimes(1);
+      expect(h.notice.success).toHaveBeenCalledTimes(1);
+    } finally { frame.remove(); }
+  });
+
+  it('keeps inactive frames quiet and reports original save errors without a success message', async () => {
+    for (const active of [true, false]) {
+      const h = fixture(active);
+      if (!active) {
+        await h.send(); expect(h.bridge.saveAll).toHaveBeenCalledTimes(1);
+        expect(h.notice.success).not.toHaveBeenCalled();
+      }
+      h.bridge.saveAll.and.resolveTo({ ok: false, message: 'disk full' });
+      await h.send();
+      expect(h.notice.loading.calls.count()).toBe(active ? 1 : 0);
+      expect(h.notice.error).toHaveBeenCalledOnceWith('disk full');
+      expect(h.notice.success).not.toHaveBeenCalled();
+    }
+  });
+
+  it('ignores foreign, detached, unready and stale workspaces', async () => {
+    const h = fixture();
+    await h.send({}); await h.send(null);
+    h.view.coderEmbedFrameReady = false; await h.send();
+    h.view.coderEmbedFrameReady = true;
+    h.view.coderFrameProjectPath = '/old'; await h.send();
+    h.view.coderFrameProjectPath = h.project;
+    h.view.coderEmbedWorkspaceRoot = '/other'; await h.send();
+    h.view.coderEmbedWorkspaceRoot = h.project;
+    h.view.dependencySession = {}; h.view.projectService = { assertProjectDependencySession: () => { throw Error('stale'); } };
+    await h.send();
+    h.view.dependencySession = undefined; h.view.destroyed = true; await h.send();
+    expect(h.bridge.saveAll).not.toHaveBeenCalled();
+    expect(h.notice.loading).not.toHaveBeenCalled();
+  });
+
+  it('discards feedback from a superseded command or a frame hidden before its save settles', async () => {
+    const h = fixture();
+    let finishFirst!: () => void, failSecond!: (e: Error) => void;
+    const first = new Promise<void>(resolve => { finishFirst = resolve; });
+    const second = new Promise<void>((_resolve, reject) => { failSecond = reject; });
+    h.bridge.saveAll.and.returnValues(first.then(() => ({ ok: true })), second);
+    const a = h.send(), b = h.send();
+    expect(h.notice.remove.calls.allArgs()).toEqual([['save-1']]);
+    finishFirst(); await a;
+    expect(h.notice.success).not.toHaveBeenCalled();
+    h.view.active = false; h.view.ngOnChanges({ active: {} });
+    expect(h.notice.remove.calls.allArgs()).toEqual([['save-1'], ['save-2']]);
+    failSecond(new Error('old project')); await b;
+    expect(h.notice.error).not.toHaveBeenCalled();
+    expect(h.notice.success).not.toHaveBeenCalled();
+  });
+
+  it('ignores an old background result after a replacement document loads in the same window', async () => {
+    const h = fixture(false);
+    let fail!: (e: Error) => void;
+    h.bridge.saveAll.and.returnValue(new Promise((_resolve, reject) => { fail = reject; }));
+    const saving = h.send();
+    Object.assign(h.view, { coderLayout: { reset() {} }, codeSuggestionHostBridge: { registerFrame() {} },
+      postCoderEditorUpdateState() {}, pushAilyCoderHostContext() {}, requestCoderEmbedLayoutRefresh() {} });
+    h.view.onCoderEmbedFrameLoad();
+    fail(new Error('old document')); await saving;
+    expect(h.notice.loading).not.toHaveBeenCalled();
+    expect(h.notice.error).not.toHaveBeenCalled();
+    expect(h.notice.success).not.toHaveBeenCalled();
+  });
+
+  it('shows only the latest save when the File menu and iframe shortcut overlap in either order', async () => {
+    for (const menuFirst of [true, false]) {
+      const h = fixture();
+      function gate() {
+        let begin!: () => void, finish!: () => void;
+        const started = new Promise<void>(resolve => { begin = resolve; });
+        const completed = new Promise<void>(resolve => { finish = resolve; });
+        return { started, begin, completed, finish };
+      }
+      const menuGate = gate(), frameGate = gate();
+      h.bridge.saveAll.and.callFake(async () => { frameGate.begin(); await frameGate.completed; return { ok: true }; });
+      const path = new BehaviorSubject(h.project);
+      const project: any = Object.assign(Object.create(ProjectService.prototype), { currentProjectPathSubject: path,
+        currentProjectPath$: path.asObservable(), stateSubject: new BehaviorSubject('default'),
+        getProjectMode: () => 'coder', prepareResolvedLibraryChangesForSave: async () => false, getPackageJson: async () => ({}) });
+      const dispatch = jasmine.createSpy('menu save').and.callFake(async () => {
+        menuGate.begin(); await menuGate.completed; return { success: true };
+      });
+      Object.defineProperties(project, {
+        dependencyLifecycle: { value: { get: () => undefined } }, application: { value: { dispatchProjectSave: dispatch } },
+        projectSaveReceipts: { value: { execute: async (_p: string, _r: unknown, _c: unknown, save: () => Promise<unknown>) => ({ result: await save() }) } },
+      });
+      const shell = Object.assign(Object.create(MainWindowComponent.prototype), { projectService: project,
+        uiService: { actionSubject: new Subject() }, cd: { detectChanges() {} }, projectSaveMessages: h.view.projectSaveMessages,
+        message: h.notice, translate: h.view.translate });
+      const header = Object.assign(Object.create(HeaderComponent.prototype), { projectService: project,
+        configService: { isCoderProduct: () => true }, dependencyBlockMessage: () => undefined });
+      shell.ngAfterViewInit();
+      const menu = () => header.process({ action: 'project-save' }, null, 'manual');
+      const unrelated = h.view.projectSaveMessages.saving('/other-project');
+      const first = menuFirst ? menu() : h.send();
+      await (menuFirst ? menuGate : frameGate).started;
+      const second = menuFirst ? h.send() : menu();
+      await (menuFirst ? frameGate : menuGate).started;
+      expect(h.notice.remove.calls.allArgs()).toEqual([['save-2']]);
+      if (menuFirst) {
+        menuGate.finish(); await first;
+        expect(h.notice.success).not.toHaveBeenCalled();
+        frameGate.finish(); await second;
+      } else {
+        menuGate.finish(); await second;
+        expect(h.notice.success).toHaveBeenCalledTimes(1);
+        frameGate.finish(); await first;
+      }
+      expect(h.notice.remove.calls.allArgs()).toEqual([['save-2'], ['save-3']]);
+      expect(h.notice.success).toHaveBeenCalledOnceWith('MAIN_WINDOW.PROJECT_SAVED', { nzDuration: 4000, nzAnimate: false });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(h.bridge.saveAll).toHaveBeenCalledTimes(1);
+      h.view.projectSaveMessages.clear(unrelated);
+      shell.ngOnDestroy();
+    }
+  });
+});
 
 describe('Coder title cached library state', () => {
   it('uses cached libraries for title polling while preserving authoritative close checks', async () => {
@@ -43,6 +224,7 @@ describe('Coder retained project workspaces', () => {
     service = Object.create(ProjectService.prototype);
     Object.assign(service, {
       coderOperationSubject: new BehaviorSubject(null), coderOperationsSubject: new BehaviorSubject(new Map()),
+      projectNavigationIntentRevision: 0,
       coderOperations: new Map(), coderProjectContexts: new Map(), coderProjectsSubject: new BehaviorSubject([]),
       currentProjectPathSubject: new BehaviorSubject(''), stateSubject: new BehaviorSubject('loaded'),
       coderWorkspaceSubject: new BehaviorSubject(null),

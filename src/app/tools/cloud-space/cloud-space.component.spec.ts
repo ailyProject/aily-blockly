@@ -1,28 +1,34 @@
-import { BehaviorSubject, NEVER, of, Subject } from 'rxjs';
+import { BehaviorSubject, from, NEVER, of, Subject, throwError } from 'rxjs';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api';
 import { detectProjectMode, projectDataRuntime } from '@domain/project/public-api';
 import { CloudSpaceComponent } from './cloud-space.component';
 import { AbsBaselineStore, absBaselineKey } from '../../integrations/blockly/abs/abs-baseline-store';
 import { absJson, createAbsProjection, hashAbsText } from '../../integrations/blockly/abs/abs-identity-map';
+import { projectCloudIdentity, writeCloudSyncState } from './services/cloud-sync-state';
 
 describe('CloudSpace opening state', () => {
+  let component: CloudSpaceComponent, open: jasmine.Spy, message: { error: jasmine.Spy };
+  beforeEach(() => {
+    open = jasmine.createSpy('open');
+    message = { error: jasmine.createSpy('error') };
+    component = new CloudSpaceComponent({} as any, {} as any, {} as any, {} as any,
+      message as any, {} as any, {} as any, {} as any, {} as any, { open } as any,
+      {} as any, {} as any, {} as any);
+  });
+
   for (const outcome of ['success', 'error']) {
     it(`suppresses duplicate opens and clears pending state on ${outcome}`, async () => {
       let settle: () => void;
       const error = new Error('open failed');
-      const open = jasmine.createSpy('open').and.returnValue(new Promise<void>((resolve, reject) => {
+      open.and.returnValue(new Promise<void>((resolve, reject) => {
         settle = () => outcome === 'success' ? resolve() : reject(error);
       }));
-      const message = { error: jasmine.createSpy('error') };
-      const component = new CloudSpaceComponent({} as any, {} as any, {} as any, {} as any,
-        message as any, {} as any, {} as any, {} as any, {} as any, { open } as any,
-        {} as any, {} as any, {} as any);
-      const item = { id: 'cloud-project' };
+      const item = { id: '42' };
 
       const pending = component.openInNewTab(item);
       expect(component.openingProjectIds.has(item.id)).toBeTrue();
       await component.openInNewTab(item);
-      expect(open).toHaveBeenCalledOnceWith(item.id);
+      expect(open).toHaveBeenCalledOnceWith('42', false, undefined, jasmine.any(Function));
 
       settle();
       await pending;
@@ -31,6 +37,22 @@ describe('CloudSpace opening state', () => {
       else expect(message.error).not.toHaveBeenCalled();
     });
   }
+
+  it('invalidates the previous open when a new project is selected or the view is destroyed', async () => {
+    let settle: () => void;
+    open.and.returnValue(new Promise<void>(resolve => { settle = resolve; }));
+    const first = component.openInNewTab({ id: 'old' });
+    const firstIsCurrent = open.calls.mostRecent().args[3];
+    expect(firstIsCurrent()).toBeTrue();
+    const second = component.openInNewTab({ id: 'new' });
+    const secondIsCurrent = open.calls.mostRecent().args[3];
+    expect(firstIsCurrent()).toBeFalse();
+    expect(secondIsCurrent()).toBeTrue();
+    component.ngOnDestroy();
+    expect(secondIsCurrent()).toBeFalse();
+    settle();
+    await Promise.all([first, second]);
+  });
 });
 
 describe('CloudSpace Hub publishing', () => {
@@ -83,6 +105,8 @@ describe('CloudSpace Hub publishing', () => {
 
 describe('CloudSpace project packaging and sync mode isolation', () => {
   const root = '/aily Projects/demo';
+  const baseline = 'a'.repeat(64);
+  const scope = JSON.stringify(['https://local-cloud.example', 'local-user']);
   let component: any;
   let files: Map<string, string>;
   let directories: Set<string>;
@@ -99,6 +123,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       [`${root}/sketch/libraries/Local/Local.h`, 'local library'],
     ]);
     directories = new Set([root, `${root}/sketch`]);
+    const isDirectory = (path: string) => directories.has(path) || [...files.keys()].some(file => file.startsWith(path + '/'));
     window['fs'] = {
       existsSync: (path: string) => files.has(path) || directories.has(path),
       readFileSync: jasmine.createSpy('read').and.callFake((path: string) => {
@@ -107,9 +132,30 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       }),
       writeFileSync: jasmine.createSpy('write').and.callFake((path: string, content: string) => files.set(path, content)),
       mkdirSync: (path: string) => directories.add(path),
-      rmSync: jasmine.createSpy('rm'),
+      rmSync: jasmine.createSpy('rm').and.callFake((path: string) => {
+        directories.delete(path);
+        for (const file of files.keys()) {
+          if (file.startsWith(path + '/')) files.delete(file);
+        }
+      }),
       unlinkSync: (path: string) => files.delete(path),
       statSync: (path: string) => ({ _isFile: files.has(path), size: files.get(path)?.length || 0 }),
+      lstatSync: (path: string) => ({ _isFile: files.has(path), _isDirectory: isDirectory(path),
+        size: files.get(path)?.length || 0, mtime: files.get(path) }),
+      readDirSync: (path: string) => [...new Set([...files.keys(), ...directories].filter(file => file.startsWith(path + '/'))
+        .map(file => file.slice(path.length + 1).split('/')[0]))]
+        .map(name => ({ name, _isFile: files.has(path + '/' + name), _isDirectory: isDirectory(path + '/' + name) })),
+      readFileBufferAsync: async (path: string) => new TextEncoder().encode(files.get(path)).buffer,
+      renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
+      captureProjectAttachment: (path: string) => ({ path }),
+      replaceProjectText: async ({ projectPath, fileName, expectedHash, content }, guard) => {
+        guard();
+        const path = projectPath + '/' + fileName;
+        if (await hashAbsText(files.get(path)!) !== expectedHash) return { status: 'CONFLICT' };
+        guard();
+        files.set(path, content);
+        return { status: 'COMMITTED', hash: await hashAbsText(content) };
+      },
     };
     window['path'] = { join: (...parts: string[]) => parts.join('/') };
     const filePath = (key: string) => root + '/' + (['package.json', 'project.abi', 'project.abs', 'project.abs.map.json'].includes(key) ? key : '.aily/abs-sync/' + key);
@@ -125,17 +171,25 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       run(access, result => result.ok ? resolve(result.value) : reject(result.error))) });
     window['os'] = { tmpdir: () => '/tmp' };
     component = Object.create(CloudSpaceComponent.prototype);
-    component.message = { error: jasmine.createSpy('error'), success: jasmine.createSpy('success') };
+    spyOn(component, 'cloudSyncReceiptsEnabled').and.returnValue(true);
+    component.message = { error: jasmine.createSpy('error'), success: jasmine.createSpy('success'),
+      warning: jasmine.createSpy('warning'), info: jasmine.createSpy('info') };
+    component.authService = { currentUser: { id: 'local-user' } };
+    component.configService = { isCoderProduct: () => false };
+    component.getCloudProjects = jasmine.createSpy('projects').and.resolveTo();
     component.electronService = { readFile: (path: string) => window['fs'].readFileSync(path, 'utf8') };
     component.platformService = { za7: '7zz' };
     component.cmdService = {
-      runAsync: jasmine.createSpy('pack').and.callFake(async () => {
-        files.set(`${root}/project.7z`, 'archive');
+      runAsync: jasmine.createSpy('pack').and.callFake(async (command: string) => {
+        const archivePath = command.match(/ a -t7z(?: -mx=9)? "([^"]+)"/)?.[1];
+        if (archivePath) files.set(archivePath, 'archive');
         return { type: 'close', code: 0 };
       }),
     };
     component.projectService = {
       currentProjectPath: root,
+      captureCurrentProjectGuard: () => () => component.projectService.currentProjectPath === root,
+      hasUnsavedChanges: async () => false,
       save: jasmine.createSpy('save').and.resolveTo({ success: true }),
       getPackageJson: async () => JSON.parse(files.get(`${root}/package.json`)!),
       getProjectMode: () => detectProjectMode({
@@ -143,8 +197,14 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
         hasAbi: files.has(`${root}/project.abi`), hasAci: files.has(`${root}/project.aci`),
       }),
     };
-    component.authService = { userInfo: { id: 'author' }, isLoggedIn: true };
-    component.cloudService = { baseUrl: '/api/v1/cloud', syncProject: jasmine.createSpy('sync').and.returnValue(NEVER) };
+    component.cloudService = {
+      baseUrl: 'https://local-cloud.example',
+      observeSyncRequest: jasmine.createSpy('observe').and.callFake(requestId =>
+        of({ status: 200, data: { request_id: requestId, state: 'unconfirmed' } })),
+      syncProject: jasmine.createSpy('sync').and.callFake(request => from(committed(request))),
+    };
+    writeCloudSyncState(root, { version: 1, identity: projectCloudIdentity(root), scope,
+      binding: { cloudId: 'existing-id', archiveSha256: baseline } });
     flush = spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
     validate = jasmine.createSpy('validate').and.resolveTo({ valid: true });
     getStore = spyOn(projectDataRuntime, 'getStore').and.returnValue({
@@ -154,9 +214,16 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
 
   afterEach(() => Object.assign(window, previousApis));
 
+  async function committed(request: any) {
+    const digest = await crypto.subtle.digest('SHA-256', request.archiveContents);
+    return { status: 200, data: { id: request.pid ?? 'created-id', request_id: request.requestId,
+      state: 'committed', archive_sha256: Array.from(new Uint8Array(digest), digit => digit.toString(16).padStart(2, '0')).join('') } };
+  }
+
   function useBlockly() {
     files.set(`${root}/package.json`, '{"name":"demo"}');
     files.set(`${root}/project.abi`, '{"blocks":{}}');
+    files.delete(`${root}/.aily/cloud-sync-state.json`);
   }
 
   it('packages Coder without ABI or touching the Blockly data runtime', async () => {
@@ -173,6 +240,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(command).toContain('"-x!sketch/target-compile.json"');
     expect(command).toContain('"-x!sketch/compile-preprocess-*.json"');
     expect(command).toContain('"-xr!.build"');
+    expect(command).toContain('"-xr!.aily"');
     expect(command).toContain('"-x!project.abs.map.json"');
   });
 
@@ -272,6 +340,71 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(window['fs'].rmSync).toHaveBeenCalled();
   });
 
+  it('defaults to the legacy upload and accepts an old response without a receipt or archive hash', async () => {
+    component.cloudSyncReceiptsEnabled.and.callThrough();
+    component.cloudService.syncProject.and.returnValue(of({ status: 200, data: { id: 'legacy-cloud-id' } }));
+
+    await component.syncToCloud();
+
+    expect(component.projectService.save).toHaveBeenCalledOnceWith(root);
+    expect(component.cloudService.observeSyncRequest).not.toHaveBeenCalled();
+    expect(component.cloudService.syncProject).toHaveBeenCalledOnceWith({
+      pid: 'existing-id', projectData: { name: 'demo', type: 'coder', entry: 'src/main.cpp', cloudId: 'existing-id' },
+      archive: jasmine.stringMatching(/^\/tmp\/aily-cloud-legacy-[a-f0-9-]+\/project\.7z$/), category: 'coder',
+    });
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('legacy-cloud-id');
+    expect(component.message.success).toHaveBeenCalledWith('同步成功');
+  });
+
+  it('uploads a first-time project through the legacy route without creating a receipt binding', async () => {
+    component.cloudSyncReceiptsEnabled.and.callThrough();
+    useBlockly();
+    component.cloudService.syncProject.and.returnValue(of({ status: 200, data: { id: 42 } }));
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.observeSyncRequest).not.toHaveBeenCalled();
+    expect(component.cloudService.syncProject).toHaveBeenCalledOnceWith({
+      pid: undefined, projectData: { name: 'demo' },
+      archive: jasmine.stringMatching(/^\/tmp\/aily-cloud-legacy-[a-f0-9-]+\/project\.7z$/), category: 'blockly',
+    });
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe(42);
+    expect(files.has(`${root}/.aily/cloud-sync-state.json`)).toBeFalse();
+  });
+
+  it('uses a separate archive and submits directly with an unresolved receipt request present', async () => {
+    component.cloudSyncReceiptsEnabled.and.callThrough();
+    useBlockly();
+    const statePath = `${root}/.aily/cloud-sync-state.json`;
+    const archivePath = `${root}/project.7z`;
+    writeCloudSyncState(root, { version: 1, identity: projectCloudIdentity(root), scope,
+      pending: { requestId: '123e4567-e89b-12d3-a456-426614174000', archiveSha256: baseline,
+        category: 'blockly', projectData: {}, before: 'original stamp' } });
+    files.set(archivePath, 'unconfirmed original');
+    const originalState = files.get(statePath);
+    component.cloudService.syncProject.and.callFake(request => {
+      expect(files.get(request.archive)).toBe('archive');
+      expect(files.get(archivePath)).toBe('unconfirmed original');
+      return of({ status: 200, data: { id: 42 } });
+    });
+
+    await component.syncToCloud();
+
+    expect(component.projectService.save).toHaveBeenCalledOnceWith(root);
+    expect(window['fs'].readFileSync).not.toHaveBeenCalledWith(statePath, 'utf8');
+    expect(component.cloudService.observeSyncRequest).not.toHaveBeenCalled();
+    expect(component.cloudService.syncProject).toHaveBeenCalledOnceWith({
+      pid: undefined, projectData: { name: 'demo' }, archive: jasmine.stringMatching(/^\/tmp\/aily-cloud-legacy-[a-f0-9-]+\/project\.7z$/),
+      category: 'blockly',
+    });
+    const uploadedArchive = component.cloudService.syncProject.calls.mostRecent().args[0].archive;
+    expect(files.has(uploadedArchive)).toBeFalse();
+    expect(window['fs'].rmSync).toHaveBeenCalledWith(uploadedArchive.slice(0, -'/project.7z'.length), { recursive: true, force: true });
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe(42);
+    expect(files.get(statePath)).toBe(originalState);
+    expect(files.get(archivePath)).toBe('unconfirmed original');
+  });
+
   it('uploads persisted Coder code with its category and existing cloud ID', async () => {
     component.projectService.save.and.callFake(async () => {
       files.set(`${root}/sketch/src/main.cpp`, 'newly saved code');
@@ -284,19 +417,19 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     });
     await component.syncToCloud();
     expect(component.projectService.save).toHaveBeenCalledOnceWith(root);
-    expect(component.cloudService.syncProject).toHaveBeenCalledOnceWith({
+    expect(component.cloudService.syncProject).toHaveBeenCalledOnceWith(jasmine.objectContaining({
       pid: 'existing-id', projectData: { name: 'demo', type: 'coder', entry: 'src/main.cpp', cloudId: 'existing-id' },
-      archive: `${root}/project.7z`, category: 'coder',
-    });
+      archive: `${root}/project.7z`, category: 'coder', expectedArchiveSha256: baseline, requestId: jasmine.any(String),
+    }));
     expect(getStore).not.toHaveBeenCalled();
   });
 
   it('uploads Blockly with an explicit category', async () => {
     useBlockly();
     await component.syncToCloud();
-    expect(component.cloudService.syncProject.calls.first().args[0]).toEqual({
+    expect(component.cloudService.syncProject.calls.first().args[0]).toEqual(jasmine.objectContaining({
       pid: undefined, projectData: { name: 'demo' }, archive: `${root}/project.7z`, category: 'blockly',
-    });
+    }));
   });
 
   it('aborts before packing or uploading if saving the editor fails', async () => {
@@ -308,39 +441,43 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   });
 
   it('syncs an existing Blockly cloud project without a local cloud baseline', async () => {
+    component.cloudSyncReceiptsEnabled.and.callThrough();
+    component.cloudService.syncProject.and.returnValue(of({ status: 200, data: { id: 2057 } }));
     useBlockly();
     files.set(`${root}/package.json`, '{"name":"demo","cloudId":2057}');
     await component.syncToCloud();
     expect(component.projectService.save).toHaveBeenCalledOnceWith(root);
     expect(component.cloudService.syncProject).toHaveBeenCalledOnceWith({
-      pid: 2057, projectData: { name: 'demo', cloudId: 2057 }, archive: `${root}/project.7z`, category: 'blockly',
+      pid: 2057, projectData: { name: 'demo', cloudId: 2057 },
+      archive: jasmine.stringMatching(/^\/tmp\/aily-cloud-legacy-[a-f0-9-]+\/project\.7z$/), category: 'blockly',
     });
     expect(window['fs'].readFileSync).not.toHaveBeenCalledWith(`${root}/.aily/cloud-sync.json`, 'utf8');
     expect(component.message.error).not.toHaveBeenCalled();
   });
 
   it('aborts a sign-out while packaging', async () => {
-    component.cmdService.runAsync.and.callFake(async () => {
-      files.set(`${root}/project.7z`, 'archive');
-      component.authService.userInfo = null;
-      return { type: 'close', code: 0 };
+    component.cloudSyncReceiptsEnabled.and.callThrough();
+    let packed: string;
+    spyOn(component, 'packageProject').and.callFake(async (_projectPath, { archivePath }) => {
+      packed = archivePath;
+      files.set(archivePath, 'archive');
+      component.authService.currentUser = null;
+      return archivePath;
     });
     await component.syncToCloud();
     expect(component.cloudService.syncProject).not.toHaveBeenCalled();
-    expect(files.has(`${root}/project.7z`)).toBeFalse();
+    expect(packed).toBeDefined();
+    expect(files.has(packed)).toBeFalse();
   });
 
   it('updates the cloud ID after syncing without reading or writing legacy cloud baseline metadata', async () => {
+    component.cloudSyncReceiptsEnabled.and.callThrough();
     const legacyBaseline = '{"cloudId":"old-project","accountId":"old-account","archiveSha256":"obsolete"}';
     files.set(`${root}/.aily/cloud-sync.json`, legacyBaseline);
-    const response = new Subject<any>();
-    component.cloudService.syncProject.and.returnValue(response);
-    component.getCloudProjects = jasmine.createSpy('refresh').and.resolveTo();
+    component.cloudService.syncProject.and.returnValue(of({ status: 200, data: { id: 'updated-id' } }));
     await component.syncToCloud();
-    response.next({ status: 200, data: { id: 'existing-id' } });
-    await Promise.resolve();
     expect(component.message.success).toHaveBeenCalledOnceWith('同步成功');
-    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('existing-id');
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('updated-id');
     expect(files.get(`${root}/.aily/cloud-sync.json`)).toBe(legacyBaseline);
     expect(window['fs'].readFileSync).not.toHaveBeenCalledWith(`${root}/.aily/cloud-sync.json`, 'utf8');
     expect(window['fs'].writeFileSync).not.toHaveBeenCalledWith(`${root}/.aily/cloud-sync.json`, jasmine.anything());
@@ -363,22 +500,27 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     const otherPath = '/aily Projects/other';
     const otherData = { name: 'other', cloudId: 'other-cloud' };
     files.set(`${otherPath}/package.json`, JSON.stringify(otherData));
-    component.projectService.currentProjectPath = otherPath;
     component.projectService.currentPackageData = otherData;
+    useBlockly();
+    component.cloudService.syncProject.and.callFake(request => {
+      component.projectService.currentProjectPath = otherPath;
+      return from(committed(request));
+    });
 
-    await component.setCurrentProjectCloudId('uploaded-cloud', root);
+    await component.syncToCloud();
 
-    expect(JSON.parse(files.get(`${root}/package.json`)!)).toEqual(jasmine.objectContaining({ cloudId: 'uploaded-cloud' }));
+    expect(JSON.parse(files.get(`${root}/package.json`)!)).toEqual(jasmine.objectContaining({ cloudId: 'created-id' }));
     expect(JSON.parse(files.get(`${otherPath}/package.json`)!)).toEqual(otherData);
     expect(component.projectService.currentPackageData).toBe(otherData);
     expect(files.has(`${root}/.temp/package.json`)).toBeFalse();
   });
 
   it('does not upload an archive when 7z reports a failure', async () => {
-    component.cmdService.runAsync.and.resolveTo({ type: 'close', code: 2, data: 'disk full' });
+    component.cmdService.runAsync.and.resolveTo({ type: 'close', code: 2 });
     await component.syncToCloud();
     expect(component.cloudService.syncProject).not.toHaveBeenCalled();
     expect(component.isSyncing).toBeFalse();
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/磁盘空间/));
   });
 
   it('updates only the matching active student original and keeps its cloud ID', async () => {
@@ -394,6 +536,222 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(component.cloudService.syncProject).not.toHaveBeenCalled();
     expect(component.isSyncing).toBeFalse();
   });
+
+  it('reconciles a lost create response with GET after exactly one POST', async () => {
+    useBlockly();
+    let receipt: any;
+    component.cloudService.syncProject.and.callFake(request => from((async () => {
+      receipt = await committed(request);
+      throw { status: 0 };
+    })()));
+    component.cloudService.observeSyncRequest.and.callFake(requestId =>
+      of(receipt ?? { status: 200, data: { request_id: requestId, state: 'unconfirmed' } }));
+    await component.syncToCloud();
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+    expect(component.cloudService.observeSyncRequest.calls.allArgs()).toEqual([[receipt.data.request_id], [receipt.data.request_id]]);
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('created-id');
+    expect(component.message.success).toHaveBeenCalledWith('同步成功');
+  });
+
+  it('dispatches the checked archive bytes even if a local file is replaced during the probe', async () => {
+    component.cloudService.observeSyncRequest.and.callFake(requestId => {
+      files.set(`${root}/project.7z`, 'unrelated bytes');
+      return of({ status: 200, data: { request_id: requestId, state: 'unconfirmed' } });
+    });
+    await component.syncToCloud();
+    const request = component.cloudService.syncProject.calls.first().args[0];
+    expect(new TextDecoder().decode(request.archiveContents)).toBe('archive');
+    expect(component.message.success).toHaveBeenCalledWith('同步成功');
+  });
+
+  it('recovers the original receipt before submitting newer local edits', async () => {
+    let receipt: any;
+    let online = true;
+    component.cloudService.syncProject.and.callFake(request => from((async () => {
+      receipt = await committed(request);
+      online = false;
+      throw { status: 0 };
+    })()));
+    component.cloudService.observeSyncRequest.and.callFake(requestId => online
+      ? of(receipt ?? { status: 200, data: { request_id: requestId, state: 'unconfirmed' } })
+      : throwError(() => ({ status: 0 })));
+    await component.syncToCloud();
+    expect(files.has(`${root}/project.7z`)).toBeTrue();
+    files.set(`${root}/sketch/src/main.cpp`, 'newer local code');
+    online = true;
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+    expect(component.projectService.save).toHaveBeenCalledTimes(1);
+    expect(component.message.success).not.toHaveBeenCalled();
+    expect(component.message.warning).toHaveBeenCalledWith('上次提交已同步，工程还有新的本地修改，尚未同步');
+    expect(files.has(`${root}/project.7z`)).toBeFalse();
+    expect(files.get(`${root}/sketch/src/main.cpp`)).toBe('newer local code');
+    expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).binding.archiveSha256).toBe(receipt.data.archive_sha256);
+  });
+
+  it('keeps the old project binding and local edits if the server rejects a stale version', async () => {
+    component.cloudService.syncProject.and.returnValue(throwError(() => ({ error: {
+      status: 409, errorCode: 'WORKSPACE_PROJECT_SOURCE_CHANGED',
+    } })));
+    await component.syncToCloud();
+    expect(component.cloudService.syncProject.calls.first().args[0].expectedArchiveSha256).toBe(baseline);
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/云端工程已更新/));
+    expect(files.get(`${root}/sketch/src/main.cpp`)).toBe('saved code');
+    expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).binding.archiveSha256).toBe(baseline);
+    expect(files.has(`${root}/project.7z`)).toBeFalse();
+  });
+
+  const conflictingArchive = 'b'.repeat(64);
+  const observedRevision = 'c'.repeat(64);
+  const nextRevision = 'd'.repeat(64);
+  const conflictResponse = (revision = observedRevision) => ({ status: 409,
+    errorCode: 'WORKSPACE_PROJECT_SOURCE_CHANGED',
+    data: { project_id: 'existing-id', archive_sha256: conflictingArchive, archive_revision: revision },
+  });
+
+  function configureConflictChoices(choices: string[], approvals: boolean[] = []) {
+    component.modal = {
+      create: jasmine.createSpy('conflict').and.returnValues(...choices.map(choice => ({ afterClose: of(choice) }))),
+      confirm: jasmine.createSpy('confirmOverwrite').and.returnValues(...approvals.map(choice => ({ afterClose: of(choice) }))),
+    };
+  }
+
+  it('requires separate confirmation before sending an overwrite against the displayed revision', async () => {
+    configureConflictChoices(['overwrite']);
+    const confirmation = new Subject<boolean>();
+    let shown: () => void;
+    const confirming = new Promise<void>(resolve => { shown = resolve; });
+    component.modal.confirm.and.callFake(() => { shown(); return { afterClose: confirmation }; });
+    component.cloudService.syncProject.and.callFake(request => request.expectedArchiveRevision
+      ? from(committed(request)) : of(conflictResponse()));
+
+    const sync = component.syncToCloud();
+    await confirming;
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+    confirmation.next(true);
+    await sync;
+
+    const [original, overwrite] = component.cloudService.syncProject.calls.allArgs().map(([request]) => request);
+    expect(overwrite).toEqual(jasmine.objectContaining({
+      pid: 'existing-id', expectedArchiveSha256: conflictingArchive, expectedArchiveRevision: observedRevision,
+    }));
+    expect(overwrite.requestId).not.toBe(original.requestId);
+    expect(overwrite.archiveContents).toBe(original.archiveContents);
+    expect(component.message.success).toHaveBeenCalledWith('同步成功');
+  });
+
+  it('asks again when another same-project revision replaces the displayed version during confirmation', async () => {
+    configureConflictChoices(['overwrite', 'overwrite'], [true, true]);
+    component.cloudService.syncProject.and.callFake(request => {
+      if (!request.expectedArchiveRevision) return of(conflictResponse());
+      if (request.expectedArchiveRevision === observedRevision) return of(conflictResponse(nextRevision));
+      return from(committed(request));
+    });
+
+    await component.syncToCloud();
+
+    const requests = component.cloudService.syncProject.calls.allArgs().map(([request]) => request);
+    expect(requests.map(request => request.expectedArchiveRevision)).toEqual([undefined, observedRevision, nextRevision]);
+    expect(new Set(requests.map(request => request.requestId)).size).toBe(3);
+    expect(component.modal.create.calls.mostRecent().args[0].nzTitle).toBe('云端工程再次更新');
+    expect(component.modal.confirm).toHaveBeenCalledTimes(2);
+    expect(component.message.success).toHaveBeenCalledOnceWith('同步成功');
+  });
+
+  for (const choice of ['cancel', 'overwrite']) {
+    it(`leaves the original binding and does not upload again after cancelling ${choice}`, async () => {
+      configureConflictChoices([choice], [false]);
+      component.cloudService.syncProject.and.returnValue(of(conflictResponse()));
+
+      await component.syncToCloud();
+
+      expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+      expect(component.modal.confirm).toHaveBeenCalledTimes(choice === 'overwrite' ? 1 : 0);
+      expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('existing-id');
+      expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).pending).toBeUndefined();
+      expect(files.has(`${root}/project.7z`)).toBeFalse();
+    });
+  }
+
+  it('creates a cloud project from a detached archive and binds it after the matching receipt', async () => {
+    configureConflictChoices(['save-new']);
+    component.cloudService.syncProject.and.callFake(request => request.pid
+      ? of(conflictResponse()) : from(committed(request)));
+
+    await component.syncToCloud();
+
+    const [original, copy] = component.cloudService.syncProject.calls.allArgs().map(([request]) => request);
+    expect(copy).toEqual(jasmine.objectContaining({
+      pid: undefined, expectedArchiveSha256: undefined, expectedArchiveRevision: undefined,
+    }));
+    expect(copy.projectData.cloudId).toBeUndefined();
+    expect(copy.requestId).not.toBe(original.requestId);
+    const [, stagedManifest] = window['fs'].writeFileSync.calls.allArgs()
+      .find(([path]) => path.startsWith('/tmp/aily-cloud-package-') && path.endsWith('/package.json'));
+    expect(JSON.parse(stagedManifest).cloudId).toBeUndefined();
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('created-id');
+    expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).binding.cloudId).toBe('created-id');
+    expect(component.message.success).toHaveBeenCalledOnceWith('已另存为新云工程');
+    expect(component.modal.confirm).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing cloud association and local files when the new cloud project exceeds the quota', async () => {
+    configureConflictChoices(['save-new']);
+    component.cloudService.syncProject.and.callFake(request => request.pid ? of(conflictResponse()) : of({
+      status: 403, errorCode: 'WORKSPACE_STORAGE_PROJECT_LIMIT_REACHED', data: { used: 12, limit: 12 },
+    }));
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(2);
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/云空间项目已达上限.*12\/12/));
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('existing-id');
+    const state = JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!);
+    expect(state.binding.archiveSha256).toBe(baseline);
+    expect(state.pending).toBeUndefined();
+    expect(files.get(`${root}/sketch/src/main.cpp`)).toBe('saved code');
+  });
+
+  it('recovers the original new-cloud-project receipt after a lost response without creating another copy', async () => {
+    configureConflictChoices(['save-new']);
+    let receipt: any;
+    let online = true;
+    component.cloudService.syncProject.and.callFake(request => request.pid ? of(conflictResponse()) : from((async () => {
+      receipt = await committed(request);
+      online = false;
+      throw { status: 0 };
+    })()));
+    component.cloudService.observeSyncRequest.and.callFake(requestId => online
+      ? of(receipt ?? { status: 200, data: { request_id: requestId, state: 'unconfirmed' } })
+      : throwError(() => ({ status: 0 })));
+
+    await component.syncToCloud();
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('existing-id');
+    expect(JSON.parse(files.get(`${root}/.aily/cloud-sync-state.json`)!).pending.resolution.kind).toBe('save-new');
+    online = true;
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(files.get(`${root}/package.json`)!).cloudId).toBe('created-id');
+    expect(component.message.success).toHaveBeenCalledOnceWith('已另存为新云工程');
+  });
+
+  it('does not submit an overwrite if the local project changed while the dialog was open', async () => {
+    configureConflictChoices(['overwrite']);
+    component.modal.confirm.and.callFake(() => {
+      files.set(`${root}/sketch/src/main.cpp`, 'edited while confirming');
+      return { afterClose: of(true) };
+    });
+    component.cloudService.syncProject.and.returnValue(of(conflictResponse()));
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/本地工程在确认期间已修改/));
+  });
+
 });
 
 describe('CloudSpace education access', () => {

@@ -1,6 +1,7 @@
 import { firstValueFrom, of } from 'rxjs';
 import { HttpHeaders, HttpResponse } from '@angular/common/http';
 import { CloudService } from './cloud.service';
+import { SKIP_CONNECTIVITY_RETRY } from '../../../interceptors/retry.interceptor';
 
 describe('CloudService Coder category isolation', () => {
   let service: CloudService;
@@ -79,11 +80,13 @@ describe('CloudService Coder category isolation', () => {
   it('sends the Coder upload category as a multipart field alongside projectData and pid', () => {
     const projectData = { name: 'demo', type: 'coder', entry: 'src/main.cpp' };
     service.syncProject({ pid: 'cloud-id', projectData, category: 'coder' });
-    const [url, body] = http.post.calls.mostRecent().args;
+    const [url, body, options] = http.post.calls.mostRecent().args;
     expect(url).toMatch(/\/cloud\/sync$/);
     expect(body.get('category')).toBe('coder');
     expect(body.get('pid')).toBe('cloud-id');
     expect(body.has('expectedArchiveSha256')).toBeFalse();
+    expect(body.has('expectedArchiveRevision')).toBeFalse();
+    expect(options.context).toBeUndefined();
     expect(JSON.parse(body.get('projectData'))).toEqual(projectData);
     expect(Object.keys(projectData)).toEqual(['name', 'type', 'entry']);
   });
@@ -93,6 +96,18 @@ describe('CloudService Coder category isolation', () => {
     const body: FormData = http.post.calls.mostRecent().args[1];
     expect(body.get('category')).toBe('blockly');
     expect(JSON.parse(body.get('projectData') as string)).toEqual({ name: 'blockly' });
+  });
+
+  it('sends the confirmed archive revision only on a requested overwrite', () => {
+    const archiveSha256 = 'a'.repeat(64);
+    const archiveRevision = 'b'.repeat(64);
+    service.syncProject({ pid: 'cloud-id', requestId: 'sync-request-id', projectData: { name: 'demo' },
+      expectedArchiveSha256: archiveSha256, expectedArchiveRevision: archiveRevision });
+    const body: FormData = http.post.calls.mostRecent().args[1];
+    expect(body.get('requestId')).toBe('sync-request-id');
+    expect(body.get('expectedArchiveSha256')).toBe(archiveSha256);
+    expect(body.get('expectedArchiveRevision')).toBe(archiveRevision);
+    expect(http.post.calls.mostRecent().args[2].context.get(SKIP_CONNECTIVITY_RETRY)).toBeTrue();
   });
 
   it('retains binary archive content in the Coder multipart upload', () => {
@@ -117,7 +132,7 @@ describe('CloudService Coder category isolation', () => {
     http.get.and.returnValue(of(new HttpResponse({ body: blob, headers: new HttpHeaders({ 'X-Archive-Sha256': sha256, 'X-Archive-Size': String(blob.size) }) })));
     const extract = spyOn<any>(service, 'downloadAndExtractArchive').and.resolveTo('/extracted');
     expect(await firstValueFrom(service.openVerifiedProjectArchive({ id: 42, uuid: 'project-uuid', archive_sha256: sha256 }, true)))
-      .toEqual({ path: '/extracted' });
+      .toEqual({ path: '/extracted', archiveSha256: sha256 });
     expect(http.get.calls.mostRecent().args).toEqual([
       jasmine.stringMatching(/\/projects\/project-uuid\/archive$/),
       { responseType: 'blob', observe: 'response', params: { expectedArchiveSha256: sha256 } },
@@ -133,7 +148,7 @@ describe('CloudService Coder category isolation', () => {
     spyOn<any>(service, 'downloadAndExtractArchive').and.resolveTo('/student-archive');
     const result = await firstValueFrom(service.openVerifiedProjectArchive({ id: 7, uuid: 'student-uuid' }, false));
     expect(http.get.calls.mostRecent().args[0]).toMatch(/\/projects\/7\/download$/);
-    expect(result).toEqual({ path: '/student-archive' });
+    expect(result).toEqual({ path: '/student-archive', archiveSha256: jasmine.stringMatching(/^[0-9a-f]{64}$/) });
   });
 });
 

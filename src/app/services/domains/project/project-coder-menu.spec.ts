@@ -47,6 +47,33 @@ describe('Coder board menu context ownership', () => {
     expect(project.currentBoardMenuI18nDir).toBe('/b/node_modules/board/i18n');
     expect((await b.getBoardConfigMenu())[0].key).toBe('pnum');
   });
+  it('reuses only the active Coder context’s verified selection and compile settings without rereading disk', async () => {
+    project.isAilyCodeProject = () => true;
+    let settings = 'local';
+    project.configService.getCompileSettingsKey = () => settings;
+    const a = context('/a');
+    await a.syncCurrentBoardConfig();
+    a.currentPackageData.projectConfig = { CDCOnBoot: 'default' };
+    a.getPackageJson = async () => a.currentPackageData;
+    const rows = await project.getBoardConfigMenu();
+    const disk = spyOn(project.electronService, 'readFile').and.throwError('unexpected synchronous disk read');
+    expect(project.isBoardConfigMenuSnapshotCurrent(rows)).toBeTrue();
+    expect(a.isBoardConfigMenuSnapshotCurrent(rows)).toBeTrue();
+    expect(project.isBoardConfigMenuSnapshotCurrent(rows.slice())).toBeFalse();
+    settings = 'different gateway';
+    expect(project.isBoardConfigMenuSnapshotCurrent(rows)).toBeFalse();
+    settings = 'local';
+    a.currentPackageData.projectConfig.CDCOnBoot = 'changed';
+    expect(project.isBoardConfigMenuSnapshotCurrent(rows)).toBeFalse();
+    a.currentPackageData.projectConfig.CDCOnBoot = 'default';
+    project.currentProjectPathSubject.next('/b');
+    expect(project.isBoardConfigMenuSnapshotCurrent(rows)).toBeFalse();
+    project.currentProjectPathSubject.next('/a');
+    project.coderProjectContexts.delete(project.normalizeProjectPath('/a'));
+    expect(project.isBoardConfigMenuSnapshotCurrent(rows)).toBeFalse();
+    expect(disk).not.toHaveBeenCalled();
+  });
+
   it('keeps menu inspection read-only even for first-option pin defaults', async () => {
     const a = context('/a');
     a.currentBoardMenuConfig = [{ key: 'pnum', extra: { selectFirstByDefault: true, syncPinConfig: true }, children: [{ data: 'first', extra: { build: { variant: 'first' } } }] }];

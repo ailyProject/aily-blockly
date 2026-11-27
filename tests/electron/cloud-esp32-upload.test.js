@@ -82,6 +82,22 @@ test('accepts the canonical direct esptool recipe with three signed firmware fil
   assert.equal(macEsp32SerialPlan(manifest, recipe).segments.length, 3);
 });
 
+test('accepts the signed Seeed XIAO board id with its ESP32-S3 esptool chip', () => {
+  const { manifest, recipe } = fixture({ wrapped: false });
+  recipe.fqbn = 'esp32:esp32:XIAO_ESP32S3:FlashSize=8M,UploadSpeed=921600';
+  recipe.upload.command = recipe.upload.command.replace('--chip esp32c3', '--chip esp32s3');
+  manifest.flashPlan.targetChip = 'XIAO_ESP32S3';
+  validateCloudRecipePlan(manifest.flashPlan, manifest.artifacts);
+  const plan = macEsp32SerialPlan(manifest, recipe);
+  assert.equal(plan.chip, 'esp32s3');
+  assert.deepEqual(plan.segments.map(segment => segment.offset), [0, 0x8000, 0xe000, 0x10000]);
+  recipe.upload.command = recipe.upload.command.replace('--chip esp32s3', '--chip esp32c3');
+  assert.equal(macEsp32SerialPlan(manifest, recipe), null);
+  recipe.upload.command = recipe.upload.command.replace('--chip esp32c3', '--chip esp32s3');
+  manifest.flashPlan.targetChip = 'esp32s3';
+  assert.equal(macEsp32SerialPlan(manifest, recipe), null);
+});
+
 test('checks the reviewed bootloader address for the selected chip', () => {
   const { manifest, recipe } = fixture();
   manifest.flashPlan.targetChip = 'esp32';

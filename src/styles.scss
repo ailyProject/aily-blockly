@@ -67,6 +67,10 @@ img {
   background: transparent !important;
 }
 
+.cloud-space-confirm-modal .ant-modal-content {
+  background: var(--aily-bg-elevated) !important;
+}
+
 .merge-confirm-modal .ant-modal-content {
   background: var(--aily-bg-elevated) !important;
   border: 1px solid var(--aily-border-input);

@@ -1667,7 +1667,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       .pipe(distinctUntilChanged(), takeUntil(this.destroy$))
       .subscribe((projectPath) => {
         this.projectDebugState =
-          this.projectDebugConfigurationService.refresh(projectPath);
+          this.projectDebugConfigurationService.initializeForEditor(projectPath);
         this.queueProjectBreakpointMarkerSync();
         this.queueDebugExecutionMarkerSync();
       });

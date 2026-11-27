@@ -12,6 +12,7 @@ describe('board cloud support and local fallback', () => {
     files = new Map([
       ['/project/package.json', JSON.stringify({ dependencies: { [boardModule]: '3.2.1' } })],
       [`/project/node_modules/${boardModule}/package.json`, JSON.stringify({ name: boardModule, version: '3.2.1', boardDependencies: { '@aily-project/sdk-test': '1.0.0' } })],
+      [`/project/node_modules/${boardModule}/board.json`, JSON.stringify({ name: 'Test board' })],
     ]);
     window['path'] = { join: (...parts: string[]) => parts.join('/'), getAppDataPath: () => '/app', isExists: () => false };
     window['fs'] = { existsSync: (file: string) => files.has(file), readFileSync: (file: string) => files.get(file) };
@@ -98,6 +99,206 @@ describe('board cloud support and local fallback', () => {
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
   });
 
+  for (const scenario of [
+    { code: 'CLOUD_TARGET_UNAVAILABLE', label: 'PROJECT.CLOUD_TARGET_UNAVAILABLE' },
+    { code: 'GATEWAY_TIMEOUT', label: 'PROJECT.CLOUD_TARGET_LOOKUP_FAILED' },
+    { code: 'AUTH_TOKEN_INVALID', label: 'PROJECT.CLOUD_TARGET_LOOKUP_FAILED' },
+    { code: 'CLOUD_BOARD_OFFLINE', label: 'PROJECT.CLOUD_BOARD_OFFLINE' },
+  ]) it(`shows the appropriate board-menu status for ${scenario.code}`, async () => {
+    project.currentBoardMenuConfig = [{ name: 'CPU frequency', key: 'CPUFreq', children: [{ name: 'Default', data: 'default' }] }];
+    project.setPackageJson = jasmine.createSpy('setPackageJson');
+    project.syncBoardPinConfig = jasmine.createSpy('syncBoardPinConfig');
+    const targets = window['cloudBuild'].targets = jasmine.createSpy('targets');
+    if (scenario.code === 'CLOUD_TARGET_UNAVAILABLE') targets.and.resolveTo({ profiles: [] });
+    else targets.and.rejectWith(Object.assign(new Error('Original cloud diagnostic'), { code: scenario.code }));
+
+    const menu = await project.getBoardConfigMenu({ persistDefaults: true });
+    expect(menu).toEqual([
+      jasmine.objectContaining({ name: scenario.label, type: 'board-config-unavailable', tooltip: scenario.label, disabled: true }),
+      jasmine.objectContaining({ key: 'CPUFreq', disabled: true }),
+    ]);
+    expect(project.setPackageJson).not.toHaveBeenCalled();
+    expect(project.syncBoardPinConfig).not.toHaveBeenCalled();
+    await expectAsync(project.getBoardConfigMenu({ requireCloudTarget: true }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: scenario.code }));
+  });
+
+  describe('runtime board projection during open', () => {
+    const board = { type: 'esp32:esp32:p4', core: 'esp32', cdcSerialPort: ['USB'] };
+    let applyCdc: jasmine.Spy;
+    beforeEach(() => {
+      project.runtimeBoardModules = new WeakMap();
+      applyCdc = jasmine.createSpy('apply CDC');
+      Object.defineProperty(project, 'application', { value: { applyCdcSerialPortOverrides: applyCdc } });
+      project.currentBoardMenuConfig = [{ key: 'ChipVariant', children: [], extra: { syncPinConfig: true } }];
+    });
+
+    it('shares an unavailable lookup between pin and CDC consumers and retries on the next open', async () => {
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.resolveTo({ profiles: [] });
+      await project.resolveBoardConfigForRuntime(board);
+      expect(targets).toHaveBeenCalledTimes(1);
+      expect(applyCdc).not.toHaveBeenCalled();
+
+      targets.and.callFake(async identity => ({ profiles: [{
+        ...identity, runner: 'aily-builder', fqbn: 'esp32:esp32:p4', profileDigest: 'a'.repeat(64),
+        capabilities: { compile: true }, metadata: {
+          defaults: { CDCOnBoot: 'cdc', ChipVariant: 'p4' },
+          boardOptions: {
+            CDCOnBoot: { default: 'cdc', values: { cdc: { properties: { 'build.cdc_on_boot': '1' } } } },
+            ChipVariant: { default: 'p4', values: { p4: { properties: { 'build.variant': 'p4' } } } },
+          },
+          variants: { 'p4/variant_generic.h': { digital: [4, 5] } },
+        },
+      }] }));
+      const resolved = await project.resolveBoardConfigForRuntime(board);
+      expect(targets).toHaveBeenCalledTimes(2);
+      expect(resolved.digital).toEqual([4, 5]);
+      expect(applyCdc).toHaveBeenCalledOnceWith(resolved, true);
+    });
+
+    it('restores the board offline and lets a build retry while the opening request is still pending', async () => {
+      project.currentBoardMenuConfig = [];
+      project.currentBoardConfig = await project.resolveBoardConfigForRuntime(board, null);
+      expect(applyCdc).not.toHaveBeenCalled();
+      const displayed = project.currentBoardConfig;
+      let releaseOpen!: (value: any) => void;
+      let started!: () => void;
+      const opening = new Promise<void>(resolve => { started = resolve; });
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(() => {
+        if (targets.calls.count() === 1) return new Promise(resolve => { releaseOpen = resolve; started(); });
+        return Promise.resolve({ profiles: [] });
+      });
+      const done = project.hydrateCloudBoardAfterOpen(displayed, () => {});
+      await opening;
+      await expectAsync(project.prepareCloudBoardForBuild(displayed, () => {}))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_TARGET_UNAVAILABLE' }));
+      releaseOpen({ profiles: [] });
+      await done;
+      expect(targets).toHaveBeenCalledTimes(2);
+      expect(project.currentBoardConfig).toBe(displayed);
+    });
+
+    it('reuses the opening profile for subsequent board menus and refreshes it at build time', async () => {
+      project.currentBoardMenuConfig = [];
+      const displayed = project.currentBoardConfig = await project.resolveBoardConfigForRuntime(board, null);
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(async identity => ({
+        profiles: [{ ...identity, runner: 'aily-builder', fqbn: 'esp32:esp32:p4', profileDigest: 'a'.repeat(64),
+          capabilities: { compile: true }, metadata: { defaults: {}, boardOptions: {
+            Speed: { default: 'fast', values: { fast: { label: 'Fast' } } },
+          } } }],
+      }));
+      await project.hydrateCloudBoardAfterOpen(displayed, () => {});
+      const menu = await project.getBoardConfigMenu();
+      expect(menu.map(item => item.key)).toContain('Speed');
+      expect(project.isBoardConfigMenuSnapshotCurrent(menu)).toBeTrue();
+      expect((await project.getBoardConfigMenu()).map(item => item.key)).toContain('Speed');
+      expect(targets).toHaveBeenCalledTimes(1);
+      targets.and.resolveTo({ profiles: [] });
+      await expectAsync(project.prepareCloudBoardForBuild(project.currentBoardConfig, () => {}))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_TARGET_UNAVAILABLE' }));
+      expect(project.isBoardConfigMenuSnapshotCurrent(menu)).toBeFalse();
+      const unavailable = await project.getBoardConfigMenu();
+      expect(unavailable[0].name).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+      expect(project.isBoardConfigMenuSnapshotCurrent(unavailable)).toBeFalse();
+      expect(targets).toHaveBeenCalledTimes(3);
+    });
+
+    it('reuses exact support and gives only the new build its catalog ticket', async () => {
+      const session = project.getProjectDependencySession('/project');
+      const bridge = window['cloudBuild'];
+      const targets = bridge.targets = jasmine.createSpy('targets').and.callFake(async identity => ({
+        ...(identity.forBuild ? { catalogTicket: 'single-use' } : {}),
+        profiles: [{ boardModule, boardVersion: identity.boardVersion, boardDigest: identity.boardDigest,
+          runner: 'aily-builder', fqbn: 'esp32:esp32:p4', profileDigest: 'a'.repeat(64),
+          capabilities: { compile: true }, metadata: { defaults: {}, boardOptions: {} } }],
+      }));
+      await project.getCloudBoardProfile({}, session);
+      await npm.prepareCompileBackend('/project');
+      expect(bridge.boardSupport).not.toHaveBeenCalled();
+      const menu = await project.getCloudBoardProfile();
+      expect(menu.catalogTicket).toBeUndefined();
+      expect(targets.calls.count()).toBe(1);
+      const build = await project.getCloudBoardProfile({ refresh: true }, session);
+      expect(build.catalogTicket).toBe('single-use');
+      expect((await project.getCloudBoardProfile()).catalogTicket).toBeUndefined();
+      expect(targets.calls.allArgs().map(args => !!args[0].forBuild)).toEqual([false, true]);
+
+      // A modified board at the same package version needs its own support check.
+      files.set(`/project/node_modules/${boardModule}/board.json`, '{"name":"Modified"}');
+      await expectAsync(npm.prepareCompileBackend('/project'))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_BOARD_UNSUPPORTED' }));
+      expect(bridge.boardSupport).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets waiting readers follow a fresh build lookup before a delayed old response arrives', async () => {
+      let release!: () => void;
+      let started!: () => void;
+      const firstStarted = new Promise<void>(resolve => { started = resolve; });
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(async identity => {
+        const first = targets.calls.count() === 1;
+        if (first) {
+          started();
+          await new Promise<void>(resolve => { release = resolve; });
+        }
+        return { profiles: [{ ...identity, runner: 'aily-builder', fqbn: 'esp32:esp32:p4',
+          profileDigest: (first ? 'a' : 'b').repeat(64), capabilities: { compile: true },
+          metadata: { defaults: {}, boardOptions: {} } }] };
+      });
+      const opening = project.getCloudBoardProfile();
+      await firstStarted;
+      const menu = project.getCloudBoardProfile();
+      const build = await project.getCloudBoardProfile({ refresh: true });
+      try {
+        expect((await menu).profileDigest).toBe(build.profileDigest);
+        expect((await opening).profileDigest).toBe('b'.repeat(64));
+      } finally { release(); }
+      expect((await project.getCloudBoardProfile()).profileDigest).toBe('b'.repeat(64));
+      expect(targets).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops background board data when the view changes while publication is queued', async () => {
+      project.currentBoardMenuConfig = [];
+      const displayed = project.currentBoardConfig = { ...board };
+      project.getCloudBoardProfile = async () => ({ metadata: { defaults: {}, boardOptions: {} } });
+      project.resolveBoardConfigForRuntime = async () => ({ ...board, digital: [7] });
+      project.cloudBoardHydratedSubject = { next: jasmine.createSpy('stale board') };
+      await project.hydrateCloudBoardAfterOpen(displayed, () => {}, async publish => {
+        project.currentProjectPathSubject.value = '/other';
+        publish();
+      });
+      expect(project.currentBoardConfig).toBe(displayed);
+      expect(project.cloudBoardHydratedSubject.next).not.toHaveBeenCalled();
+    });
+
+    it('opens a board with explicit CDC and no variable pins without requesting cloud metadata', async () => {
+      project.currentBoardMenuConfig = [{ key: 'ChipVariant' }];
+      project.getPackageJson = async () => ({ projectConfig: { CDCOnBoot: 'cdc' }, ailyBoardOverrides: { digital: [13] } });
+      const targets = window['cloudBuild'].targets = jasmine.createSpy('targets');
+      const resolved = await project.resolveBoardConfigForRuntime(board);
+      expect(resolved.digital).toEqual([13]);
+      expect(applyCdc).toHaveBeenCalledOnceWith(resolved, true);
+      expect(targets).not.toHaveBeenCalled();
+    });
+  });
+
+  it('disables only the missing option when the cloud board profile is available', async () => {
+    project.currentBoardMenuConfig = [{ name: 'CPU frequency', key: 'CPUFreq', children: [{ name: 'Default', data: 'default' }] }];
+    window['cloudBuild'].targets = jasmine.createSpy('targets').and.callFake(async identity => ({ profiles: [{
+      ...identity, runner: 'aily-builder', fqbn: 'aily:arduino:test', profileDigest: 'a'.repeat(64),
+      capabilities: { compile: true }, metadata: { defaults: {}, boardOptions: {
+        UploadSpeed: { label: 'Upload speed', default: '115200', values: { '115200': { label: '115200' } } },
+      } },
+    }] }));
+
+    const menu = await project.getBoardConfigMenu();
+
+    expect(menu).toEqual([
+      jasmine.objectContaining({ key: 'CPUFreq', disabled: true, tooltip: 'PROJECT.CLOUD_OPTION_UNAVAILABLE' }),
+      jasmine.objectContaining({ key: 'UploadSpeed', children: [jasmine.objectContaining({ data: '115200' })] }),
+    ]);
+    expect(menu[1].disabled).toBeFalsy();
+  });
+
   for (const oldHost of ['preload', 'main-process']) it(`requests a full restart for an outdated ${oldHost} without treating it as an unsupported board`, async () => {
     if (oldHost === 'preload') delete window['cloudBuild'].boardSupport;
     else window['cloudBuild'].boardSupport.and.rejectWith({ code: 'CLOUD_BUILD_ERROR', message: 'Unknown cloud build operation.' });
@@ -173,14 +374,19 @@ describe('board cloud support and local fallback', () => {
 
   it('blocks disk compilation for an unsupported cloud board until local is selected', async () => {
     const runCompile = jasmine.createSpy('runCompile').and.resolveTo({ success: true, result: { state: 'done' } });
+    const handleFailNotice = jasmine.createSpy('handleFailNotice');
     const compile = Object.assign(Object.create(CompileService.prototype), {
       metrics: { record: () => {} },
-      configService: config, projectService: project, npmService: npm,
-      application: { startBuild: () => true, finishBuild() {}, updateNotice: () => {} }, handleFailNotice() {}, runCompile, t: (key: string) => key,
+      configService: config, projectService: project, npmService: npm, translate: project.translate,
+      application: { startBuild: () => true, finishBuild() {}, updateNotice: () => {} }, handleFailNotice, runCompile, t: (key: string) => key,
     });
     const blocked = await compile.runCompileFromDisk();
     expect(blocked.success).toBeFalse();
-    expect(blocked.result.text).toContain('PROJECT.CLOUD_BOARD_UNSUPPORTED');
+    const detail = `PROJECT.CLOUD_BOARD_UNSUPPORTED (${boardModule}@3.2.1) CLOUD_BUILD.SWITCH_TO_LOCAL`;
+    expect(blocked.result).toEqual(jasmine.objectContaining({
+      code: 'CLOUD_BOARD_UNSUPPORTED', text: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', fullStdErr: detail,
+    }));
+    expect(handleFailNotice).toHaveBeenCalledOnceWith('/project', 'FAILED_TITLE', 'PROJECT.CLOUD_TARGET_UNAVAILABLE', detail, jasmine.any(Function));
     expect(runCompile).not.toHaveBeenCalled();
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
     config.data.compile.backend = 'local';
@@ -236,16 +442,18 @@ describe('board cloud support and local fallback', () => {
     window['cloudBuild'].invalidate = invalidate;
     const blockly = Object.assign(Object.create(_BuilderService.prototype), {
       metrics: { record: () => {} },
-      configService: config, projectService: project, npmService: npm,
+      configService: config, projectService: project, npmService: npm, translate: project.translate,
       workflowService: { startBuild: () => true, finishBuild: () => {} },
-      clearProgressTimer: () => {}, handleCompileError: () => {},
+      clearProgressTimer: () => {}, handleCompileError: () => {}, noticeService: { update: () => {} },
       t: (key: string) => key,
     });
-    await expectAsync(blockly.build()).toBeRejected();
+    project.getProjectDependencySession('/project');
+    await expectAsync(blockly.build()).toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_BOARD_UNSUPPORTED' }));
     expect(invalidate).not.toHaveBeenCalled();
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
     config.data.compile.backend = 'local';
-    await expectAsync(blockly.build()).toBeRejected();
+    project.getProjectDependencySession('/project');
+    await expectAsync(blockly.build()).toBeRejectedWith(jasmine.objectContaining({ text: 'local-boundary' }));
     expect(invalidate).toHaveBeenCalledOnceWith({ projectPath: '/project' });
   });
 });

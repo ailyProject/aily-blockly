@@ -3,8 +3,8 @@
 const stale = () => ({ ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The original view reservation is no longer current.' });
 const MAX_RETIREMENTS = 512;
 
-/** Main owns the navigation transition. File snapshots only authorize release of
- * the captured native record. Each renderer request also has a separate owner. */
+/** Main owns the navigation transition and binds it to the exact native leases.
+ * Each renderer request also has a separate owner. */
 function createProjectViewNavigation(lock) {
   const reservations = new Map();
   const retirements = new Map();
@@ -18,7 +18,7 @@ function createProjectViewNavigation(lock) {
   function selectLegacy(project, generation) {
     const projectPath = normalize(project);
     if (selected?.projectPath === projectPath && (!selected.rendererGeneration || selected.rendererGeneration === generation)) return;
-    // An explicit legacy acquisition of this path now owns its native record.
+    // An explicit selection can adopt the main process's existing lease.
     reservations.delete(projectPath);
     selected = { projectPath };
   }
@@ -33,19 +33,14 @@ function createProjectViewNavigation(lock) {
     }
     if (exact(prior, request)) return observe(request);
     if (!selected || selected.projectPath !== sourceProject || !projectPath || projectPath === sourceProject || prior) return stale();
-    let sourceSnapshot;
-    try { sourceSnapshot = lock.readViewLockSnapshot(sourceProject); }
-    catch { return stale(); }
-    if (sourceSnapshot?.owner?.pid !== process.pid) return stale();
+    const sourceLease = lock.captureHeldView(sourceProject);
+    if (!sourceLease) return stale();
     const result = lock.tryAcquireLock(projectPath, options);
     if (!result.ok) return result;
-    let snapshot;
-    try { snapshot = lock.readViewLockSnapshot(projectPath); }
-    catch { return stale(); }
-    if (snapshot?.owner?.pid !== process.pid) return stale();
     reservations.set(projectPath, {
       requestId: request.requestId, rendererGeneration: request.rendererGeneration,
-      projectPath, sourceProject, source: selected, sourceSnapshot, snapshot,
+      projectPath, sourceProject, source: selected, sourceLease, targetLease: { viewToken: result.viewToken },
+      attachment: result.attachment,
     });
     return { ...result, reserved: true };
   }
@@ -53,19 +48,20 @@ function createProjectViewNavigation(lock) {
   function promote(request) {
     const entry = reservations.get(normalize(request.projectPath));
     if (!exact(entry, request) || selected !== entry.source) return stale();
-    const released = lock.handoffViewLock(entry.sourceProject, entry.sourceSnapshot, entry.projectPath, entry.snapshot);
+    const released = lock.handoffViewLock(entry.sourceProject, entry.sourceLease, entry.projectPath, entry.targetLease);
     if (!released.ok) return released;
     reservations.delete(entry.sourceProject);
     selected = entry;
     entry.source = undefined;
-    entry.sourceSnapshot = undefined;
-    return { ok: true, selected: true, normalizedPath: entry.projectPath };
+    entry.sourceLease = undefined;
+    return { ok: true, selected: true, normalizedPath: entry.projectPath, ...(entry.attachment && { attachment: entry.attachment }) };
   }
 
   function observe(request) {
     const entry = reservations.get(normalize(request.projectPath));
-    if (!exact(entry, request)) return stale();
-    return { ok: true, reserved: true, selected: selected === entry, normalizedPath: entry.projectPath };
+    if (!exact(entry, request) || lock.captureHeldView(entry.projectPath)?.viewToken !== entry.targetLease.viewToken) return stale();
+    return { ok: true, reserved: true, selected: selected === entry, normalizedPath: entry.projectPath,
+      ...(entry.attachment && { attachment: entry.attachment }) };
   }
 
   function release(request, pendingOnly = false) {
@@ -77,7 +73,7 @@ function createProjectViewNavigation(lock) {
       if (retirements.size > MAX_RETIREMENTS) retirements.delete(retirements.keys().next().value);
     }
     if (!exact(entry, request) || pendingOnly && selected === entry) return { ok: true };
-    const result = lock.releaseLock(entry.projectPath, entry.snapshot);
+    const result = lock.releaseLock(entry.projectPath, entry.targetLease);
     if (result.ok || result.code === 'PROJECT_VIEW_CHANGED') {
       reservations.delete(entry.projectPath);
       if (selected === entry) selected = undefined;

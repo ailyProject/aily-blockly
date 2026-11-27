@@ -6,6 +6,7 @@ import { absJson, assertCurrentAbsProjection, createAbsProjection, reconstructAb
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 import { readAbsWorkspaceMode, type AbsWorkspaceMode, type AbsAuthorSourceRecord, type AbsAcceptedSourceProof } from './abs-workspace-mode';
 import { generationEvidence, type AbsGenerationEvidence } from './abs-generation-protocol';
+import { sameAbsProgram } from './abs-program-state';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
 import type { AbsProgramDriftObservation } from './abs-program-drift';
 import type { CopiedProjectLockRecovery, InvalidAbsMirrorRecovery, LegacyProjectFileLockObservation, ProjectFileLockObservation, ProjectStorageAttachment, ProjectStorageExecutor,
@@ -87,6 +88,17 @@ interface GenerationRecord extends Omit<AbsGenerationInput, 'expected'> {
   previousPointer?: string | null;
   workspaceMode?: 'project-v1';
   authorSource?: AbsAuthorSourceRecord;
+  /** Exact accepted author provenance of a verified History target. */
+  restoredAuthor?: { generation: string; pointerHash: string };
+}
+export interface AbsHistoryAuthorTarget {
+  source: string;
+  format?: 'abs' | 'abi';
+  document: unknown;
+}
+interface AbsStageOptions {
+  mergedCandidate?: boolean;
+  historyTarget?: AbsHistoryAuthorTarget;
 }
 const metadataPreservesAuthor = (record: Pick<GenerationRecord, 'workspaceMode' | 'authorSource' | 'expected' | 'draftBaseGeneration'>) =>
   record.workspaceMode === 'project-v1' && !!record.draftBaseGeneration && !!record.authorSource
@@ -154,11 +166,12 @@ export class AbsBaselineStore {
   }
 
   /** Creates a generation only. Does not publish ABS, mark it ready, or save ABI. */
-  async stage(input: AbsGenerationInput, expectedCommitted?: string | null, options: { mergedCandidate?: boolean } = {}): Promise<string> {
-    return this.stageGeneration(input, expectedCommitted, options.mergedCandidate);
+  async stage(input: AbsGenerationInput, expectedCommitted?: string | null, options: AbsStageOptions = {}): Promise<string> {
+    return this.stageGeneration(input, expectedCommitted, options);
   }
 
-  private async stageGeneration(input: AbsGenerationInput, expectedCommitted?: string | null, mergedCandidate = false, freshRoot = false) {
+  private async stageGeneration(input: AbsGenerationInput, expectedCommitted: string | null | undefined,
+    { mergedCandidate = false, freshRoot = false, historyTarget }: AbsStageOptions & { freshRoot?: boolean }) {
     input = cloneProjectJson(input);
     this.assertScope(input.projection);
     await validateAbsProjection(input.projection);
@@ -185,7 +198,8 @@ export class AbsBaselineStore {
     await this.port.withLock(async storage => {
       const workspaceMode = await this.workspaceMode(storage);
       if (input.authorIntent !== undefined && !['candidate', 'preserve'].includes(input.authorIntent)
-        || (input.authorIntent === 'preserve' || mergedFrom) && workspaceMode !== 'project-v1')
+        || (input.authorIntent === 'preserve' || mergedFrom) && workspaceMode !== 'project-v1'
+        || historyTarget && (input.authorIntent !== 'preserve' || input.mode !== 'import'))
         throw new AbsSyncError('ABS_GENERATION_INVALID', 'Author preservation requires its project-v1 History publisher.');
       const previousPointer = await storage.read(COMMITTED);
       const previousCommitted = await hashNullable(previousPointer);
@@ -208,8 +222,10 @@ export class AbsBaselineStore {
           hash: disposition === 'refreshed' ? await hashAbsText(input.projection.abs) : current,
           ...(mergedFrom ? { mergedFrom } : {}) };
       }
+      const restoredAuthor = historyTarget && await this.findRestoredAuthor(previousPointer, input.projection, historyTarget, storage);
       const record: GenerationRecord = { ...input, schemaVersion: 1, expected,
         ...(authorSource ? { workspaceMode: 'project-v1', authorSource } : {}),
+        ...(restoredAuthor ? { restoredAuthor } : {}),
         previousCommitted, ...(freshRoot ? {} : { previousPointer }) };
       if (input.metadataOnly && input.projection.abs !== input.expected.abs && !metadataPreservesAuthor(record))
         throw new AbsSyncError('ABS_GENERATION_INVALID', 'A metadata-only recovery must preserve the exact author ABS.');
@@ -291,22 +307,72 @@ export class AbsBaselineStore {
       && absJson(await generationEvidence(record.projection, record.abi)) === absJson(evidence);
   }
 
-  /** Read only this exact accepted candidate input, never an arbitrary draft or
-   * historical state. Its normalized output remains the semantic authority. */
+  /** Read the exact accepted input, including a History publication that proved
+   * its target carried that input's program. A preserved draft grants nothing. */
   async readAcceptedAuthorInput(generation: string): Promise<string | null> {
     const accepted = await this.inspectCommittedAncestor(generation);
     if (!accepted) return null;
     const loaded = await this.readGeneration(this.port, generation);
-    const record = loaded.record, author = record.authorSource;
+    const record = loaded.record;
     if (accepted.pointerHash !== await hashAbsText(absJson(loaded.pointer))
       || accepted.projection.abs !== record.projection.abs || accepted.abi !== record.abi)
       throw new AbsSyncError('ABS_BASELINE_STALE', 'The exact accepted input changed during observation.');
+    return record.restoredAuthor ? this.restoredAuthorInput(record, this.port) : this.acceptedAuthorInput(record);
+  }
+
+  private async acceptedAuthorInput(record: GenerationRecord): Promise<string | null> {
+    const author = record.authorSource;
     if (record.workspaceMode !== 'project-v1' || record.mode !== 'import' || record.authorIntent !== 'candidate'
       || author?.disposition !== 'accepted' || typeof record.inputAbs !== 'string') return null;
     if (author.hash !== author.inputHash || author.hash !== record.expected.abs
       || await hashAbsText(record.inputAbs) !== author.hash)
       throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'The exact accepted author input hash changed.');
     return record.inputAbs;
+  }
+
+  private async restoredAuthorInput(record: GenerationRecord, storage: Pick<AbsSyncStorageAccess, 'read'>): Promise<string | null> {
+    const reference = record.restoredAuthor;
+    if (!reference) return null;
+    const origin = await this.readGeneration(storage, reference.generation, true);
+    if (await hashAbsText(absJson(origin.pointer)) !== reference.pointerHash
+      || !this.sameAuthorProgram(origin.record.projection, record.projection))
+      throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'The restored author origin changed.');
+    return this.acceptedAuthorInput(origin.record);
+  }
+
+  private async findRestoredAuthor(head: string | null, projection: AbsProjection, target: AbsHistoryAuthorTarget,
+    storage: Pick<AbsSyncStorageAccess, 'read'>): Promise<GenerationRecord['restoredAuthor']> {
+    const matchesHistoryTarget = sameAbsProgram(target.document, projection.document);
+    let semanticOrigin: { reference: NonNullable<GenerationRecord['restoredAuthor']>; authorHash: string } | undefined;
+    let ambiguousOrigin = false;
+    try {
+      for await (const { record, text } of this.committedLineage(head, storage)) {
+        if (!this.sameAuthorProgram(record.projection, projection)) continue;
+        const source = target.format === 'abi' ? record.abi : record.projection.abs;
+        const exactTarget = source === target.source;
+        if (!exactTarget && (!matchesHistoryTarget || ambiguousOrigin)) continue;
+        if (await this.acceptedAuthorInput(record) !== null) {
+          const reference = { generation: record.projection.map.generation, pointerHash: await hashAbsText(absJson(this.parsePointer(text))) };
+          if (exactTarget) return reference;
+          const authorHash = record.authorSource!.hash;
+          if (!semanticOrigin) semanticOrigin = { reference, authorHash };
+          else if (semanticOrigin.authorHash !== authorHash) ambiguousOrigin = true;
+        } else if (exactTarget && record.restoredAuthor && await this.restoredAuthorInput(record, storage) !== null) {
+          return record.restoredAuthor;
+        }
+      }
+      // Working snapshots may differ from a committed projection in layout.
+      // Their author is unambiguous only if all equivalent accepted inputs agree.
+      if (!ambiguousOrigin) return semanticOrigin?.reference;
+    } catch (error) {
+      // Restoring a verified program does not depend on optional older author history.
+      if (!(error instanceof AbsSyncError) || !['ABS_BASELINE_CORRUPT', 'ABS_BASELINE_MISSING'].includes(error.code)) throw error;
+    }
+    return undefined;
+  }
+
+  private sameAuthorProgram(a: AbsProjection, b: AbsProjection): boolean {
+    return absJson(a.map.scope) === absJson(b.map.scope) && sameAbsProgram(a.document, b.document);
   }
 
   async readArchivedDraft(generation: string): Promise<{ generation: string; baseGeneration: string | null;
@@ -474,7 +540,7 @@ export class AbsBaselineStore {
       }
       const generation = await locked.stageGeneration({ projection, expected, mode: 'import', abi: expected.abi,
         inputAbs: expected.abs ?? projection.abs, ...(keepDraft ? { authorIntent: 'preserve' as const } : {}) },
-        await hashNullable(await storage.read(COMMITTED)), false, true);
+        await hashNullable(await storage.read(COMMITTED)), { freshRoot: true });
       // The input ABI is already durable. commit checks its exact bytes before publishing the map and index.
       const result = await locked.commit(generation, guard, async () => { guard(); });
       if (result.status !== 'COMMITTED') throw new AbsSyncError('ABS_DISK_CONFLICT', result.error ?? 'Project changed during projection refresh.');
@@ -642,13 +708,13 @@ export class AbsBaselineStore {
     return null;
   }
 
-  private async *committedLineage(head: string | null) {
+  private async *committedLineage(head: string | null, storage: Pick<AbsSyncStorageAccess, 'read'> = this.port) {
     const seen = new Set<string>();
     for (let text = head; text !== null;) {
       const pointer = this.parsePointer(text);
       if (seen.has(pointer.generation)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Cyclic committed generation lineage.');
       seen.add(pointer.generation);
-      const { record, pointer: actual } = await this.readGeneration(this.port, pointer.generation, true);
+      const { record, pointer: actual } = await this.readGeneration(storage, pointer.generation, true);
       if (absJson(pointer) !== absJson(actual)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical committed generation checksum mismatch.');
       yield { record, text };
       const previous: string | null | undefined = record.previousPointer;
@@ -759,6 +825,7 @@ export class AbsBaselineStore {
   async commit(
     generation: string, assertCurrent: () => void,
     commitAbi: (text: string, expectedByteHash: string | null, storage: AbsSyncStorageAccess) => Promise<void>,
+    beforePublish?: (storage: AbsSyncStorageAccess) => Promise<void>,
   ): Promise<AbsPublishResult> {
     return this.port.withLock(async storage => {
       const { record, pointer } = await this.readGeneration(storage, generation);
@@ -771,6 +838,12 @@ export class AbsBaselineStore {
         return this.result(storage, record, 'CONFLICT', 'Project files changed during preparation.');
       }
       assertCurrent();
+      // The original application stage and the prepared pointer share this
+      // writer. No lock handoff or concurrent publication may separate them.
+      if (beforePublish) {
+        await beforePublish(storage);
+        assertCurrent();
+      }
       const pointerText = absJson(pointer);
       if (!await storage.replace(PREPARED, null, pointerText)) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Another transaction was prepared.');
       try {
@@ -934,6 +1007,12 @@ export class AbsBaselineStore {
       }
       if (record.mode === 'import' && await hashAbsText(absJson(JSON.parse(record.abi!))) !== record.projection.map.savedAbiHash) {
         throw new Error('Prepared save shape changed.');
+      }
+      if (record.restoredAuthor !== undefined) {
+        if (record.workspaceMode !== 'project-v1' || record.mode !== 'import' || record.authorIntent !== 'preserve'
+          || !record.restoredAuthor || record.restoredAuthor.generation === generation
+          || !/^sha256:[a-f0-9]{64}$/.test(record.restoredAuthor.pointerHash)) throw new Error('Invalid restored author origin.');
+        absBaselineKey(record.restoredAuthor.generation);
       }
       const mergedFrom = await this.mergedAuthorHash(record, record.expected.abs);
       if (record.workspaceMode !== undefined || record.authorSource !== undefined || mergedFrom) {

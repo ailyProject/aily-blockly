@@ -280,21 +280,6 @@ export class GuideComponent implements OnInit, OnDestroy {
     this.process(e);
   }
 
-  async selectFolder() {
-    const folderPath = await window['ipcRenderer'].invoke('select-folder', {
-      path: '',
-    });
-    console.log('选中的文件夹路径：', folderPath);
-    return folderPath;
-  }
-
-  async openProject(data) {
-    const path = await this.selectFolder();
-    if (path) {
-      await this.projectService.projectOpen(path);
-    }
-  }
-
   async openProjectByPath(data) {
     await this.projectService.projectOpen(data.path);
   }
@@ -319,7 +304,7 @@ export class GuideComponent implements OnInit, OnDestroy {
         // this.uiService.openWindow(item.data);
         break;
       case 'project-open':
-        this.openProject(item.data);
+        void this.projectService.selectAndOpenProject();
         break;
       case 'browser-open':
         this.electronService.openUrl(item.data.url);

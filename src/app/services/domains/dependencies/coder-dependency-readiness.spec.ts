@@ -59,8 +59,8 @@ describe('Coder dependency installation and recovery', () => {
     npm.installBoardDeps.and.callFake(NpmService.prototype.installBoardDeps);
   }
 
-  it('offers a manual local build after the unavailable cloud target settles', async () => {
-    const targetError = Object.assign(new Error('此开发板版本或内容尚未注册为可用的云编译目标。'), { code: 'CLOUD_TARGET_UNAVAILABLE' });
+  for (const code of ['CLOUD_TARGET_UNAVAILABLE', 'CLOUD_BOARD_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED']) it(`offers a manual local build after ${code} settles`, async () => {
+    const targetError = Object.assign(new Error('Original unsupported configuration detail'), { code });
     failCloudBoardProfile(targetError);
     const retryLocally = jasmine.createSpy('retryLocally').and.resolveTo();
     npm.application.updateNotice.and.callFake((notice: { onRetryLocally?: () => void }) => notice.onRetryLocally?.());
@@ -72,7 +72,7 @@ describe('Coder dependency installation and recovery', () => {
     expect(npm.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
     const notice = npm.application.updateNotice.calls.mostRecent().args[0];
     expect(notice).toEqual(jasmine.objectContaining({
-      title: 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE', text: targetError.message, detail: targetError.message,
+      title: 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE', text: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', detail: targetError.message,
       state: 'error', onRetry: jasmine.any(Function), onRetryLocally: jasmine.any(Function),
     }));
 
@@ -97,7 +97,7 @@ describe('Coder dependency installation and recovery', () => {
     expect(retryLocally).not.toHaveBeenCalled();
   });
 
-  for (const code of ['AUTH_TOKEN_INVALID', 'CI_RESOURCE_UNSUPPORTED', undefined]) {
+  for (const code of ['AUTH_TOKEN_INVALID', 'GATEWAY_TIMEOUT', 'CI_RESOURCE_PREPARATION_FAILED', undefined]) {
     it(`keeps dependency retry as the only action for ${code ?? 'an unstructured error'}`, async () => {
       failCloudBoardProfile(Object.assign(new Error('Cloud target unavailable'), { code }));
       const retryLocally = jasmine.createSpy('retryLocally');
@@ -301,8 +301,8 @@ describe('Coder dependency installation and recovery', () => {
     expect(window['npm'].run).not.toHaveBeenCalled();
   });
 
-  it('returns the structured cloud failure to the compile owner while ordinary preflight still reports dependency retry', async () => {
-    const targetError = Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' });
+  for (const code of ['CLOUD_TARGET_UNAVAILABLE', 'CI_RESOURCE_UNSUPPORTED']) it(`returns ${code} to the compile owner while ordinary preflight reports dependency retry`, async () => {
+    const targetError = Object.assign(new Error('Original unsupported configuration detail'), { code });
     failCloudBoardProfile(targetError);
     project.setProjectDependencyResult(session, true);
 

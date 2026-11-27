@@ -1,5 +1,6 @@
 import { BehaviorSubject, Subject, Subscription } from 'rxjs';
 import { fakeAsync, tick } from '@angular/core/testing';
+import { NavigationEnd } from '@angular/router';
 import { HeaderComponent } from './header.component';
 import { BlocklyProjectDirtyState } from '../../../editors/blockly-editor/services/blockly-project-dirty-state';
 import { BlocklyProjectDocument } from '../../../editors/blockly-editor/services/blockly-project-model';
@@ -148,6 +149,26 @@ describe('project title unsaved marker', () => {
     await view.refreshProjectUnsavedState(); expect(view.hasUnsavedProjectChanges).toBeTrue();
   });
 
+  it('removes the old board settings message as soon as the displayed project changes', fakeAsync(() => {
+    const h = watchingFixture(false), view = h.view;
+    let finish!: (receipt: { changed: boolean }) => void;
+    view.message = { loading: jasmine.createSpy('loading').and.returnValue({ messageId: 'old-board-setting' }),
+      remove: jasmine.createSpy('remove') };
+    view.projectService.isAilyCodeProject = () => false;
+    view.projectService.applyBoardConfiguration = () => new Promise(resolve => { finish = resolve; });
+    const content = { project: view.projectService.currentProjectPath };
+    view.boardChoiceIsCurrent = () => content.project === view.projectService.currentProjectPath;
+    void view.applyPortBoardChoice(content, { key: 'UploadSpeed', data: '115200' });
+    tick(1000);
+    expect(view.message.loading).toHaveBeenCalledTimes(1);
+    view.projectService.currentProjectPath = '/replacement';
+    view.projectService.currentProjectPath$.next('/replacement');
+    expect(view.message.remove).toHaveBeenCalledOnceWith('old-board-setting');
+    finish({ changed: true }); tick();
+    expect(view.message.remove).toHaveBeenCalledTimes(1);
+    h.dispose();
+  }));
+
   it('does no polling work for idle Blockly and schedules Coder only while active', fakeAsync(() => {
     const view = fixture(); view.unsavedSubscriptions = { add() {} };
     view.projectService.currentProjectPath$ = new Subject();
@@ -155,9 +176,24 @@ describe('project title unsaved marker', () => {
     view.watchProjectUnsavedState(); view.scheduleUnsavedCheck.calls.reset();
     tick(5000); expect(view.scheduleUnsavedCheck).not.toHaveBeenCalled();
     expect(view.projectService.getProjectMode).not.toHaveBeenCalled();
-    view.router.url = '/main/code-editor-pro'; tick(1000);
-    expect(view.scheduleUnsavedCheck).toHaveBeenCalledTimes(1);
-    clearInterval(view.coderUnsavedPoll);
+    expect(view.coderUnsavedPoll).toBeUndefined();
+    view.router.url = '/main/code-editor-pro';
+    const navigated = () => view.router.events.next(new NavigationEnd(1, view.router.url, view.router.url));
+    navigated(); navigated();
+    view.scheduleUnsavedCheck.calls.reset();
+    tick(1000); expect(view.scheduleUnsavedCheck).toHaveBeenCalledTimes(1);
+
+    view.projectService.currentProjectPath = '';
+    view.projectService.currentProjectPath$.next('');
+    expect(view.coderUnsavedPoll).toBeUndefined();
+    view.projectService.currentProjectPath = '/other';
+    view.projectService.currentProjectPath$.next('/other');
+    expect(view.coderUnsavedPoll).toBeDefined();
+
+    view.router.url = '/main/blockly-editor'; navigated();
+    expect(view.coderUnsavedPoll).toBeUndefined();
+    view.scheduleUnsavedCheck.calls.reset();
+    tick(5000); expect(view.scheduleUnsavedCheck).not.toHaveBeenCalled();
   }));
 
   it('retains canvas edits during dependency preparation and autosaves once it settles', fakeAsync(() => {

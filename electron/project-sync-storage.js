@@ -265,7 +265,9 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
           if (!bytes || !key.startsWith('recoveries/admission-')) return;
           let receipt;
           try { receipt = JSON.parse(bytes.toString('utf8')); } catch { return; }
-          if (receipt?.code === 'ABS_WORKSPACE_MIGRATION_PENDING' && receipt.request?.operation === 'abs_apply'
+          const requireApplicationWriter = receipt?.code === 'ABS_APPLY_CANCELLED_BEFORE_START'
+            || (receipt?.code === 'ABS_WORKSPACE_MIGRATION_PENDING' && receipt.request?.operation === 'abs_apply');
+          if (requireApplicationWriter
             && (expectedHash !== null || !matchesOriginalApplyRefusal(readText, key, bytes, access.attachment, executor)))
             throw fault('ABS_ADMISSION_INVALID', 'The refusal does not identify its original ABS writer.');
         };
