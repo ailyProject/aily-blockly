@@ -1,6 +1,6 @@
 export const AILY_CLOUD_IGNORE_FILE = '.ailyignore';
 
-const DEFAULT_CLOUD_IGNORE = '# 云同步忽略规则，语法与 .gitignore 相同。\nbuild/\n';
+const DEFAULT_CLOUD_IGNORE = 'build/\n';
 
 export function ensureAilyCloudIgnoreFile(projectPath: string): void {
   const fs = window['fs'];

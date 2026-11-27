@@ -136,6 +136,19 @@ describe('ProjectSettingDialogComponent package names', () => {
     expect(stale.modal.close).not.toHaveBeenCalled();
   });
 
+  it('omits the old generated header and removes it on save while preserving user comments', async () => {
+    const original = '# 云同步忽略规则，语法与 .gitignore 相同。\r\n# 用户注释\r\nbuild/\r\n';
+    rules = original;
+    const component = createComponent({ name: 'demo', version: '1.0.0' });
+
+    await component.loadProjectSettings();
+    expect(component.syncRules).toBe('# 用户注释\r\nbuild/\r\n');
+    expect(rules).toBe(original);
+
+    await component.saveSettings();
+    expect(rules).toBe('# 用户注释\r\nbuild/\r\n');
+  });
+
   it('rejects saving settings from a dialog after the current project changes', async () => {
     const component = createComponent({ name: 'demo', version: '1.0.0' });
     await component.loadProjectSettings();

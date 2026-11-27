@@ -107,7 +107,7 @@ for (const directory of [templates.CODER_TEMPLATE_DIRECTORY, templates.LEGACY_CO
       assert.equal(manifest.type, 'coder');
       assert.equal(manifest.dependencies[packageName], `^${packageVersion}`);
       assert.equal(fs.statSync(path.join(result.project, 'project.aci')).size, 0);
-      assert.match(fs.readFileSync(path.join(result.project, '.ailyignore'), 'utf8'), /^#[^\n]+\nbuild\/\n$/);
+      assert.equal(fs.readFileSync(path.join(result.project, '.ailyignore'), 'utf8'), 'build/\n');
     }
     assert.equal(f.calls.opened.length, 2);
     assert.deepEqual(f.calls.commands, []);
@@ -157,7 +157,7 @@ test('Coder template creation prepares launch and cloud ignore files before acti
   f.service.finishProjectCreation = async (project) => {
     assert.deepEqual(fs.readFileSync(path.join(project, 'project.aci')), expected);
     const cloudIgnore = fs.readFileSync(path.join(project, '.ailyignore'), 'utf8');
-    if (expectedIgnore === undefined) assert.match(cloudIgnore, /^#[^\n]+\nbuild\/\n$/);
+    if (expectedIgnore === undefined) assert.equal(cloudIgnore, 'build/\n');
     else assert.equal(cloudIgnore, expectedIgnore);
     return true;
   };
@@ -204,7 +204,7 @@ for (const native of [false, true]) {
     });
     assert.equal(await f.service.projectOpenInternal(root), true);
     const ignorePath = path.join(root, '.ailyignore');
-    assert.match(fs.readFileSync(ignorePath, 'utf8'), /^#[^\n]+\nbuild\/\n$/);
+    assert.equal(fs.readFileSync(ignorePath, 'utf8'), 'build/\n');
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).type, 'coder');
     if (native) assert.equal(fs.readFileSync(path.join(root, 'existing.ino'), 'utf8'), 'void setup() {}');
 

@@ -15,6 +15,8 @@ import {
   ProjectService,
 } from '@domain/project/public-api';
 
+const LEGACY_CLOUD_IGNORE_COMMENT = /^# 云同步忽略规则，语法与 \.gitignore 相同。(?:\r?\n|$)/;
+
 interface ProjectSettings {
   name: string;
   version: string;
@@ -130,7 +132,7 @@ export class ProjectSettingDialogComponent {
             if (!fs.lstatSync(rulesFile)._isFile) throw new Error(`${AILY_CLOUD_IGNORE_FILE} must be a regular file`);
             this.originalSyncRules = fs.readFileSync(rulesFile, 'utf8');
           }
-          this.syncRules = this.originalSyncRules ?? '';
+          this.syncRules = (this.originalSyncRules ?? '').replace(LEGACY_CLOUD_IGNORE_COMMENT, '');
           this.syncRulesReady = true;
         } catch (error) {
           console.error('读取同步规则失败:', error);

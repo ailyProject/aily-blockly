@@ -85,7 +85,7 @@ describe('exact host journal reopen provenance', () => {
     service.electronService.isElectron = true;
     try {
       expect(await service.reopenRecoveredBlocklyProject(source, () => {})).toEqual({ project: source, activated: true });
-      expect(write).toHaveBeenCalledOnceWith(ignorePath, jasmine.stringMatching(/\nbuild\/\n$/), { flag: 'wx' });
+      expect(write).toHaveBeenCalledOnceWith(ignorePath, 'build/\n', { flag: 'wx' });
 
       content = '# 我的规则\r\n/tmp/\r\n';
       expect(await service.reopenRecoveredBlocklyProject(source, () => {})).toEqual({ project: source, activated: true });

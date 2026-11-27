@@ -65,7 +65,7 @@ test('first and second Blockly creation reuse only the exact verified board and 
     assert.equal(manifest.dependencies[board.name], board.version);
     assert.equal(manifest.dependencies[library], '2.4.1');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(result.projectPath, 'project.abi'), 'utf8')), { blocks: { languageVersion: 0, blocks: [] } });
-    assert.match(fs.readFileSync(path.join(result.projectPath, '.ailyignore'), 'utf8'), /^#[^\n]+\nbuild\/\n$/);
+    assert.equal(fs.readFileSync(path.join(result.projectPath, '.ailyignore'), 'utf8'), 'build/\n');
   }
   assert.deepEqual(f.calls.installs, []);
   assert.equal(f.calls.schema.length, 2);
