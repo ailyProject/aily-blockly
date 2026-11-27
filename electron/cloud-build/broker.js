@@ -150,6 +150,16 @@ function retainedBuildBytes(config) {
   return Buffer.byteLength(config.code || '') + (config.generatedArtifacts || []).reduce((size, artifact) =>
     size + Buffer.byteLength(artifact.fileName) + Buffer.byteLength(artifact.content), 0);
 }
+function verifyArtifactFiles({ directory, manifest, signature, publicKey }) {
+  protocol.verifyManifest(manifest, signature, publicKey);
+  for (const artifact of manifest.artifacts) {
+    const filename = path.join(directory, ...artifact.path.split('/'));
+    const stat = fs.lstatSync(filename);
+    if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename
+      || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return false;
+  }
+  return true;
+}
 function supportedRequest(input) {
   if ((input.action && !['compile', 'analysis'].includes(input.action)) || (input.recordProjectDelivery !== undefined && input.recordProjectDelivery !== false)
       || (input.config?.recordProjectDelivery !== undefined && input.config.recordProjectDelivery !== false) || input.graph !== undefined || input.config?.graph !== undefined
@@ -234,6 +244,7 @@ class CloudBuildBroker {
     this.artifactRetryDelayMs = options.artifactRetryDelayMs ?? 250;
     this.retention = options.retention || {};
     this.requests = new Map(); this.active = new Map(); this.artifactUsers = new Map(); this.catalogCapabilities = new Map();
+    this.inactive = new Map();
     this.buildCatalogs = new Map();
   }
   async authorization(settings, signal, refresh) {
@@ -605,6 +616,9 @@ class CloudBuildBroker {
         throw staleSource('project', 'The active project changed during the cloud build.');
       }
       if (source.boardModule !== record.config.boardModule) throw staleSource('inputs', 'The active board changed during the cloud build.');
+      if (record.reactivating && (!source.activationId || source.mode !== config.sourceCapture?.mode)) {
+        throw staleSource('project', 'Cloud firmware requires the current editor activation.');
+      }
       if (source.mode === 'coder' && source.saved !== true) {
         throw protocol.error('BUILD_SOURCE_STALE', 'The Coder editor is unavailable or has unsaved changes.');
       }
@@ -693,6 +707,7 @@ class CloudBuildBroker {
     // restore it; a failed/cancelled request must not retain the old authority.
     const previous = this.active.get(root);
     const releasePrevious = previous ? this.protectArtifact(previous) : undefined;
+    this.inactive.delete(root);
     this.requests.set(requestId, record); this.active.delete(root);
     const deadline = setTimeout(() => record.controller.abort(protocol.error('BUILD_TIMEOUT', 'Cloud task exceeded its client deadline.')), this.deadlineMs);
     deadline.unref?.();
@@ -964,13 +979,7 @@ class CloudBuildBroker {
       lease = this.acquireArtifactLease(previous);
       if (fs.realpathSync(previous.directory) !== previous.directory || fs.lstatSync(previous.directory).isSymbolicLink()) return null;
       await this.assertCurrent(record); lease.assertOwned();
-      protocol.verifyManifest(previous.manifest, previous.signature, record.publicKey);
-      for (const artifact of previous.manifest.artifacts) {
-        const filename = path.join(previous.directory, ...artifact.path.split('/'));
-        const stat = fs.lstatSync(filename);
-        if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename
-            || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return null;
-      }
+      if (!verifyArtifactFiles(previous)) return null;
       // No awaits after the byte checks: only the freshly checked request can
       // regain upload authority. A disk-only receipt never grants permission.
       lease.assertOwned();
@@ -1016,15 +1025,26 @@ class CloudBuildBroker {
   async cancel(sender, requestId, { discardCompletedArtifact = false } = {}) {
     // 手动转本地可能与云结果发布同时到达。只撤销原请求发布的烧录权限。
     const generation = discardCompletedArtifact ? this.owner(sender).generation : undefined;
-    const completed = generation === undefined ? undefined : [...this.active.values()].find(artifact =>
-      artifact.requestId === requestId && artifact.sender === sender && artifact.generation === generation);
-    if (completed) {
-      completed.controller.abort(abortFault());
-      this.active.delete(completed.root);
-      this.collectArtifacts(completed.root, undefined, usesIsolatedArtifacts(completed.config));
+    let discarded = false;
+    if (generation !== undefined) {
+      const sameOwner = item => item.sender === sender && item.generation === generation;
+      for (const records of [this.active, this.inactive]) {
+        const artifact = [...records.values()].find(item => item.requestId === requestId && sameOwner(item));
+        if (!artifact) continue;
+        artifact.controller.abort(abortFault());
+        records.delete(artifact.root);
+        this.collectArtifacts(artifact.root, undefined, usesIsolatedArtifacts(artifact.config));
+        discarded = true;
+      }
+      for (const pending of this.requests.values()) {
+        if (pending.reactivating === requestId && sameOwner(pending)) {
+          pending.controller.abort(abortFault());
+          discarded = true;
+        }
+      }
     }
     const record = this.requests.get(requestId);
-    if (!record || record.sender !== sender || (discardCompletedArtifact && record.generation !== generation)) return !!completed;
+    if (!record || record.sender !== sender || (discardCompletedArtifact && record.generation !== generation)) return discarded;
     record.controller.abort(abortFault());
     await this.cancelRemote(record).catch(() => {});
     return true;
@@ -1197,13 +1217,13 @@ class CloudBuildBroker {
       } catch { return []; } // 工作区忙碌或路径归属不明确时延后清理。
     });
   }
-  trimCompletedRecords() {
-    let bytes = [...this.active.values()].reduce((sum, item) => sum + retainedBuildBytes(item.config), 0);
-    const newestRoot = [...this.active.keys()].at(-1);
-    for (const [root, record] of this.active) {
-      if (this.active.size <= 1 || (this.active.size <= 16 && bytes <= 32 * 1024 * 1024)) break;
+  trimCompletedRecords(records = this.active) {
+    let bytes = [...records.values()].reduce((sum, item) => sum + retainedBuildBytes(item.config), 0);
+    const newestRoot = [...records.keys()].at(-1);
+    for (const [root, record] of records) {
+      if (records.size <= 1 || (records.size <= 16 && bytes <= 32 * 1024 * 1024)) break;
       if (root === newestRoot || this.artifactUsers.has(record.directory)) continue;
-      record.controller.abort(abortFault()); this.active.delete(root); bytes -= retainedBuildBytes(record.config);
+      record.controller.abort(abortFault()); records.delete(root); bytes -= retainedBuildBytes(record.config);
       this.collectArtifacts(root, undefined, usesIsolatedArtifacts(record.config));
     }
   }
@@ -1214,11 +1234,16 @@ class CloudBuildBroker {
     return record?.sender === sender && record.generation === owner.generation
       && record.manifest.action === 'compile' && !record.controller.signal.aborted;
   }
+  hasUploadCandidate(sender, projectPath) {
+    if (this.hasArtifact(sender, projectPath)) return true;
+    const record = this.inactive.get(fs.realpathSync(projectPath));
+    return record?.sender === sender && record.generation === this.owner(sender).generation;
+  }
   async artifactPath(sender, projectPath, config) {
     this.owner(sender);
     const root = fs.realpathSync(projectPath), record = this.active.get(root);
     if (!record || record.sender !== sender) return null;
-    // 复用权限只存在于当前进程的活动记录，磁盘上残留的结果文件不能自动恢复烧录权限。
+    // Only a verified record bound to this activation can authorize an upload.
     return this.checkedArtifactPath(record, config, record.uploadWorkspace);
   }
   async checkedArtifactPath(record, config, workspace) {
@@ -1226,35 +1251,72 @@ class CloudBuildBroker {
     if (fs.realpathSync(record.directory) !== record.directory || fs.lstatSync(record.directory).isSymbolicLink()) throw protocol.error('UNSAFE_PATH', 'Active artifact directory changed.');
     return record.directory;
   }
-  async reusable(sender, config, profileDigest) {
+  async verifyUploadArtifact(record, config, workspace) {
+    const capabilities = await this.capabilities(record.settings, record.controller.signal);
+    if (trustedGateway(record.settings, capabilities).trim() !== record.publicKey.trim()
+        || negotiatedUploadPlan(capabilities, record.manifest.action) !== record.uploadPlan
+        || !matchesUploadPlan(record.uploadPlan, record.manifest)) return false;
+    await this.checkedArtifactPath(record, config, workspace);
+    return verifyArtifactFiles(record);
+  }
+  async reusable(sender, config, profileDigest, forUpload = false) {
     const root = fs.realpathSync(config.currentProjectPath), record = this.active.get(root);
-    if (!record || record.sender !== sender || record.manifest.action !== 'compile'
-        || config.code !== record.config.code || config.boardModule !== record.config.boardModule
-        || usesIsolatedArtifacts(config) !== usesIsolatedArtifacts(record.config)
-        || (profileDigest !== undefined && profileDigest !== record.manifest.profileDigest)) return false;
-    const original = record.config.sourceCapture?.workspace;
-    const workspace = config === record.config ? record.uploadWorkspace ?? original : config.sourceCapture?.workspace;
+    const candidate = record ?? (forUpload ? this.inactive.get(root) : undefined);
+    if (!candidate || candidate.sender !== sender || candidate.manifest.action !== 'compile'
+        || config.code !== candidate.config.code || config.boardModule !== candidate.config.boardModule
+        || usesIsolatedArtifacts(config) !== usesIsolatedArtifacts(candidate.config)
+        || (profileDigest !== undefined && profileDigest !== candidate.manifest.profileDigest)) return false;
+    const original = candidate.config.sourceCapture?.workspace;
+    const workspace = config === candidate.config ? candidate.uploadWorkspace ?? original : config.sourceCapture?.workspace;
     if (!sameBlocklyDocument(workspace, original)) return false;
     // A backend refresh can replace the generator with an equivalent runtime.
     // Verify the new live stamp and the complete build input before using it.
     if (!this.querySource && original && (workspace.revision !== original.revision
         || workspace.runtimeRevision !== original.runtimeRevision)) return false;
+    if (!record) return this.reactivateUploadArtifact(candidate, config, workspace);
     try {
-      const capabilities = await this.capabilities(record.settings, record.controller.signal);
-      if (trustedGateway(record.settings, capabilities).trim() !== record.publicKey.trim()
-          || negotiatedUploadPlan(capabilities, record.manifest.action) !== record.uploadPlan
-          || !matchesUploadPlan(record.uploadPlan, record.manifest)) return false;
-      await this.checkedArtifactPath(record, config, workspace);
-      protocol.verifyManifest(record.manifest, record.signature, record.publicKey);
-      for (const artifact of record.manifest.artifacts) {
-        const filename = path.join(record.directory, ...artifact.path.split('/'));
-        const stat = fs.lstatSync(filename);
-        if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return false;
-      }
+      if (!await this.verifyUploadArtifact(record, config, workspace)) return false;
       if (this.active.get(root) !== record) return false;
       if (workspace) record.uploadWorkspace = { ...workspace };
       return true;
+    } catch (error) {
+      if (forUpload && error.sourceReason === 'project') return this.reactivateUploadArtifact(record, config, workspace);
+      return false;
+    }
+  }
+  async reactivateUploadArtifact(candidate, config, workspace) {
+    const { root, sender, generation } = candidate;
+    if (!this.querySource || !config.sourceCapture?.mode || config.sourceCapture.mode !== candidate.config.sourceCapture?.mode
+      || this.owner(sender).generation !== generation || [...this.requests.values()].some(request => request.root === root)) return false;
+    const currentCandidate = () => this.active.get(root) ?? this.inactive.get(root);
+    if (currentCandidate() !== candidate) return false;
+    const requestId = crypto.randomUUID();
+    const record = { ...candidate, requestId, config: retainedBuildConfig(config), activationId: undefined,
+      controller: new AbortController(), uploadWorkspace: workspace, reactivating: candidate.requestId };
+    this.requests.set(requestId, record);
+    let lease;
+    try {
+      // Revalidate using the current deployment and the original signed-in account.
+      const settings = await this.configuration();
+      if (settings.gatewayUrl !== candidate.gatewayUrl) return false;
+      record.settings = { ...settings, [AUTH_USER]: candidate.settings[AUTH_USER] };
+      lease = this.acquireArtifactLease(record);
+      if (!await this.verifyUploadArtifact(record, record.config, workspace)) return false;
+      lease.assertOwned();
+      if (record.controller.signal.aborted || !record.activationId || currentCandidate() !== candidate) return false;
+      record.requestId = candidate.requestId;
+      delete record.reactivating;
+      candidate.controller.abort(abortFault());
+      this.inactive.delete(root);
+      this.active.delete(root);
+      this.active.set(root, record);
+      this.trimCompletedRecords();
+      return true;
     } catch { return false; }
+    finally {
+      this.requests.delete(requestId);
+      lease?.release();
+    }
   }
   async artifactUploadInfo(sender, projectPath, portType) {
     this.owner(sender);
@@ -1319,12 +1381,21 @@ class CloudBuildBroker {
       throw error;
     }
   }
-  invalidate(projectPath, sender) {
+  invalidate(projectPath, sender, preserveCompleted = false) {
     try {
       const root = fs.realpathSync(projectPath), generation = sender ? this.owner(sender).generation : undefined;
       const matches = record => record.root === root && (!sender || (record.sender === sender && record.generation === generation));
       const active = this.active.get(root);
-      if (active && matches(active)) { active.controller.abort(abortFault()); this.active.delete(root); }
+      const inactive = this.inactive.get(root);
+      if (!preserveCompleted && inactive && matches(inactive)) this.inactive.delete(root);
+      if (active && matches(active)) {
+        active.controller.abort(abortFault()); this.active.delete(root);
+        if (preserveCompleted && active.manifest.action === 'compile' && !this.requests.has(active.requestId)) {
+          // Navigation revokes the live grant. Keep only same-window, verified history as a candidate.
+          this.inactive.delete(root); this.inactive.set(root, active);
+          this.trimCompletedRecords(this.inactive);
+        }
+      }
       for (const record of this.requests.values()) if (matches(record)) {
         record.controller.abort(abortFault()); if (!record.cleanupBlocked) this.requests.delete(record.requestId); void this.cancelRemote(record).catch(() => {});
       }
@@ -1337,6 +1408,7 @@ class CloudBuildBroker {
       if (saved.sender === sender && saved.generation === generation) this.discardBuildCatalog(ticket);
     }
     const roots = new Set(), cancelled = [];
+    for (const [root, record] of this.inactive) if (record.sender === sender && record.generation === generation) this.inactive.delete(root);
     for (const [root, record] of this.active) if (record.sender === sender && record.generation === generation) {
       roots.add(root); record.controller.abort(protocol.error('BUILD_OWNER_EXPIRED', 'Build owner changed.')); this.active.delete(root);
     }
@@ -1349,6 +1421,7 @@ class CloudBuildBroker {
   }
   invalidateAll({ keepCompleted = false } = {}) {
     this.lastBoardCatalog = undefined;
+    if (!keepCompleted) this.inactive.clear();
     for (const ticket of this.buildCatalogs.keys()) this.discardBuildCatalog(ticket);
     const roots = new Set([...this.requests.values()].map(record => record.root)), cancelled = [];
     for (const [root, record] of this.active) {

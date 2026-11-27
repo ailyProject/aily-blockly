@@ -42,12 +42,15 @@ const UNSUPPORTED_CLOUD_BUILD_CODES = new Set([
   'CLOUD_COMPILE_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED',
 ]);
 
+const confirmedCoderCloudPreflight = Symbol('confirmedCoderCloudPreflight');
+
 type CloudBuildFault = {
   code?: string;
   ciResourceReason?: string;
   httpStatus?: number;
   cleanupConfirmed?: boolean;
   remoteCleanupConfirmed?: boolean;
+  [confirmedCoderCloudPreflight]?: true;
 };
 
 export function isUnsupportedCloudBuild(error: unknown): boolean {
@@ -58,10 +61,24 @@ function cloudBuildCleanupAllowsRetry(fault: CloudBuildFault | undefined): boole
   return fault?.cleanupConfirmed !== false && fault?.remoteCleanupConfirmed !== false;
 }
 
+export function isCoderCloudPreflightFailure(error: unknown): boolean {
+  const fault = error as CloudBuildFault | undefined;
+  return cloudBuildCleanupAllowsRetry(fault)
+    && (fault?.code === 'CLOUD_BOARD_UNSUPPORTED' || fault?.code === 'CLOUD_TARGET_UNAVAILABLE');
+}
+
+/** The live Coder dependency check, rather than an external error field, authorizes this case. */
+export function confirmCoderCloudPreflightFailure(error: unknown): unknown {
+  if (!isCoderCloudPreflightFailure(error)) return error;
+  return Object.assign(new Error(error instanceof Error ? error.message : String(error)), error,
+    { [confirmedCoderCloudPreflight]: true });
+}
+
 export function canOfferLocalBuildFallback(error: unknown): boolean {
   const fault = error as CloudBuildFault | undefined;
   if (!fault?.code || !cloudBuildCleanupAllowsRetry(fault)) return false;
   return fault.code === 'CLOUD_TARGET_UNAVAILABLE'
+    || (fault.code === 'CLOUD_BOARD_UNSUPPORTED' && fault[confirmedCoderCloudPreflight] === true)
     || (fault.code === 'CI_RESOURCE_UNSUPPORTED' && fault.ciResourceReason === 'sdk-toolchain-unsupported')
     || KNOWN_CLOUD_WORKER_FAILURES.has(fault.code)
     || (GATEWAY_SERVER_FAILURES.has(fault.code) && typeof fault.httpStatus === 'number' && [500, 502, 503, 504].includes(fault.httpStatus));

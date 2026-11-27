@@ -22,7 +22,7 @@ import {
 
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
-import { canRetryCloudBuildLocally, isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
+import { canRetryCloudBuildLocally, confirmCoderCloudPreflightFailure, isCoderCloudPreflightFailure, isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
 import { getCloudEditorDependencies, type CloudBoardProfile } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 import { findCompilerIntegrityProblem } from '../../../utils/compiler-integrity.utils';
@@ -675,7 +675,8 @@ export class NpmService {
   }
 
   /** 编译入口刷新支持状态；运行中由云切到本地时补齐正常本地依赖链。 */
-  async prepareCompileBackend(projectPath: string, isCancelled: () => boolean = () => false): Promise<void> {
+  async prepareCompileBackend(projectPath: string, isCancelled: () => boolean = () => false,
+    recheckFailedCoderPreflight = false): Promise<void> {
     if (this.configService.getCompileBackend() !== 'cloud') return;
     const session = this.prjService.getProjectDependencySession(projectPath);
     const project = this.getDependencyProject(session);
@@ -688,15 +689,28 @@ export class NpmService {
     guard();
     if (!boardModule) return;
     const wasCloud = project.isCloudBuild();
+    const recheck = recheckFailedCoderPreflight && this.prjService.hasCoderCloudPreflightFailure(projectPath);
     let backend: 'cloud' | 'local';
     try {
       backend = await project.resolveCompileBackend(session, true);
+      guard();
+      // The project-open failure grants a fresh lookup, not a fallback for an old target.
+      if (recheck && backend === 'cloud') await project.getCloudBoardProfile({ refresh: true }, session);
     } catch (error) {
       // A late unsupported reply must not replace the user's cancellation.
       guard();
+      if (recheck && this.prjService.hasCoderCloudPreflightFailure(projectPath)) {
+        throw confirmCoderCloudPreflightFailure(error);
+      }
       throw error;
     }
     guard();
+    if (recheck && backend === 'cloud') {
+      // Lookup recovery only reopens the admission gate after normal dependencies are ready.
+      const ready = await this.ensureProjectAndBoardDeps(projectPath, undefined, session);
+      guard();
+      if (!ready) throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+    }
     if (wasCloud && backend === 'local') {
       await this.installBoardDeps(session);
       if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
@@ -879,6 +893,7 @@ export class NpmService {
     };
     const promise = this.prjService.runProjectDependencyTask(session, async () => {
       let ready = false;
+      let cloudPreflightFailed = false;
       try {
         // One owner reports completion; npm success alone does not unlock builds.
         if (!await this.ensureProjectDependenciesInstalled(projectPath, {
@@ -919,6 +934,8 @@ export class NpmService {
         const cloud = this.isCloudBuild(projectPath);
         const unsupported = cloud && isUnsupportedCloudBuild(error);
         const offerLocal = retryLocally && cloud && canRetryCloudBuildLocally(error);
+        cloudPreflightFailed = cloud && this.configService.isCoderProduct()
+          && this.isAilyCodeProjectRoot(projectPath) && isCoderCloudPreflightFailure(error);
         const detail = this.getNpmErrorMessage(error);
         this.application.updateNotice({
           title: this.translate.instant(offerLocal || unsupported ? 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE' : 'NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
@@ -935,7 +952,7 @@ export class NpmService {
         });
         return false;
       } finally {
-        if (this.isDependencySessionCurrent(session)) this.prjService.setProjectDependencyResult(session, ready);
+        if (this.isDependencySessionCurrent(session)) this.prjService.setProjectDependencyResult(session, ready, cloudPreflightFailed);
       }
     });
     pending.set(session, promise);

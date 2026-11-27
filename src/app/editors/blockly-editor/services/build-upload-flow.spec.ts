@@ -717,7 +717,7 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.files.get('/project/package.json')).toBe(manifest);
     expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
     expect(await f.service.canReuseBuildForUpload(() => false)).toBeTrue();
-    expect(reusable).toHaveBeenCalledOnceWith({ config: jasmine.objectContaining({ isolatedCloudBuild: true, generatedArtifacts: null }) });
+    expect(reusable).toHaveBeenCalledOnceWith({ config: jasmine.objectContaining({ isolatedCloudBuild: true, generatedArtifacts: null }), forUpload: true });
   });
 
   for (const exitCode of [0, 1]) it(`uses a tool loading diagnostic only for a failed build (exit=${exitCode})`, async () => {

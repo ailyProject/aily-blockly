@@ -1440,9 +1440,15 @@ export class ProjectService {
     return this.dependencyLifecycle.isBusy(projectPath);
   }
 
-  setProjectDependencyResult(session: ProjectDependencySession, ready: boolean): void {
+  setProjectDependencyResult(session: ProjectDependencySession, ready: boolean, cloudPreflightFailed = false): void {
     this.assertProjectDependencySession(session);
-    this.dependencyLifecycle.setResult(session, ready);
+    this.dependencyLifecycle.setResult(session, ready, cloudPreflightFailed);
+  }
+
+  hasCoderCloudPreflightFailure(projectPath: string): boolean {
+    return this.configService.isCoderProduct() && this.isCloudBuild(projectPath)
+      && this.getProjectDependencyStatus(projectPath) === 'error'
+      && this.dependencyLifecycle.hasCloudPreflightFailure(projectPath);
   }
 
   getProjectDependencyStatus(projectPath = this.currentProjectPath) {
@@ -3867,7 +3873,7 @@ export class ProjectService {
     const existing = attempts.get(session);
     if (existing) return existing;
     const attempt = Promise.resolve().then(async () => {
-      await window['cloudBuild']?.invalidate?.({ projectPath: session.projectPath });
+      await window['cloudBuild']?.invalidate?.({ projectPath: session.projectPath, preserveCompleted: true });
     }).catch(error => { attempts.delete(session); throw error; });
     attempts.set(session, attempt);
     return attempt;

@@ -156,11 +156,17 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     this.states$.next(new Map([...this.sessions].map(([path, session]) => [path, session.state])));
   }
 
-  private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>,
-    { repairLocalDependencies = false, preprocessOnly = false } = {}): Promise<any> {
+  private async run(path: string, kind: 'build' | 'upload',
+    execute: (session: CoderProjectSession, cloudPreflightCurrent?: () => boolean) => Promise<any>,
+    { repairLocalDependencies = false, preprocessOnly = false, requestBoundFallback = false } = {}): Promise<any> {
     if (this.projects.isProjectTransitionInProgress(path)) throw new Error('工程配置正在更新，请完成后再编译或上传。');
     const dependencyBlock = this.projects.getProjectDependencyBlockMessage(path);
-    if (dependencyBlock && !repairLocalDependencies) throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
+    const recoverCloudPreflight = dependencyBlock && requestBoundFallback && this.isActive(path)
+      && this.projects.hasCoderCloudPreflightFailure(path);
+    if (dependencyBlock && !repairLocalDependencies && !recoverCloudPreflight) {
+      throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
+    }
+    const cloudPreflightCurrent = recoverCloudPreflight ? this.projects.captureCurrentProjectGuard() : undefined;
     const session = this.getSession(path);
     if (session.busy) throw new Error(`工程正在${session.busy === 'build' ? '编译' : '上传'}: ${path}`);
     session.busy = kind;
@@ -176,7 +182,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     }, visible) : undefined;
     try {
       if (preparation) await preparation.painted;
-      if (!repairLocalDependencies) await session.project.syncCurrentBoardConfig();
+      if (!repairLocalDependencies && !recoverCloudPreflight) await session.project.syncCurrentBoardConfig();
       if (!session.builderObserved) {
         session.builderObserved = true;
         session.injector.get(BuilderService).buildFinishedSubject.subscribe(event => {
@@ -184,7 +190,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
           this.publish();
         });
       }
-      const result = await execute(session);
+      const result = await execute(session, cloudPreflightCurrent);
       session.state = { ...session.state, [kind]: result?.state || 'done' };
       return result;
     } catch (error: any) {
@@ -199,11 +205,24 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
   }
 
   build(path: string, options: NonNullable<Parameters<CoderExecutionPort['build']>[1]> = {}): Promise<any> {
-    return this.run(path, 'build', async session => {
+    const recordCloudFailure = options.localFallback?.recordCloudFailure;
+    const requestBoundFallback = !!options.requestId && !options.preprocessOnly && !options.clearCache
+      && !!(recordCloudFailure || options.localFallback?.local);
+    return this.run(path, 'build', async (session, cloudPreflightCurrent) => {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);
-      return builder.build(path, options);
-    }, { preprocessOnly: options.preprocessOnly });
+      if (!cloudPreflightCurrent || !recordCloudFailure || options.localFallback?.local) return builder.build(path, options);
+      const assertActiveProject = () => {
+        if (!cloudPreflightCurrent()) throw new Error('The active Coder project changed after the cloud preflight.');
+      };
+      return builder.build(path, { ...options, localFallback: {
+        recordCloudFailure: (error, assertSourceCurrent) => recordCloudFailure(error, async () => {
+          assertActiveProject();
+          await assertSourceCurrent();
+          assertActiveProject();
+        }),
+      } });
+    }, { preprocessOnly: options.preprocessOnly, requestBoundFallback });
   }
 
   async resolvePort(path: string, requestedPort?: string) {

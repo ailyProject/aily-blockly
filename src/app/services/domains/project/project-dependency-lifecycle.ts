@@ -12,6 +12,7 @@ interface DependencyEntry {
   preparing: boolean;
   pending: number;
   result?: 'ready' | 'error';
+  cloudPreflightFailed?: boolean;
   idleWaiters: Array<() => void>;
 }
 
@@ -93,10 +94,17 @@ export class ProjectDependencyLifecycle {
     this.changesSubject.next();
   }
 
-  setResult(session: ProjectDependencySession, ready: boolean): void {
+  setResult(session: ProjectDependencySession, ready: boolean, cloudPreflightFailed = false): void {
     this.assertCurrent(session);
-    this.entries.get(this.normalize(session.projectPath))!.result = ready ? 'ready' : 'error';
+    const entry = this.entries.get(this.normalize(session.projectPath))!;
+    entry.result = ready ? 'ready' : 'error';
+    entry.cloudPreflightFailed = !ready && cloudPreflightFailed;
     this.changesSubject.next();
+  }
+
+  hasCloudPreflightFailure(projectPath: string): boolean {
+    return this.getStatus(projectPath) === 'error'
+      && this.entries.get(this.normalize(projectPath))?.cloudPreflightFailed === true;
   }
 
   getStatus(projectPath: string): 'idle' | 'installing' | 'ready' | 'error' {

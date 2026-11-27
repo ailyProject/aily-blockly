@@ -261,7 +261,7 @@ export class CompileService {
         } catch { /* Failure to capture an exact source only withholds the fallback offer. */ }
       }
       if (!fallback && !retryLocally && this.configService.getCompileBackend() === 'cloud') {
-        await this.npmService.prepareCompileBackend(root, () => this.cancelled);
+        await this.npmService.prepareCompileBackend(root, () => this.cancelled, !!context.assertCloudFailureSource);
         if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
         if (context.settingsKey !== this.configService.getCompileSettingsKey() || root !== this.projectService.currentProjectPath) {
           throw new Error('BUILD_SOURCE_STALE: Build settings or the active project changed.');
@@ -743,7 +743,7 @@ export class CompileService {
       const sourceCapture = captureBuildSource(config);
       // 复用已经签名且输入完全一致的产物无需重新调度目标；节点忙闲和离线不影响本地烧录。
       // 主进程仍校验原任务的完整输入、签名及逐文件哈希，新编译才刷新并锁定精确目标。
-      const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+      const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture }, forUpload: true });
       assertManifest();
       return reusable === true && isCurrent();
     } catch { return false; }
