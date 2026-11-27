@@ -22,6 +22,7 @@ export * from './operations/project-creation-workflow';
 export * from './project-root-path';
 export * from './project-view-ownership';
 export * from './project-package-name';
+export { AILY_CLOUD_IGNORE_FILE } from './aily-cloud-ignore-file';
 export * from './project-save-outcome';
 export * from './project-save-receipts';
 export * from './project-conflict';

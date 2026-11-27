@@ -840,6 +840,8 @@
         "DESCRIPTION_PLACEHOLDER": "Please enter project description",
         "DOC_URL": "Documentation URL",
         "DOC_URL_PLACEHOLDER": "Please enter documentation URL",
+        "SYNC_RULES": "Sync Rules",
+        "SYNC_RULES_HINT": "One rule per line, using .gitignore syntax",
         "PROJECT_CONFIG": "Project Configuration",
         "NO_CONFIG": "No configuration information",
         "DEPENDENCIES": "Dependencies",
@@ -858,7 +860,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "Invalid documentation URL format. Please enter a valid URL",
         "SUCCESS_SAVE": "Saved successfully!",
         "ERROR_SAVE_FAILED": "Save failed, please try again later",
-        "ERROR_LOAD_FAILED": "Failed to load project settings"
+        "ERROR_LOAD_FAILED": "Failed to load project settings",
+        "ERROR_SYNC_RULES_LOAD": "Failed to read sync rules",
+        "ERROR_SYNC_RULES_SAVE": "Failed to save sync rules",
+        "ERROR_SETTINGS_AFTER_RULES": "Sync rules were saved. The other project settings could not be saved. Please try again.",
+        "ERROR_PROJECT_CHANGED": "The active project changed. Please reopen Project Settings."
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Project Settings",

@@ -836,6 +836,8 @@
         "DESCRIPTION_PLACEHOLDER": "请输入项目描述",
         "DOC_URL": "文档链接",
         "DOC_URL_PLACEHOLDER": "请输入文档链接",
+        "SYNC_RULES": "同步规则",
+        "SYNC_RULES_HINT": "每行一条，语法同 .gitignore",
         "PROJECT_CONFIG": "项目配置",
         "NO_CONFIG": "暂无配置信息",
         "DEPENDENCIES": "依赖项",
@@ -854,7 +856,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "文档链接格式不正确，请输入有效的 URL 地址",
         "SUCCESS_SAVE": "保存成功！",
         "ERROR_SAVE_FAILED": "保存失败，请稍后重试",
-        "ERROR_LOAD_FAILED": "加载项目设置失败"
+        "ERROR_LOAD_FAILED": "加载项目设置失败",
+        "ERROR_SYNC_RULES_LOAD": "读取同步规则失败",
+        "ERROR_SYNC_RULES_SAVE": "保存同步规则失败",
+        "ERROR_SETTINGS_AFTER_RULES": "同步规则已保存，其他项目设置保存失败，请重试",
+        "ERROR_PROJECT_CHANGED": "当前项目已切换，请重新打开项目设置"
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "项目设置",

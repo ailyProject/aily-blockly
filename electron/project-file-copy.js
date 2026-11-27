@@ -24,7 +24,7 @@ function isProjectWriterTransient(relativePath) {
     || /^\.log\/compile\/requests\/(?:[a-f0-9]{64}\.build\.json|\.build-receipts\.guard)$/.test(name)
     || BUILD_WORKSPACE_OWNER_FILES.has(name)
     || /^(?:\.aily\/abs-sync\/(?:baselines\/)?)?\.abs-sync-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name)
-    || /^\.(?:project\.(?:abi|abs|abs\.map\.json)|project-data-backup)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name);
+    || /^\.(?:project\.(?:abi|abs|abs\.map\.json)|project-data-backup|\.ailyignore)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name);
 }
 
 function readHistoryCopyInputs(root, metadata, names) {

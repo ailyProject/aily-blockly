@@ -1501,6 +1501,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
       case 'project-save-as':
         await this.saveProjectAs();
         break;
+      case 'project-settings':
+        if (this.projectService.currentProjectPath) this.uiService.openProjectSettings();
+        break;
       case 'workspace-export-image':
         await this.exportWorkspaceImage();
         break;

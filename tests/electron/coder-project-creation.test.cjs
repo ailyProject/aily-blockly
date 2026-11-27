@@ -7,6 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { readPureModule, sourceClass } = require('./fixtures/bootstrap-host-source.cjs');
 const { copyCoderTemplateDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
+const { rootAttachment } = require('../../electron/project-file-lock-owner');
 
 const domain = 'src/app/services/domains/project';
 const templates = readPureModule(`${domain}/coder/coder-project-template.ts`);
@@ -35,6 +36,7 @@ function creationFixture(t, templateDirectory = templates.CODER_TEMPLATE_DIRECTO
 
   const pathApi = { ...path, getAppDataPath: () => root, isExists: fs.existsSync };
   const fsApi = {
+    captureProjectAttachment: directory => rootAttachment(fs.realpathSync.native(directory)),
     existsSync: fs.existsSync,
     mkdirSync: fs.mkdirSync,
     readFileSync: (file) => fs.readFileSync(file, 'utf8'),
@@ -53,6 +55,8 @@ function creationFixture(t, templateDirectory = templates.CODER_TEMPLATE_DIRECTO
   const Project = sourceClass(`${domain}/project.service.ts`, 'ProjectService', {
     ...templates,
     window,
+    ...readPureModule(`${domain}/aily-cloud-ignore-file.ts`, { window }),
+    ...readPureModule(`${domain}/project-recovery-request.ts`, { require: () => ({}) }),
     ...readPureModule(`${domain}/coder/arduino-sketch.ts`, { window }),
     ...readPureModule(`${domain}/project-mode.ts`),
     isAilyBoardPackageName: (name) => name === packageName,
@@ -60,7 +64,8 @@ function creationFixture(t, templateDirectory = templates.CODER_TEMPLATE_DIRECTO
     ...readPureModule(`${domain}/project-package-name.ts`),
   }, ['projectNew', 'projectNewWithResult', 'buildProjectPath', 'buildNpmPackageSpec',
     'normalizeAilyBoardPackageName', 'updateNewProjectPackageJson', 'normalizeAilyCodeBoardDepRange',
-    'projectNewFromTemplate', 'importProjectDirectory', 'getProjectMode', 'projectOpenInternal']);
+    'projectNewFromTemplate', 'importProjectDirectory', 'getProjectMode', 'projectOpenInternal',
+    'backfillProjectCloudIgnore', 'projectDirectoryMatches']);
   const service = new Project();
   const calls = { commands: [], opened: [] };
   service.assertProjectCreationMode = async () => {};
@@ -102,6 +107,7 @@ for (const directory of [templates.CODER_TEMPLATE_DIRECTORY, templates.LEGACY_CO
       assert.equal(manifest.type, 'coder');
       assert.equal(manifest.dependencies[packageName], `^${packageVersion}`);
       assert.equal(fs.statSync(path.join(result.project, 'project.aci')).size, 0);
+      assert.match(fs.readFileSync(path.join(result.project, '.ailyignore'), 'utf8'), /^#[^\n]+\nbuild\/\n$/);
     }
     assert.equal(f.calls.opened.length, 2);
     assert.deepEqual(f.calls.commands, []);
@@ -139,7 +145,7 @@ test('generates a default sketch and a launch file when the cached board has no 
   assert.deepEqual(f.calls.commands, []);
 });
 
-test('Coder examples receive a launch file before activation and preserve its existing contents', async (t) => {
+test('Coder template creation prepares launch and cloud ignore files before activation and preserves template contents', async (t) => {
   const f = creationFixture(t);
   const template = path.join(f.boardPath, 'example');
   fs.mkdirSync(template);
@@ -147,16 +153,24 @@ test('Coder examples receive a launch file before activation and preserve its ex
   f.service.electronService = { isElectron: true };
   f.service.initializeProjectDataSchema = async () => {};
   let expected = Buffer.alloc(0);
+  let expectedIgnore;
   f.service.finishProjectCreation = async (project) => {
     assert.deepEqual(fs.readFileSync(path.join(project, 'project.aci')), expected);
+    const cloudIgnore = fs.readFileSync(path.join(project, '.ailyignore'), 'utf8');
+    if (expectedIgnore === undefined) assert.match(cloudIgnore, /^#[^\n]+\nbuild\/\n$/);
+    else assert.equal(cloudIgnore, expectedIgnore);
     return true;
   };
   assert.equal(await f.service.projectNewFromTemplate({ name: 'fresh', path: f.projects }, template), true);
   assert.equal(fs.existsSync(path.join(template, 'project.aci')), false);
+  assert.equal(fs.existsSync(path.join(template, '.ailyignore')), false);
   expected = Buffer.from([0xff, 0, 1]);
+  expectedIgnore = '# template rules\r\n/custom/\r\n*.tmp\r\n';
   fs.writeFileSync(path.join(template, 'project.aci'), expected);
+  fs.writeFileSync(path.join(template, '.ailyignore'), expectedIgnore);
   assert.equal(await f.service.projectNewFromTemplate({ name: 'existing', path: f.projects }, template), true);
   assert.deepEqual(fs.readFileSync(path.join(template, 'project.aci')), expected);
+  assert.equal(fs.readFileSync(path.join(template, '.ailyignore'), 'utf8'), expectedIgnore);
 });
 
 for (const native of [false, true]) {
@@ -167,10 +181,10 @@ for (const native of [false, true]) {
     fs.mkdirSync(root);
     if (native) fs.writeFileSync(path.join(root, 'existing.ino'), 'void setup() {}');
     else f.writeJson(path.join(root, 'package.json'), { name: 'existing', type: 'coder' });
-    f.window.projectLock = { tryAcquire: async (project) => {
+    f.window.projectLock = { tryAcquire: async (project, options) => {
       assert.equal(project, root);
-      assert.equal(fs.existsSync(projectFile), false);
-      return { ok: true };
+      assert.equal(fs.existsSync(projectFile), options?.provisional !== true);
+      return { ok: true, attachment: f.window.fs.captureProjectAttachment(project) };
     } };
     Object.assign(f.service, {
       currentProjectPath: '',
@@ -189,8 +203,18 @@ for (const native of [false, true]) {
       router: { createUrlTree() {}, isActive: () => true },
     });
     assert.equal(await f.service.projectOpenInternal(root), true);
+    const ignorePath = path.join(root, '.ailyignore');
+    assert.match(fs.readFileSync(ignorePath, 'utf8'), /^#[^\n]+\nbuild\/\n$/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).type, 'coder');
     if (native) assert.equal(fs.readFileSync(path.join(root, 'existing.ino'), 'utf8'), 'void setup() {}');
+
+    // A user may clear the rules without wanting the default to return.
+    fs.writeFileSync(ignorePath, '');
+    f.service.coderProjects = [{ path: root }];
+    f.service.dependencyLifecycle.get = () => undefined;
+    f.window.projectLock.tryAcquire = async project => ({ ok: true, attachment: f.window.fs.captureProjectAttachment(project) });
+    assert.equal(await f.service.projectOpenInternal(root, { reason: 'open' }), true);
+    assert.equal(fs.readFileSync(ignorePath, 'utf8'), '');
   });
 }
 

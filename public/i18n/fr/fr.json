@@ -710,6 +710,8 @@
         "DESCRIPTION_PLACEHOLDER": "Veuillez saisir la description du projet",
         "DOC_URL": "URL de Documentation",
         "DOC_URL_PLACEHOLDER": "Veuillez saisir l'URL de documentation",
+        "SYNC_RULES": "Règles de synchronisation",
+        "SYNC_RULES_HINT": "Une règle par ligne, selon la syntaxe de .gitignore",
         "PROJECT_CONFIG": "Configuration du Projet",
         "NO_CONFIG": "Aucune information de configuration",
         "DEPENDENCIES": "Dépendances",
@@ -728,7 +730,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "Format d'URL de documentation invalide. Veuillez saisir une URL valide",
         "SUCCESS_SAVE": "Enregistré avec succès!",
         "ERROR_SAVE_FAILED": "Échec de l'enregistrement, veuillez réessayer plus tard",
-        "ERROR_LOAD_FAILED": "Échec du chargement des paramètres du projet"
+        "ERROR_LOAD_FAILED": "Échec du chargement des paramètres du projet",
+        "ERROR_SYNC_RULES_LOAD": "Impossible de lire les règles de synchronisation",
+        "ERROR_SYNC_RULES_SAVE": "Impossible d’enregistrer les règles de synchronisation",
+        "ERROR_SETTINGS_AFTER_RULES": "Les règles de synchronisation ont été enregistrées. L’enregistrement des autres paramètres du projet a échoué. Veuillez réessayer.",
+        "ERROR_PROJECT_CHANGED": "Le projet actif a changé. Veuillez rouvrir les paramètres du projet."
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Paramètres du Projet",

@@ -1,3 +1,5 @@
+import { listCloudProjectEntries } from './cloud-project-entries';
+
 export interface CloudSyncBinding {
   cloudId: string;
   archiveSha256: string;
@@ -107,17 +109,10 @@ export async function readLocalCloudArchive(path: string): Promise<{ contents: A
 export function cloudSourceStamp(projectPath: string, category: 'blockly' | 'coder'): string {
   const fs = window['fs'], path = window['path'];
   const files: Array<[string, number, string]> = [];
-  const excluded = new Set(['node_modules', 'project.7z', 'package-lock.json', 'project.abi.backup',
-    'project.abs', 'project.abs.map.json', ...(category === 'coder' ? ['project.abi'] : [])]);
-  function visit(dir: string, relative: string): void {
-    for (const entry of fs.readDirSync(dir).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (excluded.has(entry.name) || (entry.name.startsWith('.') && (entry._isDirectory || category === 'blockly'))) continue;
-      const absolute = path.join(dir, entry.name), name = relative + entry.name;
-      const stat = fs.lstatSync(absolute);
-      if (stat._isDirectory) visit(absolute, name + '/');
-      if (stat._isFile) files.push([name, stat.size, stat.mtime]);
-    }
+  for (const name of listCloudProjectEntries(projectPath, category)) {
+    if (name.endsWith('/')) continue;
+    const stat = fs.lstatSync(path.join(projectPath, name));
+    if (stat._isFile) files.push([name, stat.size, stat.mtime]);
   }
-  visit(projectPath, '');
   return JSON.stringify(files);
 }

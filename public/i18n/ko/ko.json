@@ -710,6 +710,8 @@
         "DESCRIPTION_PLACEHOLDER": "프로젝트 설명을 입력하세요",
         "DOC_URL": "문서 URL",
         "DOC_URL_PLACEHOLDER": "문서 URL을 입력하세요",
+        "SYNC_RULES": "동기화 규칙",
+        "SYNC_RULES_HINT": "한 줄에 하나의 규칙을 .gitignore 문법으로 작성하세요",
         "PROJECT_CONFIG": "프로젝트 설정",
         "NO_CONFIG": "설정 정보 없음",
         "DEPENDENCIES": "의존성",
@@ -728,7 +730,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "문서 URL 형식이 올바르지 않습니다. 유효한 URL을 입력하세요",
         "SUCCESS_SAVE": "저장에 성공했습니다！",
         "ERROR_SAVE_FAILED": "저장에 실패했습니다. 나중에 다시 시도해 주세요",
-        "ERROR_LOAD_FAILED": "프로젝트 설정 로드에 실패했습니다"
+        "ERROR_LOAD_FAILED": "프로젝트 설정 로드에 실패했습니다",
+        "ERROR_SYNC_RULES_LOAD": "동기화 규칙을 읽지 못했습니다",
+        "ERROR_SYNC_RULES_SAVE": "동기화 규칙을 저장하지 못했습니다",
+        "ERROR_SETTINGS_AFTER_RULES": "동기화 규칙이 저장되었습니다. 나머지 프로젝트 설정을 저장하지 못했습니다. 다시 시도해 주세요.",
+        "ERROR_PROJECT_CHANGED": "현재 프로젝트가 변경되었습니다. 프로젝트 설정을 다시 열어 주세요."
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "프로젝트 설정",

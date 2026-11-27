@@ -710,6 +710,8 @@
         "DESCRIPTION_PLACEHOLDER": "Por favor ingrese la descripción del proyecto",
         "DOC_URL": "URL de Documentación",
         "DOC_URL_PLACEHOLDER": "Por favor ingrese la URL de documentación",
+        "SYNC_RULES": "Reglas de sincronización",
+        "SYNC_RULES_HINT": "Una regla por línea, con la sintaxis de .gitignore",
         "PROJECT_CONFIG": "Configuración del Proyecto",
         "NO_CONFIG": "Sin información de configuración",
         "DEPENDENCIES": "Dependencias",
@@ -728,7 +730,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "Formato de URL de documentación inválido. Por favor ingrese una URL válida",
         "SUCCESS_SAVE": "¡Guardado exitosamente!",
         "ERROR_SAVE_FAILED": "Error al guardar, por favor intente más tarde",
-        "ERROR_LOAD_FAILED": "Error al cargar la configuración del proyecto"
+        "ERROR_LOAD_FAILED": "Error al cargar la configuración del proyecto",
+        "ERROR_SYNC_RULES_LOAD": "No se pudieron leer las reglas de sincronización",
+        "ERROR_SYNC_RULES_SAVE": "No se pudieron guardar las reglas de sincronización",
+        "ERROR_SETTINGS_AFTER_RULES": "Se guardaron las reglas de sincronización. No se pudo guardar el resto de la configuración del proyecto. Vuelve a intentarlo.",
+        "ERROR_PROJECT_CHANGED": "El proyecto activo ha cambiado. Vuelve a abrir la configuración del proyecto."
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Configuración del Proyecto",

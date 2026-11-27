@@ -710,6 +710,8 @@
         "DESCRIPTION_PLACEHOLDER": "يرجى إدخال وصف المشروع",
         "DOC_URL": "رابط الوثائق",
         "DOC_URL_PLACEHOLDER": "يرجى إدخال رابط الوثائق",
+        "SYNC_RULES": "قواعد المزامنة",
+        "SYNC_RULES_HINT": "قاعدة واحدة في كل سطر، بصيغة .gitignore",
         "PROJECT_CONFIG": "تكوين المشروع",
         "NO_CONFIG": "لا توجد معلومات تكوين",
         "DEPENDENCIES": "التبعيات",
@@ -728,7 +730,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "تنسيق رابط الوثائق غير صحيح. يرجى إدخال عنوان URL صالح",
         "SUCCESS_SAVE": "تم الحفظ بنجاح!",
         "ERROR_SAVE_FAILED": "فشل الحفظ، يرجى المحاولة لاحقًا",
-        "ERROR_LOAD_FAILED": "فشل تحميل إعدادات المشروع"
+        "ERROR_LOAD_FAILED": "فشل تحميل إعدادات المشروع",
+        "ERROR_SYNC_RULES_LOAD": "تعذر قراءة قواعد المزامنة",
+        "ERROR_SYNC_RULES_SAVE": "تعذر حفظ قواعد المزامنة",
+        "ERROR_SETTINGS_AFTER_RULES": "تم حفظ قواعد المزامنة، لكن تعذر حفظ إعدادات المشروع الأخرى. يرجى إعادة المحاولة.",
+        "ERROR_PROJECT_CHANGED": "تغيّر المشروع الحالي. يرجى إعادة فتح إعدادات المشروع."
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "إعدادات المشروع",

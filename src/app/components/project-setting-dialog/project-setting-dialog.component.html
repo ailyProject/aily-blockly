@@ -56,6 +56,15 @@
                     [placeholder]="'PROJECT_SETTING_DIALOG.DOC_URL_PLACEHOLDER' | translate"
                     [disabled]="isSubmitting">
             </div>
+
+            <div class="form-item">
+                <label class="form-label" for="project-cloud-sync-rules">
+                    {{ 'PROJECT_SETTING_DIALOG.SYNC_RULES' | translate }}
+                    <span class="more">{{ 'PROJECT_SETTING_DIALOG.SYNC_RULES_HINT' | translate }}</span>
+                </label>
+                <textarea id="project-cloud-sync-rules" class="form-control" nz-input [(ngModel)]="syncRules"
+                    rows="3" spellcheck="false" [disabled]="isSubmitting || !syncRulesReady"></textarea>
+            </div>
         </div>
 
         <!-- 项目配置 -->

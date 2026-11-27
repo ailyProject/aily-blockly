@@ -710,6 +710,8 @@
         "DESCRIPTION_PLACEHOLDER": "Bitte Projektbeschreibung eingeben",
         "DOC_URL": "Dokumentations-URL",
         "DOC_URL_PLACEHOLDER": "Bitte Dokumentations-URL eingeben",
+        "SYNC_RULES": "Synchronisierungsregeln",
+        "SYNC_RULES_HINT": "Eine Regel pro Zeile. Es gilt die .gitignore-Syntax.",
         "PROJECT_CONFIG": "Projektkonfiguration",
         "NO_CONFIG": "Keine Konfigurationsinformationen",
         "DEPENDENCIES": "Abhängigkeiten",
@@ -728,7 +730,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "Ungültiges Dokumentations-URL-Format. Bitte geben Sie eine gültige URL ein",
         "SUCCESS_SAVE": "Erfolgreich gespeichert!",
         "ERROR_SAVE_FAILED": "Speichern fehlgeschlagen, bitte versuchen Sie es später erneut",
-        "ERROR_LOAD_FAILED": "Laden der Projekteinstellungen fehlgeschlagen"
+        "ERROR_LOAD_FAILED": "Laden der Projekteinstellungen fehlgeschlagen",
+        "ERROR_SYNC_RULES_LOAD": "Synchronisierungsregeln konnten nicht gelesen werden",
+        "ERROR_SYNC_RULES_SAVE": "Synchronisierungsregeln konnten nicht gespeichert werden",
+        "ERROR_SETTINGS_AFTER_RULES": "Die Synchronisierungsregeln wurden gespeichert. Die übrigen Projekteinstellungen konnten nicht gespeichert werden. Bitte erneut versuchen.",
+        "ERROR_PROJECT_CHANGED": "Das aktuelle Projekt hat sich geändert. Bitte die Projekteinstellungen erneut öffnen."
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Projekteinstellungen",

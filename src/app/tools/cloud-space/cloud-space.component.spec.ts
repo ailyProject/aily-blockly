@@ -17,6 +17,9 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   let flush: jasmine.Spy;
   let getStore: jasmine.Spy;
   let validate: jasmine.Spy;
+  let archiveCommand: jasmine.Spy;
+  let packedEntries: string[];
+  let stagedEntries: string[];
 
   beforeEach(() => {
     previousApis = { fs: window['fs'], path: window['path'], os: window['os'] };
@@ -26,6 +29,8 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       [`${root}/sketch/libraries/Local/Local.h`, 'local library'],
     ]);
     directories = new Set([root, `${root}/sketch`]);
+    packedEntries = [];
+    stagedEntries = [];
     const isDirectory = (path: string) => directories.has(path) || [...files.keys()].some(file => file.startsWith(path + '/'));
     window['fs'] = {
       existsSync: (path: string) => files.has(path) || directories.has(path),
@@ -36,7 +41,9 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       writeFileSync: jasmine.createSpy('write').and.callFake((path: string, content: string) => files.set(path, content)),
       mkdirSync: (path: string) => directories.add(path),
       rmSync: jasmine.createSpy('rm').and.callFake((path: string) => {
-        directories.delete(path);
+        for (const directory of directories) {
+          if (directory === path || directory.startsWith(path + '/')) directories.delete(directory);
+        }
         for (const file of files.keys()) {
           if (file.startsWith(path + '/')) files.delete(file);
         }
@@ -84,13 +91,23 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     component.configService = { isCoderProduct: () => false };
     component.getCloudProjects = jasmine.createSpy('projects').and.resolveTo();
     component.electronService = { readFile: (path: string) => window['fs'].readFileSync(path, 'utf8') };
-    component.platformService = { za7: '7zz' };
+    component.platformService = { getZa7Path: async () => '7zz' };
+    archiveCommand = jasmine.createSpy('pack').and.callFake(async (args: string[], cwd: string) => {
+      const listPath = args.find(arg => arg.startsWith('@'))?.slice(1);
+      if (listPath) {
+        const entries = files.get(listPath);
+        expect(entries).toBeDefined();
+        const selection = (entries ?? '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+          .map(entry => entry.startsWith('"') && entry.endsWith('"') ? entry.slice(1, -1) : entry);
+        if (cwd === root) packedEntries = selection;
+        else stagedEntries = selection;
+      }
+      const archivePath = args.find(arg => arg.endsWith('.7z'));
+      if (archivePath) files.set(archivePath, 'archive');
+      return { type: 'close', code: 0 };
+    });
     component.cmdService = {
-      runAsync: jasmine.createSpy('pack').and.callFake(async (command: string) => {
-        const archivePath = command.match(/ a -t7z(?: -mx=9)? "([^"]+)"/)?.[1];
-        if (archivePath) files.set(archivePath, 'archive');
-        return { type: 'close', code: 0 };
-      }),
+      spawn: (_command: string, args: string[], options: { cwd: string }) => from(archiveCommand(args, options.cwd)),
     };
     component.projectService = {
       currentProjectPath: root,
@@ -134,21 +151,58 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   }
 
   it('packages Coder without ABI or touching the Blockly data runtime', async () => {
+    for (const relative of ['sketch/.aily-component-library.json', 'sketch/.local-state/cache',
+      'sketch/preprocess.json', 'sketch/library-cache.json', 'sketch/target-compile.json',
+      'sketch/compile-preprocess-original.json', '.build/cache', '.env.local', 'project.abs.map.json']) {
+      files.set(`${root}/${relative}`, 'project file');
+    }
     expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
     expect(flush).not.toHaveBeenCalled();
     expect(getStore).not.toHaveBeenCalled();
     expect(window['fs'].readFileSync).not.toHaveBeenCalledWith(`${root}/project.abi`, 'utf8');
     expect(component.message.error).not.toHaveBeenCalled();
-    const command = component.cmdService.runAsync.calls.first().args[0];
-    expect(command).toContain('"-xr!.*/"');
-    expect(command).not.toContain('"-xr!.*"');
-    expect(command).toContain('"-x!sketch/preprocess.json"');
-    expect(command).toContain('"-x!sketch/library-cache.json"');
-    expect(command).toContain('"-x!sketch/target-compile.json"');
-    expect(command).toContain('"-x!sketch/compile-preprocess-*.json"');
-    expect(command).toContain('"-xr!.build"');
-    expect(command).toContain('"-xr!.aily"');
-    expect(command).toContain('"-x!project.abs.map.json"');
+    expect(new Set(packedEntries)).toEqual(new Set([
+      'package.json', 'sketch/.aily-component-library.json', 'sketch/libraries/Local/Local.h', 'sketch/src/main.cpp',
+    ]));
+  });
+
+  for (const mode of ['coder', 'blockly'] as const) {
+    it(`applies .gitignore rules to ${mode} archives and retains the project files needed to reopen`, async () => {
+      if (mode === 'blockly') useBlockly();
+      const rules = [
+        '# Project sync rules', '', 'build/', '/scratch.log', '**/*.private', '!notes/keep.private',
+        'drafts/', '!drafts/keep.txt', '\\#local.txt', '\\!local.txt', '带空格 的文件.txt',
+        '/node_modules/', '!/node_modules/', 'package.json', 'project.abi', '.ailyignore', '',
+      ].join('\r\n');
+      const omitted = ['build/bin', 'nested/build/bin', 'scratch.log', 'notes/drop.private', 'drafts/keep.txt',
+        '#local.txt', '!local.txt', '带空格 的文件.txt', 'node_modules/top.js'];
+      const kept = ['nested/scratch.log', 'notes/keep.private', 'nested/node_modules/legacy.js',
+        'README.md', 'notes/build', 'notes/保留 文件.txt', 'notes/ trailing-space.txt '];
+      files.set(`${root}/.ailyignore`, rules);
+      for (const relative of [...omitted, ...kept]) files.set(`${root}/${relative}`, 'project file');
+      directories.add(`${root}/empty`);
+
+      expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
+
+      expect(packedEntries).toEqual(jasmine.arrayContaining(['.ailyignore', ...kept]));
+      expect(stagedEntries).toContain('empty/');
+      for (const relative of omitted) expect(packedEntries).withContext(relative).not.toContain(relative);
+      expect(files.get(`${root}/.ailyignore`)).toBe(rules);
+      if (mode === 'coder') {
+        expect(packedEntries).toContain('package.json');
+      } else {
+        expect(stagedEntries).toEqual(jasmine.arrayContaining(['package.json', 'project.abi']));
+      }
+    });
+  }
+
+  it('preserves the prior selection if .ailyignore is absent from the workspace', async () => {
+    files.set(`${root}/build/previous.bin`, 'existing build');
+
+    expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
+
+    expect(packedEntries).toContain('build/previous.bin');
+    expect(files.has(`${root}/.ailyignore`)).toBeFalse();
   });
 
   it('opens a downloaded Coder project through the same guarded archive import as the project plaza', async () => {
@@ -236,7 +290,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     files.set(`${root}/project.abi`, 'invalid leftover');
     expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
     expect(getStore).not.toHaveBeenCalled();
-    expect(component.cmdService.runAsync.calls.first().args[0]).toContain('"-x!project.abi"');
+    expect(packedEntries).not.toContain('project.abi');
   });
 
   it('supports legacy project.aci without a sketch directory', async () => {
@@ -252,20 +306,23 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     files.set(`${root}/project.aci`, '');
     expect(await component.packageProject(root)).toBeUndefined();
     expect(component.message.error).toHaveBeenCalledWith('Coder 项目源码不存在，无法打包');
-    expect(component.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(archiveCommand).not.toHaveBeenCalled();
   });
 
   it('validates Blockly resources while excluding both local ABS files from the archive', async () => {
     useBlockly();
     files.set(`${root}/project.abs`, 'field: "@json:{\\"resource\\":1}"');
+    files.set(`${root}/project.abs.map.json`, '{}');
+    files.set(`${root}/project.abi.backup`, '{}');
+    files.set(`${root}/sketch/.local-state`, 'hidden Blockly file');
+    files.set(`${root}/assets/project-data/resource`, 'asset');
     expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
     expect(flush).toHaveBeenCalledTimes(1);
     expect(validate).toHaveBeenCalledOnceWith([{ blocks: {} }, { resource: 1 }]);
-    expect(component.cmdService.runAsync.calls.first().args).toEqual([
-      `7zz a -t7z -mx=9 "${root}/project.7z" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi" "-x!package.json" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`,
-      root, false,
-    ]);
-    expect(component.cmdService.runAsync).toHaveBeenCalledTimes(2);
+    expect(new Set(packedEntries)).toEqual(new Set([
+      'assets/project-data/resource', 'sketch/libraries/Local/Local.h', 'sketch/src/main.cpp',
+    ]));
+    expect(archiveCommand).toHaveBeenCalledTimes(2);
   });
 
   it('packages one immutable saved source when public mirrors and the manifest change during archive creation', async () => {
@@ -284,7 +341,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     await store.commit(generation, () => {}, async (text, expected, io) => { expect(await io.replace('project.abi', expected, text)).toBeTrue(); });
     files.set(`${root}/project.abi`, 'partial next ABI');
     files.set(`${root}/project.abs`, 'unpublished next draft');
-    component.cmdService.runAsync.and.callFake(async (_command, cwd) => {
+    archiveCommand.and.callFake(async (_args, cwd) => {
       if (cwd === root) files.set(`${root}/package.json`, '{"name":"later manifest"}');
       else {
         expect(files.get(cwd + '/project.abi')).toBe(abi);
@@ -293,7 +350,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       files.set(`${root}/project.7z`, 'archive'); return { type: 'close', code: 0 };
     });
     expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
-    expect(component.cmdService.runAsync).toHaveBeenCalledTimes(2);
+    expect(archiveCommand).toHaveBeenCalledTimes(2);
     expect(files.get(`${root}/project.abi`)).toBe('partial next ABI');
     expect(files.get(`${root}/project.abs`)).toBe('unpublished next draft');
     expect(component.message.error).not.toHaveBeenCalled();
@@ -304,7 +361,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     validate.and.resolveTo({ valid: false, issues: [{ error: 'missing resource' }] });
     expect(await component.packageProject(root)).toBeUndefined();
     expect(component.message.error).toHaveBeenCalledWith('项目数据资源不完整，无法打包');
-    expect(component.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(archiveCommand).not.toHaveBeenCalled();
   });
 
   it('still refuses malformed Blockly ABI and ABS documents', async () => {
@@ -314,17 +371,18 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     files.set(`${root}/project.abi`, '{}');
     files.set(`${root}/project.abs`, 'field: "@json:unterminated');
     expect(await component.packageProject(root)).toBeUndefined();
-    expect(component.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(archiveCommand).not.toHaveBeenCalled();
   });
 
   it('strips local library paths only from the archived manifest', async () => {
     const manifest = { name: 'demo', type: 'coder', [AILY_LOCAL_LIBRARY_SOURCES_KEY]: { local: '/private/library' } };
     files.set(`${root}/package.json`, JSON.stringify(manifest));
     expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
-    const stagedManifest = window['fs'].writeFileSync.calls.mostRecent().args[1];
+    const [, stagedManifest] = window['fs'].writeFileSync.calls.allArgs()
+      .find(([path]) => path.startsWith('/tmp/') && path.endsWith('/package.json'));
     expect(JSON.parse(stagedManifest)).toEqual({ name: 'demo', type: 'coder' });
     expect(JSON.parse(files.get(`${root}/package.json`)!)).toEqual(manifest);
-    expect(component.cmdService.runAsync.calls.first().args[0]).toContain('"-x!package.json"');
+    expect(packedEntries).not.toContain('package.json');
     expect(window['fs'].rmSync).toHaveBeenCalled();
   });
 
@@ -398,7 +456,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
       files.set(`${root}/sketch/src/main.cpp`, 'newly saved code');
       return { success: true };
     });
-    component.cmdService.runAsync.and.callFake(async () => {
+    archiveCommand.and.callFake(async () => {
       expect(files.get(`${root}/sketch/src/main.cpp`)).toBe('newly saved code');
       files.set(`${root}/project.7z`, 'archive');
       return { type: 'close', code: 0 };
@@ -423,13 +481,13 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   it('aborts before packing or uploading if saving the editor fails', async () => {
     component.projectService.save.and.resolveTo({ success: false, error: 'save failed' });
     await component.syncToCloud();
-    expect(component.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(archiveCommand).not.toHaveBeenCalled();
     expect(component.cloudService.syncProject).not.toHaveBeenCalled();
     expect(component.isSyncing).toBeFalse();
   });
 
   it('does not upload another project metadata when the active project changes while packing', async () => {
-    component.cmdService.runAsync.and.callFake(async () => {
+    archiveCommand.and.callFake(async () => {
       files.set(`${root}/project.7z`, 'archive');
       component.projectService.currentProjectPath = '/aily Projects/other';
       return { type: 'close', code: 0 };
@@ -460,11 +518,40 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
   });
 
   it('does not upload an archive when 7z reports a failure', async () => {
-    component.cmdService.runAsync.and.resolveTo({ type: 'close', code: 2 });
+    archiveCommand.and.resolveTo({ type: 'close', code: 2 });
     await component.syncToCloud();
     expect(component.cloudService.syncProject).not.toHaveBeenCalled();
     expect(component.isSyncing).toBeFalse();
-    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/磁盘空间/));
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/项目打包失败/));
+  });
+
+  it('does not upload when the sync ignore rules change during archive creation', async () => {
+    files.set(`${root}/.ailyignore`, 'build/\n');
+    archiveCommand.and.callFake(async () => {
+      files.set(`${root}/project.7z`, 'archive');
+      files.set(`${root}/.ailyignore`, 'drafts/\n');
+      return { type: 'close', code: 0 };
+    });
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).not.toHaveBeenCalled();
+    expect(component.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/打包期间已变化/));
+  });
+
+  it('does not invalidate a receipt sync when an ignored build file changes during archive creation', async () => {
+    files.set(`${root}/.ailyignore`, 'build/\n');
+    files.set(`${root}/build/output.bin`, 'old build');
+    archiveCommand.and.callFake(async () => {
+      files.set(`${root}/project.7z`, 'archive');
+      files.set(`${root}/build/output.bin`, 'new build');
+      return { type: 'close', code: 0 };
+    });
+
+    await component.syncToCloud();
+
+    expect(component.cloudService.syncProject).toHaveBeenCalledTimes(1);
+    expect(component.message.success).toHaveBeenCalledWith('同步成功');
   });
 
   it('updates only the matching active student original and keeps its cloud ID', async () => {

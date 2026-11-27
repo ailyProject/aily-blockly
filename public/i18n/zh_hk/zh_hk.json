@@ -785,6 +785,8 @@
         "DESCRIPTION_PLACEHOLDER": "請輸入項目描述",
         "DOC_URL": "文檔鏈接",
         "DOC_URL_PLACEHOLDER": "請輸入文檔鏈接",
+        "SYNC_RULES": "同步規則",
+        "SYNC_RULES_HINT": "每行一條，語法同 .gitignore",
         "PROJECT_CONFIG": "項目配置",
         "NO_CONFIG": "暫無配置信息",
         "DEPENDENCIES": "依賴項",
@@ -803,7 +805,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "文檔鏈接格式不正確，請輸入有效的 URL 地址",
         "SUCCESS_SAVE": "保存成功！",
         "ERROR_SAVE_FAILED": "保存失敗，請稍後重試",
-        "ERROR_LOAD_FAILED": "加載項目設置失敗"
+        "ERROR_LOAD_FAILED": "加載項目設置失敗",
+        "ERROR_SYNC_RULES_LOAD": "讀取同步規則失敗",
+        "ERROR_SYNC_RULES_SAVE": "儲存同步規則失敗",
+        "ERROR_SETTINGS_AFTER_RULES": "同步規則已儲存，其他項目設置儲存失敗，請重試",
+        "ERROR_PROJECT_CHANGED": "目前項目已切換，請重新開啟項目設置"
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "項目設置",
