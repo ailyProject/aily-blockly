@@ -1,4 +1,5 @@
 import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
+import { confirmCoderCloudPreflightFailure } from '../../../utils/cloud-build-progress.utils';
 import { ProjectBuildReceipts, readNativeBuildReceipt, readProjectBuildRequest } from './project-build-receipts';
 
 describe('project build receipt store', () => {
@@ -118,7 +119,10 @@ describe('project build receipt store', () => {
     expect(answer.result).toEqual(jasmine.objectContaining({ ok: false, code: 'BUILD_SOURCE_STALE', message: 'source changed' }));
   });
 
-  for (const code of ['node_restarted', 'CLOUD_TARGET_UNAVAILABLE']) it(`requires an explicit, separate, same-project request after ${code}`, async () => {
+  const ciCompatibility = { code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported' };
+  const confirmedUnsupportedBoard = confirmCoderCloudPreflightFailure({ code: 'CLOUD_BOARD_UNSUPPORTED' }) as { code: string };
+
+  for (const failure of [{ code: 'node_restarted' }, { code: 'CLOUD_TARGET_UNAVAILABLE' }, ciCompatibility, confirmedUnsupportedBoard]) it(`requires an explicit, separate, same-project request after ${failure.code}`, async () => {
     const store = new ProjectBuildReceipts();
     const guard = jasmine.createSpy('guard');
     const local = jasmine.createSpy('local').and.callFake(async control => {
@@ -127,11 +131,11 @@ describe('project build receipt store', () => {
       return { ok: true };
     });
     const first = await store.start('/isolated', request('cloud', 10_000), 'compile', async control => {
-      control.recordCloudFailure?.({ code }, guard);
-      return { ok: false, code };
+      control.recordCloudFailure?.(failure, guard);
+      return { ok: false, code: failure.code };
     });
     expect(first.buildReceipt.state).toBe('completed');
-    expect(first.result).toEqual({ ok: false, code, localFallback: { fromRequestId: 'cloud' } });
+    expect(first.result).toEqual({ ok: false, code: failure.code, localFallback: { fromRequestId: 'cloud' } });
     expect((await store.status('/isolated', request('cloud'))).result).toBe(first.result);
     expect(local).not.toHaveBeenCalled();
     expect(() => store.start('/wrong', request('wrong-project'), 'local', local, 'cloud')).toThrowError(/another project/);
@@ -148,7 +152,7 @@ describe('project build receipt store', () => {
     const store = new ProjectBuildReceipts(), local = jasmine.createSpy('local');
     let sourceCurrent = true;
     await store.start('/isolated', request('cloud', 10_000), 'compile', async control => {
-      control.recordCloudFailure?.({ code: 'CLOUD_BOARD_OFFLINE' }, () => {
+      control.recordCloudFailure?.(ciCompatibility, () => {
         if (!sourceCurrent) throw new Error('Original canvas changed.');
       });
       return { ok: false };
@@ -163,6 +167,10 @@ describe('project build receipt store', () => {
     const store = new ProjectBuildReceipts(), local = jasmine.createSpy('local');
     const cases = [
       { fault: { code: 'COMPILE_ERROR' }, outcome: 'failed' },
+      { fault: { code: 'CLOUD_BOARD_UNSUPPORTED' }, outcome: 'failed' },
+      { fault: { code: 'CI_RESOURCE_UNSUPPORTED' }, outcome: 'failed' },
+      { fault: { ...ciCompatibility, cleanupConfirmed: false }, outcome: 'failed' },
+      { fault: { ...ciCompatibility, remoteCleanupConfirmed: false }, outcome: 'failed' },
       { fault: { code: 'node_restarted', remoteCleanupConfirmed: false }, outcome: 'failed' },
       { fault: { code: 'node_restarted' }, outcome: 'cancelled' },
     ];

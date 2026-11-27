@@ -12,13 +12,14 @@ const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { createNotificationApi } = require('./notification-preload');
+const { SDK_TOOLCHAIN_UNSUPPORTED } = require('./cloud-build/ci-resource-contract');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { rootAttachment, storageExecutor } = require('./project-file-lock-owner');
 const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
 const { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
-    prepareBuildExecution, requiresIsolatedBuildRecovery, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution,
+    prepareBuildExecution, requiresIsolatedBuildRecovery, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildExecutionInWorker, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution,
     sharedBuildExecutionVersion, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
@@ -82,6 +83,8 @@ async function invokeCloudBuild(payload) {
       ...(envelope?.error?.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
       ...(envelope?.error?.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(envelope?.error?.sourceReason ? { sourceReason: envelope.error.sourceReason } : {}),
+      ...(envelope?.error?.code === 'CI_RESOURCE_UNSUPPORTED' && envelope.error.ciResourceReason === SDK_TOOLCHAIN_UNSUPPORTED
+        ? { ciResourceReason: SDK_TOOLCHAIN_UNSUPPORTED } : {}),
       ...(envelope?.error?.buildSnapshot ? { buildSnapshot: envelope.error.buildSnapshot } : {}),
       ...(typeof envelope?.error?.logComplete === 'boolean' ? { logComplete: envelope.error.logComplete } : {}),
     };
@@ -477,12 +480,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     tryAcquire: (projectPath, options) =>
       ipcRenderer.invoke("project-lock-try", {
         projectPath,
-        force: options && options.force,
         provisional: options?.provisional === true,
+        auxiliary: options?.auxiliary === true,
       }),
-    release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
+    release: (projectPath, viewToken) => ipcRenderer.invoke("project-lock-release", { projectPath, viewToken }),
     navigate: (action, reservation, options) => ipcRenderer.invoke('project-view-navigation', {
-      ...reservation, action, force: options?.force, pendingOnly: options?.pendingOnly,
+      ...reservation, action, pendingOnly: options?.pendingOnly,
     }),
     checkStartupRestore: (projectPath, ticket) => ipcRenderer.invoke('project-navigation-startup-check', projectPath, ticket),
     cancelStartupRestore: () => ipcRenderer.send('project-navigation-startup-cancel'),
@@ -492,7 +495,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     canReopenNavigation: (proof, project) => ipcRenderer.invoke('project-navigation-can-reopen', { proof, project }),
     closedNavigationSession: () => ipcRenderer.invoke('project-navigation-closed-session'),
     clearActive: (projectPath, options) => ipcRenderer.invoke('project-navigation-clear', projectPath, options),
-    focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
+    focusProcess: (projectPath, viewToken) => ipcRenderer.invoke("project-lock-focus", { projectPath, viewToken }),
   },
   subWindow: (() => {
     // 立即监听 window-init-data，缓存数据，避免 Angular 组件注册监听前数据丢失
@@ -621,6 +624,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     requiresIsolatedBuildRecovery,
     abandonPreparedPreprocess,
     resolveBuildExecution,
+    resolveBuildExecutionInWorker,
     resolveBuildProjectPath,
     inspectBuildExecution,
     cancelBuildExecution,
@@ -640,6 +644,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
     cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
     hasArtifact: options => invokeCloudBuild({ ...options, action: 'hasArtifact' }),
+    hasUploadCandidate: options => invokeCloudBuild({ ...options, action: 'hasUploadCandidate' }),
     artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
     artifactUploadInfo: options => invokeCloudBuild({ ...options, action: 'artifactUploadInfo' }),
     prepareArtifactUpload: options => invokeCloudBuild({ ...options, action: 'prepareArtifactUpload' }),
@@ -744,6 +749,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   uploader: {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
+    manualReceipt: (input) => ipcRenderer.invoke('project-manual-upload-receipt', input),
   },
   fs: {
     projectRecoveryReceipts: recoveryReceipts,

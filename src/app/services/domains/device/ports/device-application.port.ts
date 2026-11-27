@@ -9,6 +9,7 @@ export interface DeviceActionFeedback {
 
 /** UI/editor/subapp coordination required by firmware upload. */
 export interface DeviceApplicationPort {
+  beginUploadPreparation(title: string, text: string): { painted: Promise<void>; close(): void } | undefined;
   hasActionListener(listenerId: string): boolean;
   dispatchAction(
     type: string,

@@ -3,7 +3,7 @@ import { absSyntaxOptions, readableExtraState } from './abs-syntax-contracts';
 import { absJson } from './abs-json';
 import { hashAbsText, indexAbsSyntax } from './abs-identity-map';
 import { parseAbsSyntax } from './abs-syntax';
-import { AbsAbiBlock, AbsAbiWorkspace, AbsProjectionContracts, AbsSyntaxNode, AbsSyncError, absInputPath } from './abs-state';
+import { AbsAbiBlock, AbsAbiWorkspace, AbsProjectionContracts, AbsSyntaxNode, AbsSyncError } from './abs-state';
 
 /** The readable program owns visible values; this section owns everything it cannot express. */
 const MARKER = '\n# @project-state:';
@@ -113,7 +113,7 @@ export async function decodeAbsState(source: string): Promise<{ document: unknow
     .filter(block => state.contracts.procedures?.[block.id]?.family === 'custom-functions-v1')
     .map(block => [block.id, block] as const) : []);
   const used = new Set<string>();
-  const built = new Map<string, AbsAbiBlock>();
+  const built = new Map<AbsSyntaxNode, AbsAbiBlock>();
   const syntaxRoots = parseAbsSyntax(program, state.syntax ? absSyntaxOptions(state.syntax, state.contracts) : {});
   const entries = indexAbsSyntax(syntaxRoots);
   for (let index = entries.length - 1; index >= 0; index--) {
@@ -132,15 +132,15 @@ export async function decodeAbsState(source: string): Promise<{ document: unknow
     if (residual.inputs !== undefined) block.inputs = Object.fromEntries(Object.entries(residual.inputs).map(([name, input]) => {
       const child = node.inputs[name];
       if (!!child !== !!input.kind) return invalid('Input state does not match the readable program.');
-      return [name, { ...input.edge, ...(child ? { [input.kind!]: built.get(absInputPath(path, name)) ?? invalid('Missing input block state.') } : {}) }];
+      return [name, { ...input.edge, ...(child ? { [input.kind!]: built.get(child) ?? invalid('Missing input block state.') } : {}) }];
     }));
     if (residual.next !== undefined) {
       if (!node.next) return invalid('Next block is missing.');
-      block.next = { ...residual.next, block: built.get(`${path}/next`) ?? invalid('Missing next block state.') };
+      block.next = { ...residual.next, block: built.get(node.next) ?? invalid('Missing next block state.') };
     }
-    built.set(path, block);
+    built.set(node, block);
   }
-  const roots = syntaxRoots.map((_, index) => built.get(`/blocks/${index}`)!);
+  const roots = syntaxRoots.map(root => built.get(root)!);
   if (used.size !== Object.keys(state.nodes).length) return invalid('Unused block state.');
   const document: any = state.document;
   const restored = new Set<number>();

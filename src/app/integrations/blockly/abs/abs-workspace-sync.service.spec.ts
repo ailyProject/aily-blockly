@@ -6,6 +6,7 @@ import 'blockly/blocks';
 import '../../../editors/blockly-editor/components/blockly/plugins/block-plus-minus/src/index.js';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { AbsBaselineStore, AbsSyncStoragePort, AbsSyncStorageAccess, absBaselineKey } from './abs-baseline-store';
+import { AbsOperationJournal } from './abs-operation-journal';
 import { readWorkingCandidate } from './abs-working-candidate';
 import { acceptedInputEditProof } from './abs-accepted-input-edits';
 import { absJson, createAbsProjection, hashAbsText, indexAbsSyntax } from './abs-identity-map';
@@ -5162,6 +5163,47 @@ describe('v2 actual workspace generation coordinator', () => {
 
   describe('project-v1 author tree', () => {
     const select = () => disk.set('workspace-mode.json', absJson({ version: 1, mode: 'project-v1' }));
+    for (const checkpoint of ['clean restored', 'dirty restored', 'pending'] as const) {
+      it(`saves the latest canvas with a missing projection only when its runtime checkpoint is safe (${checkpoint})`, async () => {
+        select();
+        const saved = editor.captureProjectSnapshot().document;
+        const abi = absJson(saved);
+        const draft = '# Keep the independently authored draft';
+        disk.set('project.abi', abi);
+        disk.set('project.abs', draft);
+        window['fs'].readFileSync = () => disk.get('project.abi');
+        editor.getProjectAbiForSave = (document = editor.captureProjectSnapshot().document) => document;
+        project.rememberLoadedProject(scope.projectKey, abi, saved);
+        const journal = new AbsOperationJournal(port, scope.projectKey);
+        const check = () => {};
+        if (checkpoint === 'dirty restored') roots().setFieldValue('unsaved before runtime rebuild', 'TEXT');
+        const id = await journal.begin({ kind: 'runtime-rebuild', document: editor.captureProjectSnapshot().document,
+          disk: { abi, abs: draft, map: null } }, check);
+        if (checkpoint !== 'pending') await journal.restored(id, check);
+        const retained = [...disk];
+        roots().setFieldValue('edited while compiling', 'TEXT');
+        const request = { version: 2 as const, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' as const };
+
+        if (checkpoint !== 'clean restored') {
+          await expectAsync(project.save(scope.projectKey, request))
+            .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_TRANSACTION_PENDING' }));
+          expect([...disk]).toEqual(retained);
+          expect(roots().getFieldValue('TEXT')).toBe('edited while compiling');
+          return;
+        }
+
+        const result = await project.save(scope.projectKey, request);
+        expect(result.projectSaved).toBeTrue();
+        expect(disk.get('project.abi')).toContain('edited while compiling');
+        expect(disk.get('project.abs')).toBe(draft);
+        expect(disk.get('project.abs.map.json')).toBeDefined();
+        const receipt = await service.observeNativeSave(scope.projectKey, request, port.executor!.hostPid!);
+        expect(receipt?.saveReceipt.state).toBe('completed');
+        expect(receipt?.result?.['projectSaved']).toBeTrue();
+        expect(disk.get(`recoveries/operation-${id}.json`)).toBeDefined();
+      });
+    }
+
     it('acknowledges an unchanged author-tree save without creating another immutable generation', async () => {
       await baseline(); select();
       const first = await service.exportGeneration({ save: true });
@@ -5573,6 +5615,73 @@ describe('v2 actual workspace generation coordinator', () => {
       expect(reapplied.result.evidence.binding.generation).not.toBe(first.evidence.binding.generation);
       expect(gate.busy).toBeFalse();
     });
+    for (const direction of ['restore', 'redo'] as const) {
+      it(`S3 History ${direction} preserves the accepted author origin for the next tracked deletion`, async () => {
+        const f = await captureWithUnchangedAuthorState(), store = new AbsBaselineStore(port, scope);
+        const applyCandidate = async (source: string, capture: typeof f.capture,
+          edits: Array<{ start: number; end: number; text: string }>) => {
+          const workingCandidate = await retainWorkingCandidate(capture, source, { source: capture.authorSource!.text!, edits });
+          disk.set('project.abs', source);
+          const bound = await f.request(workingCandidate, source);
+          const validation = await service.validateGeneration(source, bound);
+          const result = await service.applyGeneration(source, validation.base.generation, {}, validation);
+          expect(result.publication.status).toBe('COMMITTED');
+          return result.evidence!.binding;
+        };
+        disk.set('project.abs', f.source);
+        const firstValidation = await service.validateGeneration(f.source, await f.request());
+        const first = await service.applyGeneration(f.source, firstValidation.base.generation, {}, firstValidation);
+        const firstProgram = (await service.inspectHistoryProgram()).abs;
+        // History's before snapshot is captured from Working and can have different native layout.
+        roots().moveBy(20, 30);
+        const beforeSecond = await service.captureWorkingCandidate(), firstLabel = 'verified state origin';
+        expect(beforeSecond.abs).not.toBe(firstProgram);
+        const labelStart = f.source.indexOf(firstLabel), secondLabel = 'second accepted author';
+        expect(labelStart).toBeGreaterThan(0);
+        const secondAuthor = f.source.replace(firstLabel, secondLabel);
+        const second = await applyCandidate(secondAuthor, beforeSecond,
+          [{ start: labelStart, end: labelStart + firstLabel.length, text: secondLabel }]);
+        const secondProgram = (await service.inspectHistoryProgram()).abs;
+        const navigate = async (base: string, target: string, expected: typeof second) => {
+          const reference = async (source: string) => ({ hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).length });
+          const result = await service.publishHistoryProgram({ version: 2, requestId: `pub2-${crypto.randomUUID()}`,
+            history: { id: crypto.randomUUID(), expected, base: { source: base, ...await reference(base) },
+              candidate: await reference(target), source: target } });
+          expect(result.result!['publication'].status).toBe('COMMITTED');
+          return result.result!['evidence'].binding;
+        };
+
+        const restored = await navigate(secondProgram, beforeSecond.abs, second);
+        expect(disk.get('project.abs')).toBe(secondAuthor);
+        // Lex applies the separately fenced author transition after the native History receipt.
+        disk.set('project.abs', f.source);
+        const head = direction === 'restore' ? restored : await navigate(beforeSecond.abs, secondProgram, restored);
+        const author = direction === 'restore' ? f.source : secondAuthor;
+        if (direction === 'redo') disk.set('project.abs', secondAuthor);
+        expect(head.generation).not.toBe(first.evidence!.binding.generation);
+        expect(await store.readAcceptedAuthorInput(head.generation)).toBe(author);
+
+        const capture = await service.captureWorkingCandidate();
+        expect(capture.authorSource?.text).toBe(author);
+        expect(splitAbsState(capture.abs).state).not.toBe(splitAbsState(author).state);
+        const start = author.indexOf('text_print('), end = author.indexOf('\n', start) + 1;
+        expect(start).toBeGreaterThan(0);
+        const deletion = { start, end, text: '' };
+        const source = author.slice(0, start) + author.slice(end);
+        const stateStart = author.indexOf('\n# @project-state:') + '\n# @project-state:'.length;
+        const forgedState = JSON.parse(splitAbsState(author).state!);
+        forgedState.nodes.find(node => node.attributes?.id === 'protected').attributes.deletable = true;
+        const forgedText = absJson(forgedState);
+        const forged = source.slice(0, stateStart - (end - start)) + forgedText;
+        const forgedRef = await retainWorkingCandidate(capture, forged, { source: author,
+          edits: [deletion, { start: stateStart, end: author.length, text: forgedText }] });
+        await expectAsync(service.validateGeneration(forged, await f.request(forgedRef, forged)))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+        await applyCandidate(source, capture, [deletion]);
+        expect(editor.workspace.getAllBlocks(false).some(block => block.type === 'text_print')).toBeFalse();
+        expect(roots().isDeletable()).toBeFalse();
+      });
+    }
     it('S3 prepares migration without writes and selects only the same accepted program and Working document under its original lease', async () => {
       await baseline();
       const draft = disk.get('project.abs')! + '\n# pending author before migration'; disk.set('project.abs', draft);

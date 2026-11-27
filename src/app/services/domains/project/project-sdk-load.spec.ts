@@ -117,7 +117,7 @@ describe('board configuration menu SDK readiness', () => {
   it('reads ready SDK options and keeps normal default persistence and pin synchronization', async () => {
     const { service, manifest } = fixture();
 
-    const menu = await service.getBoardConfigMenu();
+    const menu = await service.getBoardConfigMenu({ persistDefaults: true });
 
     expect(window['fs'].readFileSync).toHaveBeenCalledOnceWith(boardsPath, 'utf8');
     expect(menu.find((item: any) => item.key === 'CDCOnBoot').children).toContain(jasmine.objectContaining({
@@ -136,7 +136,7 @@ describe('board configuration menu SDK readiness', () => {
     service.getBoardDependencies.and.resolveTo({});
     service.currentBoardMenuConfig = service.currentBoardMenuConfig.filter((item: any) => item.key === 'Variant');
 
-    const menu = await service.getBoardConfigMenu();
+    const menu = await service.getBoardConfigMenu({ persistDefaults: true });
 
     expect(menu.length).toBe(1);
     expect(menu[0].disabled).toBeFalsy();

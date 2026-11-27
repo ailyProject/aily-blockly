@@ -22,9 +22,11 @@ describe('board package MCU declaration', () => {
   function fixture(raw: Record<string, any>) {
     const serialized = JSON.stringify(raw), read = jasmine.createSpy('read board').and.returnValue(serialized);
     const service: any = Object.create(ProjectService.prototype);
+    service.configService = { getCompileSettingsKey: () => 'local' };
     service.runtimeBoardModules = new WeakMap();
     service.currentProjectPathSubject = new BehaviorSubject('/fixture');
     service.boardConfigUpdatedSubject = new Subject();
+    service.getPackageJson = async () => ({});
     service.getBoardModule = async () => '@aily-project/board-alias';
     service.isAilyCodeProject = () => true;
     service.electronService = { readFile: read };

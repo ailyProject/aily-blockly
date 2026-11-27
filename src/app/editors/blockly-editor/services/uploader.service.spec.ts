@@ -87,6 +87,25 @@ describe('Uploader command lifecycle during project close', () => {
     };
   }
 
+  it('reports an occupied physical serial port instead of the uploader exit code', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit("A fatal error occurred: Could not open COM1, the port is busy or doesn't exist.",
+      '([Errno 16] could not open port COM1: [Errno 16] Resource busy: COM1)');
+    output.next({ type: 'close', code: 2, streamId: 'local-upload' });
+    output.complete();
+    flushMicrotasks();
+    expect(f.outcome.rejected).toBeTrue();
+    expect(f.outcome.result).toEqual(jasmine.objectContaining({
+      state: 'error',
+      code: 'SERIAL_PORT_BUSY',
+      text: 'BLOCKLY_EDITOR.UPLOAD.SERIAL_PORT_BUSY',
+    }));
+    expect(service.noticeService.update).toHaveBeenCalledWith(jasmine.objectContaining({
+      state: 'error',
+      text: 'BLOCKLY_EDITOR.UPLOAD.SERIAL_PORT_BUSY',
+    }));
+  }));
+
   for (const [format, line, expected] of [
     ['avrdude hash bar', 'Writing | ################################################## | 78% 0.12s', 78],
     ['Unicode bar', 'Writing | ████████████████████████████████████████████████▉  | 98%', 98],

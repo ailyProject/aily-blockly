@@ -10,7 +10,7 @@ import {
   ChatPerformanceTracer,
 } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
+import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState, yieldForNoticePaint } from '@core/app-shell/public-api';
 import { ProjectService, ProjectDebugConfigurationService, projectDataRuntime } from '@domain/project/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { MetricsService } from '@core/metrics/public-api';
@@ -39,8 +39,9 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
-import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED, isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
+import type { CloudBoardProfile } from '../../../utils/cloud-build-settings.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 import {
   PYTHON_PROJECT_ENTRY,
@@ -71,6 +72,7 @@ export class _BuilderService {
   private isolatedBuilds(): boolean { return window['builder']?.isolatedBuildExecutionVersion === 1; }
 
   private async prepareExecution(config: any, workspace?: PreparedBlocklyCode['sourceWorkspace'], operation: 'compile' | 'preprocess' = 'compile'): Promise<any> {
+    this.projectService.assertActiveProjectDirectory?.(config.currentProjectPath);
     return this.isolatedBuilds() ? window['builder'].prepareBuildExecution(config, workspace, operation) : config;
   }
 
@@ -375,22 +377,7 @@ export class _BuilderService {
         if (publish) await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
-        const runtimeRevision = getActiveProjectGeneratorRevision();
-        const dataSession = projectDataRuntime.getSessionToken(), pageId = this.blocklyService.getActivePageId();
-        // Match the captured build revision before launch and before accepting
-        // a result. Save-only view changes are outside that revision.
-        const assertFresh = () => {
-          if (projectPath !== this.projectService.currentProjectPath || dataSession !== projectDataRuntime.getSessionToken()) {
-            throw buildSourceStale('project', 'Project changed after code capture.');
-          }
-          if (workspace !== this.blocklyService.workspace) throw buildSourceStale('workspace', 'Workspace changed after code capture.');
-          if (this.blocklyService.isWorkspaceEditBlocked()) throw buildSourceStale('busy', 'Workspace is unavailable for source verification.');
-          if (pageId !== this.blocklyService.getActivePageId()) throw buildSourceStale('page', 'Active page changed after code capture.');
-          if (runtimeRevision !== getActiveProjectGeneratorRevision()) throw buildSourceStale('generator', 'Generator changed after code capture.');
-          if (prepared.revision !== this.blocklyService.captureBuildSnapshot().revision) {
-            throw buildSourceStale('blocks', 'Blockly source changed after code capture.');
-          }
-        };
+        const assertFresh = this.captureBuildSourceGuard(workspace, projectPath, prepared.revision);
         return { code: prepared.code, projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
           sourceWorkspace: prepared.sourceWorkspace, assertFresh,
           blockSourceMappings: this.createBlockSourceMappings(
@@ -399,6 +386,24 @@ export class _BuilderService {
       }, false, isCancelled),
       detail,
     );
+  }
+
+  /** Save-only view changes do not change the captured build revision. */
+  private captureBuildSourceGuard(workspace: BlocklyService['workspace'], projectPath: string, revision: number): () => void {
+    const runtimeRevision = getActiveProjectGeneratorRevision();
+    const dataSession = projectDataRuntime.getSessionToken(), pageId = this.blocklyService.getActivePageId();
+    return () => {
+      if (projectPath !== this.projectService.currentProjectPath || dataSession !== projectDataRuntime.getSessionToken()) {
+        throw buildSourceStale('project', 'Project changed after code capture.');
+      }
+      if (workspace !== this.blocklyService.workspace) throw buildSourceStale('workspace', 'Workspace changed after code capture.');
+      if (this.blocklyService.isWorkspaceEditBlocked()) throw buildSourceStale('busy', 'Workspace is unavailable for source verification.');
+      if (pageId !== this.blocklyService.getActivePageId()) throw buildSourceStale('page', 'Active page changed after code capture.');
+      if (runtimeRevision !== getActiveProjectGeneratorRevision()) throw buildSourceStale('generator', 'Generator changed after code capture.');
+      if (revision !== this.blocklyService.captureBuildSnapshot().revision) {
+        throw buildSourceStale('blocks', 'Blockly source changed after code capture.');
+      }
+    };
   }
 
   private appendPreprocessErrorOutput(value: unknown): void {
@@ -1147,6 +1152,7 @@ export class _BuilderService {
     isCancelled: () => boolean,
     captureExecution?: (execution: ResolvedBuildExecution) => void,
     backend?: 'local' | 'cloud',
+    captureSourceGuard?: (assertFresh: () => void | Promise<void>) => void,
   ): Promise<boolean> {
     const projectPath = this.projectService.currentProjectPath;
     const settingsKey = this.compileSettingsKey();
@@ -1159,7 +1165,8 @@ export class _BuilderService {
     if (!cloud && !verifyLocal) return false;
     const boardModule = await this.projectService.getBoardModule();
     if (isCancelled() || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
-    return this.runWithInteractiveProjectCode(this.blocklyService.workspace, async (prepared, assertCurrent) => {
+    const workspace = this.blocklyService.workspace;
+    return this.runWithInteractiveProjectCode(workspace, async (prepared, assertCurrent) => {
       assertCurrent();
       // Pure read: do not publish headers/macros or acquire a build workspace
       // merely to decide whether to upload an existing firmware.
@@ -1174,7 +1181,7 @@ export class _BuilderService {
         if (!prepared.sourceWorkspace) return false;
         // 与实际编译使用相同的工作区快照；遗漏该字段会让主进程始终判定固件已过期。
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
-        reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+        reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture }, forUpload: true });
       } else if (captureExecution) {
         execution = window['builder'].resolveBuildExecution(projectPath, config);
         reusable = !!execution;
@@ -1186,6 +1193,10 @@ export class _BuilderService {
         throw new Error('Upload build configuration changed.');
       }
       if (execution) captureExecution?.(execution);
+      if (reusable && captureSourceGuard) {
+        const assertFresh = this.captureBuildSourceGuard(workspace, projectPath, prepared.revision);
+        captureSourceGuard(() => this.blocklyService.readAfterWorkspaceEdit(assertFresh));
+      }
       return reusable === true;
     }, false, isCancelled);
   }
@@ -1332,7 +1343,10 @@ export class _BuilderService {
     }
 
 
-  private buildErrorText(error: any): string {
+  private buildErrorText(error: any, duringTargetLookup: boolean): string {
+    const gatewayUnavailable = duringTargetLookup && (['GATEWAY_TIMEOUT', 'GATEWAY_UNREACHABLE'].includes(error?.code)
+      || error?.httpStatus === 408 || error?.httpStatus === 429 || error?.httpStatus >= 500 && error?.httpStatus < 600);
+    if (gatewayUnavailable || isUnsupportedCloudBuild(error)) return this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE');
     const detail = String(error?.message || error?.text || error);
     if (error?.code !== 'BUILD_SOURCE_STALE' && !detail.startsWith('BUILD_SOURCE_STALE:')) return detail;
     const key = `SOURCE_STALE.${error?.sourceReason || 'unknown'}`;
@@ -1487,10 +1501,20 @@ export class _BuilderService {
     });
     const cancellation = new AbortController();
     this.buildCancellation = cancellation;
+    this.streamId = null;
+    this.buildStartTime = checkpoint.startedAt;
+    this.noticeService.update({ title: this.t('PREPARING_TITLE'), state: 'doing', showProgress: false, preparationId: requestId,
+      stop: () => this.cancel(requestId) });
+    await yieldForNoticePaint();
     const requestLog = await createProjectBuildLog(requestedProjectPath, requestId);
     this.activeBuildLog = requestLog;
     const fallback = preparation.localFallback?.local;
     let assertCloudFailureSource: (() => void) | undefined;
+    let targetLookupFailure: unknown;
+    const rememberTargetLookupFailure = (error: unknown): never => {
+      targetLookupFailure = error;
+      throw error;
+    };
     const switchToLocal = async () => {
       if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
       if (!projectCurrent() || requestedProjectPath !== this.projectService.currentProjectPath) {
@@ -1527,8 +1551,6 @@ export class _BuilderService {
           throw Object.assign(buildSourceStale('settings', 'Build settings changed before compilation.'), { buildOutcome: 'not-started' });
         }
         this.currentProjectPath = requestedProjectPath;
-        this.streamId = null; // 初始化为 null
-        this.buildStartTime = Date.now(); // 记录编译开始时间
         if (fallback) {
           if (!cloudBuild || backendOperation.isNested || graphSemanticRevision !== undefined) {
             throw Object.assign(new Error('The local fallback no longer belongs to an active cloud compile.'),
@@ -1547,7 +1569,8 @@ export class _BuilderService {
           await this.npmService.prepareLocalCompileBackend(requestedProjectPath,
             () => cancellation.signal.aborted, () => this.cancel(requestId));
         }
-        if (cloudBuild && !backendOperation.isNested && graphSemanticRevision === undefined && preparation.localFallback?.recordCloudFailure) {
+        const captureFallbackSource = () => {
+          if (!cloudBuild || backendOperation.isNested || graphSemanticRevision !== undefined || !preparation.localFallback?.recordCloudFailure) return;
           try {
             const canvas = this.blocklyService.captureBuildSnapshot().revision;
             const workspace = this.blocklyService.workspace;
@@ -1573,10 +1596,12 @@ export class _BuilderService {
               if (this.projectService.getRuntimeBoardModule() !== boardModule) throw buildSourceStale('inputs', 'The Blockly board changed after the cloud failure.');
               assertInputs();
             };
-          } catch { /* Failure to capture an exact source only withholds the fallback offer. */ }
-        }
+          } catch { assertCloudFailureSource = undefined; }
+        };
+        captureFallbackSource();
         if (!fallback && this.configService.getCompileBackend() === 'cloud') {
-          await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted);
+          await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted)
+            .catch(rememberTargetLookupFailure);
           if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()
             || requestedProjectPath !== this.projectService.currentProjectPath) throw new Error('Build configuration changed or was cancelled.');
           cloudBuild = this.isCloudBuild();
@@ -1656,13 +1681,30 @@ export class _BuilderService {
           const assertBoard = captureBuildRequestGuard(() => ['board.json', 'package.json'].map(name =>
             window['fs'].readFileSync(this.electronService.pathJoin(projectPath, 'node_modules', boardModule, name), 'utf8')));
           const boardJson = await this.projectService.getBoardJson();
-          // 云端仅需要项目和库源码；本地分支继续等待 aily-builder、SDK 和编译器准备完成。
+          const prepareCloudTarget = async () => {
+            const guard = () => {
+              if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
+              if (!projectCurrent() || requestedSettingsKey !== this.compileSettingsKey()) {
+                throw buildSourceStale('settings', 'Cloud build configuration changed before capture.');
+              }
+              assertPackage(); assertBoard();
+            };
+            guard();
+            const previousBoard = this.projectService.currentBoardConfig;
+            const profile = await this.projectService.prepareCloudBoardForBuild(previousBoard, guard).catch(rememberTargetLookupFailure);
+            guard();
+            // Applying verified pins/CDC can advance the generator revision.
+            if (previousBoard !== this.projectService.currentBoardConfig) captureFallbackSource();
+            if (profile.boardModule !== boardModule) throw buildSourceStale('inputs', 'Cloud target board changed.');
+            if (profile.capabilities?.compile !== true) {
+              throw Object.assign(new Error('This cloud target does not support compilation.'), { code: 'CLOUD_COMPILE_UNSUPPORTED' });
+            }
+            return profile;
+          };
+          let cloudProfile: CloudBoardProfile | undefined;
           if (cloudBuild) {
-            if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()) throw new Error('Cloud build configuration changed or was cancelled.');
             await this.npmService.ensureCloudLibrarySources(projectPath);
-            // Restore selected/default cloud pins before generating code and
-            // capturing the generator revision. Opening Upload must be idempotent.
-            await this.projectService.getBoardConfigMenu({ requireCloudTarget: true });
+            cloudProfile = await prepareCloudTarget();
           }
           if (!cloudBuild) await this.waitForAilyBuilderReady();
           assertPackage(); assertBoard();
@@ -1729,7 +1771,7 @@ export class _BuilderService {
             if (cloudBuild) {
               let state: Awaited<ReturnType<_BuilderService['runCloudCompilation']>> | undefined;
               try {
-                state = await this.runCloudCompilation(buildConfig, boardName, assertCurrent);
+                state = await this.runCloudCompilation(buildConfig, boardName, assertCurrent, cloudProfile!);
                 cloudBuildSnapshot = state.buildSnapshot;
               } catch (error) {
                 cloudBuildSnapshot = error?.buildSnapshot;
@@ -2193,9 +2235,15 @@ export class _BuilderService {
               this.buildPromiseReject = reject;
               backendOperation.useCloud();
               cloudBuild = true;
-              cloudBuild = await this.npmService.prepareCloudCompileBackend(projectPath, () => cancellation.signal.aborted);
+              cloudBuild = await this.npmService.prepareCloudCompileBackend(projectPath, () => cancellation.signal.aborted)
+                .catch(rememberTargetLookupFailure);
               assertCurrent();
-              if (!cloudBuild) {
+              if (cloudBuild) {
+                // A switch back to the cloud starts a new selection. If its
+                // projection changes the generator, the old snapshot must fail.
+                cloudProfile = await prepareCloudTarget();
+                assertCurrent();
+              } else {
                 if (!backendOperation.local) backendOperation.useLocal();
                 allowCloudSwitch = false;
               }
@@ -2220,7 +2268,7 @@ export class _BuilderService {
           reject(buildCancelledResult(this.t('CANCELLED_TITLE')));
           return;
         }
-        const message = this.buildErrorText(error);
+        const message = this.buildErrorText(error, targetLookupFailure === error);
         if (cloudBuild && assertCloudFailureSource) preparation.localFallback?.recordCloudFailure?.(error, assertCloudFailureSource);
         const detail = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
         const fullErrorMessage = message === error?.message || detail.includes(message) ? detail : `${message}\n${detail}`;
@@ -2282,7 +2330,7 @@ export class _BuilderService {
     }
 
   /** 复用 Blockly 的构建生命周期；传输、签名校验和产物发布由桌面主进程负责。 */
-  private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void): Promise<ActionState & {
+  private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void, profile: CloudBoardProfile): Promise<ActionState & {
     buildSource?: Record<string, unknown>; buildSnapshot?: BuildSnapshot;
   }> {
     const requestLog = this.activeBuildLog;
@@ -2294,9 +2342,6 @@ export class _BuilderService {
     this.activeCloudRequestId = requestId;
     const checkCurrent = () => this.blocklyService.readAfterWorkspaceEdit(assertCurrent);
     await checkCurrent();
-    const profile = await this.projectService.getCloudBoardProfile({ refresh: true });
-    await checkCurrent();
-    if (profile.capabilities?.compile !== true) throw new Error('This cloud target does not support compilation.');
     const settings = this.configService.getCloudBuildSettings();
     let switchToLocal: (() => boolean) | undefined;
     const requestLocal = () => {
@@ -2309,7 +2354,7 @@ export class _BuilderService {
         state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(requestId) });
       const dependencySession = this.projectService.getProjectDependencySession(config.currentProjectPath);
       const result = await runCloudBuildWithProgress({ requestId, buildRequestId: requestLog?.requestId || requestId,
-        config, settings, profileDigest: profile.profileDigest, action: 'compile' }, bridge, {
+        config, settings, profileDigest: profile.profileDigest, catalogTicket: profile.catalogTicket, action: 'compile' }, bridge, {
         prepareTool: async tool => {
           await checkCurrent();
           await this.npmService.installCloudUploadTool(tool, dependencySession);

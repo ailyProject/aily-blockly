@@ -89,6 +89,22 @@ test('publishes exact UTF-8 bytes, BOM and CRLF and cleans temporary files', asy
   assert.equal(read(root), content); assertClean(root);
 });
 
+test('publishes and clears cloud ignore rules independently of a pending ABS generation', async () => {
+  const root = project();
+  const absSync = path.join(root, '.aily', 'abs-sync');
+  fs.mkdirSync(absSync, { recursive: true });
+  fs.writeFileSync(path.join(absSync, 'prepared.json'), 'pending');
+  const rules = '# 云同步规则\r\nbuild/\r\n';
+  const file = path.join(root, '.ailyignore');
+  assert.equal((await replaceProjectText(request(root, rules, null, '.ailyignore'), guard)).status, 'COMMITTED');
+  assert.equal(fs.readFileSync(file, 'utf8'), rules);
+  assert.equal((await replaceProjectText(request(root, 'stale', null, '.ailyignore'), guard)).status, 'CONFLICT');
+  assert.equal((await replaceProjectText(request(root, '', rules, '.ailyignore'), guard)).status, 'COMMITTED');
+  assert.equal(fs.readFileSync(file, 'utf8'), '');
+  assert.equal(fs.readFileSync(path.join(absSync, 'prepared.json'), 'utf8'), 'pending');
+  assertClean(root);
+});
+
 test('legacy shadow migration retains a backup when no ABS identity binding exists', async () => {
   const root = project(); initialize(root);
   const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard);

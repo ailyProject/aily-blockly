@@ -30,7 +30,11 @@ function inspect(config, { linkedNumberPlayback = false } = {}) {
   const sdk = pkg.boardDependencies?.[contract.SDK_PACKAGE];
   const intent = contract.detectIntent(config.code, { linkedNumberPlayback });
   if (!sdk || !intent.required) return null;
-  if (!contract.SDK_VERSIONS.includes(sdk) || pkg.boardDependencies?.[contract.TOOL_PACKAGE] !== contract.TOOL_VERSION) throw fault('CI_RESOURCE_UNSUPPORTED', 'This CI resource generator requires a supported exact SDK and citool version.');
+  if (!contract.SDK_VERSIONS.includes(sdk) || pkg.boardDependencies?.[contract.TOOL_PACKAGE] !== contract.TOOL_VERSION) {
+    throw Object.assign(fault('CI_RESOURCE_UNSUPPORTED', 'This CI resource generator requires a supported exact SDK and citool version.'), {
+      ciResourceReason: contract.SDK_TOOLCHAIN_UNSUPPORTED,
+    });
+  }
   const board = JSON.parse(readPhysical(path.join(boardRoot, 'board.json'), 4 * 1024 * 1024));
   return { root, pkg, sdk, intent, boardDigest: protocol.boardDigest(pkg, board) };
 }

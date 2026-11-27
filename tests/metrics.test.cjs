@@ -112,7 +112,9 @@ test('network and HTTP failures never escape or retry; a request aborts after th
 
 test('shared project creation records success and preserves existing failure returns', async () => {
   const records = [];
-  const { ProjectService } = load('src/app/services/domains/project/project.service.ts');
+  const { ProjectService } = load('src/app/services/domains/project/project.service.ts', {
+    './aily-cloud-ignore-file': { ensureAilyCloudIgnoreFile() {} },
+  });
   const service = Object.create(ProjectService.prototype);
   Object.defineProperty(service, 'application', { value: { updateFooterState() {} } });
   Object.defineProperty(service, 'message', { value: { error() {} } });
@@ -147,11 +149,13 @@ test('Python and Arduino report actual upload success before auxiliary cleanup, 
   service.createUploadOperationId = () => 'upload';
   service.sendSerialResourceUploadSignal = async signal => { if (signal.endsWith('connect') && !signal.endsWith('disconnect')) throw new Error('cleanup'); };
   service.projectService = { isAilyCodeProject: () => true };
-  service.application = { hasActionListener: () => false, uploadFromBlocklyEditor: async () => ({ state: 'done' }) };
+  service.translate = { instant: key => key };
+  service.application = { beginUploadPreparation: () => undefined, hasActionListener: () => false,
+    uploadFromBlocklyEditor: async () => ({ state: 'done' }) };
   service.electronService = { isWindowFocused: () => true }; service.resumeLifecycleFromPolicy = () => ({});
-  await assert.rejects(service.uploadCurrentProject(), /cleanup/); assert.equal(records.length, 2);
+  await assert.rejects(service.uploadCurrentProject(undefined, () => {}), /cleanup/); assert.equal(records.length, 2);
   service.application.uploadFromBlocklyEditor = async () => ({ state: 'warn', text: 'Cancelled' });
-  await assert.rejects(service.uploadCurrentProject(), /cleanup/); assert.equal(records.length, 2);
+  await assert.rejects(service.uploadCurrentProject(undefined, () => {}), /cleanup/); assert.equal(records.length, 2);
 });
 
 test('disk compilation reports an attempt before local or cloud failure, but not preprocessing or a busy rejection', async () => {

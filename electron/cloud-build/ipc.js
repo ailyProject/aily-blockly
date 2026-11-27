@@ -6,6 +6,7 @@ const uploadRuntime = require('./cloud-upload-runtime');
 const cloudRecipe = require('./cloud-recipe-upload');
 const { nativeSerialExecutable } = require('./cloud-native-upload');
 const ciResources = require('./ci-resource-preparation');
+const { SDK_TOOLCHAIN_UNSUPPORTED } = require('./ci-resource-contract');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const { confirmBuildSource } = require(path.join(childRoot, 'scripts/build-source-capture'));
 const { CloudBuildBroker } = require('./broker');
@@ -78,7 +79,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       // 设置子窗口只有连接检查权限；提交任务、读取固件及烧录必须属于当前主页面。
       if (!owner && !['finishArtifactUpload','cancelUpload'].includes(request.action) && !(deploymentRead && canReadGateway(event.sender))) throw Object.assign(new Error('Cloud build operations require the current main window; application settings can only read deployment identity or check Gateway health.'), { code: 'CLOUD_BUILD_FORBIDDEN' });
       // 以主进程版本和区域为准，旧偏好或渲染层参数不能放开云请求；初始化读取和清理仍可执行。
-      if (request.action === 'hasArtifact' && !isCloudSupported()) return { ok: true, result: false };
+      if (['hasArtifact', 'hasUploadCandidate'].includes(request.action) && !isCloudSupported()) return { ok: true, result: false };
       if (!['configuration', 'cancel', 'cancelUpload', 'finishArtifactUpload', 'invalidate'].includes(request.action)) assertCloudSupported();
       if (['targets', 'compile', 'analysis'].includes(request.action)) request.settings = await broker.configuration();
       // 跨窗口设置保存可能早于旧页面的 IPC 到达；主进程必须拒绝关闭后的迟到任务。
@@ -99,14 +100,22 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       }
       else if (request.action === 'completeCIToolPreparation') result = broker.completeCIToolPreparation(event.sender, request);
       else if (request.action === 'boardSupport') result = await broker.boardSupport(request.settings || request, request);
-      else if (request.action === 'targets') result = await broker.targets(request.settings || request, undefined, request.profileDigest, request);
+      else if (request.action === 'targets') {
+        const catalogOwner = currentBackend === 'cloud' ? { sender: event.sender, generation: owner.generation,
+          isCurrent: () => revision === backendRevision } : undefined;
+        result = await broker.targets(request.settings, undefined, request.profileDigest, request, catalogOwner);
+        if (catalogOwner && request.forBuild === true) assertRevision(revision);
+      }
       else if (request.action === 'compile' || request.action === 'analysis') {
         const stopped = () => { void broker.cancel(event.sender, request.requestId); };
         event.sender.once('destroyed', stopped);
         try { result = await broker.run(event.sender, request, send); }
         finally { event.sender.removeListener('destroyed', stopped); }
-      } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId);
+      } else if (request.action === 'cancel') result = await broker.cancel(event.sender, request.requestId, {
+        discardCompletedArtifact: request.discardCompletedArtifact === true,
+      });
       else if (request.action === 'hasArtifact') result = broker.hasArtifact(event.sender, request.projectPath);
+      else if (request.action === 'hasUploadCandidate') result = broker.hasUploadCandidate(event.sender, request.projectPath);
       else if (request.action === 'artifactPath') result = await broker.artifactPath(event.sender, request.projectPath);
       else if (request.action === 'artifactUploadInfo') {
         result = await broker.artifactUploadInfo(event.sender, request.projectPath, request.portType);
@@ -180,12 +189,12 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
           }
         }
       }
-      else if (request.action === 'reusable') result = await broker.reusable(event.sender, request.config, request.profileDigest);
+      else if (request.action === 'reusable') result = await broker.reusable(event.sender, request.config, request.profileDigest, request.forUpload === true);
       else if (request.action === 'invalidate') {
         let root = path.resolve(request.projectPath);
         try { root = fs.realpathSync(root); } catch { /* 已删除项目也可能仍有需要取消的烧录。 */ }
         const normalizedRoot = process.platform === 'win32' ? root.toLowerCase() : root;
-        broker.invalidate(request.projectPath, event.sender);
+        broker.invalidate(request.projectPath, event.sender, request.preserveCompleted === true);
         for (const item of uploads.values()) if (item.sender === event.sender
             && (process.platform === 'win32' ? item.root.toLowerCase() : item.root) === normalizedRoot) item.controller.abort();
         for (const [key,item] of uploadSessions) if(item.sender===event.sender && (process.platform==='win32'?item.root.toLowerCase():item.root)===normalizedRoot)void closeUploadSession(key).catch(()=>{});
@@ -220,6 +229,8 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
     } catch (error) { return { ok: false, error: { code: error.code || 'CLOUD_BUILD_ERROR', message: error.message || String(error),
       ...(Number.isInteger(error.httpStatus) ? { httpStatus: error.httpStatus } : {}),
       ...(error.code === 'BUILD_SOURCE_STALE' && error.sourceReason ? { sourceReason: error.sourceReason } : {}),
+      ...(error.code === 'CI_RESOURCE_UNSUPPORTED' && error.ciResourceReason === SDK_TOOLCHAIN_UNSUPPORTED
+        ? { ciResourceReason: SDK_TOOLCHAIN_UNSUPPORTED } : {}),
       ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
       ...(error.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(error.buildSnapshot ? { buildSnapshot: error.buildSnapshot } : {}),

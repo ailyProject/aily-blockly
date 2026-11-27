@@ -16,8 +16,12 @@ vm.runInNewContext(transformSync(fs.readFileSync('src/app/integrations/blockly/b
 const { switchProjectBoard } = moduleValue.exports;
 const sourceFile = ts.createSourceFile('project.service.ts', fs.readFileSync('src/app/services/domains/project/project.service.ts', 'utf8'), ts.ScriptTarget.Latest, true);
 const declaration = sourceFile.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'ProjectService');
-const method = declaration.members.find(node => node.name?.getText(sourceFile) === 'changeBoard'); assert.ok(method);
-const domainCode = transformSync(`class Domain { ${method.getText(sourceFile)} }; module.exports = Domain;`, { loader: 'ts', format: 'cjs', target: 'es2022' }).code;
+const methods = ['changeBoard', 'clearBoardSwitchMessage'].map(name => {
+  const method = declaration.members.find(node => node.name?.getText(sourceFile) === name);
+  assert.ok(method);
+  return method.getText(sourceFile);
+});
+const domainCode = transformSync(`class Domain { ${methods.join('\n')} }; module.exports = Domain;`, { loader: 'ts', format: 'cjs', target: 'es2022' }).code;
 // The small native outcome shape observed on real board publication. This is
 // a propagation contract fixture, not a claim that this test creates a commit.
 const binding = { generation: 'original-generation', scope: { projectKey: '/owned-project', pageId: 'main' },
@@ -99,7 +103,8 @@ test('the actual Domain board path returns its one original native outcome rathe
     getPackageJson: async () => ({ name: 'retained-project', dependencies: { '@aily-project/board-old': '1', '@aily-project/lib-keep': '1' } }),
     isAilyCodeProject: () => false, normalizeAilyBoardPackageName: value => value,
     configService: { boardDict: { [target]: { name: target, version: '1' } }, recordBoardUsage() {}, getNpmRegistryForBoard: () => undefined },
-    message: { loading() {}, success() {}, error() {} }, translate: { instant: value => value },
+    message: { loading: () => ({ messageId: 'progress' }), success: () => ({ messageId: 'done' }),
+      error: () => ({ messageId: 'error' }), remove() {} }, translate: { instant: value => value },
     getBoardModule: async () => '@aily-project/board-old', buildNpmPackageSpec: name => name,
     buildNpmInstallCommand: async () => 'fixture network-download boundary', cmdService: { runAsyncChecked: async () => {
       assert.equal(admitted, true, 'The original native admission must precede target cache/download preparation'); downloads++;

@@ -83,6 +83,11 @@ export let HEADER_MENU: IMenuItem[] = [
     icon: 'fa-light fa-folder-open',
   },
   {
+    name: 'PROJECT.LOCK_OPEN_COPY',
+    action: 'project-open-as-copy',
+    icon: 'fa-light fa-folder-plus',
+  },
+  {
     name: 'MENU.PROJECT_ADD',
     action: 'project-add',
     icon: 'fa-light fa-folder-plus',
@@ -111,6 +116,12 @@ export let HEADER_MENU: IMenuItem[] = [
     data: { type: 'cmd', data: 'save-as' },
     icon: 'fa-light fa-copy',
     router: ['/main/blockly-editor', '/main/code-editor', '/main/code-editor-pro']
+  },
+  {
+    name: 'PROJECT_SETTING_DIALOG.TITLE',
+    action: 'project-settings',
+    icon: 'fa-light fa-folder-bookmark',
+    router: ['/main/code-editor-pro'],
   },
   {
     name: 'MENU.IMAGE_EXPORT',

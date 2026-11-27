@@ -585,6 +585,12 @@
   }
 }
 
+// Board settings are radio choices. Reserve the check column before the
+// selection moves so a long option's text and hover scroll stay in place.
+:host(.ports) .submenu-box .submenu-option-title-row {
+  grid-template-columns: minmax(0, 1fr) 18px;
+}
+
 :host(.mode-menu),
 :host(.permission-menu),
 :host(.context-menu),

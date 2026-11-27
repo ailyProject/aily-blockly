@@ -170,11 +170,17 @@ function bridgeFixture(sourceProject = '', generation = 7, testPorts = {}) {
   }
   return { bridge, domain, calls, window, generation, originalMethods };
 }
-function mainRouteFixture(sourceProject = '/source', transport = async () => ({ ok: true })) {
+function mainRouteFixture(sourceProject = '/source', transport = async () => ({ ok: true }), projectLock = {
+  captureHeldView(project) {
+    try { return { attachment: require('../../../electron/project-file-lock-owner').rootAttachment(project) }; }
+    catch { return undefined; }
+  },
+}) {
   const calls = [],
     globals = {
       fs: { existsSync: () => true },
       path,
+      projectLock,
       getBuildProduct: () => 'blockly',
       getOpenedProjectPathFromWindow: () => sourceProject,
       requestMainWindow: async (...args) => {

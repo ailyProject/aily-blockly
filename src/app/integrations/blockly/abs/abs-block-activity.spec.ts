@@ -57,8 +57,10 @@ describe('Blockly executable block activity', () => {
     const first: any = { isEnabled: () => true, getParent: () => second, getNextBlock: () => null };
     const second: any = { isEnabled: () => true, getParent: () => first, getNextBlock: () => null };
     expect(() => createBlocklyBlockActivity()(first)).toThrowError(/acyclic/);
+    expect(() => isBlocklyBlockActive(first)).toThrowError(/acyclic/);
     first.getNextBlock = () => second; second.getNextBlock = () => first;
     expect(() => createBlocklyBlockActivity()(first)).toThrowError(/acyclic/);
+    expect(() => isBlocklyBlockActive(first)).toThrowError(/acyclic/);
   });
 });
 

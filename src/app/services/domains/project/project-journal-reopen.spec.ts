@@ -69,6 +69,33 @@ describe('exact host journal reopen provenance', () => {
     expect(service.stopProjectCommands).not.toHaveBeenCalled(); expect(service.isProjectTransitionInProgress(source)).toBeFalse();
   });
 
+  it('backfills the cloud ignore file only after successful load of the original locked directory', async () => {
+    const previous = { fs: window['fs'], path: window['path'], lock: window['projectLock'] };
+    const attachment = { version: 1, root: source, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
+    const ignorePath = source + '/.ailyignore';
+    let content: string | undefined;
+    const write = jasmine.createSpy('write cloud ignore').and.callFake((_path, bytes) => {
+      expect(service.getBlocklyProjectLoadStatus(source).ready).toBeTrue();
+      content = bytes;
+    });
+    window['path'] = { join: (...parts: string[]) => parts.join('/') };
+    window['fs'] = { existsSync: (path: string) => path === ignorePath && content !== undefined,
+      lstatSync: () => ({ _isFile: true }), writeFileSync: write, captureProjectAttachment: () => attachment };
+    window['projectLock'] = { tryAcquire: async () => ({ ok: true, attachment, alreadyHeld: true }) };
+    service.electronService.isElectron = true;
+    try {
+      expect(await service.reopenRecoveredBlocklyProject(source, () => {})).toEqual({ project: source, activated: true });
+      expect(write).toHaveBeenCalledOnceWith(ignorePath, 'build/\n', { flag: 'wx' });
+
+      content = '# 我的规则\r\n/tmp/\r\n';
+      expect(await service.reopenRecoveredBlocklyProject(source, () => {})).toEqual({ project: source, activated: true });
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(content).toBe('# 我的规则\r\n/tmp/\r\n');
+    } finally {
+      window['fs'] = previous.fs; window['path'] = previous.path; window['projectLock'] = previous.lock;
+    }
+  });
+
   for (const dirty of [{ dirty: true, busy: false }, { dirty: false, busy: true }, {}, null]) {
     it(`retains unverified/pending library state ${JSON.stringify(dirty)} before navigation`, async () => {
       status.and.resolveTo(dirty);

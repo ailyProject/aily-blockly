@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { copyProjectDirectory } = require('../../../electron/project-file-copy');
 
-const root = process.argv[2];
+const root = fs.realpathSync.native(process.argv[2]);
 const source = path.join(root, 'project_oct16a');
 const unfiltered = path.join(root, 'unfiltered');
 const filtered = path.join(root, 'project_oct16a_new');

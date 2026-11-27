@@ -227,6 +227,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       ? ['go-main', 'minimize', 'maximize', 'close']
       : ['go-main'];
     this.langSubscription = this.translate.onLangChange.subscribe(() => {
+      if (this.aiOperationNotice) this.refreshAiOperationNotice(true);
       this.syncHostContext();
       this.pushChatSubappActivities();
     });
@@ -254,8 +255,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       }
     });
     this.aiWritingStateSubscription = combineLatest([
-      this.blocklyService.aiWriting$,
-      this.blocklyService.aiWaitWriting$,
+      this.blocklyService.aiOperationWriting$,
       this.blocklyService.workspaceRecoveryRequired$,
     ]).subscribe(() => this.refreshAiOperationNotice());
     this.authStateSubscription = merge(
@@ -2233,9 +2233,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.refreshAiOperationNotice();
   }
 
-  private refreshAiOperationNotice(): void {
+  private refreshAiOperationNotice(refreshText = false): void {
     if (!this.isAilyChatTool()) return;
-    this.aiOperationNotice ??= new ChildAiOperationNotice(this.noticeService, `child-ai-notice:${this.hostContextId}`);
+    this.aiOperationNotice ??= new ChildAiOperationNotice(this.noticeService, `child-ai-notice:${this.hostContextId}`,
+      key => this.translate.instant(key));
     const selected = this.aiOperationVersion2 ? this.aiOperationProtocol?.selected : undefined;
     const legacySession = this.aiLegacyRunSessionId || this.ailyChatOperationSessionId;
     const running = this.aiOperationVersion2 ? !!selected : this.aiLegacyRunning || this.ailyChatOperationActive;
@@ -2243,12 +2244,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       running,
       stopping: selected?.stopping ?? this.aiLegacyStopping,
       synchronizing: this.aiOperationVersion2 && this.aiOperationProtocol?.awaitingSnapshot,
-      writing: this.blocklyService.aiWriting,
+      automationWriting: this.blocklyService.aiOperationWriting,
       recoveryRequired: this.blocklyService.isWorkspaceRecoveryRequired(),
       projectPath: this.projectService.currentProjectPath || '',
       executionKey: selected ? JSON.stringify(selected.owner) : legacySession,
       ...(running && (selected || legacySession) ? { stop: () => { void this.requestAiOperationStop(selected?.owner, legacySession); } } : {}),
-    });
+    }, refreshText);
   }
 
   private async requestAiOperationStop(owner: ChildAiRunOwner | undefined, legacySession: string): Promise<void> {

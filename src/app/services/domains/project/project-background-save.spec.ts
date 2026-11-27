@@ -41,4 +41,25 @@ describe('background project save presentation', () => {
     const h = fixture(); expect((await h.service.save('/project')).success).toBeTrue();
     expect(h.states).toEqual(['loaded', 'saving', 'saved']);
   });
+
+  it('refuses to start either save when the original project directory has been replaced', async () => {
+    const h = fixture(), originalFs = window['fs'];
+    const attachment = (ino: string) => ({
+      version: 1, root: '/project', identity: { dev: '1', ino, birthtimeNs: '10' },
+    });
+    h.service.activeProjectDirectory = attachment('10');
+    h.service.translate = { instant: () => '工程目录已被替换' };
+    try {
+      window['fs'] = { captureProjectAttachment: () => attachment('11') };
+      for (const result of [await h.service.save(), await h.service.saveInBackground()]) {
+        expect(result).toEqual(jasmine.objectContaining({
+          success: false, path: '/project', code: 'PROJECT_VIEW_ATTACHMENT_CHANGED', error: '工程目录已被替换',
+        }));
+      }
+      expect(h.dispatch).not.toHaveBeenCalled();
+      window['fs'] = { captureProjectAttachment: () => attachment('10') };
+      expect((await h.service.save()).success).toBeTrue();
+      expect(h.dispatch).toHaveBeenCalledTimes(1);
+    } finally { window['fs'] = originalFs; }
+  });
 });

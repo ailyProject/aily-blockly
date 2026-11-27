@@ -53,9 +53,9 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
       // companions is unnecessary here. An exact, verified private record can
       // mark this ABI as complete; ordinary legacy loading otherwise proceeds.
       try {
-        const committed = await lookup.inspectCommitted(), baseline = committed?.projection;
-        if (!baseline || !supportsAbsProjectionForEditing(baseline.map.projectionVersion)
-          || abi !== await lookup.readDerivedAbi(baseline.map.generation)) return null;
+        const snapshot = await lookup.readCommittedSnapshot();
+        if (!snapshot || !supportsAbsProjectionForEditing(snapshot.projection.map.projectionVersion)
+          || abi !== snapshot.abi) return null;
         assertCurrent();
         return await port.read('project.abi') === abi ? abi : null;
       } catch (error) {

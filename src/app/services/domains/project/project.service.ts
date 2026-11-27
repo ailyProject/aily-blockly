@@ -1,9 +1,10 @@
 import { ensureProjectPartitionFile } from './project-partitions';
+import { ensureAilyCloudIgnoreFile } from './aily-cloud-ignore-file';
 import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, ensureCoderProjectFile, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { ProjectNavigationTransition, type ProjectViewReservation } from './project-navigation-transition';
-import { projectViewOpenError } from './project-view-ownership';
+import { isProjectViewConflict, projectViewOpenError, type ProjectViewLockFailure } from './project-view-ownership';
 import { ProjectDependencyLifecycle, type ProjectDependencySession } from './project-dependency-lifecycle';
 import { BehaviorSubject, Subject, firstValueFrom } from 'rxjs';
 import { MetricsService } from '@core/metrics/public-api';
@@ -92,6 +93,7 @@ import {
   getCloudBuildSettings, selectCloudBoardProfile,
   type CloudBoardProfile,
 } from '../../../utils/cloud-build-settings.utils';
+import { isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
 
 interface ProjectPackageData {
   name: string;
@@ -103,6 +105,7 @@ interface ProjectPackageData {
   board?: string;
   type?: string;
   framework?: string;
+  projectConfig?: Record<string, unknown>;
   cloudId?: string; // 云端项目ID
   blocklyToolboxOrder?: string[];
 }
@@ -208,6 +211,8 @@ export class ProjectService {
   // 开发板变更事件通知，只在变更时发出
   boardChangeSubject = new Subject<void>();
   boardConfigUpdatedSubject = new Subject<any>();
+  readonly cloudBoardHydratedSubject = new Subject<any>();
+  private cloudBoardProjectionRequest?: object;
 
   // 当前项目路径的订阅源
   private currentProjectPathSubject = new BehaviorSubject<string>('');
@@ -626,6 +631,7 @@ export class ProjectService {
   async discardLibraryChanges(projectPath = this.currentProjectPath, reconcile = false, historyRestored = false,
     allowInstallFailure = false): Promise<string | undefined> {
     if (!projectPath || !window['libraryDependencies']) return;
+    if (projectPath === this.currentProjectPath && !this.projectDirectoryMatches(projectPath, this.activeProjectDirectory)) return;
     const restoreCoderSources = !reconcile && this.hasCachedLibraryChanges(projectPath)
       && this.getProjectMode(projectPath) === 'coder';
     const status = await window['libraryDependencies'].discard(projectPath, {
@@ -667,6 +673,8 @@ export class ProjectService {
   }
 
   private async discardDepartingBlocklyProject(projectPath: string, reconcile = false, recovery?: 'discard' | 'reload'): Promise<boolean> {
+    if (projectPath === this.currentProjectPath && !this.projectDirectoryMatches(projectPath, this.activeProjectDirectory))
+      return this.retireBlocklyEditor(projectPath);
     const discard = recovery && await this.application.prepareBlocklyRecoveryDiscard?.(projectPath, recovery);
     try {
       if (!(await this.retireBlocklyEditor(projectPath))) return false;
@@ -698,6 +706,7 @@ export class ProjectService {
     const context: ProjectService = Object.assign(Object.create(ProjectService.prototype), this);
     Object.assign(context, {
       isCoderProjectContext: true,
+      boardMenuSnapshots: undefined,
       disposeLibraryChanges: undefined,
       currentProjectPathSubject: new BehaviorSubject(path),
       currentPackageData: JSON.parse(this.electronService.readFile(window['path'].join(path, 'package.json'))),
@@ -708,6 +717,8 @@ export class ProjectService {
       stateSubject: new BehaviorSubject('loaded'),
       boardChangeSubject: new Subject<void>(),
       boardConfigUpdatedSubject: new Subject<any>(),
+      cloudBoardHydratedSubject: new Subject<any>(),
+      cloudBoardProjectionRequest: undefined,
       projectOpenTask: null,
     });
     context.currentProjectPath$ = context.currentProjectPathSubject.asObservable();
@@ -716,11 +727,14 @@ export class ProjectService {
     context.syncCurrentBoardConfig = async (session?: ProjectDependencySession) => {
       try {
         if (session) context.assertProjectDependencySession(session);
-        const board = await context.resolveBoardConfigForRuntime();
+        const board = await context.resolveBoardConfigForRuntime(undefined, null);
         await context.loadBoardMenuConfig();
         if (session) context.assertProjectDependencySession(session);
         context.currentBoardConfig = board;
         context.boardConfigUpdatedSubject.next(context.currentBoardConfig);
+        if (context.isCloudBuild()) void context.hydrateCloudBoardAfterOpen(board, () => {
+          if (session) context.assertProjectDependencySession(session);
+        });
         return true;
       } catch (error) {
         if (session) context.assertProjectDependencySession(session);
@@ -806,8 +820,9 @@ export class ProjectService {
     if (this.getProjectMode(path) !== 'coder') throw new Error('请选择 Coder 工程文件夹');
     if (this.coderProjects.some(folder => this.isSameProjectPath(folder.path, path))) return;
     if (window['projectLock']) {
-      const result = await window['projectLock'].tryAcquire(path);
+      const result = await window['projectLock'].tryAcquire(path, { auxiliary: true });
       if (!result.ok) throw new Error(`工程已被其他窗口占用: ${path}`);
+      if (result.attachment) this.backfillProjectCloudIgnore(path, result.attachment);
     }
     this.registerCoderProject(path);
     await this.restoreCoderWorkspaceTabs(path);
@@ -1045,8 +1060,9 @@ export class ProjectService {
       if (this.coderProjects.some(open => this.isSameProjectPath(open.path, project.path))) continue;
       if (!window['fs'].isDirectory(project.path) || this.getProjectMode(project.path) !== 'coder') continue;
       if (window['projectLock']) {
-        const lock = await window['projectLock'].tryAcquire(project.path);
+        const lock = await window['projectLock'].tryAcquire(project.path, { auxiliary: true });
         if (!lock.ok) continue;
+        if (lock.attachment) this.backfillProjectCloudIgnore(project.path, lock.attachment);
       }
       this.coderProjectsSubject.next([...this.coderProjects, this.coderProjectTab(project.path)]);
     }
@@ -1078,6 +1094,7 @@ export class ProjectService {
   private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease;
     startupRestore?: string; startupPreparation?: AbortController; navigation?: ProjectNavigationTransition } | null = null;
   private activeProjectViewReservation?: ProjectViewReservation;
+  private activeProjectDirectory?: ProjectStorageAttachment;
   private projectNavigationIntentRevision = 0;
   private closedRestartSession?: { project: string; sessionId: string };
   private readonly projectLifecycle = new ProjectLifecycleGate();
@@ -1085,9 +1102,10 @@ export class ProjectService {
   private projectCommandStopCloud?: WeakMap<ProjectDependencySession, Promise<void>>;
   private projectCommandStopObservation?: WeakMap<ProjectDependencySession, Promise<boolean>>;
   private boardSwitchLifecycle: { projectPath: string; token: symbol } | null = null;
+  private boardSwitchNotice?: { projectPath: string; messageId: string };
   private loadingBlocklyProjectPath = '';
   private loadedBlocklyProjectPath = '';
-  private blocklyProjectLoadFailure: { path: string; error: string } | null = null;
+  private blocklyProjectLoadFailure: { path: string; error: string; code?: string } | null = null;
   private blocklyLibraryRuntimeRebuildTask: {
     path: string;
     runtimeSignature: string;
@@ -1117,6 +1135,15 @@ export class ProjectService {
   }
 
   set currentProjectPath(path: string) {
+    this.setActiveProjectPath(path, path === this.currentProjectPath ? this.activeProjectDirectory : undefined);
+  }
+
+  private setActiveProjectPath(path: string, attachment?: ProjectStorageAttachment): void {
+    this.activeProjectDirectory = attachment;
+    if (this.boardSwitchNotice && (this.boardSwitchNotice.projectPath !== path || !this.boardSwitchLifecycle)) {
+      this.clearBoardSwitchMessage();
+      this.boardSwitchNotice = undefined;
+    }
     if (path && this.getProjectMode(path) === 'coder') {
       this.registerCoderProject(path);
     }
@@ -1175,7 +1202,7 @@ export class ProjectService {
     this.stateSubject.next('loaded');
   }
 
-  markBlocklyProjectLoadFailed(projectPath: string, error: string): void {
+  markBlocklyProjectLoadFailed(projectPath: string, error: string, code?: string): void {
     if ((!this.isSameProjectPath(projectPath, this.currentProjectPath)
       && !this.isSameProjectPath(projectPath, this.loadingBlocklyProjectPath))
       || this.dependencyLifecycleState?.get(projectPath)?.signal.aborted) return;
@@ -1186,6 +1213,7 @@ export class ProjectService {
     this.blocklyProjectLoadFailure = {
       path: projectPath,
       error: String(error || '未知项目加载错误'),
+      code,
     };
     this.stateSubject.next('error');
   }
@@ -1356,13 +1384,37 @@ export class ProjectService {
   }
 
   /** A delayed UI answer belongs to one activation, not just its reusable path. */
-  captureCurrentProjectGuard(): () => boolean {
+  captureCurrentProjectGuard(requireOriginalDirectory = true): () => boolean {
     const path = this.currentProjectPath;
+    const attachment = this.activeProjectDirectory;
     const session = this.dependencyLifecycleState?.get(path);
     const aborted = session?.signal.aborted;
     return () => this.currentProjectPath === path
+      && (!requireOriginalDirectory || this.projectDirectoryMatches(path, attachment))
       && this.dependencyLifecycleState?.get(path) === session
       && session?.signal.aborted === aborted;
+  }
+
+  private projectDirectoryMatches(path: string, attachment?: ProjectStorageAttachment): boolean {
+    if (!attachment) return true;
+    try { return sameRecoveryAttachment(attachment, window['fs']?.captureProjectAttachment?.(path)); }
+    catch { return false; }
+  }
+
+  private assertProjectDirectory(path: string, attachment?: ProjectStorageAttachment): void {
+    if (!this.projectDirectoryMatches(path, attachment))
+      throw Object.assign(new Error(this.translate.instant('PROJECT.DIRECTORY_REPLACED')),
+        { code: 'PROJECT_VIEW_ATTACHMENT_CHANGED' });
+  }
+
+  private backfillProjectCloudIgnore(projectPath: string, attachment: ProjectStorageAttachment): void {
+    if (!this.projectDirectoryMatches(projectPath, attachment)) return;
+    try { ensureAilyCloudIgnoreFile(projectPath); }
+    catch (error) { console.warn('补齐项目云同步忽略规则失败:', error); }
+  }
+
+  assertActiveProjectDirectory(path = this.currentProjectPath): void {
+    if (path === this.currentProjectPath) this.assertProjectDirectory(path, this.activeProjectDirectory);
   }
 
   assertProjectDependencySession(session: ProjectDependencySession): void {
@@ -1388,9 +1440,15 @@ export class ProjectService {
     return this.dependencyLifecycle.isBusy(projectPath);
   }
 
-  setProjectDependencyResult(session: ProjectDependencySession, ready: boolean): void {
+  setProjectDependencyResult(session: ProjectDependencySession, ready: boolean, cloudPreflightFailed = false): void {
     this.assertProjectDependencySession(session);
-    this.dependencyLifecycle.setResult(session, ready);
+    this.dependencyLifecycle.setResult(session, ready, cloudPreflightFailed);
+  }
+
+  hasCoderCloudPreflightFailure(projectPath: string): boolean {
+    return this.configService.isCoderProduct() && this.isCloudBuild(projectPath)
+      && this.getProjectDependencyStatus(projectPath) === 'error'
+      && this.dependencyLifecycle.hasCloudPreflightFailure(projectPath);
   }
 
   getProjectDependencyStatus(projectPath = this.currentProjectPath) {
@@ -1837,6 +1895,7 @@ export class ProjectService {
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
         coderEntry,
       });
+      ensureAilyCloudIgnoreFile(projectPath);
       if (isCoderTemplate) ensureCoderProjectFile(projectPath);
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
@@ -1872,6 +1931,7 @@ export class ProjectService {
 
       await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
+      ensureAilyCloudIgnoreFile(projectPath);
       if (mode === 'coder') ensureCoderProjectFile(projectPath);
       const created = await this.finishProjectCreation(projectPath, options);
       if (created) this.metrics.record('project_created');
@@ -2033,7 +2093,49 @@ export class ProjectService {
     } finally { lifecycle.release(); }
   }
 
-  // 打开项目
+  async selectAndOpenProject({ defaultPath, beforeOpen, asCopy = false }: {
+    defaultPath?: string; beforeOpen?: () => Promise<boolean>; asCopy?: boolean;
+  } = {}): Promise<boolean> {
+    const current = this.captureCurrentProjectGuard();
+    const revision = this.projectNavigationIntentRevision;
+    const stillCurrent = () => current() && revision === this.projectNavigationIntentRevision;
+    try {
+      const selection = await window['ipcRenderer'].invoke('dialog-select-files', {
+        defaultPath,
+        title: this.translate.instant(asCopy ? 'PROJECT.LOCK_OPEN_COPY' : 'MENU.PROJECT_OPEN'),
+        properties: ['openDirectory'],
+      });
+      const selected = selection?.filePaths?.[0];
+      if (selection?.canceled || !selected || !stillCurrent()) return false;
+      if ((beforeOpen && !await beforeOpen()) || !stillCurrent()) return false;
+      return asCopy ? await this.openProjectCopy(selected, stillCurrent) : await this.projectOpen(selected);
+    } catch (error) {
+      this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + (error instanceof Error ? error.message : String(error)));
+      return false;
+    }
+  }
+
+  private async openProjectCopy(source: string, stillCurrent: () => boolean): Promise<boolean> {
+    let imported: string | undefined;
+    try {
+      const parent = await this.getDefaultProjectParentPath();
+      if (!stillCurrent()) return false;
+      const path = window['path'];
+      const name = path.basename(source)
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 60) || 'project';
+      const destination = path.join(parent, `${name}_${crypto.randomUUID().slice(0, 8)}`);
+      imported = this.importProjectDirectory(source, destination);
+      if (!imported) throw new Error('Project import did not produce a directory.');
+      const opened = stillCurrent() && await this.projectOpen(imported);
+      if (!opened) this.message.info(this.translate.instant('PROJECT.IMPORT_PROJECT_CREATED', { path: imported }));
+      return opened;
+    } catch (error) {
+      if (imported) this.message.info(this.translate.instant('PROJECT.IMPORT_PROJECT_CREATED', { path: imported }));
+      this.message.error(this.translate.instant('PROJECT.IMPORT_PROJECT_FAILED', { error: error instanceof Error ? error.message : String(error) }));
+      return false;
+    }
+  }
+
   async projectOpen(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}) {
     options.createActivation?.assertCurrent();
     options.recoveryReopen?.assertCurrent();
@@ -2090,7 +2192,10 @@ export class ProjectService {
     if (!options.navigation && switchingBlocklyView) {
       options = { ...options, navigation: { requestId: crypto.randomUUID(), transition: new ProjectNavigationTransition() } };
     }
-    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }, startupPreparation?.signal).catch(error => {
+    let duplicateRequested = false;
+    const requestCopy = options.interactive === false || startupRestore || options.createActivation || options.recoveryReopen
+      ? undefined : () => { duplicateRequested = true; };
+    const promise = this.projectOpenInternal(projectPath, options, current => { session = current; }, startupPreparation?.signal, requestCopy).catch(error => {
       if (startupRestore && (error as { code?: string })?.code === 'PROJECT_STARTUP_OPEN_SUPERSEDED') return false;
       if (startupPreparation?.signal.aborted && error === startupPreparation.signal.reason) return false;
       throw error;
@@ -2109,21 +2214,25 @@ export class ProjectService {
       if (!opened) {
         if (session) this.dependencyLifecycle.finishPreparation(session);
       }
-      return opened;
+      if (!duplicateRequested) return opened;
     } catch (error) {
       if (signal?.aborted) throw error;
       if (session) this.dependencyLifecycle.finishPreparation(session);
-      if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return false;
+      const code = (error as { code?: string })?.code;
+      if (code === 'PROJECT_DEPENDENCY_CANCELLED') return false;
       // Router/editor teardown can fail before the new Blockly component exists
       // to report a load failure. Close this load transaction here as well.
       if (this.isSameProjectPath(projectPath, this.loadingBlocklyProjectPath)) {
-        this.markBlocklyProjectLoadFailed(projectPath, error instanceof Error ? error.message : String(error));
+        this.markBlocklyProjectLoadFailed(projectPath, error instanceof Error ? error.message : String(error), code);
       }
-      throw error;
+      if (code !== 'ABS_OPERATION_LOCATION_UNPROVEN' || targetMode !== 'blockly' || !requestCopy) throw error;
+      if (await this.promptProjectLockConflict(true, true, false) !== 'copy') return false;
+      requestCopy();
     } finally {
       signal?.removeEventListener('abort', release);
       release();
     }
+    return this.openProjectCopy(projectPath, () => navigationRevision === this.projectNavigationIntentRevision);
   }
 
   private beginExplicitNavigation(): number {
@@ -2260,6 +2369,7 @@ export class ProjectService {
 
   async acknowledgeBlocklyRecoveryDiscard(path = this.currentProjectPath): Promise<void> {
     if (!path || !this.isSameProjectPath(path, this.currentProjectPath) || this.getProjectMode(path) === 'coder') return;
+    if (!this.projectDirectoryMatches(path, this.activeProjectDirectory)) return;
     await this.application.acknowledgeBlocklyRecoveryDiscard?.(path);
   }
 
@@ -2391,7 +2501,7 @@ export class ProjectService {
   }
 
   private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {},
-    onPreparation?: (session: ProjectDependencySession) => void, startupSignal?: AbortSignal): Promise<boolean> {
+    onPreparation?: (session: ProjectDependencySession) => void, startupSignal?: AbortSignal, requestCopy?: () => void): Promise<boolean> {
     const previousProjectPath = this.currentProjectPath;
     const previousReservation = this.activeProjectViewReservation;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
@@ -2436,7 +2546,8 @@ export class ProjectService {
     if (this.getProjectMode(projectPath) === 'coder') {
       if (startup) return false;
       const reload = activationReason === 'reload' || activationReason === 'chat-tool-reload';
-      if (reload && this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
+      const retained = this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath));
+      if (reload && retained) {
         if (this.getCoderOperation(projectPath)) throw new Error('工程正在编译或上传，请等待完成后重新加载');
         if (activationReason !== 'chat-tool-reload' && options.saveBeforeReload !== false) {
           const saved = await this.application.dispatchProjectSave(projectPath, 15_000);
@@ -2444,46 +2555,43 @@ export class ProjectService {
         }
         await this.stopProjectCommands(projectPath);
       }
-      const retained = this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath));
-      if (!this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
-        if (window['projectLock']) {
-          const lock = await window['projectLock'].tryAcquire(projectPath);
-          if (!lock.ok) {
-            if (options.interactive === false) throw projectViewOpenError(projectPath, lock);
-            this.message.error('工程已被其他窗口占用'); return false;
-          }
-          if (creation) await checkCreation();
-        }
-        try {
+      const view = window['projectLock'];
+      const leavingBlockly = isSwitchingProject && this.getProjectMode(previousProjectPath) === 'blockly';
+      const pending = view ? await view.tryAcquire(projectPath, { provisional: true }) : undefined;
+      if (pending && !pending.ok) {
+        if (options.interactive === false) throw projectViewOpenError(projectPath, pending);
+        await this.resolveProjectLockConflict(projectPath, pending, requestCopy);
+        return false;
+      }
+      let selected = false;
+      let attachment: ProjectStorageAttachment | undefined;
+      try {
+        creation?.assertCurrent();
+        if (!retained) {
           if (findArduinoSketchEntry(projectPath)) prepareArduinoSketchProject(projectPath);
-        } catch (error) {
-          await window['projectLock']?.release(projectPath);
-          throw error;
+          try {
+            ensureCoderProjectFile(projectPath);
+          } catch (error) {
+            // A legacy project can still be opened from its folder if launch file creation fails.
+            console.warn('补齐 Coder 项目入口失败:', error);
+          }
         }
-        try {
-          ensureCoderProjectFile(projectPath);
-        } catch (error) {
-          // A legacy project can still be opened from its folder when the launch file cannot be created.
-          console.warn('补齐 Coder 项目入口失败:', error);
-        }
-      }
-      if (creation) {
-        await checkCreation();
-        creation.beginHandoff();
-      }
-      if (isSwitchingProject && this.getProjectMode(previousProjectPath) === 'blockly') {
-        try {
+        creation?.beginHandoff();
+        if (leavingBlockly) {
           await this.stopProjectCommands(previousProjectPath);
           creation?.assertCurrent();
-          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, options.retainRecovery ? undefined : 'discard'))) {
-            if (!retained) await window['projectLock']?.release(projectPath);
-            return false;
-          }
-        } catch (error) {
-          if (!retained) await window['projectLock']?.release(projectPath);
-          throw error;
+          if (!(await this.discardDepartingBlocklyProject(previousProjectPath, false, options.retainRecovery ? undefined : 'discard'))) return false;
         }
-        await this.releaseProjectViewLock(previousProjectPath, previousReservation);
+        const activeView = view ? await view.tryAcquire(projectPath) : undefined;
+        if (activeView && !activeView.ok) throw projectViewOpenError(projectPath, activeView);
+        attachment = activeView?.attachment;
+        selected = true;
+        if (leavingBlockly) await this.releaseProjectViewLock(previousProjectPath, previousReservation);
+      } finally {
+        if (pending && !pending.alreadyHeld && !selected) {
+          try { await view.release(projectPath, pending.viewToken); }
+          catch (error) { console.warn('project-lock release after Coder activation failed:', error); }
+        }
       }
       if (!retained) {
         this.registerCoderProject(projectPath);
@@ -2506,10 +2614,12 @@ export class ProjectService {
       // of navigation. Angular skips an already-active URL with `false`; that
       // is not a refused project reload. A different route must still navigate.
       const targetRoute = this.router.createUrlTree(['/main/code-editor-pro'], { queryParams: { path: projectPath } });
-      if (this.router.isActive(targetRoute, { paths: 'exact', queryParams: 'exact', fragment: 'ignored', matrixParams: 'ignored' })) {
-        return true;
+      const opened = this.router.isActive(targetRoute, { paths: 'exact', queryParams: 'exact', fragment: 'ignored', matrixParams: 'ignored' })
+        || await this.router.navigate(['/main/code-editor-pro'], { queryParams: { path: projectPath }, replaceUrl: true });
+      if (opened && attachment && this.isSameProjectPath(this.currentProjectPath, projectPath)) {
+        this.backfillProjectCloudIgnore(projectPath, attachment);
       }
-      return this.router.navigate(['/main/code-editor-pro'], { queryParams: { path: projectPath }, replaceUrl: true });
+      return opened;
     }
 
     const originalOpen = this.projectOpenTask;
@@ -2517,10 +2627,13 @@ export class ProjectService {
     const prepareBeforeHandoff = abiIsExist && isSwitchingProject && !creation && !recovery;
     const navigation = prepareBeforeHandoff ? options.navigation?.transition : undefined;
     const rendererGeneration = this.electronService.currentRendererGeneration;
-    const reservation: ProjectViewReservation | undefined = navigation && rendererGeneration > 0 && window['projectLock']?.navigate
+    // A Coder tab remains open while Blockly is selected. Its lease must not participate in the source retirement.
+    const retainedCoderView = this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath));
+    const reservation: ProjectViewReservation | undefined = navigation && !retainedCoderView && rendererGeneration > 0 && window['projectLock']?.navigate
       ? { requestId: options.navigation!.requestId, rendererGeneration, sourceProject: previousProjectPath, projectPath }
       : undefined;
     let promoted = false;
+    let targetDirectory: ProjectStorageAttachment | undefined;
     const sourceView = this.projectViewRevision;
     const assertSourceView = () => {
       navigation?.assertCurrent();
@@ -2528,6 +2641,7 @@ export class ProjectService {
         throw Object.assign(new Error('The original view changed during target preparation.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
     };
     let ownsNewTargetLock = false;
+    let targetViewToken: string | undefined;
     const releasePreparedTargetLock = async () => {
       if (reservation) {
         if (promoted) return;
@@ -2543,7 +2657,7 @@ export class ProjectService {
         || this.projectOpenTask && this.projectOpenTask !== originalOpen
           && (!startup || this.projectOpenTask.startupRestore !== startup)
           && this.isSameProjectPath(projectPath, this.projectOpenTask.path)) return;
-      try { await window['projectLock']?.release(projectPath); }
+      try { await window['projectLock']?.release(projectPath, targetViewToken); }
       catch (error) { console.warn('project-lock release after open preparation:', error); }
     };
     const beginPreparation = () => {
@@ -2555,37 +2669,25 @@ export class ProjectService {
     try {
       if (this.electronService.isElectron && window['projectLock']) {
         const provisional = prepareBeforeHandoff ? { provisional: true } : undefined;
-        const acquire = (force = false) => {
+        const acquire = () => {
           assertSourceView();
           const work = reservation
-            ? window['projectLock'].navigate('reserve', reservation, { force })
-            : window['projectLock'].tryAcquire(projectPath, force ? { ...provisional, force } : provisional);
+            ? window['projectLock'].navigate('reserve', reservation)
+            : window['projectLock'].tryAcquire(projectPath, provisional);
           return reservation ? navigation!.wait(work) : work;
         };
-        let r = await acquire();
+        const r = await acquire();
         if (!r.ok && startup) return false;
         if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
         if (!r.ok && options.interactive === false) throw projectViewOpenError(projectPath, r);
-        if (!r.ok && r.conflict && r.holder) {
-          const action = await this.promptProjectLockConflict(r.holder);
-          if (action === 'cancel') {
-            return false;
-          }
-          if (action === 'focus') {
-            await window['projectLock'].focusProcess(r.holder.pid);
-            return false;
-          }
-          r = await acquire(true);
-          if (!r.ok) {
-            this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
-            return false;
-          }
-        } else if (!r.ok) {
-          this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
+        if (!r.ok) {
+          await this.resolveProjectLockConflict(projectPath, r, requestCopy);
           return false;
         }
+        targetDirectory = r.attachment;
         if (creation || startup || prepareBeforeHandoff) {
           ownsNewTargetLock = !r.alreadyHeld;
+          targetViewToken = r.viewToken;
           try { creation?.assertCurrent(); assertStartup(); }
           catch (error) { if (!prepareBeforeHandoff) await releasePreparedTargetLock(); throw error; }
         }
@@ -2596,6 +2698,7 @@ export class ProjectService {
         const check = () => {
           creation?.assertCurrent();
           assertSourceView();
+          this.assertProjectDirectory(projectPath, targetDirectory);
           this.assertProjectDependencySession(session);
         };
         const abort = () => {
@@ -2677,6 +2780,7 @@ export class ProjectService {
           ? await this.observeProjectViewPromotion(reservation)
           : await window['projectLock'].tryAcquire(projectPath);
         if (!selected.ok || reservation && selected.selected !== true) throw projectViewOpenError(projectPath, selected);
+        this.assertProjectDirectory(projectPath, targetDirectory);
         assertSourceView();
         if (reservation) this.activeProjectViewReservation = reservation;
         promoted = true;
@@ -2718,7 +2822,11 @@ export class ProjectService {
       this.assertProjectDependencySession(session);
     };
     try {
-      const guard = () => { this.assertProjectDependencySession(session); assertStartup(); };
+      const guard = () => {
+        this.assertProjectDirectory(projectPath, targetDirectory);
+        this.assertProjectDependencySession(session);
+        assertStartup();
+      };
       const preparing = () => { guard(); recovery?.assertCurrent(); };
       if (!preparedSession && abiIsExist) {
         preparing();
@@ -2772,7 +2880,8 @@ export class ProjectService {
     }
     if (creation || startup) this.beginBlocklyProjectLoad(projectPath);
     this.closedRestartSession = undefined;
-    this.currentProjectPath = projectPath;
+    this.assertProjectDirectory(projectPath, targetDirectory);
+    this.setActiveProjectPath(projectPath, targetDirectory);
     await options.onViewActivated?.(projectPath, this.projectViewRevision);
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
     this.projectActivationSubject.next({
@@ -2817,6 +2926,9 @@ export class ProjectService {
     }
 
     await this.waitForProjectOpenCompletion(projectPath, session);
+    if (abiIsExist && targetDirectory && this.isSameProjectPath(this.currentProjectPath, projectPath)) {
+      this.backfillProjectCloudIgnore(projectPath, targetDirectory);
+    }
     return true;
   }
 
@@ -2857,7 +2969,7 @@ export class ProjectService {
         }
         const status = this.getBlocklyProjectLoadStatus(projectPath);
         if (state === 'error' && status.error) {
-          finish(new Error(status.error));
+          finish(Object.assign(new Error(status.error), { code: this.blocklyProjectLoadFailure?.code }));
           return;
         }
         if (!status.ready) {
@@ -2940,6 +3052,9 @@ export class ProjectService {
 
   private async saveWithPresentation(path: string, publicationRequest: ProjectSaveRequest | undefined, background: boolean): ReturnType<ProjectService['save']> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
+    try { this.assertActiveProjectDirectory(path); }
+    catch (error) { return { success: false, path, code: (error as { code?: string }).code,
+      error: error instanceof Error ? error.message : String(error) }; }
     if (this.getProjectMode(path) !== 'coder') {
       try { requireProjectProgramPublication(); }
       catch (error) { return { success: false, path, code: (error as any)?.code,
@@ -2990,7 +3105,9 @@ export class ProjectService {
     if (current() && !background) this.stateSubject.next('saving');
     let outcome: Partial<ProjectSaveOutcome> = {};
     try {
+      this.assertActiveProjectDirectory(path);
       if (await this.prepareResolvedLibraryChangesForSave(path) && this.getProjectMode(path) !== 'coder') await this.ensureBlocklyLibraryRuntimeReady(path);
+      this.assertActiveProjectDirectory(path);
       const result = background ? await this.application.dispatchProjectSave(path, 0, request, true)
         : request ? await this.application.dispatchProjectSave(path, 0, request)
         : await this.application.dispatchProjectSave(path, 0);
@@ -2999,7 +3116,7 @@ export class ProjectService {
         typeof result?.code === 'string' ? { code: result.code } : {});
       // Saving an inactive Coder tab is valid. Its acknowledgement must not
       // change a replacement project's status or read that project's manifest.
-      if (current()) {
+      if (current() && this.projectDirectoryMatches(path, this.activeProjectDirectory)) {
         const manifest = await this.getPackageJson();
         if (current()) {
           this.currentPackageData = manifest;
@@ -3379,6 +3496,7 @@ export class ProjectService {
       if (this.currentProjectPath !== sourceProjectPath || projectDataRuntime.getSessionToken() !== session) {
         throw new Error('当前项目会话已切换，请重新执行另存为');
       }
+      this.assertActiveProjectDirectory(sourceProjectPath);
       if (runtimeSnapshot && !this.hasBlocklyRuntimeRecovery(sourceProjectPath)) {
         throw Object.assign(new Error('The retained full runtime snapshot changed; no partial-canvas fallback is allowed.'),
           { code: 'PROJECT_RECOVERY_SOURCE_CHANGED' });
@@ -3755,7 +3873,7 @@ export class ProjectService {
     const existing = attempts.get(session);
     if (existing) return existing;
     const attempt = Promise.resolve().then(async () => {
-      await window['cloudBuild']?.invalidate?.({ projectPath: session.projectPath });
+      await window['cloudBuild']?.invalidate?.({ projectPath: session.projectPath, preserveCompleted: true });
     }).catch(error => { attempts.delete(session); throw error; });
     attempts.set(session, attempt);
     return attempt;
@@ -3856,19 +3974,29 @@ export class ProjectService {
     return this.finishProjectCreation(projectPath, options);
   }
 
-  /** 项目已被其他实例占用时的操作：取消 / 前置其他进程 / 强制打开 */
-  private promptProjectLockConflict(holder: {
-    pid: number;
-    execPath?: string;
-    appVersion?: string;
-  }): Promise<'cancel' | 'focus' | 'force'> {
+  private async resolveProjectLockConflict(projectPath: string, result: ProjectViewLockFailure, requestCopy?: () => void): Promise<void> {
+    if (!isProjectViewConflict(result)) {
+      this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
+      return;
+    }
+    const unknown = result.ownership?.state !== 'active' && result.code !== 'PROJECT_VIEW_OCCUPIED';
+    const canCopy = unknown && !!requestCopy;
+    const focus = unknown ? undefined : result.focus?.viewToken;
+    const action = await this.promptProjectLockConflict(unknown, canCopy, !!focus);
+    if (action === 'copy' && canCopy) requestCopy();
+    if (action === 'focus' && focus) {
+      const focused = await window['projectLock'].focusProcess(projectPath, focus);
+      if (!focused?.ok) this.message.info(this.translate.instant('PROJECT.LOCK_FOCUS_UNAVAILABLE'));
+    }
+  }
+
+  private promptProjectLockConflict(unknown: boolean, canCopy: boolean, canFocus: boolean): Promise<'cancel' | 'focus' | 'copy'> {
     let modalRef: NzModalRef;
     modalRef = this.modal.create({
-      nzTitle: this.translate.instant('PROJECT.LOCK_CONFLICT_TITLE'),
-      nzContent: this.translate.instant('PROJECT.LOCK_CONFLICT_CONTENT', {
-        version: holder.appVersion || '-',
-        pid: String(holder.pid),
-      }),
+      nzTitle: this.translate.instant(unknown ? 'PROJECT.LOCK_UNKNOWN_TITLE' : 'PROJECT.LOCK_CONFLICT_TITLE'),
+      nzContent: this.translate.instant(unknown
+        ? canCopy ? 'PROJECT.LOCK_UNKNOWN_COPY_CONTENT' : 'PROJECT.LOCK_UNKNOWN_CONTENT'
+        : 'PROJECT.LOCK_CONFLICT_MESSAGE'),
       nzMaskClosable: false,
       nzClosable: true,
       nzClassName: 'project-lock-conflict-modal',
@@ -3881,23 +4009,21 @@ export class ProjectService {
           label: this.translate.instant('PROJECT.LOCK_CANCEL'),
           onClick: () => modalRef.close('cancel'),
         },
-        {
+        ...(canFocus ? [{
           label: this.translate.instant('PROJECT.LOCK_FOCUS_OTHER'),
-          type: 'primary',
+          type: 'primary' as const,
           onClick: () => modalRef.close('focus'),
-        },
-        // 不需要强制打开选项
-        // {
-        //   label: this.translate.instant('PROJECT.LOCK_FORCE_OPEN'),
-        //   type: 'primary',
-        //   danger: true,
-        //   onClick: () => modalRef.close('force'),
-        // },
+        }] : []),
+        ...(canCopy ? [{
+          label: this.translate.instant('PROJECT.LOCK_OPEN_COPY'),
+          type: 'primary' as const,
+          onClick: () => modalRef.close('copy'),
+        }] : []),
       ],
     });
     return new Promise((resolve) => {
       modalRef.afterClose.subscribe((result) => {
-        resolve((result as 'cancel' | 'focus' | 'force') || 'cancel');
+        resolve((result as 'cancel' | 'focus' | 'copy') || 'cancel');
       });
     });
   }
@@ -4172,6 +4298,7 @@ export class ProjectService {
     // them from the activation, even when a broken manifest cannot report a mode.
     // A loaded workspace's serialization error still needs the user's decision.
     const path = this.currentProjectPath;
+    this.assertActiveProjectDirectory(path);
     const status = this.getBlocklyProjectLoadStatus(path);
     if (!status.ready && (this.stateSubject.value === 'loading'
       && this.isSameProjectPath(path, this.loadingBlocklyProjectPath)
@@ -4193,12 +4320,14 @@ export class ProjectService {
   }
 
   async setPackageJson(data: any) {
-    if (!this.currentProjectPath) {
+    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard();
+    if (!project) {
       throw new Error('当前项目路径未设置');
     }
 
     // set之前重新获取最新的package.json内容，然后进行合并
-    const currentPackageJson = await this.getPackageJson();
+    const currentPackageJson = await this.getPackageJson(project);
+    if (!current()) throw new Error('Project changed before publishing its configuration.');
     // 对比写入内容和当前内容是否相同，如果相同则不写入
     if (JSON.stringify(currentPackageJson) === JSON.stringify(data)) {
       // console.log('package.json内容未更改，跳过写入');
@@ -4209,13 +4338,12 @@ export class ProjectService {
       data = { ...currentPackageJson, ...data };
     }
 
-    if (this.libraryChanges.has(this.normalizeProjectPath(this.currentProjectPath))) {
-      const staged = await window['libraryDependencies'].patch(this.currentProjectPath, data);
-      this.acceptLibraryStatus(this.currentProjectPath, staged);
+    if (this.libraryChanges.has(this.normalizeProjectPath(project))) {
+      const staged = await window['libraryDependencies'].patch(project, data);
+      this.acceptLibraryStatus(project, staged);
       this.libraryChangesChanged?.next();
       return staged;
     }
-    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard();
     const host = window['libraryDependencies'];
     if (host?.environmentVersion !== 2 || typeof host.configure !== 'function') {
       throw Object.assign(new Error('Project configuration requires the matching dependency publisher; no unchecked write was attempted.'),
@@ -4534,8 +4662,20 @@ export class ProjectService {
     const boardModule = await this.getBoardModule();
     guard();
     if (!boardModule) return 'local';
-    const boardVersion = (await this.getBoardPackageJson(boardModule)).version;
+    const boardPackage = await this.getBoardPackageJson(boardModule);
+    const boardVersion = boardPackage.version;
     guard();
+    // A successful full catalog already established support for this exact installed board.
+    // The new job will still discover live targets before generating code.
+    const known = this.cloudBoardProfileCache;
+    if (refresh && known?.profile.boardModule === boardModule && known.profile.boardVersion === boardVersion) {
+      const board = JSON.parse(this.electronService.readFile(`${projectPath}/node_modules/${boardModule}/board.json`));
+      const digest = await sha256Hex(canonicalCloudJson({ package: boardPackage, board }));
+      guard();
+      const owner = this.dependencyLifecycle.get(projectPath);
+      if (known === this.cloudBoardProfileCache && known.key === this.cloudBoardProfileKey(
+        settingsKey, projectPath, owner, boardModule, boardVersion, digest)) return 'cloud';
+    }
     const cached = this.boardCompileBackends?.get(projectPath);
     if (!refresh && cached?.settingsKey === settingsKey && cached.boardModule === boardModule && cached.boardVersion === boardVersion) {
       if (!cached.cloud) throw this.unsupportedCloudBoard(boardModule, boardVersion);
@@ -4576,11 +4716,21 @@ export class ProjectService {
   }
 
   private cloudBoardProfileCache?: { key: string; profile: CloudBoardProfile };
-  private cloudBoardProfileLookups?: Map<string, Promise<CloudBoardProfile>>;
+  private cloudBoardProfileLookups?: Map<string, {
+    promise: Promise<CloudBoardProfile>;
+    refresh: boolean;
+    followRefresh: (result: Promise<CloudBoardProfile>) => void;
+  }>;
+
+  private cloudBoardProfileKey(settings: string, path: string, session: ProjectDependencySession | undefined,
+    module: string, version: string, digest: string): string {
+    return JSON.stringify([settings, path, session?.projectSessionId, module, version, digest]);
+  }
 
   /** 根据已安装开发板包和原始 board.json 的内容摘要，匹配 Gateway 已注册的精确编译目标。 */
   async getCloudBoardProfile(
-    options: { refresh?: boolean } = {}, session?: ProjectDependencySession,
+    options: { refresh?: boolean; compileAction?: 'compile' | 'analysis'; projection?: Map<string, Promise<CloudBoardProfile>> } = {},
+    session?: ProjectDependencySession,
   ): Promise<CloudBoardProfile> {
     if (!this.isCloudBuild()) throw new Error('Cloud compilation is not selected.');
     const settingsKey = this.getCompileBackendKey();
@@ -4601,7 +4751,7 @@ export class ProjectService {
     guard();
     const boardPackage = await this.getBoardPackageJson(boardModule);
     guard();
-    if (!boardModule || !boardPackage?.version) throw new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'));
+    if (!boardModule || !boardPackage?.version) throw new Error(this.translate.instant('PROJECT.CLOUD_TARGET_LOOKUP_FAILED'));
     const boardVersion = boardPackage.version;
     const boardJsonPath = `${projectPath}/node_modules/${boardModule}/board.json`;
     const board = JSON.parse(this.electronService.readFile(boardJsonPath));
@@ -4609,23 +4759,33 @@ export class ProjectService {
     const originalBoardInput = canonicalCloudJson({ package: boardPackage, board });
     const boardDigest = await sha256Hex(originalBoardInput);
     guard();
-    const key = JSON.stringify([settingsKey, projectPath, ownerSession?.projectSessionId, boardModule, boardVersion, boardDigest]);
-    const cached = this.cloudBoardProfileCache?.key === key ? this.cloudBoardProfileCache.profile : undefined;
-    if (!options.refresh && cached) return cached;
-    const pending = this.cloudBoardProfileLookups ??= new Map();
-    // 菜单、分区工具和编译预检可能同时读取目标，合并相同身份的在途请求。
-    const existing = pending.get(key);
-    if (existing) {
-      const profile = await existing;
-      guard();
-      return profile;
+    const key = this.cloudBoardProfileKey(settingsKey, projectPath, ownerSession, boardModule, boardVersion, boardDigest);
+    const projection = options.projection;
+    if (projection?.size && !projection.has(key)) {
+      throw Object.assign(new Error('Board changed during runtime configuration.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
     }
-    const promise = (async () => {
+    const cached = this.cloudBoardProfileCache?.key === key ? this.cloudBoardProfileCache.profile : undefined;
+    if (!options.refresh && cached && !projection?.has(key)) {
+      projection?.set(key, Promise.resolve(cached));
+      return cached;
+    }
+    const pending = this.cloudBoardProfileLookups ??= new Map();
+    // 菜单与工程后台预取共享同一目标。编译可以发起新的权威查询。
+    const active = pending.get(key);
+    const existing = projection?.get(key) ?? (active && (!options.refresh || active.refresh) ? active.promise : undefined);
+    if (existing) {
+      projection?.set(key, existing);
+      try { return await existing; } finally { guard(); }
+    }
+    let catalogTicket: string | undefined;
+    const lookupResult = (async () => {
       const gateway = window['cloudBuild'];
-      if (!gateway?.targets) throw new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'));
+      if (!gateway?.targets) throw new Error(this.translate.instant('PROJECT.CLOUD_BRIDGE_RESTART_REQUIRED'));
       const settings = getCloudBuildSettings(this.configService?.data);
       const lookup = async (): Promise<CloudBoardProfile | undefined> => {
-        const targets = await gateway.targets({ ...settings, boardModule, boardVersion, boardDigest });
+        const targets = await gateway.targets({ ...settings, boardModule, boardVersion, boardDigest,
+          ...(options.refresh ? { forBuild: true, compileAction: options.compileAction ?? 'compile' } : {}) });
+        if (options.refresh && typeof targets?.catalogTicket === 'string') catalogTicket = targets.catalogTicket;
         guard();
         const currentModule = await this.getBoardModule();
         guard();
@@ -4644,7 +4804,6 @@ export class ProjectService {
         throw Object.assign(new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE')),
           { code: 'CLOUD_TARGET_UNAVAILABLE' });
       }
-      this.cloudBoardProfileCache = { key, profile };
       return profile;
     })().catch(error => {
       guard();
@@ -4654,9 +4813,28 @@ export class ProjectService {
       }
       throw error;
     });
-    pending.set(key, promise);
-    try { return await promise; }
-    finally { if (pending.get(key) === promise) pending.delete(key); }
+    // If a build overtakes a slow menu lookup, existing readers follow the build's
+    // result. A late response from the original lookup cannot restore stale options.
+    let followRefresh!: (result: Promise<CloudBoardProfile>) => void;
+    const promise = new Promise<CloudBoardProfile>((resolve, reject) => {
+      followRefresh = resolve;
+      lookupResult.then(resolve, reject);
+    });
+    const request = { promise, refresh: !!options.refresh, followRefresh };
+    if (options.refresh && cached) this.cloudBoardProfileCache = undefined;
+    pending.set(key, request);
+    active?.followRefresh(promise);
+    projection?.set(key, promise);
+    try {
+      const profile = await promise;
+      guard();
+      if (pending.get(key) !== request) return profile;
+      this.cloudBoardProfileCache = { key, profile };
+      // Only the foreground caller owns this single-use main-process catalog.
+      return catalogTicket ? { ...profile, catalogTicket } : profile;
+    } finally {
+      if (pending.get(key) === request) pending.delete(key);
+    }
   }
 
   /** 为分区管理等功能提供统一的构建属性：本地读取 SDK，云端使用已注册元数据。 */
@@ -4744,31 +4922,92 @@ export class ProjectService {
     }
   }
 
-  async resolveBoardConfigForRuntime(rawBoardJson?: any): Promise<any> {
+  /** A null profile restores package defaults and explicit project choices without network access. */
+  async resolveBoardConfigForRuntime(rawBoardJson?: any, cloudProfile?: CloudBoardProfile | null): Promise<any> {
+    const current = this.captureCurrentProjectGuard();
+    const settingsKey = this.getCompileBackendKey();
     const boardJson = rawBoardJson ?? await this.getBoardJson();
     const resolvedBoardJson = JSON.parse(JSON.stringify(boardJson));
     normalizeBoardMcuDeclaration(resolvedBoardJson);
     const boardModule = this.runtimeBoardModules.get(boardJson);
     if (boardModule) this.runtimeBoardModules.set(resolvedBoardJson, boardModule);
+    // One projection uses the same signed metadata for pins and CDC. A later
+    // menu open or build can retry even if this projection's lookup failed.
+    const projection = new Map<string, Promise<CloudBoardProfile>>();
+    const readProfile = () => cloudProfile ? Promise.resolve(cloudProfile) : this.getCloudBoardProfile({ projection });
     if (!this.isCoderProjectContext) {
-      // The installed board remains immutable. Variant pins are a projection
-      // of the selected project environment, just like CDC runtime ports.
-      const menu = await this.getBoardConfigMenu({ persistDefaults: false }, resolvedBoardJson);
-      const selected = menu.flatMap(item => item.children || []).find(item => item.check && item.extra?.syncPinConfig);
-      if (selected) {
-        const pins = await this.getVariantConfig(selected.extra?.build?.variant || null,
-          selected.extra?.build?.variant_h || 'variant_generic.h');
-        for (const [key, value] of Object.entries(pins || {})) if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
+      const hasPinMenu = this.currentBoardMenuConfig?.some(item =>
+        item.extra?.syncPinConfig || item.children?.some(child => child.extra?.syncPinConfig));
+      if (hasPinMenu) {
+        // Restore an explicitly selected variant from the installed SDK while offline.
+        // A verified cloud profile may later supply different signed defaults.
+        const pinProfile = cloudProfile === null ? null : readProfile;
+        const menu = await this.getBoardConfigMenu({ persistDefaults: false }, resolvedBoardJson, pinProfile);
+        const selected = menu.flatMap(item => item.children || []).find(item => item.check && item.extra?.syncPinConfig);
+        if (selected) {
+          const pins = await this.getVariantConfig(selected.extra?.build?.variant || null,
+            selected.extra?.build?.variant_h || 'variant_generic.h', pinProfile);
+          for (const [key, value] of Object.entries(pins || {})) if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
+        }
       }
       const packageJson = await this.getPackageJson();
       for (const [key, value] of Object.entries(packageJson?.ailyBoardOverrides || {})) {
         if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
       }
     }
-    const cdcEnabled = await this.isCdcOnBootEnabledForProject(resolvedBoardJson);
+    const cdcEnabled = await this.isCdcOnBootEnabledForProject(resolvedBoardJson, undefined, cloudProfile === null ? null : readProfile);
+    if (!current() || settingsKey !== this.getCompileBackendKey()) {
+      throw Object.assign(new Error('Board configuration was replaced.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    }
     // 云目标暂不可用时仍允许打开和编辑工程；CDC 状态未知时保留开发板原始运行端口。
     if (cdcEnabled !== undefined) this.application.applyCdcSerialPortOverrides(resolvedBoardJson, cdcEnabled);
     return resolvedBoardJson;
+  }
+
+  async hydrateCloudBoardAfterOpen(board: any, assertCurrent: () => void,
+    publishWhenIdle?: (publish: () => void) => Promise<void>): Promise<CloudBoardProfile | undefined> {
+    try { return await this.projectCloudBoardProfile(board, assertCurrent, true, publishWhenIdle); }
+    catch {
+      // Opening remains usable offline. The next cloud build reports its own fresh lookup.
+      return undefined;
+    }
+  }
+
+  prepareCloudBoardForBuild(board: any, assertCurrent: () => void): Promise<CloudBoardProfile> {
+    return this.projectCloudBoardProfile(board, assertCurrent, false);
+  }
+
+  private async projectCloudBoardProfile(board: any, assertCurrent: () => void, background: boolean,
+    publishWhenIdle?: (publish: () => void) => Promise<void>): Promise<CloudBoardProfile> {
+    const request = this.cloudBoardProjectionRequest = {};
+    const current = this.captureCurrentProjectGuard();
+    const settings = this.getCompileBackendKey();
+    const check = () => {
+      assertCurrent();
+      if (!current() || settings !== this.getCompileBackendKey() || !this.isCloudBuild()
+        || this.cloudBoardProjectionRequest !== request || this.currentBoardConfig !== board) {
+        throw Object.assign(new Error('Cloud board configuration was replaced.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+      }
+    };
+    check();
+    const profile = await this.getCloudBoardProfile({ refresh: !background });
+    check();
+    const resolved = await this.resolveBoardConfigForRuntime(undefined, profile);
+    check();
+    if (canonicalCloudJson(resolved) !== canonicalCloudJson(board)) {
+      const publish = () => {
+        check();
+        this.currentBoardConfig = resolved;
+        if (this.isCoderProjectContext) this.boardConfigUpdatedSubject.next(resolved);
+        else {
+          window['boardConfig'] = resolved;
+          this.cloudBoardHydratedSubject.next(resolved);
+        }
+      };
+      if (publishWhenIdle) await publishWhenIdle(publish);
+      else publish();
+    }
+    return profile;
   }
 
   async refreshRuntimeBoardConfig(): Promise<any> {
@@ -4782,6 +5021,7 @@ export class ProjectService {
   async isCdcOnBootEnabledForProject(
     rawBoardJson?: any,
     cdcOnBootOption?: string,
+    readProfile: (() => Promise<CloudBoardProfile>) | null = () => this.getCloudBoardProfile(),
   ): Promise<boolean | undefined> {
     try {
       const boardJson = rawBoardJson ?? await this.getBoardJson();
@@ -4805,14 +5045,15 @@ export class ProjectService {
       if (this.isCloudBuild()) {
         if (selectedOption === 'cdc') return true;
         if (selectedOption === 'default' || selectedOption === 'disabled') return false;
+        if (!readProfile) return undefined;
       }
-      const option = selectedOption
-        ?? (this.isCloudBuild() ? getCloudBoardOptions(await this.getCloudBoardProfile())['CDCOnBoot'] : undefined);
+      const profile = this.isCloudBuild() && readProfile ? await readProfile() : undefined;
+      const option = selectedOption ?? (profile ? getCloudBoardOptions(profile)['CDCOnBoot'] : undefined);
       if (!option) {
         return false;
       }
 
-      const rawBoardConfig = await this.getRawBoardsTxtConfig(boardName);
+      const rawBoardConfig = profile ? cloudBoardProperties(profile, boardName) : await this.getRawBoardsTxtConfig(boardName);
       if (!rawBoardConfig) {
         return false;
       }
@@ -4836,9 +5077,9 @@ export class ProjectService {
     return parts[parts.length - 1] || null;
   }
 
-  private async getRawBoardsTxtConfig(boardName: string, optionalSdk = false): Promise<Record<string, string> | null> {
+  private async getRawBoardsTxtConfig(boardName: string, optionalSdk = false, installedOnly = false): Promise<Record<string, string> | null> {
     // 将云端注册属性转成现有 boards.txt 键格式，复用菜单和 CDC 的本地解析逻辑。
-    if (this.isCloudBuild()) return cloudBoardProperties(await this.getCloudBoardProfile(), boardName);
+    if (!installedOnly && this.isCloudBuild()) return cloudBoardProperties(await this.getCloudBoardProfile(), boardName);
     try {
       const sdkPath = await this.getSdkPath({ optional: optionalSdk });
       if (!sdkPath) {
@@ -5121,13 +5362,26 @@ export class ProjectService {
     return options;
   }
 
+  private boardMenuSnapshots?: WeakMap<readonly IMenuItem[], () => boolean>;
+
+  /** Checked synchronously before painting a previously opened menu. */
+  isBoardConfigMenuSnapshotCurrent(rows: readonly IMenuItem[]): boolean {
+    return this.boardMenuSnapshots?.get(rows)?.() ?? false;
+  }
+
   /** Build the current board's configuration menu from its root menu.json. */
-  async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}, runtimeBoard?: any): Promise<IMenuItem[]> {
+  async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}, runtimeBoard?: any,
+    readProfile: (() => Promise<CloudBoardProfile>) | null = () => this.getCloudBoardProfile()): Promise<IMenuItem[]> {
     if (!this.isCoderProjectContext && this.isAilyCodeProject()) {
       const path = this.currentProjectPath;
       const context = this.getCoderProjectContext(path);
       const menu = await context.getBoardConfigMenu(options);
-      if (path === this.currentProjectPath) this.currentPackageData = context.currentPackageData;
+      if (path === this.currentProjectPath) {
+        this.currentPackageData = context.currentPackageData;
+        const key = this.normalizeProjectPath(path);
+        (this.boardMenuSnapshots ??= new WeakMap()).set(menu, () => this.currentProjectPath === path
+          && this.coderProjectContexts.get(key) === context && context.isBoardConfigMenuSnapshotCurrent(menu));
+      }
       return menu;
     }
     // Merely opening Coder's menu must not change its board/source outside the
@@ -5143,12 +5397,16 @@ export class ProjectService {
         throw Object.assign(new Error('Board menu session was replaced.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
       }
     };
+    const board = this.currentBoardConfig;
+    const declaration = this.currentBoardMenuConfig;
+    const cloud = this.isCloudBuild();
+    const language = this.translate.currentLang;
     const menu = this.cloneCurrentBoardMenuConfig();
     let cloudProfile: CloudBoardProfile | undefined;
-    if (this.isCloudBuild()) {
+    if (readProfile && cloud) {
       // 云端元数据补齐 SDK 原本提供的菜单；目标不可用时禁用选项，避免写入未经验证的默认值。
       try {
-        cloudProfile = await this.getCloudBoardProfile();
+        cloudProfile = await readProfile();
         assertCurrent();
         for (const [key, declaration] of Object.entries(cloudProfile.metadata.boardOptions)) {
           if (!menu.some(item => item.key === key)) menu.push({
@@ -5156,14 +5414,31 @@ export class ProjectService {
           });
         }
       } catch (error) {
-        if ((error as any)?.code === 'PROJECT_DEPENDENCY_CANCELLED' || options.requireCloudTarget) throw error;
-        return [{ name: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', disabled: true,
-          tooltip: this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'), icon: 'fa-light fa-triangle-exclamation' },
+        const code = (error as { code?: string })?.code;
+        if (code === 'PROJECT_DEPENDENCY_CANCELLED' || options.requireCloudTarget) throw error;
+        const label = isUnsupportedCloudBuild(error) ? 'PROJECT.CLOUD_TARGET_UNAVAILABLE'
+          : code === 'CLOUD_BOARD_OFFLINE' ? 'PROJECT.CLOUD_BOARD_OFFLINE' : 'PROJECT.CLOUD_TARGET_LOOKUP_FAILED';
+        return [{ name: label, type: 'board-config-unavailable', disabled: true,
+          tooltip: this.translate.instant(label), icon: 'fa-light fa-triangle-exclamation' },
           ...menu.map(item => ({ ...item, disabled: true }))];
       }
     }
+    const profileIsCurrent = () => {
+      const live = this.cloudBoardProfileCache?.profile;
+      return !cloud || !!live && !!cloudProfile
+        && live.profileDigest === cloudProfile.profileDigest && live.boardDigest === cloudProfile.boardDigest;
+    };
+    const checkedProfile = cloud && profileIsCurrent();
+    const remember = (selection: string) => {
+      (this.boardMenuSnapshots ??= new WeakMap()).set(menu, () => projectCurrent()
+        && settingsKey === this.getCompileBackendKey() && cloud === this.isCloudBuild()
+        && board === this.currentBoardConfig && declaration === this.currentBoardMenuConfig
+        && language === this.translate.currentLang && profileIsCurrent()
+        && selection === canonicalCloudJson(this.currentPackageData?.projectConfig ?? {}));
+    };
     if (menu.length === 0) {
-      return [];
+      remember(canonicalCloudJson(this.currentPackageData?.projectConfig ?? {}));
+      return menu;
     }
 
     let packageJson: any = {};
@@ -5183,7 +5458,7 @@ export class ProjectService {
     assertCurrent();
     const hasSdk = Object.keys(boardDependencies).some(name => name.startsWith('@aily-project/sdk-'));
     const boardConfig = boardName && cloudProfile ? cloudBoardProperties(cloudProfile, boardName)
-      : boardName && hasSdk ? await this.getRawBoardsTxtConfig(boardName, true) : null;
+      : boardName && hasSdk ? await this.getRawBoardsTxtConfig(boardName, true, readProfile === null) : null;
     assertCurrent();
     const sdkUnavailable = !cloudProfile && hasSdk && !boardConfig;
     persistDefaults = persistDefaults && !sdkUnavailable;
@@ -5197,7 +5472,7 @@ export class ProjectService {
       }
       if (cloudProfile && !cloudProfile.metadata.boardOptions[menuItem.key]) {
         menuItem.disabled = true;
-        menuItem.tooltip = this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+        menuItem.tooltip = this.translate.instant('PROJECT.CLOUD_OPTION_UNAVAILABLE');
         continue;
       }
 
@@ -5317,13 +5592,17 @@ export class ProjectService {
 
     if (sdkUnavailable) {
       menu.unshift({
-        name: 'PROJECT.SDK_CONFIG_NOT_READY',
+        name: 'PROJECT.SDK_CONFIG_NOT_READY', type: 'board-config-unavailable',
         tooltip: this.translate.instant('PROJECT.SDK_CONFIG_NOT_READY'),
         icon: 'fa-light fa-triangle-exclamation',
         disabled: true,
       });
     }
 
+    if (checkedProfile && !profileIsCurrent()) {
+      throw Object.assign(new Error('Cloud board options changed while loading the menu.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    }
+    if (!sdkUnavailable) remember(canonicalCloudJson(currentProjectConfig));
     return menu;
   }
 
@@ -5447,10 +5726,11 @@ export class ProjectService {
   }
 
   // 根据传入的引脚信息解析引脚配置 如STM32F1xx/F100C(4-6)T
-  async getVariantConfig(variant: string, variant_h: string) {
-    if (this.isCloudBuild()) {
+  async getVariantConfig(variant: string, variant_h: string,
+    readProfile: (() => Promise<CloudBoardProfile>) | null = () => this.getCloudBoardProfile()) {
+    if (readProfile && this.isCloudBuild()) {
       // 云端返回已注册的变体引脚，避免为了读取引脚定义而下载整个 SDK。
-      const metadata = (await this.getCloudBoardProfile()).metadata;
+      const metadata = (await readProfile()).metadata;
       const pins = metadata.variants?.[`${variant}/${variant_h}`];
       if (!pins) throw Object.assign(new Error('Cloud target does not provide this board variant.'), { code: 'CLOUD_TARGET_UNAVAILABLE' });
       return JSON.parse(JSON.stringify(pins));
@@ -5621,6 +5901,14 @@ export class ProjectService {
     }
   }
 
+  private clearBoardSwitchMessage(): void {
+    const notice = this.boardSwitchNotice;
+    if (notice?.messageId) {
+      this.message.remove(notice.messageId);
+      notice.messageId = '';
+    }
+  }
+
   async changeBoard(boardInfo: {
     name: string;
     version: string;
@@ -5635,12 +5923,15 @@ export class ProjectService {
     const lifecycle = this.acquireProjectLifecycle([projectPath]);
     this.boardSwitchLifecycle = { projectPath, token: lifecycle.token };
     this.isBoardSwitchInProgress = true;
+    this.clearBoardSwitchMessage();
+    const notice = this.boardSwitchNotice = { projectPath, messageId: '' };
     let reloadPromise: Promise<void> | null = null;
     let nativePublication: Record<string, unknown> | undefined;
     try {
       if (!this.currentProjectPath) {
         throw new Error('当前项目路径未设置');
       }
+      notice.messageId = this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD'), { nzDuration: 0 }).messageId;
       const currentPackageJson = await this.getPackageJson();
       assertCurrentProject();
       const currentProjectMode = normalizeProjectMode(currentPackageJson) || 'arduino';
@@ -5662,13 +5953,12 @@ export class ProjectService {
           );
         }
       }
-      // 0. 保存当前项目
+      // The board-switch notice also covers Coder's required pre-save.
       if (isAilyCode) {
-        const saved = await this.save();
+        const saved = await this.saveInBackground(projectPath);
         if (!saved.success) throw new Error(`切换开发板前保存项目失败：${saved.error || '未确认保存完成'}`);
       }
       assertCurrentProject();
-      this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD'), { nzDuration: 5000 });
 
       // 记录开发板使用次数
       this.configService.recordBoardUsage(normalizedBoardInfo.name);
@@ -5787,12 +6077,21 @@ export class ProjectService {
       assertCurrentProject();
 
       this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.BOARD_SWITCH_COMPLETE') });
-      this.message.success(this.translate.instant('PROJECT.BOARD_SWITCH_SUCCESS'), { nzDuration: 3000 });
+      if (this.boardSwitchNotice === notice) {
+        this.clearBoardSwitchMessage();
+        notice.messageId = this.message.success(this.translate.instant('PROJECT.BOARD_SWITCH_SUCCESS'),
+          { nzDuration: 4000, nzAnimate: false }).messageId;
+      }
       return nativePublication;
     } catch (error) {
       this.rejectBoardSwitchReload(error);
       console.error('切换开发板失败:', error);
-      this.message.error(this.translate.instant('PROJECT.BOARD_SWITCH_FAILED') + error.message);
+      if (this.boardSwitchNotice === notice) {
+        this.clearBoardSwitchMessage();
+        if (this.currentProjectPath === projectPath) {
+          notice.messageId = this.message.error(this.translate.instant('PROJECT.BOARD_SWITCH_FAILED') + error.message).messageId;
+        }
+      }
       throw error;
     } finally {
       this.isBoardSwitchInProgress = false;

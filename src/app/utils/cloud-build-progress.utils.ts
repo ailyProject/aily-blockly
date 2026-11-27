@@ -37,13 +37,57 @@ const KNOWN_CLOUD_WORKER_FAILURES = new Set([
   'CLOUD_BOARD_OFFLINE', 'NODE_CAPACITY_EXCEEDED', 'node_restarted', 'offer_lost', 'task_missing', 'worker_stopped',
 ]);
 const GATEWAY_SERVER_FAILURES = new Set(['GATEWAY_HTTP_ERROR', 'GATEWAY_ERROR', 'internal_error', 'gateway_closing']);
+const UNSUPPORTED_CLOUD_BUILD_CODES = new Set([
+  'CLOUD_BOARD_NOT_ENABLED', 'CLOUD_BOARD_UNSUPPORTED', 'CLOUD_TARGET_UNAVAILABLE',
+  'CLOUD_COMPILE_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED',
+]);
+
+const confirmedCoderCloudPreflight = Symbol('confirmedCoderCloudPreflight');
+
+type CloudBuildFault = {
+  code?: string;
+  ciResourceReason?: string;
+  httpStatus?: number;
+  cleanupConfirmed?: boolean;
+  remoteCleanupConfirmed?: boolean;
+  [confirmedCoderCloudPreflight]?: true;
+};
+
+export function isUnsupportedCloudBuild(error: unknown): boolean {
+  return UNSUPPORTED_CLOUD_BUILD_CODES.has((error as CloudBuildFault | undefined)?.code ?? '');
+}
+
+function cloudBuildCleanupAllowsRetry(fault: CloudBuildFault | undefined): boolean {
+  return fault?.cleanupConfirmed !== false && fault?.remoteCleanupConfirmed !== false;
+}
+
+export function isCoderCloudPreflightFailure(error: unknown): boolean {
+  const fault = error as CloudBuildFault | undefined;
+  return cloudBuildCleanupAllowsRetry(fault)
+    && (fault?.code === 'CLOUD_BOARD_UNSUPPORTED' || fault?.code === 'CLOUD_TARGET_UNAVAILABLE');
+}
+
+/** The live Coder dependency check, rather than an external error field, authorizes this case. */
+export function confirmCoderCloudPreflightFailure(error: unknown): unknown {
+  if (!isCoderCloudPreflightFailure(error)) return error;
+  return Object.assign(new Error(error instanceof Error ? error.message : String(error)), error,
+    { [confirmedCoderCloudPreflight]: true });
+}
 
 export function canOfferLocalBuildFallback(error: unknown): boolean {
-  const fault = error as { code?: string; httpStatus?: number; cleanupConfirmed?: boolean; remoteCleanupConfirmed?: boolean } | undefined;
-  if (!fault?.code || fault.cleanupConfirmed === false || fault.remoteCleanupConfirmed === false) return false;
+  const fault = error as CloudBuildFault | undefined;
+  if (!fault?.code || !cloudBuildCleanupAllowsRetry(fault)) return false;
   return fault.code === 'CLOUD_TARGET_UNAVAILABLE'
+    || (fault.code === 'CLOUD_BOARD_UNSUPPORTED' && fault[confirmedCoderCloudPreflight] === true)
+    || (fault.code === 'CI_RESOURCE_UNSUPPORTED' && fault.ciResourceReason === 'sdk-toolchain-unsupported')
     || KNOWN_CLOUD_WORKER_FAILURES.has(fault.code)
     || (GATEWAY_SERVER_FAILURES.has(fault.code) && typeof fault.httpStatus === 'number' && [500, 502, 503, 504].includes(fault.httpStatus));
+}
+
+/** Desktop retries also cover unsupported configurations before the local compiler starts. */
+export function canRetryCloudBuildLocally(error: unknown): boolean {
+  return canOfferLocalBuildFallback(error) || (isUnsupportedCloudBuild(error)
+    && cloudBuildCleanupAllowsRetry(error as CloudBuildFault));
 }
 
 interface CloudBuildRunResult {
@@ -62,7 +106,7 @@ interface CloudBuildProgressBridge {
   preparationRequirements?: (request: { requestId: string; [option: string]: unknown }) => Promise<Array<{ name: string; version: string; installed: boolean }>>;
   run: (request: { requestId: string; [option: string]: unknown }) => Promise<CloudBuildRunResult>;
   completeCIToolPreparation?: (request: { requestId: string; nonce: string; error?: string }) => Promise<unknown>;
-  cancel: (request: { requestId: string }) => unknown;
+  cancel: (request: { requestId: string; discardCompletedArtifact?: true }) => unknown;
   onProgress: (listener: (event: CloudBuildProgressEvent) => void) => (() => void) | void;
 }
 
@@ -238,7 +282,7 @@ export async function runCloudBuildWithProgress(
     callbacks.localSwitch?.(() => {
       if (settled || switching || !callbacks.isCurrent()) return false;
       switching = true;
-      cancellation = Promise.resolve().then(() => bridge.cancel({ requestId: request.requestId }))
+      cancellation = Promise.resolve().then(() => bridge.cancel({ requestId: request.requestId, discardCompletedArtifact: true }))
         .then(() => ({}), error => ({ error }));
       return true;
     });

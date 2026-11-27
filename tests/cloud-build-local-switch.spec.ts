@@ -1,6 +1,6 @@
 import { Subject } from 'rxjs';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../src/app/utils/local-build-switch.utils';
-import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, canRetryCloudBuildLocally, CLOUD_BUILD_LOCAL_REQUESTED, isUnsupportedCloudBuild, runCloudBuildWithProgress } from '../src/app/utils/cloud-build-progress.utils';
 import { ProjectService } from '../src/app/services/domains/project/project.service';
 
 function deferred<T>() {
@@ -34,6 +34,51 @@ describe('cloud build failures eligible for local fallback', () => {
       new Error('HTTP 503'),
     ]) expect(canOfferLocalBuildFallback(fault)).withContext(JSON.stringify(fault)).toBeFalse();
   });
+
+  it('keeps unmarked unsupported targets out of AI fallback while offering a manual local action', () => {
+    for (const code of ['CLOUD_BOARD_NOT_ENABLED', 'CLOUD_BOARD_UNSUPPORTED', 'CLOUD_TARGET_UNAVAILABLE', 'CLOUD_COMPILE_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED']) {
+      expect(isUnsupportedCloudBuild({ code })).withContext(code).toBeTrue();
+      expect(canRetryCloudBuildLocally({ code })).withContext(code).toBeTrue();
+      expect(canOfferLocalBuildFallback({ code })).withContext(code).toBe(code === 'CLOUD_TARGET_UNAVAILABLE');
+      expect(canRetryCloudBuildLocally({ code, cleanupConfirmed: false })).withContext(code).toBeFalse();
+      expect(canRetryCloudBuildLocally({ code, remoteCleanupConfirmed: false })).withContext(code).toBeFalse();
+    }
+  });
+
+  it('limits new AI fallback to the exact native CI SDK or citool compatibility refusal', () => {
+    const compatibility = { code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported' };
+    expect(canOfferLocalBuildFallback(compatibility)).toBeTrue();
+    expect(canOfferLocalBuildFallback({ ...compatibility, ciResourceReason: 'linked-input-mismatch' })).toBeFalse();
+    expect(canOfferLocalBuildFallback({ ...compatibility, code: 'COMPILE_ERROR' })).toBeFalse();
+    expect(canOfferLocalBuildFallback({ ...compatibility, cleanupConfirmed: false })).toBeFalse();
+    expect(canOfferLocalBuildFallback({ ...compatibility, remoteCleanupConfirmed: false })).toBeFalse();
+  });
+
+  it('retains the native CI compatibility reason without calling the cloud compiler', async () => {
+    const rejection = Object.assign(new Error('Unsupported CI SDK version'), {
+      code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported',
+    });
+    const bridge = { preparationRequirements: jasmine.createSpy('requirements').and.rejectWith(rejection),
+      run: jasmine.createSpy('run'), onProgress: () => () => {}, cancel: jasmine.createSpy('cancel') };
+    const failed = await runCloudBuildWithProgress({ requestId: 'ci-unsupported' }, bridge, {
+      isCurrent: () => true, log: () => {}, progress: () => {},
+    }).catch(error => error);
+    expect(failed.code).toBe(rejection.code);
+    expect(failed.ciResourceReason).toBe(rejection.ciResourceReason);
+    expect(canOfferLocalBuildFallback(failed)).toBeTrue();
+    expect(bridge.run).not.toHaveBeenCalled();
+    expect(bridge.cancel).not.toHaveBeenCalled();
+  });
+
+  it('keeps temporary failures out of the unsupported summary', () => {
+    const offline = { code: 'CLOUD_BOARD_OFFLINE' };
+    expect(isUnsupportedCloudBuild(offline)).toBeFalse();
+    expect(canRetryCloudBuildLocally(offline)).toBeTrue();
+    for (const code of ['GATEWAY_TIMEOUT', 'AUTH_TOKEN_INVALID', 'CI_RESOURCE_PREPARATION_FAILED', 'PROTOCOL_UNSUPPORTED', 'BUILD_SOURCE_STALE', 'TARGET_UNSUPPORTED']) {
+      expect(isUnsupportedCloudBuild({ code })).withContext(code).toBeFalse();
+      expect(canRetryCloudBuildLocally({ code })).withContext(code).toBeFalse();
+    }
+  });
 });
 
 describe('switching a running cloud build to local', () => {
@@ -59,7 +104,7 @@ describe('switching a running cloud build to local', () => {
     const f = await fixture();
     expect(f.switch()).toBeTrue(); expect(f.switch()).toBeFalse();
     await Promise.resolve();
-    expect(f.bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'owned' });
+    expect(f.bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'owned', discardCompletedArtifact: true });
     f[first].resolve(first === 'run' ? { success: true } : true);
     for (let n = 0; n < 5; n++) await Promise.resolve();
     expect(f.settled()).toBeFalse();
@@ -122,7 +167,7 @@ describe('switching before the cloud request is submitted', () => {
     requirements.resolve([]);
     expect((await result).code).toBe(invalidated ? 'BUILD_SOURCE_STALE' : CLOUD_BUILD_LOCAL_REQUESTED);
     expect(bridge.run).not.toHaveBeenCalled();
-    expect(bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'preparing' });
+    expect(bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'preparing', discardCompletedArtifact: true });
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(requestSwitch()).toBeFalse();
   });

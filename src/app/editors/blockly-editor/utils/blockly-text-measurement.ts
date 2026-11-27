@@ -6,8 +6,8 @@ const standardFields = new Set<Function>([
 ]);
 
 /** Prime the existing, synchronous Blockly width cache before renderers start
- * interleaving SVG writes with computed-style reads. Measure each real field's
- * font; never assume that themes, CSS overrides or different fields share it.
+ * interleaving SVG writes with computed-style reads. Use the first real field
+ * for each key, matching the bundled Blockly text width cache.
  * Custom renderers/field subclasses retain their own measurement path.
  * Call only inside startTextWidthCache/stopTextWidthCache.
  */
@@ -31,19 +31,22 @@ export function primeBlocklyTextWidths(workspace: Blockly.WorkspaceSvg): void {
   }
   // Snapshot all font values before measuring. getComputedStyle returns a live
   // object, and the canvas helper's first call itself inserts a DOM element.
-  const measurements = fields.map(({ field, text }) => {
-    const style = getComputedStyle(text);
+  const measurements = new Map<string, {
+    content: string; className: string; size: string; weight: string; family: string;
+  }>();
+  for (const { field, text } of fields) {
     const display = (field as any).getDisplayText_() as string;
     // Text dropdown arrows are part of the measured <text>; SVG arrows are not.
     const arrow = field instanceof Blockly.FieldDropdown ? (field as any).arrow?.textContent || '' : '';
-    return {
-      content: field.getSourceBlock()?.RTL ? arrow + display : display + arrow,
-      className: text.getAttribute('class') || '',
-      size: style.fontSize, weight: style.fontWeight, family: style.fontFamily,
-    };
-  });
+    const content = field.getSourceBlock()?.RTL ? arrow + display : display + arrow;
+    const className = text.getAttribute('class') || '';
+    const key = content + '\n' + className;
+    if (measurements.has(key)) continue;
+    const style = getComputedStyle(text);
+    measurements.set(key, { content, className, size: style.fontSize, weight: style.fontWeight, family: style.fontFamily });
+  }
   const probe = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-  for (const measurement of measurements) {
+  for (const measurement of measurements.values()) {
     probe.textContent = measurement.content;
     probe.setAttribute('class', measurement.className);
     Blockly.utils.dom.getFastTextWidthWithSizeString(probe, measurement.size, measurement.weight, measurement.family);

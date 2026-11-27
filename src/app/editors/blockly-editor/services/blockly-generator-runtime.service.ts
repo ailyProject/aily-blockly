@@ -8,6 +8,7 @@ import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import type { NativeCandidateBlock, NativeCandidateOptions } from './blockly-native-candidate-protocol';
 import * as Blockly from 'blockly';
+import { preserveLegacySerialChoices } from './blockly-board-dropdowns';
 import { normalizeLegacyVariableToolboxSource } from '../utils/blockly-legacy-library-compat';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
@@ -364,6 +365,9 @@ export class BlocklyGeneratorRuntimeService {
       .map(String)
       .filter((name) => !globalsBefore.has(name));
     const result = this.describeLoadedGenerator(session, filePath, globalNames);
+    if (globalNames.includes('generateSerialPortOptionsWithCustom') && globalNames.includes('updateSerialCustomPorts')) {
+      preserveLegacySerialChoices(session.realmWindow, session.context.getWorkspace);
+    }
     result.registeredBlockTypes = Object.keys(session.generator.forBlock)
       .filter(type => session.generator.forBlock[type] !== previousHandlers[type]);
 

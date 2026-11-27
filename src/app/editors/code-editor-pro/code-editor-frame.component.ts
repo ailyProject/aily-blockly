@@ -28,7 +28,7 @@ import { CodeSuggestionHostBridgeService } from './services/code-suggestion-host
 import { NpmService } from '@domain/dependencies/public-api';
 import { resolveActualBuildOutputs, type BuildArtifactV1 } from '../../utils/builder.utils';
 import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-packages.utils';
-import { UiService } from '@core/app-shell/public-api';
+import { UiService, ProjectSaveMessageService, type ProjectSaveMessage } from '@core/app-shell/public-api';
 import { AiCoderDiffBridgeService } from '@integration/automation/public-api';
 import {
   ChildToolHostInfo,
@@ -180,8 +180,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   @Input({ required: true }) projectPath = '';
   @Input() active = false;
   coderFrameProjectPath = '';
+  private shortcutSave?: { notice?: ProjectSaveMessage };
 
   ngOnChanges(changes: SimpleChanges): void {
+    if (changes['active'] && !this.active) this.clearShortcutSaveMessage();
     if (changes['active'] && this.active) {
       this.aiCoderDiffBridge.setWorkspaceRoot(this.projectPath);
       this.aiCoderDiffBridge.registerEmbed(this.coderEmbedFrame?.nativeElement?.contentWindow ?? null);
@@ -317,6 +319,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     private readonly codeSuggestionHostBridge: CodeSuggestionHostBridgeService,
     private readonly coderRuntime: CoderProjectRuntimeService,
     private readonly boardAuthPrompt: BoardAuthPromptService,
+    private readonly projectSaveMessages: ProjectSaveMessageService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -563,6 +566,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   ngOnDestroy(): void {
     this.destroyed = true;
+    this.clearShortcutSaveMessage();
     this.clearCoderEmbedLoadingTimers();
     this.proProject.unregisterPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
     this.unregisterCoderEditorUpdateClient?.();
@@ -942,6 +946,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    * iframe 每次加载完成后向 aily-coder-editor 同步宿主上下文（构建目录等），避免依赖 ProjectService 竞态。
    */
   onCoderEmbedFrameLoad(): void {
+    this.clearShortcutSaveMessage();
     this.coderLayout.reset(this.projectPath);
     this.coderInitialContextFrame = null;
     this.coderInitialContextRoot = '';
@@ -979,6 +984,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private beginCoderEmbedLoading(): void {
+    this.clearShortcutSaveMessage();
     if (this.coderRuntime && this.projectPath) this.coderRuntime.getSession(this.projectPath).editorReady = false;
     this.clearCoderEmbedLoadingTimers();
     this.detachCoderEmbedFrame();
@@ -2217,11 +2223,37 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.message.error(`${libraryName} ${operation}: ${readableError}`);
   }
 
+  private clearShortcutSaveMessage(): void {
+    if (this.shortcutSave?.notice) this.projectSaveMessages.clear(this.shortcutSave.notice);
+    this.shortcutSave = undefined;
+  }
+
+  private async saveFromEditorShortcut(source: MessageEventSource | null): Promise<void> {
+    const project = this.projectPath, root = this.coderFrameProjectPath;
+    const session = this.dependencySession;
+    const current = () => this.coderEmbedFrameReady && this.projectPath === project
+      && source === this.coderEmbedFrame?.nativeElement?.contentWindow
+      && session === this.dependencySession && this.isCurrentCoderWorkspace(root, session);
+    if (!source || !project || !root || root !== (window['path']?.resolve?.(project) ?? project) || !current()) return;
+
+    this.clearShortcutSaveMessage();
+    const save = this.shortcutSave = { notice: this.active ? this.projectSaveMessages.saving(project) : undefined };
+    let failure: string | undefined;
+    try { await this.proProject.saveAll(project); }
+    catch (error) { failure = error instanceof Error ? error.message : String(error); }
+    if (this.shortcutSave !== save) return;
+    if (!current() || (save.notice && !this.active)) { this.clearShortcutSaveMessage(); return; }
+    if (failure !== undefined) {
+      if (!save.notice || this.projectSaveMessages.clear(save.notice)) this.message.error(failure);
+      this.shortcutSave = undefined;
+    } else if (save.notice) {
+      save.notice = this.projectSaveMessages.saved(project, save.notice);
+    }
+  }
+
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
     if (ev.data?.channel === 'aily-coder-editor-project-save') {
-      if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
-      try { await this.proProject.saveAll(this.projectPath); }
-      catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); }
+      await this.saveFromEditorShortcut(ev.source);
       return;
     }
     if (ev.data?.channel === CODER_SIDEBAR_STATE_CHANNEL) {

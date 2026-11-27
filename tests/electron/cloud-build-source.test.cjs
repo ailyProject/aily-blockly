@@ -160,6 +160,50 @@ test('warm cloud reuse binds a new request and current ABI without overwriting t
   assert.deepEqual(fs.readFileSync(first.buildSource.metadataPath), original);
 });
 
+test('upload reuses a signed Blockly build after an equivalent generator refresh', async t => {
+  const f = fixture(t);
+  f.config.isolatedCloudBuild = true;
+  f.config.generatedArtifacts = [{ fileName: 'variables_main-12345678.h', content: '#define VALUE 1' }];
+  f.capture();
+  const original = f.config.sourceCapture;
+  const result = await f.run();
+  const sourceReceipt = fs.readFileSync(result.buildSource.metadataPath);
+  const firmware = path.join(result.artifactPath, 'sketch.bin');
+  const modified = fs.statSync(firmware).mtimeMs;
+
+  // An upload needs a new, live capture before accepting an equivalent runtime.
+  f.workspace.runtimeRevision++;
+  f.capture();
+  await assert.rejects(f.broker.acquireCurrentArtifact(f.sender, f.root), { code: 'BUILD_SOURCE_STALE' });
+  assert.equal(await f.broker.reusable(f.sender, f.config), true);
+  assert.equal(await f.broker.artifactPath(f.sender, f.root), result.artifactPath);
+  const upload = await f.broker.acquireCurrentArtifact(f.sender, f.root);
+  try {
+    assert.deepEqual(upload.record.config.sourceCapture, original);
+    assert.equal(upload.identity.inputDigest, result.inputDigest);
+    await upload.assertCurrent();
+
+    f.workspace.runtimeRevision++;
+    f.capture();
+    await assert.rejects(upload.assertCurrent(), { code: 'BUILD_SOURCE_STALE', sourceReason: 'generator' });
+  } finally {
+    upload.release();
+  }
+
+  // An edited program or changed generated header must not inherit upload authority.
+  f.workspace.documentText = '{"pages":["edited native source"]}';
+  f.workspace.revision++;
+  f.capture();
+  assert.equal(await f.broker.reusable(f.sender, f.config), false);
+  f.workspace.documentText = '{"pages":["native-source"]}';
+  f.config.generatedArtifacts = [{ fileName: 'variables_main-12345678.h', content: '#define VALUE 2' }];
+  f.capture();
+  assert.equal(await f.broker.reusable(f.sender, f.config), false);
+  assert.equal(f.jobs, 1);
+  assert.equal(fs.statSync(firmware).mtimeMs, modified);
+  assert.deepEqual(fs.readFileSync(result.buildSource.metadataPath), sourceReceipt);
+});
+
 test('isolated cloud publication, reuse and upload keep the protected local cache untouched', async t => {
   const f = fixture(t), owner = acquireBuildWorkspace(f.root, 'compile');
   try {

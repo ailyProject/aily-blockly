@@ -7,6 +7,7 @@ const { createRequire } = require('node:module');
 const { createProjectRecoveryReceipts } = require('../../electron/project-recovery-receipts');
 const { readRepairBootstrap, codeIdentity, rendererOverride, shutdownRepairEnvironment, verifyFork } = require('../../electron/project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('../../electron/project-repair-lineage');
+const { tryAcquireFileLock } = require('../../child/scripts/native-file-lock');
 const fixture = require('./fixtures/project-repair-environment.cjs');
 const hash = text => 'sha256:' + createHash('sha256').update(text).digest('hex');
 const identityParams = env => ({ version: 2, project: env.project, environmentId: env.environmentId, requestId: env.requestId,
@@ -364,7 +365,7 @@ test('a normally exited child can resume one new epoch without altering old reco
 test('abandoned or active writer records are reported exactly and are never removed to restart a child', async t => {
   const f = fixture(t); await f.controller.ensure();
   const file = path.join(f.target, '.aily', 'project-files.write.lock'); fs.mkdirSync(path.dirname(file), { recursive: true });
-  const bytes = JSON.stringify({ pid: 200, token: 'keep-the-real-owner' }); fs.writeFileSync(file, bytes);
+  const bytes = JSON.stringify({ pid: process.pid, token: 'keep-the-real-owner' }); fs.writeFileSync(file, bytes);
   const controller = createRepairContinuationController({ ...f.opts, processState: pid => pid !== 200 });
   const result = await controller.resume({ ...f.resume, resumeRequestId: 'blocked-writer-resume' });
   assert.equal(result.code, 'PROJECT_REPAIR_TARGET_BUSY'); assert.equal(result.details.resource, 'project-files.write.lock');
@@ -399,6 +400,17 @@ test('repair view lock recheck never forces another owner or permits opening the
   assert.equal(checkRepairProjectOpen(record, f.target, 200).code, 'PROJECT_REPAIR_TARGET_BUSY');
   assert.equal(fs.readFileSync(lock, 'utf8'), bytes);
 });
+test('repair admission respects the native view guard before its owner record is published', t => {
+  const f = fixture(t), directory = path.join(f.target, '.aily');
+  fs.mkdirSync(directory, { recursive: true });
+  const guard = tryAcquireFileLock(path.join(directory, 'project-view.guard'));
+  try {
+    assert.ok(guard);
+    assert.equal(checkRepairProjectOpen({ project: f.target }, f.target).code, 'PROJECT_REPAIR_TARGET_BUSY');
+    assert.equal(fs.existsSync(path.join(directory, 'project-open.lock')), false);
+  } finally { guard?.close(); }
+  assert.equal(checkRepairProjectOpen({ project: f.target }, f.target), null);
+});
 for (const previousOwner of [true, 'unknown']) test(`an exited child cannot transfer an ${previousOwner === true ? 'alive' : 'unconfirmed'} parent's lineage to a new caller`, async t => {
   const f = fixture(t); await f.controller.ensure();
   const original = await f.continuation.inspect({ version: 1, project: f.target }); let spawned = 0;
@@ -420,7 +432,7 @@ test('a prepared lineage cannot be claimed by another caller while its original 
 for (const relative of ['electron/project-repair-environment.js', 'electron/project-repair-lineage.js', 'electron/project-repair-commit.js', 'electron/project-repair-normalization.js',
   'electron/project-recovery-receipts.js', 'electron/project-repair-handoff.js', 'electron/project-repair-primary.js',
   'electron/project-file-access.js', 'electron/project-lock.js', 'electron/child-script-path.js', 'child/scripts/native-file-lock.js',
-  'child/scripts/build-workspace-lease.js', 'child/scripts/system-boot-id.js', 'child/scripts/process-state.js']) test(`a helper-only change to ${relative} changes code identity and rejects old lineage`, async t => {
+  'child/scripts/build-workspace-lease.js', 'child/scripts/build-process-identity.js', 'child/scripts/system-boot-id.js', 'child/scripts/process-state.js']) test(`a helper-only change to ${relative} changes code identity and rejects old lineage`, async t => {
   const f = fixture(t); await f.prepare.ensure(f.source, f.request);
   const before = codeIdentity(process.execPath, f.appPath); fs.appendFileSync(path.join(f.appPath, relative), '\nchanged boundary');
   assert.notEqual(codeIdentity(process.execPath, f.appPath), before);

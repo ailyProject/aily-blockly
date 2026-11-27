@@ -7,6 +7,7 @@ import { SerialOperationQueue } from '@shared/public-api';
 import { AbsApplicationJournal } from './abs-application-journal';
 import { generationEvidence } from './abs-generation-protocol';
 import { inspectAbsBaselineRecovery, recoverAbsBaseline } from './abs-baseline-recovery';
+import { OriginalRequestAdmissions } from './original-request-admission';
 
 describe('same-project durable operation recovery', () => {
   const project = 'same-project', scope = { projectKey: project, pageId: 'main' };
@@ -193,13 +194,14 @@ describe('same-project durable operation recovery', () => {
     expect([...files]).toEqual(before);
   });
 
-  async function prepareApplication() {
+  async function prepareApplication(reservations?: OriginalRequestAdmissions) {
     const previous = await save('previous'); await previous.commit();
     const source = 'exact complete candidate', requestId = 'original-apply-request-001';
     const validation = { version: 2, requestId, base: (await generationEvidence(previous.projection, previous.abi)).binding,
       candidate: { hash: await hashAbsText(source), bytes: source.length }, workspaceRevision: 1,
       sourceEdits: { exact: 'full original source edit payload is retained' } };
     const journal = new AbsOperationJournal(port, project);
+    await reservations?.reserveApplication(requestId, validation.candidate.hash, () => {});
     const id = await journal.begin({ kind: 'abs-apply', document: document('unsaved before'), disk: await previous.store.captureDisk(),
       candidate: { source, generation: previous.generation, hash: validation.candidate.hash }, application: { requestId, validation } }, () => {});
     const next = await save('requested candidate');
@@ -228,6 +230,22 @@ describe('same-project durable operation recovery', () => {
     expect(observed.result.historyBase).toEqual(original.outcome.historyBase);
     expect(observed.result.applicationObservation.current).toBeTrue(); expect([...files]).toEqual(before);
   });
+  it('never withdraws an indexed ABS application whose committed response was lost', async () => {
+    port = { ...port, attachment: { version: 1, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } },
+      executor: { version: 1, hostPid: 101, storagePid: 102, instanceId: 'test', processIdentity: 'test-process', bootId: 'test-boot' } };
+    const admissions = new OriginalRequestAdmissions(port, project);
+    const original = await prepareApplication(admissions);
+    await original.next.commit();
+    const before = [...files];
+    expect(await admissions.cancelUnstartedApplication(original.requestId, original.validation.candidate.hash, 101, () => {}))
+      .toBe('pending');
+    const observed = await new AbsApplicationJournal(port, project).observe(original.requestId, () => {}, 101);
+    expect(observed.result).toEqual(jasmine.objectContaining({ ok: true,
+      publication: jasmine.objectContaining({ status: 'COMMITTED', generation: original.next.generation }),
+      applicationObservation: jasmine.objectContaining({ requestId: original.requestId, resultKnown: true }),
+    }));
+    expect([...files]).toEqual(before);
+  });
   it('recovers the commit-to-receipt crash gap and keeps historical proof through later editing', async () => {
     const original = await prepareApplication(); fail = 'project.abs.map.json'; await original.next.commit(); fail = undefined;
     const before = [...files], pending = await new AbsApplicationJournal(connect(), project).observe(original.requestId, () => {});
@@ -245,6 +263,61 @@ describe('same-project durable operation recovery', () => {
     expect((await new AbsApplicationJournal(connect(), project).observe('different-original-request', () => {})).result.code).toBe('ABS_APPLY_OBSERVATION_UNKNOWN');
     await expectAsync(new AbsOperationJournal(port, project).begin({ kind: 'abs-apply', document: document('another'),
       disk: await original.next.store.captureDisk(), application: { requestId: original.requestId, validation: original.validation } }, () => {})).toBeRejected();
+  });
+  it('seals the exact staged preimage only after cold native readback and original writer exit', async () => {
+    const guard = () => {};
+    const attachment = { version: 1 as const, root: project, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
+    const executor = { version: 1 as const, hostPid: 101, storagePid: 102, instanceId: 'old', processIdentity: 'old', bootId: 'boot' };
+    port = { ...port, attachment, executor };
+    const previous = await save('previous'); await previous.commit();
+    const next = await save('requested candidate'), disk = await previous.store.captureDisk(), committed = files.get('committed.json');
+    const source = next.projection.abs, requestId = 'cold-staged-application-001', complete = document('unsafe to lose');
+    const validation = { version: 2, requestId,
+      base: { ...(await generationEvidence(previous.projection, previous.abi)).binding, generation: 'unsaved-working-base' },
+      candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).length }, workspaceRevision: 1,
+      workingCandidate: { version: 1, id: crypto.randomUUID(), revisionHash: 'a'.repeat(64) } };
+    await new OriginalRequestAdmissions(port, project).reserveApplication(requestId, validation.candidate.hash, guard);
+    const input = { kind: 'abs-apply' as const, document: complete, disk,
+      candidate: { source, hash: validation.candidate.hash, generation: validation.base.generation }, application: { requestId, validation } };
+    const id = await new AbsOperationJournal(port, project).begin(input, guard);
+    const outcome = {
+      evidence: await generationEvidence(next.projection, next.abi), publication: { status: 'COMMITTED', generation: next.generation },
+    };
+    await port.withLock(storage => new AbsApplicationJournal(port, project).stage(id, validation, outcome, guard, storage));
+    const ancestry = spyOn(AbsBaselineStore.prototype, 'inspectCommittedAncestor').and.callThrough();
+    let exited = false;
+    port = { ...connect(), attachment, executor: { ...executor, hostPid: 201, storagePid: 202, instanceId: 'new', processIdentity: 'new' },
+      observeExecutor: async original => {
+        expect(original).toEqual(executor);
+        return exited ? { version: 1, state: 'exited', reason: 'process-exited' } : { version: 1, state: 'active', reason: 'process-matched' };
+      } };
+    const journal = new AbsOperationJournal(port, project), application = new AbsApplicationJournal(port, project);
+    expect((await recoverAbsProjectOperation(port, project, guard))!.document).toEqual(complete);
+    await journal.restored(id, guard);
+    await journal.recordRestoredApplication(id, guard, async () => { throw new Error('live writer must not readback'); });
+    expect((await application.observe(requestId, guard)).result.publication.status).toBe('UNKNOWN');
+    exited = true;
+    await expectAsync(journal.recordRestoredApplication(id, guard, async () => { throw new Error('different document'); })).toBeRejected();
+    expect((await application.observe(requestId, guard)).result.publication.status).toBe('UNKNOWN');
+    await journal.recordRestoredApplication(id, guard, async () => { files.set('project.abs', 'external edit during readback'); });
+    expect(files.has(`recoveries/application-result-${id}.json`)).toBeFalse();
+    files.set('project.abs', disk.abs!);
+    await journal.recordRestoredApplication(id, guard, async recovered => expect(recovered).toEqual(complete));
+    const original = (await application.observe(requestId, guard, executor.hostPid)).result;
+    expect(original).toEqual(jasmine.objectContaining({ code: 'ABS_APPLICATION_COLD_ROLLBACK', publication: { status: 'NOT_COMMITTED' },
+      application: { status: 'ROLLED_BACK', requestId }, candidateApplied: false,
+      applicationObservation: jasmine.objectContaining({ requestId, resultKnown: true, current: false }),
+      publicationObservation: jasmine.objectContaining({ executor, observer: { hostPid: 201 }, current: false, durable: true }),
+    }));
+    expect(ancestry).not.toHaveBeenCalled();
+    expect(files.get('committed.json')).toBe(committed);
+    expect(await previous.store.captureDisk()).toEqual(disk);
+    expect(files.has(`recoveries/application-commit-${id}.json`)).toBeFalse();
+    await expectAsync(journal.begin(input, guard)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_APPLY_REQUEST_ALREADY_RECORDED' }));
+    await (await save('newer user edit')).commit();
+    const later = [...files];
+    expect((await application.observe(requestId, guard, executor.hostPid)).result).toEqual(original);
+    expect([...files]).toEqual(later);
   });
   it('proves an unacknowledged historical commit from verified successor pointer lineage', async () => {
     const original = await prepareApplication(); await original.next.commit();
