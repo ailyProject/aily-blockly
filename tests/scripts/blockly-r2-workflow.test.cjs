@@ -148,7 +148,7 @@ test('retry after a manifest failure restores this run\'s logs even after an old
   for (const name of metadataFiles) assert.equal(remote(name), `B:${name}`);
 });
 
-test('stable metadata follows both packages before dispatching the domestic feed', () => {
+test('stable metadata precedes direct domestic publication of this run\'s signed artifacts', () => {
   for (const platform of ['windows', 'macos']) {
     assert.deepEqual(workflow.jobs[`upload-${platform}-to-r2`].needs, ['release']);
   }
@@ -156,11 +156,19 @@ test('stable metadata follows both packages before dispatching the domestic feed
   const sync = workflow.jobs['trigger-server-script'];
   assert.deepEqual(sync.needs, ['prepare', metadataJob]);
   assert.equal(sync['runs-on'], 'ubuntu-latest');
-  const dispatch = sync.steps.find(step => step.run);
-  assert.equal(dispatch.run, 'bash scripts/dispatch-cn-feed.sh blockly "$RELEASE_VERSION"');
-  assert.deepEqual(dispatch.env, {
-    GH_TOKEN: '${{ secrets.CN_FEED_DISPATCH_TOKEN }}', RELEASE_VERSION: '${{ needs.prepare.outputs.version }}',
-  });
+  assert.equal(sync.env.RELEASE_VERSION, '${{ needs.prepare.outputs.version }}');
+  const downloads = sync.steps.filter(step => step.uses === 'actions/download-artifact@v4');
+  assert.deepEqual(downloads.map(step => step.with.name), [
+    'AilyBlockly-Windows-Package-cn', 'AilyBlockly-macOS-Package-cn', 'AilyBlockly-Changelog', 'AilyBlockly-Manifests',
+  ]);
+  for (const step of downloads) {
+    assert.deepEqual(step.with, { name: step.with.name, path: '${{ runner.temp }}/blockly-input' });
+  }
+  const [prepare, upload, verify] = sync.steps.slice(-3);
+  assert.match(prepare.run, /publish-blockly-feed\.py prepare/);
+  assert.equal(upload.run, 'bash scripts/upload-blockly-feed.sh');
+  assert.equal(upload.env.SSHPASS, '${{ secrets.TRIGGER_SERVER_PASSWORD }}');
+  assert.match(verify.run, /verify-blockly-feed\.py/);
   for (const name of ['upload-windows-to-r2', 'upload-macos-to-r2', metadataJob, 'trigger-server-script']) {
     assert.equal(workflow.jobs[name].if, "github.ref_name == 'deploy'");
   }

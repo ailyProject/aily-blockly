@@ -1169,12 +1169,45 @@ jobs:
     timeout-minutes: 65
     permissions:
       contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Dispatch and wait for domestic publication
+      - name: Install domestic publication tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-yaml rsync sshpass
+      - uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package-cn
+          path: ${{ runner.temp }}/blockly-input
+      - uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package-cn
+          path: ${{ runner.temp }}/blockly-input
+      - uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Changelog
+          path: ${{ runner.temp }}/blockly-input
+      - uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Manifests
+          path: ${{ runner.temp }}/blockly-input
+      - name: Verify domestic packages and prepare update manifests
+        run: /usr/bin/python3 scripts/publish-blockly-feed.py prepare "$RELEASE_VERSION" "$RUNNER_TEMP/blockly-input" "$RUNNER_TEMP/blockly-bundle"
+      - name: Upload and publish on the domestic server
         env:
-          GH_TOKEN: ${{ secrets.CN_FEED_DISPATCH_TOKEN }}
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: bash scripts/dispatch-cn-feed.sh blockly "$RELEASE_VERSION"
+          FEED_HOST: ${{ secrets.TRIGGER_SERVER_HOST }}
+          FEED_USER: ${{ secrets.TRIGGER_SERVER_USER }}
+          SSHPASS: ${{ secrets.TRIGGER_SERVER_PASSWORD }}
+          FEED_KNOWN_HOSTS: ${{ secrets.DOMESTIC_FEED_KNOWN_HOSTS }}
+          FEED_PORT: ${{ vars.DOMESTIC_FEED_SSH_PORT || '22' }}
+          STAGING_ROOT: ${{ vars.DOMESTIC_FEED_STAGING_ROOT }}
+          PUBLIC_DIR: ${{ vars.DOMESTIC_FEED_PUBLIC_DIR }}
+        run: bash scripts/upload-blockly-feed.sh
+      - name: Verify the public domestic feed
+        env:
+          VERIFY_URL: ${{ vars.DOMESTIC_FEED_VERIFY_URL || 'https://dl.yiyu.pro/blockly' }}
+        run: /usr/bin/python3 scripts/verify-blockly-feed.py "$RELEASE_VERSION" "$RUNNER_TEMP/blockly-bundle" "$VERIFY_URL"
