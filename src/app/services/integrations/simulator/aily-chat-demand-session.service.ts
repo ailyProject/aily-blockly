@@ -76,7 +76,7 @@ const AILY_CHAT_TOOL_ID = DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID;
 const AILY_CHAT_DEMAND_SESSION_CHANNEL = 'aily-chat-demand-session-v1';
 const DEMAND_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const ARCHITECTURE_AGENT_PREFIX = '[AGENT: ArchitectureAgent]';
-const PROJECT_SCENE_AGENT_PREFIX = '[AGENT: ProjectSceneAgent]';
+const SIMULATOR_AGENT_PREFIX = '[AGENT: SimulatorAgent]';
 const DEFAULT_PROJECT_SCENE_PROMPT = '根据当前项目生成仿真连线场景';
 
 const EMPTY_DIAGRAM_GENERATION_STATE: DiagramGenerationState = {
@@ -160,7 +160,7 @@ export class AilyChatDemandSessionService {
     return this.runDemandSession({
       kind: 'project-scene',
       title: options.title || prompt,
-      prompt: this.withAgentPrefix(prompt, PROJECT_SCENE_AGENT_PREFIX),
+      prompt: this.withAgentPrefix(prompt, SIMULATOR_AGENT_PREFIX),
       mode: 'agent',
       revealSession: options.revealSession !== false,
       projectPath: options.projectPath,

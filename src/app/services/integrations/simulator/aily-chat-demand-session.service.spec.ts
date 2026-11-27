@@ -110,7 +110,7 @@ describe('AilyChatDemandSessionService', () => {
     }));
   });
 
-  it('uses only the canonical ProjectSceneAgent marker', async () => {
+  it('uses only the canonical SimulatorAgent marker', async () => {
     const harness = createHarness();
 
     await harness.service.generateProjectScene('生成项目连线图', { revealSession: true });
@@ -119,7 +119,7 @@ describe('AilyChatDemandSessionService', () => {
       action: 'demand-session.run',
       kind: 'project-scene',
       mode: 'agent',
-      prompt: '[AGENT: ProjectSceneAgent] 生成项目连线图',
+      prompt: '[AGENT: SimulatorAgent] 生成项目连线图',
     }));
   });
 
@@ -226,7 +226,7 @@ describe('AilyChatDemandSessionService', () => {
     const request = {
       kind: 'project-scene' as const,
       title: '生成项目连线图',
-      prompt: '[AGENT: ProjectSceneAgent] 生成项目连线图',
+      prompt: '[AGENT: SimulatorAgent] 生成项目连线图',
       mode: 'agent' as const,
     };
     const first = harness.service.runDemandSession(request);

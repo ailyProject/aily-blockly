@@ -89,9 +89,10 @@ ${SCENE_CODE_INTERPRETATION_RULES}
 2. 如工具处于 deferred，只能用一次 tool_load 精确加载 abs_export、get_board_config。第一项 Blockly 工作区操作必须是 abs_export，以当前内存工作区为准；保留全部当前用户代码，不以 Scene 重新生成或覆盖代码。
 3. 只读核对当前代码、开发板和库事实，以及 Scene 的 GPIO、总线、上下拉、LED 源/灌电流与电阻要求。按上述原则区分物理引脚身份与 ABS/SDK 参数，不猜测缺失事实。
 4. 不调用 abs_validate、abs_apply、board_switch、set_board_config、lib_add，不修改用户代码、板卡配置、库或工程文件。若当前代码与原 Scene 不一致或事实不可核验，停止并清楚报告冲突，不按旧 Scene 改回用户代码；由用户决定后续如何调整。
-5. 一致时立即用简短文本结束。不要构建、调用 subagent、SchematicAgent 或控制 Simulator/QEMU/GDB/UART；Host 会在本轮成功结束后调用正常 Scene-bound Builder。`;
+5. 一致时立即用简短文本结束。不要构建、委派子智能体或控制 Simulator/QEMU/GDB/UART；Host 会在本轮成功结束后调用正常 Scene-bound Builder。`;
   }
-  return `这是主 Agent 的普通项目变更任务；不要调用任何 subagent、SchematicAgent，也不要修改 Simulator Scene。
+
+  return `这是主 Agent 的普通项目变更任务；不要委派子智能体或修改 Simulator Scene。
 
 权威范围：
 - requestId: ${request.requestId}

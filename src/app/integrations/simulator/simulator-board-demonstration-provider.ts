@@ -72,7 +72,8 @@ export class SimulatorBoardDemonstrationProvider {
       this.requireProject(request.projectIdentity, signal);
 
       const authority = new SimulatorProjectArtifactCallbackAuthority({ projectRoot: root,
-        projectIdentity: this.options.projectIdentity, workspaceIdentity: this.options.workspaceIdentity, files: this.options.files });
+        projectIdentity: this.options.projectIdentity, workspaceIdentity: this.options.workspaceIdentity, files: this.options.files,
+        resolveBuildRoot: () => this.options.files.join(root, '.build') });
 
       this.artifacts.set(root, authority);
 
