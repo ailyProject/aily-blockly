@@ -50,15 +50,91 @@ describe('Coder dependency installation and recovery', () => {
 
   afterEach(() => Object.assign(window, original));
 
-  function failCloudBoardProfile(error: Error): void {
+  function switchToCloud(): void {
     project.configService.getCompileBackend = npm.configService.getCompileBackend = () => 'cloud';
     project.configService.getCompileSettingsKey = npm.configService.getCompileSettingsKey = () => 'cloud';
     session = project.getProjectDependencySession('/project');
     project.resolveCompileBackend = jasmine.createSpy('boardSupport').and.resolveTo('cloud');
-    project.getCloudBoardProfile = jasmine.createSpy('cloudProfile').and.rejectWith(error);
     npm.ensureCloudLibrarySources = jasmine.createSpy('cloudSources').and.resolveTo();
+  }
+
+  function failCloudBoardProfile(error: Error): void {
+    switchToCloud();
+    project.getCloudBoardProfile = jasmine.createSpy('cloudProfile').and.rejectWith(error);
     npm.installBoardDeps.and.callFake(NpmService.prototype.installBoardDeps);
   }
+
+  it('prepares cloud dependencies on the first build after changing a ready local session to cloud', async () => {
+    const localSession = project.getProjectDependencySession('/project');
+    project.setProjectDependencyResult(localSession, true);
+    switchToCloud();
+    expect(localSession.signal.aborted).toBeTrue();
+    expect(project.getProjectDependencyStatus('/project')).toBe('idle');
+    expect(npm.hasPendingCloudDependencyPreparation('/project')).toBeFalse();
+
+    const signal = new AbortController().signal;
+    await npm.prepareCoderCloudBuildDependencies('/project', session, signal);
+    await npm.prepareCoderCloudBuildDependencies('/project', session, signal);
+
+    expect(npm.installedOk).toHaveBeenCalledOnceWith('/project', session, jasmine.any(Object));
+    expect(npm.ensureCloudLibrarySources).toHaveBeenCalledOnceWith('/project', session, undefined);
+    expect(npm.installBoardDeps).toHaveBeenCalledOnceWith(session, { showSuccessNotice: false, prepareCloudSources: false });
+    expect(npm.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
+    expect(project.getProjectDependencyStatus('/project')).toBe('ready');
+    expect(npm.hasPendingCloudDependencyPreparation('/project')).toBeFalse();
+  });
+
+  it('joins an existing cloud installation and cancels only the waiting build', async () => {
+    switchToCloud();
+    let enterPlatform!: () => void;
+    let finishPlatform!: () => void;
+    const platformStarted = new Promise<void>(resolve => { enterPlatform = resolve; });
+    const platform = new Promise<void>(resolve => { finishPlatform = resolve; });
+    npm.installBoardDeps.and.callFake(() => { enterPlatform(); return platform; });
+    const installation = npm.ensureProjectAndBoardDeps('/project', undefined, session);
+    expect(npm.hasPendingCloudDependencyPreparation('/project')).toBeTrue();
+    const stop = new AbortController();
+    const waiting = npm.prepareCoderCloudBuildDependencies('/project', session, stop.signal);
+    const otherBuild = npm.prepareCoderCloudBuildDependencies('/project', session, new AbortController().signal);
+    const cancelled = expectAsync(waiting).toBeRejectedWith(jasmine.objectContaining({ code: 'CANCELLED' }));
+
+    await platformStarted;
+    stop.abort();
+    await cancelled;
+    expect(session.signal.aborted).toBeFalse();
+    expect(npm.hasPendingCloudDependencyPreparation('/project')).toBeTrue();
+    finishPlatform();
+    await expectAsync(installation).toBeResolvedTo(true);
+    await expectAsync(otherBuild).toBeResolved();
+
+    expect(npm.installBoardDeps).toHaveBeenCalledTimes(1);
+    expect(project.getProjectDependencyStatus('/project')).toBe('ready');
+    expect(npm.hasPendingCloudDependencyPreparation('/project')).toBeFalse();
+  });
+
+  it('cannot use preparation from the previous backend generation after settings change again', async () => {
+    switchToCloud();
+    let enterPlatform!: () => void;
+    let finishPlatform!: () => void;
+    const platformStarted = new Promise<void>(resolve => { enterPlatform = resolve; });
+    const platform = new Promise<void>(resolve => { finishPlatform = resolve; });
+    npm.installBoardDeps.and.callFake(() => { enterPlatform(); return platform; });
+    const cloudSession = session;
+    const waiting = npm.prepareCoderCloudBuildDependencies('/project', cloudSession, new AbortController().signal);
+    const obsolete = expectAsync(waiting).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
+
+    await platformStarted;
+    project.configService.getCompileBackend = npm.configService.getCompileBackend = () => 'local';
+    project.configService.getCompileSettingsKey = npm.configService.getCompileSettingsKey = () => 'local-again';
+    const localSession = project.getProjectDependencySession('/project');
+    await obsolete;
+    finishPlatform();
+
+    expect(localSession).not.toBe(cloudSession);
+    expect(cloudSession.signal.aborted).toBeTrue();
+    expect(npm.hasPendingCloudDependencyPreparation('/project')).toBeFalse();
+    expect(project.getProjectDependencyStatus('/project')).toBe('idle');
+  });
 
   for (const code of ['CLOUD_TARGET_UNAVAILABLE', 'CLOUD_BOARD_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED']) it(`offers a manual local build after ${code} settles`, async () => {
     const targetError = Object.assign(new Error('Original unsupported configuration detail'), { code });
@@ -106,6 +182,9 @@ describe('Coder dependency installation and recovery', () => {
     expect(project.hasCoderCloudPreflightFailure('/project')).toBeTrue();
     expect(canOfferLocalBuildFallback(unsupported)).toBeFalse();
 
+    await npm.prepareCoderCloudBuildDependencies('/project', session, new AbortController().signal);
+    expect(project.hasCoderCloudPreflightFailure('/project')).toBeTrue();
+    expect(npm.installBoardDeps).toHaveBeenCalledTimes(1);
     project.getCloudBoardProfile.and.rejectWith(unsupported);
     const failure = await npm.prepareCompileBackend('/project', () => false, true).catch((error: unknown) => error);
     expect(project.getCloudBoardProfile.calls.mostRecent().args).toEqual([{ refresh: true }, session]);

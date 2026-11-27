@@ -1465,7 +1465,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
     if (!this.configService.isCoderProduct()) return undefined;
     // A running program must remain stoppable while dependencies are repaired.
     if (['play', 'upload'].includes(item.action) && (this.connectorState.running || item.state === 'running')) return undefined;
-    return this.projectService.getProjectDependencyBlockMessage();
+    const dependencyBlock = this.projectService.getProjectDependencyBlockMessage();
+    if (dependencyBlock && item.action === 'compile' && this.coderRuntime.canJoinCloudDependencyPreparation()) return undefined;
+    return dependencyBlock;
   }
 
   async process(item: IMenuItem, event = null, source: 'manual' | 'ai' | 'system' = 'system') {

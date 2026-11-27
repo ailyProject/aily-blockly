@@ -674,6 +674,50 @@ export class NpmService {
     return this.configService?.getCompileBackend?.() === 'cloud' && this.prjService.isCloudBuild(projectPath);
   }
 
+  hasPendingCloudDependencyPreparation(projectPath: string): boolean {
+    if (!this.projectDepsInstallPromises || !this.isCloudBuild(projectPath)) return false;
+    for (const session of this.projectDepsInstallPromises.keys()) {
+      if (session.projectPath === projectPath && this.isDependencySessionCurrent(session)) return true;
+    }
+    return false;
+  }
+
+  /** A Coder cloud build can wait for the editor's existing, session-owned preparation. */
+  async prepareCoderCloudBuildDependencies(projectPath: string, session: ProjectDependencySession, signal: AbortSignal): Promise<void> {
+    const assertBuildCurrent = () => {
+      if (signal.aborted) {
+        const reason = signal.reason;
+        if (typeof reason?.code === 'string') throw reason;
+        throw Object.assign(new Error('Build cancelled while preparing cloud dependencies.'), { code: 'CANCELLED' });
+      }
+      this.assertDependencySession(session);
+    };
+    assertBuildCurrent();
+    const status = this.prjService.getProjectDependencyStatus(projectPath);
+    const pending = this.projectDepsInstallPromises?.get(session);
+    if (!pending && status !== 'idle') return;
+
+    let onAbort!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => {
+        try { assertBuildCurrent(); } catch (error) { reject(error); }
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      session.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      const preparation = pending ?? this.ensureProjectAndBoardDeps(projectPath, {
+        onBoardDepsSettled: async () => { await this.getDependencyProject(session).syncCurrentBoardConfig(session); },
+      }, session);
+      await Promise.race([preparation, cancelled]);
+      // A false result leaves the session error and retry/unsupported-target action with its owner.
+      assertBuildCurrent();
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+      session.signal.removeEventListener('abort', onAbort);
+    }
+  }
+
   /** 编译入口刷新支持状态；运行中由云切到本地时补齐正常本地依赖链。 */
   async prepareCompileBackend(projectPath: string, isCancelled: () => boolean = () => false,
     recheckFailedCoderPreflight = false): Promise<void> {
@@ -794,9 +838,17 @@ export class NpmService {
     try {
       // Changing compile settings creates an idle session. Upload may verify a prior
       // firmware against disk; a new compile still requires full dependency preparation.
-      if ((purpose !== 'firmware-upload' && this.prjService.getProjectDependencyStatus(projectPath) !== 'ready')
-        || !await this.installedOk(projectPath)) {
-        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      const status = this.prjService.getProjectDependencyStatus(projectPath);
+      if (purpose !== 'firmware-upload' && status !== 'ready') {
+        throw Object.assign(new Error(`Coder dependency preparation status: ${status}.`), {
+          code: 'CODER_DEPENDENCY_NOT_READY',
+        });
+      }
+      const inventory: { value?: CloudDependencyInventory; error?: unknown } = {};
+      if (!await this.installedOk(projectPath, session, inventory)) {
+        throw inventory.error ?? Object.assign(new Error('Installed project dependencies failed validation.'), {
+          code: 'CODER_DEPENDENCY_INVENTORY_INVALID',
+        });
       }
       this.assertDependencySession(session);
       const project = this.getDependencyProject(session);
@@ -833,10 +885,11 @@ export class NpmService {
       if (purpose === 'cloud-build' && this.isCloudBuild(projectPath) && canRetryCloudBuildLocally(error)) throw error;
       this.prjService.setProjectDependencyResult(session, false);
       const message = this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
+      const detail = this.getNpmErrorMessage(error);
       this.application.updateNotice({
         title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
         text: message,
-        detail: this.getNpmErrorMessage(error),
+        detail,
         state: 'error',
         onRetry: () => {
           if (!this.isDependencySessionCurrent(session)
@@ -846,7 +899,8 @@ export class NpmService {
           }, session).catch(() => {});
         },
       });
-      throw reject(message);
+      const code = (error as { code?: unknown } | undefined)?.code;
+      throw Object.assign(reject(message), { fullStdErr: detail, ...(typeof code === 'string' ? { code } : {}) });
     }
   }
 
@@ -2151,7 +2205,7 @@ export class NpmService {
   /**
    * 检查顶层依赖，并递归检查积木库声明的其他积木库依赖。
    */
-  async installedOk(path: string, session?: ProjectDependencySession, inventory?: { value?: CloudDependencyInventory }): Promise<boolean> {
+  async installedOk(path: string, session?: ProjectDependencySession, inventory?: { value?: CloudDependencyInventory; error?: unknown }): Promise<boolean> {
     if (this.isCloudBuild(path)) {
       // 将同一次扫描结果交给源码准备步骤，避免依赖检查通过后立即重复扫描。
       const ownerSession = session ?? this.prjService.getProjectDependencySession(path);
@@ -2162,6 +2216,7 @@ export class NpmService {
       } catch (error) {
         // 未显式传会话的调用也要传播取消，不能把旧工程被关闭误判为依赖缺失并重新安装。
         this.assertDependencySession(ownerSession);
+        if (inventory) inventory.error = error;
         return false;
       }
     }

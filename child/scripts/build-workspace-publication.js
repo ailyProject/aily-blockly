@@ -245,8 +245,10 @@ function patchBuildMetadata(projectPath, patch) {
     if (patch.codeHash !== undefined && !/^[a-f0-9]{64}$/.test(patch.codeHash)) fail('Invalid code hash.');
     if (patch.buildInfo !== undefined) {
         const info = patch.buildInfo;
+        // A stopped preflight may not have captured any compiled source.
+        const cancelledBeforeSourceCapture = info?.lastBuildStatus === 'cancelled' && info.lastBuildCode === '';
         if (!info || !['success', 'failed', 'cancelled'].includes(info.lastBuildStatus)
-            || !/^[a-f0-9]{64}$/.test(info.lastBuildCode) || typeof info.lastBuildTime !== 'string'
+            || (!cancelledBeforeSourceCapture && !/^[a-f0-9]{64}$/.test(info.lastBuildCode)) || typeof info.lastBuildTime !== 'string'
             || !Number.isFinite(Date.parse(info.lastBuildTime)) || !Number.isFinite(info.lastBuildDuration) || info.lastBuildDuration < 0
             || Object.keys(info).some(key => !['lastBuildTime', 'lastBuildCode', 'lastBuildStatus', 'lastBuildDuration'].includes(key))) fail('Invalid build result metadata.');
     }

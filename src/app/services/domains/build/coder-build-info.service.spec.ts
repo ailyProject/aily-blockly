@@ -68,7 +68,8 @@ describe('Coder build metadata', () => {
       },
     };
     project = { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
-      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'coder-opening' }),
+      getProjectDependencySession: (projectPath: string) => ({ projectPath, projectSessionId: 'coder-opening', signal: new AbortController().signal }),
+      getProjectDependencyStatus: () => 'ready',
       ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
       getProjectDependencyBlockMessage: () => undefined,
       ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true) };
@@ -169,7 +170,8 @@ describe('Coder build metadata', () => {
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
       { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo(),
-        ensureLocalCompilerDependencies: jasmine.createSpy('compilerIntegrity').and.resolveTo() } as any,
+        ensureLocalCompilerDependencies: jasmine.createSpy('compilerIntegrity').and.resolveTo(),
+        prepareCoderCloudBuildDependencies: jasmine.createSpy('prepareCoderCloudBuildDependencies').and.resolveTo() } as any,
       { record: jasmine.createSpy('record') } as any,
     );
     let calls = 0;
@@ -346,6 +348,105 @@ describe('Coder build metadata', () => {
     return { compiler, operation };
   }
 
+  it('waits for the exact Coder dependency session before the first explicit cloud build', async () => {
+    const { compiler } = createSwitchingCompiler();
+    const session = { projectPath: root, projectSessionId: 'warm-cloud-opening', signal: new AbortController().signal };
+    project.getProjectDependencySession = () => session;
+    let dependencyStatus = 'idle';
+    project.getProjectDependencyStatus = () => dependencyStatus;
+    compiler.runCloudCompile.and.resolveTo({ success: true });
+    const prepareBackend = spyOn(compiler.npmService, 'prepareCompileBackend').and.resolveTo();
+    let enterPreparation!: () => void;
+    let finishPreparation!: () => void;
+    const preparing = new Promise<void>(resolve => { enterPreparation = resolve; });
+    const preparation = new Promise<void>(resolve => { finishPreparation = resolve; });
+    const prepareDependencies = compiler.npmService.prepareCoderCloudBuildDependencies.and.callFake(() => {
+      enterPreparation();
+      return preparation;
+    });
+
+    const pending = compiler.runCompileFromDisk({ requestId: 'first-warm-cloud-build' });
+    await preparing;
+    expect(prepareDependencies).toHaveBeenCalledOnceWith(root, session, jasmine.any(AbortSignal));
+    expect(prepareBackend).not.toHaveBeenCalled();
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    dependencyStatus = 'ready';
+    finishPreparation();
+
+    const outcome = await pending;
+    expect(outcome.success).toBeTrue();
+    expect(outcome.result.buildLog.requestId).toBe('first-warm-cloud-build');
+    expect(prepareBackend).toHaveBeenCalledOnceWith(root, jasmine.any(Function), true);
+    expect(prepareBackend).toHaveBeenCalledBefore(compiler.npmService.assertCoderDependenciesReady);
+    expect(compiler.npmService.assertCoderDependenciesReady).toHaveBeenCalledBefore(compiler.runCloudCompile);
+    expect(compiler.runCloudCompile).toHaveBeenCalledTimes(1);
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+  });
+
+  function waitForCloudDependencySignal(compiler: any): Promise<AbortSignal> {
+    return new Promise(entered => {
+      compiler.npmService.prepareCoderCloudBuildDependencies.and.callFake((_path: string, _session: unknown, signal: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          entered(signal);
+        }),
+      );
+    });
+  }
+
+  it('cancels a cloud build while waiting for dependency preparation without dispatching it', async () => {
+    const { compiler, operation } = createSwitchingCompiler();
+    const session = { projectPath: root, projectSessionId: 'warm-cloud-opening', signal: new AbortController().signal };
+    project.getProjectDependencySession = () => session;
+    const prepareBackend = spyOn(compiler.npmService, 'prepareCompileBackend');
+    const preparing = waitForCloudDependencySignal(compiler);
+    const recordCloudFailure = jasmine.createSpy('recordCloudFailure');
+
+    const pending = compiler.runCompileFromDisk({ requestId: 'cancel-warm-cloud-build', localFallback: { recordCloudFailure } });
+    const signal = await preparing;
+    compiler.cancel();
+    const outcome = await pending;
+
+    expect(signal.aborted).toBeTrue();
+    expect(session.signal.aborted).toBeFalse();
+    expect(outcome.success).toBeFalse();
+    expect(outcome.result).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled',
+      buildLog: jasmine.objectContaining({ requestId: 'cancel-warm-cloud-build' }) }));
+    expect(prepareBackend).not.toHaveBeenCalled();
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+    expect(recordCloudFailure).not.toHaveBeenCalled();
+    expect(operation.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles the waiting cloud request as stale promptly when the compile setting changes', async () => {
+    const { compiler, operation } = createSwitchingCompiler();
+    let backend = 'cloud';
+    const settingsChanged = new Subject<void>();
+    Object.assign(compiler.configService, {
+      getCompileBackend: () => backend, getCompileSettingsKey: () => backend, configReloaded$: settingsChanged,
+    });
+    const prepareBackend = spyOn(compiler.npmService, 'prepareCompileBackend');
+    const preparing = waitForCloudDependencySignal(compiler);
+
+    const pending = compiler.runCompileFromDisk({ requestId: 'obsolete-warm-cloud-build' });
+    const signal = await preparing;
+    expect(settingsChanged.observed).toBeTrue();
+    backend = 'local';
+    settingsChanged.next();
+    const outcome = await pending;
+
+    expect(signal.aborted).toBeTrue();
+    expect(settingsChanged.observed).toBeFalse();
+    expect(outcome.success).toBeFalse();
+    expect(outcome.result).toEqual(jasmine.objectContaining({ code: 'BUILD_SOURCE_STALE',
+      buildLog: jasmine.objectContaining({ requestId: 'obsolete-warm-cloud-build' }) }));
+    expect(prepareBackend).not.toHaveBeenCalled();
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+    expect(operation.release).toHaveBeenCalledTimes(1);
+  });
+
   it('prepares a blocked Coder project for one explicit local build without rechecking the cloud target', async () => {
     const { compiler, operation } = createSwitchingCompiler();
     let dependenciesBlocked = true;
@@ -368,6 +469,7 @@ describe('Coder build metadata', () => {
     expect(compiler.npmService.assertCoderDependenciesReady).toHaveBeenCalledBefore(compiler.runOneShotCommand);
     expect(compiler.runOneShotCommand).toHaveBeenCalledTimes(1);
     expect(cloudPreflight).not.toHaveBeenCalled();
+    expect(compiler.npmService.prepareCoderCloudBuildDependencies).not.toHaveBeenCalled();
     expect(compiler.runCloudCompile).not.toHaveBeenCalled();
     expect(operation.release).toHaveBeenCalledTimes(1);
     expect(operation.local).toBeFalse();

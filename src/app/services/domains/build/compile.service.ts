@@ -89,6 +89,7 @@ export class CompileService {
   private activeExecutionConfig?: any;
   private buildAttempt = 0;
   private cancelled = false;
+  private cloudDependencyWait?: AbortController;
   private activeSub: Subscription | null = null;
   private activeStreamId: string | null = null;
   private activeCommandCancel: (() => void) | null = null;
@@ -121,6 +122,7 @@ export class CompileService {
       this.activeBuildLog?.markIncomplete('Build was cancelled while output was streaming; the process tail may not have been captured.');
     }
     this.cancelled = true;
+    this.cloudDependencyWait?.abort();
     if (this.activeExecutionConfig?.execution) {
       try { window['builder'].cancelBuildExecution(this.activeExecutionConfig); }
       catch (error) { console.warn('Could not persist build cancellation; stopping the registered process tree:', error); }
@@ -141,6 +143,10 @@ export class CompileService {
         // 主进程负责重试远程取消并使该请求失效，界面无需重复提交取消请求。
       });
     }
+  }
+
+  isWaitingForCloudDependencies(): boolean {
+    return !!this.cloudDependencyWait && !this.cloudDependencyWait.signal.aborted;
   }
 
   async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<DiskCompileResult> {
@@ -168,8 +174,8 @@ export class CompileService {
       };
     }
 
-    if (this.configService.isCoderProduct() && this.projectService.isAilyCodeProject(root)
-      && !await this.projectService.ensureCoderBoardSelected(root)) {
+    const coder = this.configService.isCoderProduct() && this.projectService.isAilyCodeProject(root);
+    if (coder && !await this.projectService.ensureCoderBoardSelected(root)) {
       return { success: false, result: { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' } };
     }
 
@@ -179,7 +185,8 @@ export class CompileService {
       if (blocked) return blocked;
     }
 
-    const { projectPath, projectSessionId } = this.projectService.getProjectDependencySession(root);
+    const dependencySession = this.projectService.getProjectDependencySession(root);
+    const { projectPath, projectSessionId } = dependencySession;
     if (!this.application.startBuild()) {
       const state = this.application.currentProcessState;
       let msg = 'System is busy';
@@ -261,7 +268,46 @@ export class CompileService {
         } catch { /* Failure to capture an exact source only withholds the fallback offer. */ }
       }
       if (!fallback && !retryLocally && this.configService.getCompileBackend() === 'cloud') {
-        await this.npmService.prepareCompileBackend(root, () => this.cancelled, !!context.assertCloudFailureSource);
+        let recheckFailedPreparation = !!context.assertCloudFailureSource;
+        if (coder && context.cloud && !options.preprocessOnly && !options.graphSemanticRevision && !options.recordProjectDelivery) {
+          const wait = new AbortController();
+          this.cloudDependencyWait = wait;
+          const abortIfSuperseded = () => {
+            if (!projectCurrent() || context.settingsKey !== this.configService.getCompileSettingsKey()) {
+              wait.abort(Object.assign(buildSourceStale('project', 'Build project or settings changed during cloud dependency preparation.'),
+                { buildOutcome: 'not-started' }));
+            }
+          };
+          const settings = this.configService.configReloaded$?.subscribe(abortIfSuperseded);
+          try {
+            abortIfSuperseded();
+            const status = this.projectService.getProjectDependencyStatus(root);
+            capture.append(`Coder cloud dependency session: ${projectSessionId}, status before preparation: ${status}.\n`);
+            if (status === 'idle' || status === 'installing') {
+              // A target error discovered by this preparation belongs to the current compile's retry action.
+              recheckFailedPreparation = true;
+              this.application.updateNotice({ title: this.t('PREPARING_TITLE'),
+                text: this.translate.instant('CLOUD_BUILD.STAGES.PREPARING'),
+                state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel() });
+            }
+            await this.npmService.prepareCoderCloudBuildDependencies(root, dependencySession, wait.signal);
+            abortIfSuperseded();
+            if (wait.signal.aborted && !this.cancelled) throw wait.signal.reason;
+            capture.append(`Coder cloud dependency status after preparation: ${this.projectService.getProjectDependencyStatus(root)}.\n`);
+          } catch (error) {
+            if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') {
+              throw Object.assign(new Error((error as Error).message), {
+                code: 'PROJECT_DEPENDENCY_CANCELLED', buildOutcome: 'not-started',
+              });
+            }
+            throw error;
+          } finally {
+            settings?.unsubscribe();
+            if (this.cloudDependencyWait === wait) this.cloudDependencyWait = undefined;
+          }
+          if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
+        }
+        await this.npmService.prepareCompileBackend(root, () => this.cancelled, recheckFailedPreparation);
         if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
         if (context.settingsKey !== this.configService.getCompileSettingsKey() || root !== this.projectService.currentProjectPath) {
           throw new Error('BUILD_SOURCE_STALE: Build settings or the active project changed.');
@@ -276,6 +322,11 @@ export class CompileService {
 
       if (context.cloud || retryLocally || fallback) {
         const blocked = await this.checkCompileDependencies(root, context.cloud);
+        if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
+        if (context.cloud && (!projectCurrent() || context.settingsKey !== this.configService.getCompileSettingsKey())) {
+          throw Object.assign(buildSourceStale('project', 'Build project or settings changed during cloud dependency validation.'),
+            { buildOutcome: 'not-started' });
+        }
         if (blocked) return blocked;
       }
 
@@ -340,8 +391,11 @@ export class CompileService {
     } catch (error) {
       if (cloud && canRetryCloudBuildLocally(error)) throw error;
       const text = error instanceof Error ? error.message : String(error);
+      const { code, fullStdErr } = (error ?? {}) as { code?: string; fullStdErr?: string };
+      if (code || fullStdErr) this.activeBuildLog?.append(`Dependency validation: ${code ?? 'failed'} ${fullStdErr ?? text}\n`);
       this.message.warning(text);
-      return { success: false, result: { state: 'warn', text, buildOutcome: 'not-started' } };
+      return { success: false, result: { state: 'warn', text, buildOutcome: 'not-started',
+        ...(code ? { code } : {}), ...(fullStdErr ? { fullStdErr } : {}) } };
     }
 
     return undefined;

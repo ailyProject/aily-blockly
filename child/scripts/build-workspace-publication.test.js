@@ -131,6 +131,24 @@ test('metadata patches preserve the root manifest and success ticket, ignoring a
     assert.equal(f.exists('.build/aily-workspace.lock'), false);
 });
 
+test('records cancellation before source capture without admitting a hashless build result', t => {
+    const f = fixture(t, 'coder');
+    f.write('.build/main.hex', 'existing firmware');
+    const buildInfo = {
+        lastBuildTime: '2026-11-27T00:00:00.000Z', lastBuildCode: '', lastBuildStatus: 'cancelled', lastBuildDuration: 0.1,
+    };
+    const codeHash = 'a'.repeat(64);
+    patch(f.root, { codeHash, buildInfo });
+    const cancelled = f.read('package.json');
+    assert.deepEqual(JSON.parse(cancelled).buildInfo, buildInfo);
+    assert.equal(JSON.parse(cancelled).codeHash, codeHash);
+    for (const lastBuildStatus of ['success', 'failed']) {
+        assert.throws(() => patch(f.root, { buildInfo: { ...buildInfo, lastBuildStatus } }), /BUILD_PUBLICATION_INVALID/);
+    }
+    assert.equal(f.read('package.json'), cancelled);
+    assert.equal(f.read('.build/main.hex'), 'existing firmware');
+});
+
 for (const type of ['blockly', 'coder']) test(`${type} metadata does not create a package backup; unrelated fields are not patchable`, t => {
     const f = fixture(t, type); patch(f.root, { codeHash: 'a'.repeat(64) });
     assert.equal(f.exists('.temp'), false);

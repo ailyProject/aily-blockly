@@ -13,6 +13,7 @@ import {
   BUILD_ACTION_PORT,
   BuilderService,
   CoderBuildInfoService,
+  CompileService,
   CompileValidationService,
 } from '@domain/build/public-api';
 import { SerialService, UploaderService } from '@domain/device/public-api';
@@ -57,6 +58,7 @@ describe('Coder concurrent process integration', () => {
       getProjectMode: () => 'coder',
       isProjectTransitionInProgress: jasmine.createSpy('transition').and.returnValue(false),
       getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
+      getProjectDependencyStatus: jasmine.createSpy('dependencyStatus').and.returnValue('idle'),
       hasCoderCloudPreflightFailure: jasmine.createSpy('cloudPreflightFailure').and.returnValue(false),
       beginCoderOperation: () => () => {},
       ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true),
@@ -183,6 +185,60 @@ describe('Coder concurrent process integration', () => {
     expect(runtime.getState('/a').upload).toBe('default');
   });
 
+  it('admits only an explicit build to join the active Coder cloud dependency preparation', async () => {
+    const { injector } = runtime.getSession('/a');
+    const pending = spyOn(injector.get(NpmService), 'hasPendingCloudDependencyPreparation').and.returnValue(false);
+    const builder = spyOn(injector.get(BuilderService), 'build').and.resolveTo({ state: 'done' });
+    project.getProjectDependencyStatus.and.returnValue('installing');
+    project.getProjectDependencyBlockMessage.and.returnValue('installing dependencies');
+
+    await expectAsync(runtime.build('/a')).toBeRejectedWithError('installing dependencies');
+    pending.and.returnValue(true);
+    expect(runtime.canJoinCloudDependencyPreparation()).toBeTrue();
+    expect(runtime.canJoinCloudDependencyPreparation('/b')).toBeFalse();
+    await expectAsync(runtime.build('/a', { preprocessOnly: true })).toBeRejectedWithError('installing dependencies');
+    await expectAsync(runtime.build('/a', { clearCache: true })).toBeRejectedWithError('installing dependencies');
+    await expectAsync(runtime.build('/a', { localFallback: { local: {
+      fromRequestId: 'cloud-request', assertCurrent: async () => {},
+    } } })).toBeRejectedWithError('installing dependencies');
+    await expectAsync(runtime.upload('/a', '/dev/A')).toBeRejectedWithError('installing dependencies');
+    expect(builder).not.toHaveBeenCalled();
+
+    const options = { requestId: 'cloud-request', localFallback: { recordCloudFailure: jasmine.createSpy('record cloud failure') } };
+    await expectAsync(runtime.build('/a', options)).toBeResolvedTo({ state: 'done' });
+    expect(builder).toHaveBeenCalledOnceWith('/a', jasmine.objectContaining({ requestId: options.requestId }));
+    const failure = new Error('cloud preflight');
+    const sourceCurrent = jasmine.createSpy('source current');
+    builder.calls.mostRecent().args[1]?.localFallback?.recordCloudFailure?.(failure, sourceCurrent);
+    const assertActive = options.localFallback.recordCloudFailure.calls.mostRecent().args[1];
+    await expectAsync(assertActive()).toBeResolved();
+    project.currentProjectPath = '/b';
+    await expectAsync(assertActive()).toBeRejectedWithError(/active Coder project changed/);
+    expect(sourceCurrent).toHaveBeenCalledTimes(1);
+    project.currentProjectPath = '/a';
+
+    project.getProjectDependencyStatus.and.returnValue('error');
+    project.getProjectDependencyBlockMessage.and.returnValue('retry dependencies');
+    await expectAsync(runtime.build('/a')).toBeRejectedWithError('retry dependencies');
+    expect(builder).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds an idle cloud build fallback to the current project after obtaining its dependency session', async () => {
+    const session = runtime.getSession('/a');
+    session.project.isCloudBuild = () => true;
+    const dependencySession = spyOn(session.project, 'getProjectDependencySession').and.callThrough();
+    const capture = spyOn(project, 'captureCurrentProjectGuard').and.callThrough();
+    const builder = spyOn(session.injector.get(BuilderService), 'build').and.resolveTo({ state: 'done' });
+    const recordCloudFailure = jasmine.createSpy('record cloud failure');
+    await runtime.build('/a', { requestId: 'cloud-request', localFallback: { recordCloudFailure } });
+
+    expect(dependencySession).toHaveBeenCalledOnceWith('/a');
+    expect(dependencySession).toHaveBeenCalledBefore(capture);
+    builder.calls.mostRecent().args[1]?.localFallback?.recordCloudFailure?.(new Error('cloud failure'), async () => {});
+    project.currentProjectPath = '/b';
+    await expectAsync(recordCloudFailure.calls.mostRecent().args[1]()).toBeRejectedWithError(/active Coder project changed/);
+  });
+
   it('shows preparation before Coder preflight, rejects reentry, and preserves progress from another owner', async () => {
     const session = runtime.getSession('/a');
     let fail!: (error: Error) => void;
@@ -197,6 +253,43 @@ describe('Coder concurrent process integration', () => {
     expect(session.notice.data).toBeNull();
     expect(notices.data.title).toBe('Download');
     expect(session.busy).toBeNull();
+  });
+
+  it('keeps the active build stoppable when cloud dependency progress replaces its notice', async () => {
+    const session = runtime.getSession('/a');
+    const compiler = session.injector.get(CompileService);
+    const waiting = spyOn(compiler, 'isWaitingForCloudDependencies').and.returnValue(false);
+    const cancel = spyOn(compiler, 'cancel');
+    let started!: () => void;
+    let finish!: (value: { state: string }) => void;
+    const enteredBuild = new Promise<void>(resolve => { started = resolve; });
+    spyOn(session.injector.get(BuilderService), 'build').and.callFake(() => {
+      started();
+      return new Promise(resolve => { finish = resolve; });
+    });
+    const build = runtime.build('/a');
+    await enteredBuild;
+    const notices = TestBed.inject(NoticeService);
+    const progress = { title: 'Preparing dependencies', state: 'doing' as const };
+    session.notice.update(progress);
+    expect(notices.data.stop).toBeUndefined();
+
+    waiting.and.returnValue(true);
+    const existingStop = jasmine.createSpy('existing stop');
+    session.notice.update({ ...progress, stop: existingStop });
+    expect(notices.data.stop).toBe(existingStop);
+    session.notice.update({ ...progress });
+    expect(notices.data.stop).toEqual(jasmine.any(Function));
+    const previousStop = notices.data.stop!;
+    session.notice.update({ ...progress });
+    previousStop();
+    expect(cancel).not.toHaveBeenCalled();
+    notices.data.stop!();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(existingStop).not.toHaveBeenCalled();
+
+    finish({ state: 'done' });
+    await build;
   });
 
   it('restores an actionable dependency failure and its retry when returning to a project', () => {

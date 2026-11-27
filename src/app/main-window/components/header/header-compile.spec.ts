@@ -17,6 +17,7 @@ describe('Header compile readiness', () => {
     header.message = { info: jasmine.createSpy('info') };
     header.connectorState = { running: false };
     header.configService = { isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(false) };
+    header.coderRuntime = { canJoinCloudDependencyPreparation: jasmine.createSpy('canJoin').and.returnValue(false) };
     header.uploaderService = { requiresLocalPort: jasmine.createSpy('requiresPort').and.returnValue(true),
       upload: jasmine.createSpy('upload').and.resolveTo({ state: 'done' }) };
     header.serialService = { currentPort: null };
@@ -71,6 +72,24 @@ describe('Header compile readiness', () => {
       expect(item.state).toBe('default');
     });
   }
+
+  it('admits a Coder compile, but keeps Play and Upload blocked, during joinable cloud preparation', async () => {
+    header.configService.isCoderProduct.and.returnValue(true);
+    header.projectService.getProjectMode.and.returnValue('coder');
+    header.projectService.getProjectDependencyBlockMessage.and.returnValue('installing');
+    header.coderRuntime.canJoinCloudDependencyPreparation.and.returnValue(true);
+
+    const compile = { action: 'compile', state: 'default' };
+    expect(header.dependencyBlockMessage(compile)).toBeUndefined();
+    await header.process(compile, null, 'manual');
+    await header.process({ action: 'play', state: 'default' }, null, 'manual');
+    await header.process({ action: 'upload', state: 'default' }, null, 'manual');
+
+    expect(header.builderService.build).toHaveBeenCalledOnceWith(undefined, { source: 'manual' });
+    expect(header.uploaderService.upload).not.toHaveBeenCalled();
+    expect(header.message.info).toHaveBeenCalledTimes(2);
+    expect(header.message.info).toHaveBeenCalledWith('installing');
+  });
 
   it('does not request a board from Blockly compilation', async () => {
     header.projectService.isProjectOpening = false;

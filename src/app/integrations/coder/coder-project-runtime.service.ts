@@ -90,6 +90,12 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     return this.sessions.get(this.key(path))?.state || { build: 'default', upload: 'default' };
   }
 
+  canJoinCloudDependencyPreparation(path = this.projects.currentProjectPath): boolean {
+    if (!this.isActive(path) || this.projects.getProjectDependencyStatus(path) !== 'installing') return false;
+    const session = this.sessions.get(this.key(path));
+    return session?.injector.get(NpmService).hasPendingCloudDependencyPreparation(path) === true;
+  }
+
   getSession(path: string): CoderProjectSession {
     const key = this.key(path);
     const existing = this.sessions.get(key);
@@ -115,6 +121,13 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     };
     this.sessions.set(key, session);
     session.notice.stateSubject.subscribe(notice => {
+      if (notice?.state === 'doing' && !notice.stop && session.busy === 'build'
+        && child.get(CompileService).isWaitingForCloudDependencies()) {
+        const stop = () => {
+          if (this.isActive(path) && session.busy === 'build' && session.state.notice?.stop === stop) this.cancel(path, 'build');
+        };
+        notice = { ...notice, stop };
+      }
       if (notice?.onRetryLocally) {
         const retry = notice.onRetryLocally;
         const current = session.project.captureCurrentProjectGuard();
@@ -158,17 +171,23 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
 
   private async run(path: string, kind: 'build' | 'upload',
     execute: (session: CoderProjectSession, cloudPreflightCurrent?: () => boolean) => Promise<any>,
-    { repairLocalDependencies = false, preprocessOnly = false, requestBoundFallback = false } = {}): Promise<any> {
+    { repairLocalDependencies = false, preprocessOnly = false, requestBoundFallback = false, joinCloudDependencyPreparation = false } = {}): Promise<any> {
     if (this.projects.isProjectTransitionInProgress(path)) throw new Error('工程配置正在更新，请完成后再编译或上传。');
     const dependencyBlock = this.projects.getProjectDependencyBlockMessage(path);
+    const joiningCloudPreparation = dependencyBlock && joinCloudDependencyPreparation && this.canJoinCloudDependencyPreparation(path);
     const recoverCloudPreflight = dependencyBlock && requestBoundFallback && this.isActive(path)
       && this.projects.hasCoderCloudPreflightFailure(path);
-    if (dependencyBlock && !repairLocalDependencies && !recoverCloudPreflight) {
+    if (dependencyBlock && !repairLocalDependencies && !recoverCloudPreflight && !joiningCloudPreparation) {
       throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
     }
-    const cloudPreflightCurrent = recoverCloudPreflight ? this.projects.captureCurrentProjectGuard() : undefined;
     const session = this.getSession(path);
     if (session.busy) throw new Error(`工程正在${session.busy === 'build' ? '编译' : '上传'}: ${path}`);
+    const prepareCloudPreflight = requestBoundFallback && joinCloudDependencyPreparation && this.isActive(path)
+      && (joiningCloudPreparation || (!dependencyBlock && this.projects.getProjectDependencyStatus(path) === 'idle'
+        && session.project.isCloudBuild(path)));
+    // A settings change can leave the old dependency session in the registry until the new owner is requested.
+    if (prepareCloudPreflight) session.project.getProjectDependencySession(path);
+    const cloudPreflightCurrent = recoverCloudPreflight || prepareCloudPreflight ? this.projects.captureCurrentProjectGuard() : undefined;
     session.busy = kind;
     session.state = { ...session.state, [kind]: 'doing' };
     const finish = this.projects.beginCoderOperation(kind, path);
@@ -208,6 +227,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     const recordCloudFailure = options.localFallback?.recordCloudFailure;
     const requestBoundFallback = !!options.requestId && !options.preprocessOnly && !options.clearCache
       && !!(recordCloudFailure || options.localFallback?.local);
+    const joinCloudDependencyPreparation = !options.preprocessOnly && !options.clearCache && !options.localFallback?.local;
     return this.run(path, 'build', async (session, cloudPreflightCurrent) => {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);
@@ -222,7 +242,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
           assertActiveProject();
         }),
       } });
-    }, { preprocessOnly: options.preprocessOnly, requestBoundFallback });
+    }, { preprocessOnly: options.preprocessOnly, requestBoundFallback, joinCloudDependencyPreparation });
   }
 
   async resolvePort(path: string, requestedPort?: string) {
