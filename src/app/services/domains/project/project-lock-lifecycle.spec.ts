@@ -136,7 +136,8 @@ describe('Project command lifecycle during close', () => {
     window['ipcRenderer'].invoke.and.callFake(async (channel: string, data: any) =>
       channel === 'project-commands-stop-status' ? { ok: true, ...data, state: 'stopped' } : { ok: true });
     expect(await service.close()).toBeTrue();
-    expect(invalidate.calls.allArgs()).toEqual([[{ projectPath: '/active' }], [{ projectPath: '/active' }]]);
+    const invalidation = { projectPath: '/active', preserveCompleted: true };
+    expect(invalidate.calls.allArgs()).toEqual([[invalidation], [invalidation]]);
     expect(window['projectLock'].release).toHaveBeenCalledOnceWith('/active');
   });
 

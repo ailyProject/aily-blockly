@@ -11,6 +11,7 @@ import { MetricsService } from '@core/metrics/public-api';
 import { ProjectService, CODER_EXECUTION_PORT } from '@domain/project/public-api';
 import {
   BUILD_ACTION_PORT,
+  BuilderService,
   CoderBuildInfoService,
   CompileValidationService,
 } from '@domain/build/public-api';
@@ -56,6 +57,7 @@ describe('Coder concurrent process integration', () => {
       getProjectMode: () => 'coder',
       isProjectTransitionInProgress: jasmine.createSpy('transition').and.returnValue(false),
       getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
+      hasCoderCloudPreflightFailure: jasmine.createSpy('cloudPreflightFailure').and.returnValue(false),
       beginCoderOperation: () => () => {},
       ensureCoderBoardSelected: jasmine.createSpy('selectBoard').and.resolveTo(true),
       getCoderProjectContext(path: string) {
@@ -100,6 +102,30 @@ describe('Coder concurrent process integration', () => {
 
   function started(command: typeof commands[number]): void { command.output.next({ type: 'stdout', data: 'running\n', streamId: command.id }); }
   function finish(command: typeof commands[number]): void { command.output.next({ type: 'close', code: 0, streamId: command.id }); command.output.complete(); }
+
+  it('admits only the active Coder build with request-bound fallback controls after a cloud preflight failure', async () => {
+    const builder = spyOn(runtime.getSession('/a').injector.get(BuilderService), 'build').and.resolveTo({ state: 'done' });
+    const recording = { recordCloudFailure: jasmine.createSpy('record failure') };
+    const local = { local: { fromRequestId: 'original', assertCurrent: async () => {} } };
+    project.getProjectDependencyBlockMessage.and.returnValue('dependency failure');
+    await expectAsync(runtime.build('/a', { requestId: 'ordinary', localFallback: recording })).toBeRejectedWithError('dependency failure');
+    project.hasCoderCloudPreflightFailure.and.returnValue(true);
+    await expectAsync(runtime.build('/a')).toBeRejectedWithError('dependency failure');
+    await expectAsync(runtime.build('/a', { requestId: 'analysis', localFallback: recording, preprocessOnly: true })).toBeRejectedWithError('dependency failure');
+    await expectAsync(runtime.build('/b', { requestId: 'background', localFallback: recording })).toBeRejectedWithError('dependency failure');
+    expect(builder).not.toHaveBeenCalled();
+
+    await runtime.build('/a', { requestId: 'original', localFallback: recording });
+    await runtime.build('/a', { requestId: 'local', localFallback: local });
+    expect(builder.calls.mostRecent().args).toEqual(['/a', { requestId: 'local', localFallback: local }]);
+    const sourceCurrent = jasmine.createSpy('source check');
+    builder.calls.first().args[1]?.localFallback?.recordCloudFailure?.(new Error('cloud preflight'), sourceCurrent);
+    const activeSource = recording.recordCloudFailure.calls.mostRecent().args[1];
+    await expectAsync(activeSource()).toBeResolved();
+    project.currentProjectPath = '/b';
+    await expectAsync(activeSource()).toBeRejectedWithError(/active Coder project changed/);
+    expect(sourceCurrent).toHaveBeenCalledTimes(1);
+  });
 
   for (const state of ['done', 'error']) it(`owns the project while a notification retries locally and reports ${state}`, async () => {
     const session = runtime.getSession('/a');

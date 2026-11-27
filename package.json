@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.116",
+  "version": "0.9.117",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -214,6 +214,7 @@
     "esptool-js": "^0.6.0",
     "fancy-ansi": "^0.1.3",
     "iconv-lite": "^0.7.0",
+    "ignore": "7.0.5",
     "install": "^0.13.0",
     "js-base64": "^3.7.8",
     "jsonrepair": "^3.13.0",

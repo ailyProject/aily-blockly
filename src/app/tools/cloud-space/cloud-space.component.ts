@@ -21,7 +21,7 @@ import { HubNavigationService } from '@integration/hub/public-api';
 import { LoginDialogComponent } from '../../main-window/components/login-dialog/login-dialog.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { distinctUntilChanged } from 'rxjs/operators';
-import { firstValueFrom, Subscription } from 'rxjs';
+import { firstValueFrom, lastValueFrom, Subscription } from 'rxjs';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api';
 import { TranslateService } from '@ngx-translate/core';
@@ -29,6 +29,7 @@ import { ConfigService } from '@core/preferences/public-api';
 import { readSavedProjectProgram, type SavedProjectProgram } from '../../integrations/blockly/abs/abs-program-reader';
 import { publishProjectText } from '../../services/core/platform/project-file-publication';
 import { chooseCloudSyncConflictAction, confirmCloudSyncOverwrite } from './services/cloud-sync-conflict';
+import { listCloudProjectEntries } from './services/cloud-project-entries';
 import {
   cloudSourceStamp, projectCloudIdentity, readLocalCloudArchive,
   readCloudSyncConflict, readCloudSyncState, writeCloudSyncState, type CloudSyncState,
@@ -429,116 +430,64 @@ export class CloudSpaceComponent {
     );
     delete cloudPackageJson[AILY_LOCAL_LIBRARY_SOURCES_KEY];
     if (detachCloudProject) delete cloudPackageJson.cloudId;
-    const replacePackage = hasLocalLibrarySources || detachCloudProject;
+    const replacePackage = !!savedProgram || hasLocalLibrarySources || detachCloudProject;
+    const fs = window['fs'], path = window['path'];
+    const stagingDir = path.join(window['os'].tmpdir(), `aily-cloud-package-${crypto.randomUUID()}`);
+    let stagingOwned = false;
+    try {
+      const entries = listCloudProjectEntries(prjPath, isCoder ? 'coder' : 'blockly');
+      const emptyDirectories = entries.filter(name => name.endsWith('/'));
+      const sourceEntries = entries.filter(name => !name.endsWith('/')
+        && !(replacePackage && name === 'package.json') && !(savedProgram && name === 'project.abi'));
+      const zip = await this.platformService.getZa7Path();
+      fs.mkdirSync(stagingDir);
+      stagingOwned = true;
+      const listFile = path.join(stagingDir, 'files.txt');
+      if (sourceEntries.length) await this.addCloudArchiveEntries(zip, archivePath, prjPath, listFile, sourceEntries);
 
-    // console.log('开始打包项目:', prjPath);
-
-    // 构建更安全的打包命令
-    // 打包所有文件，但排除特定目录和文件
-    // -x!node_modules: 排除 node_modules
-    // -xr!.*: 递归排除所有以 "." 开头的文件和目录
-    // -x!package-lock.json: 排除 package-lock.json
-    // -x!project.7z: 排除自身
-    // 注意：在某些shell环境下，!可能需要转义或引用，这里使用引号包裹排除项
-    // Cloud projects reopen from ABI; ABS identity maps belong to the source's local baseline.
-    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi" "-x!package.json" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`;
-    if (isCoder) {
-      // 保留 sketch 源码、本地库和 .aily-component-library.json 来源记录。
-      // 通配符末尾的 / 让 7-Zip 只匹配点开头的目录，保留其他点开头的文件。
-      const exclusions = [
-        '-x!node_modules', '-x!package-lock.json', '-x!project.7z',
-        '-x!project.abi', '-x!project.abi.backup', '-x!project.abs', '-x!project.abs.map.json',
-        '-xr!.*/', '-xr!.git', '-xr!.aily', '-xr!.temp', '-xr!.build', '-xr!.cache', '-xr!.pio',
-        '-xr!.DS_Store', '-xr!.env*',
-        '-x!sketch/preprocess.json', '-x!sketch/library-cache.json',
-        '-x!sketch/build-config.json', '-x!sketch/upload-config.json',
-        '-x!sketch/target-compile.json',
-        '-x!sketch/compile-preprocess-*.json',
-      ];
-      packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * ${exclusions.map(value => `"${value}"`).join(' ')}`;
-    }
-    if (replacePackage && isCoder) {
-      packCommand += ` "-x!package.json"`;
-    }
-    
-    // console.log('执行打包命令:', packCommand);
-    const result = await this.cmdService.runAsync(packCommand, prjPath, false);
-
-    // console.log('打包命令执行结果:', result);
-
-    // 检查打包是否成功
-    if (result.type === 'error' || (result.code && result.code !== 0)) {
-      this.message.error('项目打包失败：' + (result.error || result.data || '请检查本地磁盘空间和文件写入权限'));
-      console.error('7za打包失败:', result);
-      return;
-    }
-
-    if (savedProgram || replacePackage) {
-      const stagingDir = window['path'].join(
-        window['os'].tmpdir(),
-        `aily-cloud-package-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      );
-      let stagingOwned = false;
-      try {
-        window['fs'].mkdirSync(stagingDir);
-        stagingOwned = true;
-        window['fs'].writeFileSync(
-          window['path'].join(stagingDir, 'package.json'),
-          JSON.stringify(cloudPackageJson, null, 2),
-        );
-        if (savedProgram) window['fs'].writeFileSync(window['path'].join(stagingDir, 'project.abi'), savedProgram.files['project.abi']);
-        const addPackageResult = await this.cmdService.runAsync(
-          `${this.platformService.za7} a -t7z "${archivePath}" "package.json"${savedProgram ? ' "project.abi"' : ''}`,
-          stagingDir,
-          false,
-        );
-        if (addPackageResult.type === 'error' || (addPackageResult.code && addPackageResult.code !== 0)) {
-          this.message.error('项目打包失败: 无法写入已保存的项目快照');
-          console.error('写入云端 package.json 失败:', addPackageResult);
-          return;
+      if (replacePackage || emptyDirectories.length) {
+        const snapshot = path.join(stagingDir, 'snapshot');
+        fs.mkdirSync(snapshot);
+        const snapshotEntries = [...emptyDirectories];
+        // Stage empty directories so a late write in the source cannot add unlisted files.
+        for (const name of emptyDirectories) fs.mkdirSync(path.join(snapshot, name));
+        if (replacePackage) {
+          fs.writeFileSync(path.join(snapshot, 'package.json'), JSON.stringify(cloudPackageJson, null, 2));
+          snapshotEntries.push('package.json');
         }
-      } finally {
-        if (stagingOwned) window['fs'].rmSync(stagingDir, { recursive: true, force: true });
+        if (savedProgram) {
+          fs.writeFileSync(path.join(snapshot, 'project.abi'), savedProgram.files['project.abi']);
+          snapshotEntries.push('project.abi');
+        }
+        await this.addCloudArchiveEntries(zip, archivePath, snapshot, listFile, snapshotEntries);
       }
+
+      if (!fs.existsSync(archivePath) || fs.statSync(archivePath).size === 0) throw new Error('7z 归档不存在或为空');
+      return archivePath;
+    } catch (error) {
+      this.message.error(`项目打包失败：${error instanceof Error ? error.message : String(error)}`);
+      console.error('云同步项目打包失败:', error);
+    } finally {
+      if (stagingOwned) fs.rmSync(stagingDir, { recursive: true, force: true });
     }
+  }
 
-    // 等待文件系统完成写入
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // 验证生成的7z文件
-    if (!window['fs'].existsSync(archivePath)) {
-      this.message.error('7z文件生成失败');
-      console.error('7z文件不存在:', archivePath);
-      return;
+  private async addCloudArchiveEntries(zip: string, archive: string, cwd: string, listFile: string, entries: string[]): Promise<void> {
+    const lines: string[] = [], literalIncludes: string[] = [];
+    for (const name of entries) {
+      // A 7-Zip listfile cannot represent line breaks and trims unquoted whitespace.
+      if (/[\r\n]/.test(name)) literalIncludes.push(`-i!${name}`);
+      else lines.push(`"${name}"`);
     }
-
-    // 检查文件大小（多次检查确保文件完整）
-    let fileStats = window['fs'].statSync(archivePath);
-    let retryCount = 0;
-
-    // 如果文件大小为0，等待一段时间后重试
-    while (fileStats.size === 0 && retryCount < 5) {
-      // console.log(`文件大小为0，等待重试... (${retryCount + 1}/5)`);
-      await new Promise(resolve => setTimeout(resolve, 300));
-      fileStats = window['fs'].statSync(archivePath);
-      retryCount++;
+    const args = ['a', '-t7z', '-mx=9', '-spd', '-scsUTF-8', archive, ...literalIncludes];
+    if (lines.length) {
+      window['fs'].writeFileSync(listFile, `${lines.join('\n')}\n`, 'utf8');
+      args.push(`@${listFile}`);
     }
-
-    if (fileStats.size === 0) {
-      this.message.error('生成的7z文件为空，打包过程可能失败');
-      console.error('7z文件为空:', archivePath);
-
-      // 尝试手动检查打包命令的输出
-      console.error('打包命令输出:', result.data);
-      return;
+    const result = await lastValueFrom(this.cmdService.spawn(zip, args, { cwd, shellProfile: false, observeExit: true }));
+    if (result.type !== 'close' || result.code !== 0) {
+      throw new Error(result.error || result.stderr || result.stdout || '7-Zip 未完成归档');
     }
-
-    // console.log('7z文件生成成功:', {
-    //   path: archivePath,
-    //   size: fileStats.size
-    // });
-
-    return archivePath;
   }
 
   syncProject() {

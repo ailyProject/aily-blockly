@@ -1181,7 +1181,7 @@ export class _BuilderService {
         if (!prepared.sourceWorkspace) return false;
         // 与实际编译使用相同的工作区快照；遗漏该字段会让主进程始终判定固件已过期。
         const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
-        reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+        reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture }, forUpload: true });
       } else if (captureExecution) {
         execution = window['builder'].resolveBuildExecution(projectPath, config);
         reusable = !!execution;

@@ -441,8 +441,10 @@ export class _UploaderService {
 
         // A local build retires the prior cloud result. The receipt selects a
         // candidate; the active source and firmware checks below authorize reuse.
-        const cloudCandidate = reuseCloud || (!firmware && (window['cloudBuild']?.hasArtifact
-          ? await window['cloudBuild'].hasArtifact({ projectPath }) : initialCloud));
+        const cloudBuild = window['cloudBuild'];
+        const hasCloudCandidate = cloudBuild?.hasUploadCandidate ?? cloudBuild?.hasArtifact;
+        const cloudCandidate = reuseCloud || (!firmware && (hasCloudCandidate
+          ? await hasCloudCandidate({ projectPath }) : initialCloud));
         const candidateBackend = cloudCandidate ? 'cloud' : 'local';
         const findReusableFirmware = async (verify: (backend: 'cloud' | 'local') => Promise<boolean>) => {
           if (await verify(candidateBackend)) return candidateBackend;

@@ -644,6 +644,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
     cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
     hasArtifact: options => invokeCloudBuild({ ...options, action: 'hasArtifact' }),
+    hasUploadCandidate: options => invokeCloudBuild({ ...options, action: 'hasUploadCandidate' }),
     artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
     artifactUploadInfo: options => invokeCloudBuild({ ...options, action: 'artifactUploadInfo' }),
     prepareArtifactUpload: options => invokeCloudBuild({ ...options, action: 'prepareArtifactUpload' }),

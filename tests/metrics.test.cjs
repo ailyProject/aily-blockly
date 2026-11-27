@@ -112,7 +112,9 @@ test('network and HTTP failures never escape or retry; a request aborts after th
 
 test('shared project creation records success and preserves existing failure returns', async () => {
   const records = [];
-  const { ProjectService } = load('src/app/services/domains/project/project.service.ts');
+  const { ProjectService } = load('src/app/services/domains/project/project.service.ts', {
+    './aily-cloud-ignore-file': { ensureAilyCloudIgnoreFile() {} },
+  });
   const service = Object.create(ProjectService.prototype);
   Object.defineProperty(service, 'application', { value: { updateFooterState() {} } });
   Object.defineProperty(service, 'message', { value: { error() {} } });

@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto');
 const { MAX_PROJECT_FILE_BYTES: MAX_BYTES, projectFileHash: hash, projectFileFault: fault,
   projectFileGuard, createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 
-const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json']);
+const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json', '.ailyignore']);
 const PROJECT_FILE_PUBLICATION_VERSION = 2;
 const PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION = 1;
 
@@ -93,7 +93,7 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
       // No awaits from the guard through the final byte check and rename.
       guard();
       lock.assertOwned();
-      assertNoPendingAbsGeneration(access);
+      if (fileName !== '.ailyignore') assertNoPendingAbsGeneration(access);
       if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
       const previous = read();
       if (hash(previous) !== expectedHash) result = { status: 'CONFLICT', error: 'Project file changed before commit; external content was retained.' };

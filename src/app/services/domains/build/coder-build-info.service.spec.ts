@@ -321,7 +321,7 @@ describe('Coder build metadata', () => {
       expect(await compiler.canReuseCloudBuildForUpload(root)).toBeTrue();
       expect(reusable).toHaveBeenCalledOnceWith({ config: jasmine.objectContaining({
         currentProjectPath: root, code: files.get(root + '/sketch/src/main.cpp'), sourceCapture: { digest: 'captured' },
-      }) });
+      }), forUpload: true });
       expect(compiler.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
       reusable.and.callFake(async () => { project.currentProjectPath = '/elsewhere'; return true; });
       expect(await compiler.canReuseCloudBuildForUpload(root)).toBeFalse();

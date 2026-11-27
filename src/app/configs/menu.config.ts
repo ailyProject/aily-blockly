@@ -118,6 +118,12 @@ export let HEADER_MENU: IMenuItem[] = [
     router: ['/main/blockly-editor', '/main/code-editor', '/main/code-editor-pro']
   },
   {
+    name: 'PROJECT_SETTING_DIALOG.TITLE',
+    action: 'project-settings',
+    icon: 'fa-light fa-folder-bookmark',
+    router: ['/main/code-editor-pro'],
+  },
+  {
     name: 'MENU.IMAGE_EXPORT',
     action: 'workspace-export-image',
     icon: 'fa-light fa-image',

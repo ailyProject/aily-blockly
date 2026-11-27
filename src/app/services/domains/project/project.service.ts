@@ -1,4 +1,5 @@
 import { ensureProjectPartitionFile } from './project-partitions';
+import { ensureAilyCloudIgnoreFile } from './aily-cloud-ignore-file';
 import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject, ensureCoderProjectFile, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
@@ -821,6 +822,7 @@ export class ProjectService {
     if (window['projectLock']) {
       const result = await window['projectLock'].tryAcquire(path, { auxiliary: true });
       if (!result.ok) throw new Error(`工程已被其他窗口占用: ${path}`);
+      if (result.attachment) this.backfillProjectCloudIgnore(path, result.attachment);
     }
     this.registerCoderProject(path);
     await this.restoreCoderWorkspaceTabs(path);
@@ -1060,6 +1062,7 @@ export class ProjectService {
       if (window['projectLock']) {
         const lock = await window['projectLock'].tryAcquire(project.path, { auxiliary: true });
         if (!lock.ok) continue;
+        if (lock.attachment) this.backfillProjectCloudIgnore(project.path, lock.attachment);
       }
       this.coderProjectsSubject.next([...this.coderProjects, this.coderProjectTab(project.path)]);
     }
@@ -1404,6 +1407,12 @@ export class ProjectService {
         { code: 'PROJECT_VIEW_ATTACHMENT_CHANGED' });
   }
 
+  private backfillProjectCloudIgnore(projectPath: string, attachment: ProjectStorageAttachment): void {
+    if (!this.projectDirectoryMatches(projectPath, attachment)) return;
+    try { ensureAilyCloudIgnoreFile(projectPath); }
+    catch (error) { console.warn('补齐项目云同步忽略规则失败:', error); }
+  }
+
   assertActiveProjectDirectory(path = this.currentProjectPath): void {
     if (path === this.currentProjectPath) this.assertProjectDirectory(path, this.activeProjectDirectory);
   }
@@ -1431,9 +1440,15 @@ export class ProjectService {
     return this.dependencyLifecycle.isBusy(projectPath);
   }
 
-  setProjectDependencyResult(session: ProjectDependencySession, ready: boolean): void {
+  setProjectDependencyResult(session: ProjectDependencySession, ready: boolean, cloudPreflightFailed = false): void {
     this.assertProjectDependencySession(session);
-    this.dependencyLifecycle.setResult(session, ready);
+    this.dependencyLifecycle.setResult(session, ready, cloudPreflightFailed);
+  }
+
+  hasCoderCloudPreflightFailure(projectPath: string): boolean {
+    return this.configService.isCoderProduct() && this.isCloudBuild(projectPath)
+      && this.getProjectDependencyStatus(projectPath) === 'error'
+      && this.dependencyLifecycle.hasCloudPreflightFailure(projectPath);
   }
 
   getProjectDependencyStatus(projectPath = this.currentProjectPath) {
@@ -1880,6 +1895,7 @@ export class ProjectService {
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
         coderEntry,
       });
+      ensureAilyCloudIgnoreFile(projectPath);
       if (isCoderTemplate) ensureCoderProjectFile(projectPath);
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
@@ -1915,6 +1931,7 @@ export class ProjectService {
 
       await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
+      ensureAilyCloudIgnoreFile(projectPath);
       if (mode === 'coder') ensureCoderProjectFile(projectPath);
       const created = await this.finishProjectCreation(projectPath, options);
       if (created) this.metrics.record('project_created');
@@ -2547,6 +2564,7 @@ export class ProjectService {
         return false;
       }
       let selected = false;
+      let attachment: ProjectStorageAttachment | undefined;
       try {
         creation?.assertCurrent();
         if (!retained) {
@@ -2566,6 +2584,7 @@ export class ProjectService {
         }
         const activeView = view ? await view.tryAcquire(projectPath) : undefined;
         if (activeView && !activeView.ok) throw projectViewOpenError(projectPath, activeView);
+        attachment = activeView?.attachment;
         selected = true;
         if (leavingBlockly) await this.releaseProjectViewLock(previousProjectPath, previousReservation);
       } finally {
@@ -2595,10 +2614,12 @@ export class ProjectService {
       // of navigation. Angular skips an already-active URL with `false`; that
       // is not a refused project reload. A different route must still navigate.
       const targetRoute = this.router.createUrlTree(['/main/code-editor-pro'], { queryParams: { path: projectPath } });
-      if (this.router.isActive(targetRoute, { paths: 'exact', queryParams: 'exact', fragment: 'ignored', matrixParams: 'ignored' })) {
-        return true;
+      const opened = this.router.isActive(targetRoute, { paths: 'exact', queryParams: 'exact', fragment: 'ignored', matrixParams: 'ignored' })
+        || await this.router.navigate(['/main/code-editor-pro'], { queryParams: { path: projectPath }, replaceUrl: true });
+      if (opened && attachment && this.isSameProjectPath(this.currentProjectPath, projectPath)) {
+        this.backfillProjectCloudIgnore(projectPath, attachment);
       }
-      return this.router.navigate(['/main/code-editor-pro'], { queryParams: { path: projectPath }, replaceUrl: true });
+      return opened;
     }
 
     const originalOpen = this.projectOpenTask;
@@ -2905,6 +2926,9 @@ export class ProjectService {
     }
 
     await this.waitForProjectOpenCompletion(projectPath, session);
+    if (abiIsExist && targetDirectory && this.isSameProjectPath(this.currentProjectPath, projectPath)) {
+      this.backfillProjectCloudIgnore(projectPath, targetDirectory);
+    }
     return true;
   }
 
@@ -3849,7 +3873,7 @@ export class ProjectService {
     const existing = attempts.get(session);
     if (existing) return existing;
     const attempt = Promise.resolve().then(async () => {
-      await window['cloudBuild']?.invalidate?.({ projectPath: session.projectPath });
+      await window['cloudBuild']?.invalidate?.({ projectPath: session.projectPath, preserveCompleted: true });
     }).catch(error => { attempts.delete(session); throw error; });
     attempts.set(session, attempt);
     return attempt;
@@ -4296,12 +4320,14 @@ export class ProjectService {
   }
 
   async setPackageJson(data: any) {
-    if (!this.currentProjectPath) {
+    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard();
+    if (!project) {
       throw new Error('当前项目路径未设置');
     }
 
     // set之前重新获取最新的package.json内容，然后进行合并
-    const currentPackageJson = await this.getPackageJson();
+    const currentPackageJson = await this.getPackageJson(project);
+    if (!current()) throw new Error('Project changed before publishing its configuration.');
     // 对比写入内容和当前内容是否相同，如果相同则不写入
     if (JSON.stringify(currentPackageJson) === JSON.stringify(data)) {
       // console.log('package.json内容未更改，跳过写入');
@@ -4312,13 +4338,12 @@ export class ProjectService {
       data = { ...currentPackageJson, ...data };
     }
 
-    if (this.libraryChanges.has(this.normalizeProjectPath(this.currentProjectPath))) {
-      const staged = await window['libraryDependencies'].patch(this.currentProjectPath, data);
-      this.acceptLibraryStatus(this.currentProjectPath, staged);
+    if (this.libraryChanges.has(this.normalizeProjectPath(project))) {
+      const staged = await window['libraryDependencies'].patch(project, data);
+      this.acceptLibraryStatus(project, staged);
       this.libraryChangesChanged?.next();
       return staged;
     }
-    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard();
     const host = window['libraryDependencies'];
     if (host?.environmentVersion !== 2 || typeof host.configure !== 'function') {
       throw Object.assign(new Error('Project configuration requires the matching dependency publisher; no unchecked write was attempted.'),

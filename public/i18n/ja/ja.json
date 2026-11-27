@@ -710,6 +710,8 @@
         "DESCRIPTION_PLACEHOLDER": "プロジェクトの説明を入力してください",
         "DOC_URL": "ドキュメントURL",
         "DOC_URL_PLACEHOLDER": "ドキュメントURLを入力してください",
+        "SYNC_RULES": "クラウド同期の除外ルール",
+        "SYNC_RULES_HINT": "1 行に 1 ルール",
         "PROJECT_CONFIG": "プロジェクト設定",
         "NO_CONFIG": "設定情報がありません",
         "DEPENDENCIES": "依存関係",
@@ -728,7 +730,11 @@
         "WARNING_DOC_URL_INVALID_FORMAT": "ドキュメントURLの形式が正しくありません。有効なURLを入力してください",
         "SUCCESS_SAVE": "保存に成功しました！",
         "ERROR_SAVE_FAILED": "保存に失敗しました。後でもう一度お試しください",
-        "ERROR_LOAD_FAILED": "プロジェクト設定の読み込みに失敗しました"
+        "ERROR_LOAD_FAILED": "プロジェクト設定の読み込みに失敗しました",
+        "ERROR_SYNC_RULES_LOAD": "同期ルールを読み込めませんでした",
+        "ERROR_SYNC_RULES_SAVE": "同期ルールを保存できませんでした",
+        "ERROR_SETTINGS_AFTER_RULES": "同期ルールは保存されました。他のプロジェクト設定を保存できませんでした。もう一度お試しください。",
+        "ERROR_PROJECT_CHANGED": "現在のプロジェクトが切り替わりました。プロジェクト設定を開き直してください。"
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "プロジェクト設定",
