@@ -825,6 +825,7 @@ export class AbsBaselineStore {
   async commit(
     generation: string, assertCurrent: () => void,
     commitAbi: (text: string, expectedByteHash: string | null, storage: AbsSyncStorageAccess) => Promise<void>,
+    beforePublish?: (storage: AbsSyncStorageAccess) => Promise<void>,
   ): Promise<AbsPublishResult> {
     return this.port.withLock(async storage => {
       const { record, pointer } = await this.readGeneration(storage, generation);
@@ -837,6 +838,12 @@ export class AbsBaselineStore {
         return this.result(storage, record, 'CONFLICT', 'Project files changed during preparation.');
       }
       assertCurrent();
+      // The original application stage and the prepared pointer share this
+      // writer. No lock handoff or concurrent publication may separate them.
+      if (beforePublish) {
+        await beforePublish(storage);
+        assertCurrent();
+      }
       const pointerText = absJson(pointer);
       if (!await storage.replace(PREPARED, null, pointerText)) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Another transaction was prepared.');
       try {

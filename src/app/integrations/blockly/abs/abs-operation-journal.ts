@@ -39,6 +39,9 @@ export interface AbsCurrentDocumentRecovery {
 }
 type RestoredApplicationRecord = { version: 1; kind: 'restored-working-document'; project: string; operationPointer: string;
   stagedHash: string | null; recovery: Omit<AbsCurrentDocumentRecovery, 'settlement'> };
+export interface ColdApplicationRollback {
+  version: 1; kind: 'cold-staged-preimage'; restorationRecordHash: string; stageHash: string;
+}
 export interface AbsUnpublishedDocumentSave {
   version: 1; kind: 'source-not-published'; requestId: string; operationId: string;
   attachment: AbsProjectAttachment; originalExecutor: AbsStorageExecutor; observerExecutor: AbsStorageExecutor;
@@ -544,15 +547,15 @@ export class AbsOperationJournal {
 
   /** Independent current-Working readback, never a terminal result for the old
    * application. Only a new attachment-bound operation with an exited storage
-   * executor qualifies. The caller verifies complete live S1 under this one
+   * executor qualifies. The caller verifies the complete live document under this one
    * existing file lock; it must not flush or acquire a nested storage lock. */
   async inspectRestoredApplication(requestId: string, assertCurrent: () => void,
     readback?: (document: unknown) => Promise<void>): Promise<AbsCurrentDocumentRecovery | null> {
     return this.readRestoredApplication(requestId, assertCurrent, readback);
   }
 
-  /** Retain the observed writer fence with its original request before another
-   * document operation replaces the current pointer. The original apply stays UNKNOWN. */
+  /** Preserve the verified writer fence before another document operation
+   * replaces the pointer. An exact staged preimage can also seal noncommit. */
   async recordRestoredApplication(id: string, assertCurrent: () => void, readback: (document: unknown) => Promise<void>) {
     const operation = await this.inspect();
     if (operation?.id === id && operation.kind === 'abs-apply' && operation.application) {
@@ -633,15 +636,78 @@ export class AbsOperationJournal {
       const marker: RestoredApplicationRecord = { version: 1, kind: 'restored-working-document', project: this.project,
         operationPointer: pointerText, stagedHash: staged === null ? null : await hashAbsText(staged), recovery };
       assertCurrent();
+      const markerText = absJson(marker);
       if (retained) {
-        if (absJson(marker) !== absJson(retained)) throw conflict();
-        return { ...recovery, settlement: { version: 1, recordHash: await hashAbsText(recoveryText!) } };
+        if (markerText !== absJson(retained)) throw conflict();
+      } else if (retain && !await storage.replace(recoveryKey, null, markerText)) {
+        throw conflict();
       }
-      if (!retain) return recovery;
-      const text = absJson(marker);
-      if (!await storage.replace(recoveryKey, null, text)) throw conflict();
-      return { ...recovery, settlement: { version: 1, recordHash: await hashAbsText(text) } };
+      if (!retained && !retain) return recovery;
+      const durableMarker = recoveryText ?? markerText;
+      if (retain && readback && staged !== null && record.sourceStageVersion === 1 && validation.workingCandidate
+        && pointer.sourceCommitted === undefined && absJson(finalWriter) === absJson(oldWriter)
+        && (original.executor.storagePid !== observer.executor.storagePid || original.executor.instanceId !== observer.executor.instanceId)) {
+        const exactPreimage = async () => {
+          assertCurrent();
+          return await storage.read(indexKey) === indexText && await storage.read(snapshotKey(pointer.id)) === snapshotText
+            && await storage.read(recoveryKey) === durableMarker && await storage.read(currentKey) === pointerText
+            && await storage.read(applicationStage) === staged && await storage.read('prepared.json') === null
+            && await storage.read('committed.json') === record.committed && absJson(await this.disk(storage)) === absJson(record.disk)
+            && await this.hasNoResult(storage, pointer.id);
+        };
+        if (await exactPreimage()) {
+          if (retained) await readback(record.document);
+          const preimage = new AbsBaselineStore({ ...this.port, read: key => storage.read(key) }, validation.base.scope);
+          if (await preimage.hasCommittedPreimage(record)) {
+            const coldRecovery: ColdApplicationRollback = { version: 1, kind: 'cold-staged-preimage',
+              restorationRecordHash: await hashAbsText(durableMarker), stageHash: marker.stagedHash! };
+            // The original stage names a child of this exact committed preimage.
+            // The old executor cannot publish it and the loaded Working view was read back.
+            const terminal = absJson({ version: 1, kind: 'rolled-back', project: this.project, operationId: pointer.id,
+              snapshotHash, operationPointer: pointerText, documentHash: recovery.documentHash, saved: recovery.saved,
+              coldRecovery, outcome: { ok: false, operation: 'abs_apply', project: this.project,
+                code: 'ABS_APPLICATION_COLD_ROLLBACK', message: 'The original application did not commit and the previous view was restored.',
+                publication: { status: 'NOT_COMMITTED' }, application: { status: 'ROLLED_BACK', requestId },
+                candidateApplied: false, requiresReload: false } });
+            if (await exactPreimage() && !await storage.replace(`recoveries/application-result-${pointer.id}.json`, null, terminal)) throw conflict();
+          }
+        }
+      }
+      return { ...recovery, settlement: { version: 1, recordHash: await hashAbsText(durableMarker) } };
     });
+  }
+
+  async verifyColdApplicationRollback(operation: AbsOperationSnapshot, operationPointer: string, proof: ColdApplicationRollback,
+    saved: Record<keyof AbsCurrentDocumentRecovery['saved'], string | null>): Promise<boolean> {
+    const id = operation.id, pointer = this.pointer(operationPointer);
+    const markerText = await this.port.read(restoredApplicationKey(id));
+    const staged = await this.port.read(stageKey(id));
+    if (operation.sourceStageVersion !== 1 || !operation.candidate || !operation.committed || !operation.application
+      || proof.version !== 1 || proof.kind !== 'cold-staged-preimage'
+      || markerText === null || staged === null || await hashAbsText(markerText) !== proof.restorationRecordHash
+      || await hashAbsText(staged) !== proof.stageHash || pointer.sourceCommitted !== undefined) return false;
+    const marker = JSON.parse(markerText) as RestoredApplicationRecord;
+    const recovery = marker.recovery, validation = operation.application.validation;
+    assertGenerationValidation(validation);
+    return marker.version === 1 && marker.kind === 'restored-working-document' && marker.project === this.project
+      && marker.operationPointer === operationPointer && marker.stagedHash === proof.stageHash
+      && recovery?.version === 1 && recovery.scope === 'restored-working-document' && recovery.state === 'restored'
+      && recovery.requestId === operation.application.requestId && recovery.operationId === id
+      && recovery.snapshotHash === pointer.hash
+      && recovery.operationPointerHash === await hashAbsText(operationPointer)
+      && recovery.documentHash === await hashAbsText(absJson(operation.document))
+      && absJson(recovery.saved) === absJson(saved)
+      && recovery.candidate?.hash === validation.candidate.hash && recovery.candidate.bytes === validation.candidate.bytes
+      && recovery.candidate.intentGeneration === (validation.intentGeneration ?? validation.base.generation)
+      && absJson(recovery.attachment) === absJson(operation.attachment)
+      && absJson(recovery.originalExecutor) === absJson(operation.executor)
+      && !!recovery.observerExecutor
+      && (recovery.originalExecutor.storagePid !== recovery.observerExecutor.storagePid
+        || recovery.originalExecutor.instanceId !== recovery.observerExecutor.instanceId)
+      && exitedApplicationWriter(recovery.oldWriter) && recovery.candidateApplied === false
+      && recovery.originalPublication === 'UNKNOWN'
+      && await this.matchesRestoredStage(this.port, operation, staged)
+      && await this.port.read(`recoveries/application-commit-${id}.json`) === null;
   }
 
   async matchesCopiedApplication(retained: LocationOperation, generation: string, pageId: string): Promise<boolean> {

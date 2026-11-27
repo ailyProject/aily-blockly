@@ -1896,20 +1896,21 @@ export class AbsWorkspaceSyncService {
           ...(projectTree ? { authorIntent: 'candidate' as const } : {}),
           ...(mergedAuthor === undefined ? {} : { mergedAuthor }) }, expectedPublished, { mergedCandidate });
         assertApplied();
-        if (validation) await application.stage(operationId, validation, {
-          publication: { status: 'COMMITTED', generation: projection.map.generation, abiSaved: true,
-            absMirrored: !projectTree || expected.abs === projection.abs || (mergedCandidate && expected.abs === source), mapPublished: true },
-          appliedRevision: applied.revision, requiresReload: false, evidence, abs: projection.abs,
-          warnings: ['The original derived-code publication was not observed; source application is independently verified.'],
-          derivedOutputs: { published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING' }, ...(historyBase ? { historyBase } : {}),
-        }, assertApplied);
-        commitStarted = true;
-        publication = await store.commit(projection.map.generation, assertApplied, async (text, expectedHash, storage) => {
+        publication = await this.withoutViewChecks(() => store.commit(projection.map.generation, assertApplied, async (text, expectedHash, storage) => {
           assertApplied();
           if (text !== prepared.abiText || !await storage.replace('project.abi', expectedHash, text)) {
             throw new AbsSyncError('ABS_ABI_COMMIT_CONFLICT', 'Prepared ABI changed before commit.');
           }
-        });
+        }, async storage => {
+          if (validation) await application.stage(operationId, validation, {
+            publication: { status: 'COMMITTED', generation: projection.map.generation, abiSaved: true,
+              absMirrored: !projectTree || expected.abs === projection.abs || (mergedCandidate && expected.abs === source), mapPublished: true },
+            appliedRevision: applied.revision, requiresReload: false, evidence, abs: projection.abs,
+            warnings: ['The original derived-code publication was not observed; source application is independently verified.'],
+            derivedOutputs: { published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING' }, ...(historyBase ? { historyBase } : {}),
+          }, assertApplied, storage);
+          commitStarted = true;
+        }));
         if (!publication.abiSaved) {
           await restore();
           return { publication, requiresReload: false, warnings: [] };
