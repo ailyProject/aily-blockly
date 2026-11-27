@@ -121,10 +121,33 @@ def release_directories(stage, public):
     return stage, public
 
 
-def receive(version, staging_root, public):
+def matches_public_release(version, public, names, inventory):
+    import fcntl
+    files = inventory["files"]
+    if inventory["version"] != version or set(files) != set(names):
+        return False
+    if not all((public / name).is_file() for name in names):
+        return False
+    # Read a single release snapshot while the publisher's replacement lock is held.
+    with (public / ".coder-publish.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        for name in names:
+            path = public / name
+            size, checksum = files[name]
+            if (path.is_symlink() or not path.is_file() or path.stat().st_size != size
+                    or size <= 0 or digest(path) != checksum):
+                return False
+        return all(current_version(public / name) == version_key(version) for name in MANIFESTS)
+
+
+def receive(version, staging_root, public, requested_inventory=None):
     staging_root, public = release_directories(staging_root, public)
     windows, macos = package_names(version)
-    expected = set(windows + macos + CHANGELOGS + MANIFESTS + ("inventory.json",))
+    names = MANIFESTS + CHANGELOGS + windows + macos
+    if requested_inventory and matches_public_release(version, public, names, json.loads(requested_inventory)):
+        print("CODER_FEED_CURRENT", flush=True)
+        return
+    expected = {*names, "inventory.json"}
     with tempfile.TemporaryDirectory(prefix="coder-", dir=staging_root) as directory:
         stage = Path(directory)
         # The uploader waits for sudo to finish consuming its password before sending binary data.
@@ -208,7 +231,7 @@ def publish(version, stage, public):
 
 
 if __name__ == "__main__":
-    command, version, source, target = sys.argv[1:]
+    command, version, source, target, *args = sys.argv[1:]
     version_key(version)
     {"prepare": prepare, "publish": publish, "receive": receive, "fetch-r2": fetch_r2}[command](
-        version, Path(source), Path(target))
+        version, Path(source), Path(target), *args)

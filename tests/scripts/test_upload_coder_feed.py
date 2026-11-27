@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import secrets
+import shlex
 import socket
 import subprocess
 import sys
@@ -54,7 +55,7 @@ class CoderUploadTest(unittest.TestCase):
         cls.server_log.addHandler(logging.NullHandler())
         cls.server_log.propagate = False
 
-    def exercise(self, mode):
+    def exercise(self, mode, reply=b"CODER_FEED_READY\n", exit_status=0, expect_success=True):
         password = secrets.token_hex(16)
         origin = LocalOrigin(password)
         with tempfile.TemporaryDirectory() as directory, socket.socket() as listener:
@@ -83,6 +84,8 @@ class CoderUploadTest(unittest.TestCase):
                         return
                     self.assertTrue(origin.exec_requested.wait(5))
                     self.assertTrue(password.encode() not in origin.command, "Credential in receiver command")
+                    args = shlex.split(origin.command.decode())
+                    self.assertEqual(json.loads(args[args.index("receive") + 4]), json.loads(inventory))
                     channel.settimeout(5)
                     with channel.makefile("rb") as incoming:
                         if mode == "sudo":
@@ -91,11 +94,14 @@ class CoderUploadTest(unittest.TestCase):
                             time.sleep(0.05)
                             channel.sendall_stderr(b"feed-auth]")
                             self.assertTrue(incoming.readline() == password.encode() + b"\n")
-                        channel.sendall(b"CODER_FEED_READY\n")
-                        with tarfile.open(fileobj=io.BytesIO(incoming.read())) as archive:
-                            self.assertEqual({m.name: archive.extractfile(m).read() for m in archive}, files)
-                    channel.send_exit_status(0)
-                    channel.shutdown_write()
+                        channel.sendall(reply)
+                        if reply == b"CODER_FEED_READY\n":
+                            with tarfile.open(fileobj=io.BytesIO(incoming.read())) as archive:
+                                self.assertEqual({m.name: archive.extractfile(m).read() for m in archive}, files)
+                        channel.send_exit_status(exit_status)
+                        channel.shutdown_write()
+                        if reply != b"CODER_FEED_READY\n":
+                            self.assertEqual(incoming.read(), b"", "Unexpected upload after receiver reply")
                     transport.join(5)
 
             pin = paramiko.RSAKey.generate(2048) if mode == "wrong-key" else self.host_key
@@ -114,7 +120,10 @@ class CoderUploadTest(unittest.TestCase):
                 self.assertIn("BadHostKeyException", result.stderr)
                 self.assertEqual(origin.auth_attempts, 0)
             else:
-                self.assertEqual(result.returncode, 0, result.stderr)
+                if expect_success:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(origin.auth_attempts, 1)
 
     def test_direct_receiver(self):
@@ -122,6 +131,17 @@ class CoderUploadTest(unittest.TestCase):
 
     def test_sudo_password_precedes_archive(self):
         self.exercise("sudo")
+
+    def test_current_receiver_skips_archive(self):
+        for mode in ("direct", "sudo"):
+            with self.subTest(mode=mode):
+                self.exercise(mode, reply=b"CODER_FEED_CURRENT\n")
+
+    def test_current_reply_requires_successful_exit(self):
+        self.exercise("direct", reply=b"CODER_FEED_CURRENT\n", exit_status=1, expect_success=False)
+
+    def test_current_marker_inside_error_line_is_not_a_reply(self):
+        self.exercise("direct", reply=b"receiver expected CODER_FEED_CURRENT\n", expect_success=False)
 
     def test_wrong_host_key_rejected_before_authentication(self):
         self.exercise("wrong-key")

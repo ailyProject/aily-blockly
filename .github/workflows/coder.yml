@@ -560,7 +560,7 @@ jobs:
     needs: [prepare, upload-stable-feed]
     if: needs.prepare.outputs.channel == 'stable'
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
         with:

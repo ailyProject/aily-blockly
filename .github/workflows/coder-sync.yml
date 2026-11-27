@@ -21,7 +21,7 @@ jobs:
   sync-stable-feed:
     if: github.ref == 'refs/heads/deploy-coder'
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
         with:

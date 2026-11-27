@@ -10,7 +10,8 @@ import paramiko
 
 
 SUDO_PROMPT = b"[coder-feed-auth]"
-READY = b"CODER_FEED_READY\n"
+READY = b"CODER_FEED_READY"
+CURRENT = b"CODER_FEED_CURRENT"
 
 
 def directory(variable):
@@ -20,9 +21,10 @@ def directory(variable):
     return path
 
 
-def receiver_command(version, staging, public):
+def receiver_command(version, staging, public, inventory):
     source = Path(__file__).with_name("publish-coder-feed.py").read_text(encoding="utf-8")
-    command = shlex.join(["python3", "-u", "-c", source, "receive", version, str(staging), str(public)])
+    command = shlex.join(["python3", "-u", "-c", source, "receive", version, str(staging), str(public),
+                          json.dumps(inventory)])
     staging_arg, public_arg = shlex.quote(str(staging)), shlex.quote(str(public))
     # A maintenance login may only be allowed to write as the owner of the site's home.
     # Reuse that existing delegation without changing any filesystem permissions.
@@ -41,17 +43,21 @@ def wait_for_receiver(channel, password):
     # sudo writes the prompt without a newline. Passwordless sudo goes directly to READY.
     output = b""
     authenticated = False
-    while READY not in output:
+    while True:
         chunk = channel.recv(4096)
         if not chunk:
             raise RuntimeError("Origin could not open its receiving directory; check paths and SSH account permissions")
         output += chunk
-        if SUDO_PROMPT in output:
+        while b"\n" in output:
+            line, _, output = output.partition(b"\n")
+            if line in (READY, CURRENT):
+                return line
+        if output == SUDO_PROMPT:
             if authenticated:
                 raise RuntimeError("Origin rejected authentication as the feed owner")
             channel.sendall(password.encode() + b"\n")
             authenticated = True
-            output = output.split(SUDO_PROMPT, 1)[1]
+            output = b""
 
 
 def upload(version, bundle):
@@ -76,20 +82,21 @@ def upload(version, bundle):
         with transport.open_session(timeout=30) as channel:
             channel.settimeout(180)
             channel.set_combine_stderr(True)
-            channel.exec_command(receiver_command(version, staging, public))
-            wait_for_receiver(channel, password)
-            with channel.makefile("wb") as stream, tarfile.open(fileobj=stream, mode="w|", dereference=True) as archive:
-                for name in [*inventory["files"], "inventory.json"]:
-                    path = bundle / name
-                    if Path(name).name != name or path.is_symlink() or not path.is_file():
-                        raise ValueError("Invalid bundle file")
-                    archive.add(path, arcname=name, recursive=False)
-                    print(f"Sent {name}", flush=True)
+            channel.exec_command(receiver_command(version, staging, public, inventory))
+            status = wait_for_receiver(channel, password)
+            if status == READY:
+                with channel.makefile("wb") as stream, tarfile.open(fileobj=stream, mode="w|", dereference=True) as archive:
+                    for name in [*inventory["files"], "inventory.json"]:
+                        path = bundle / name
+                        if Path(name).name != name or path.is_symlink() or not path.is_file():
+                            raise ValueError("Invalid bundle file")
+                        archive.add(path, arcname=name, recursive=False)
+                        print(f"Sent {name}", flush=True)
             channel.shutdown_write()
             output = channel.makefile("rb").read().decode(errors="replace")
             if channel.recv_exit_status():
                 raise RuntimeError(f"Origin publication failed: {output.strip()}")
-            print(output.strip())
+            print(f"Verified existing Coder {version} on the origin" if status == CURRENT else output.strip())
 
 
 if __name__ == "__main__":

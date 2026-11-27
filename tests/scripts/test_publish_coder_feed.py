@@ -2,6 +2,7 @@ import base64
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -66,6 +67,25 @@ class PublishCoderFeedTest(unittest.TestCase):
             expected = {p.name.replace("-cn.yml", ".yml"): p.read_bytes() for p in source.iterdir()}
             actual = {p.name: p.read_bytes() for p in self.public.iterdir() if not p.name.startswith(".")}
             self.assertEqual(actual, expected)
+
+        inventory = (bundle / "inventory.json").read_text(encoding="utf-8")
+        staging = self.root / "staging"
+        staging.mkdir()
+
+        def handshake(request):
+            return subprocess.run([sys.executable, SCRIPT, "receive", "1.2.3", staging, self.public, request],
+                                  input=b"", capture_output=True)
+
+        retry = handshake(inventory)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(retry.stdout, b"CODER_FEED_CURRENT\n")
+
+        incomplete = json.loads(inventory)
+        del incomplete["files"]["latest-coder.yml"]
+        self.assertEqual(handshake(json.dumps(incomplete)).stdout, b"CODER_FEED_READY\n")
+        package = next(self.public.glob("*.zip"))
+        package.write_bytes(b"?" * package.stat().st_size)
+        self.assertEqual(handshake(inventory).stdout, b"CODER_FEED_READY\n")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "The origin publishes on Linux")
     def test_same_version_allows_metadata_refresh_and_rejects_changed_packages(self):
@@ -144,7 +164,8 @@ class PublishCoderFeedTest(unittest.TestCase):
                 if condition == "truncated":
                     data = data[:end + tarfile.BLOCKSIZE]
                 before = {p.name: p.read_bytes() for p in self.public.iterdir()}
-                with subprocess.Popen([sys.executable, SCRIPT, "receive", version, staging, self.public],
+                inventory = (bundle / "inventory.json").read_text(encoding="utf-8")
+                with subprocess.Popen([sys.executable, SCRIPT, "receive", version, staging, self.public, inventory],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as receiver:
                     self.assertEqual(receiver.stdout.readline(), b"CODER_FEED_READY\n")
                     _, error = receiver.communicate(data)
