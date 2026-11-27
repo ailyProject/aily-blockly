@@ -1,0 +1,117 @@
+name: Publish domestic Coder feed
+description: Publish the verified CN files from a stable Coder release on the domestic origin
+inputs:
+  source-run-id:
+    description: Aily Coder Package run ID on deploy-coder
+    required: true
+  use-r2:
+    description: Recover the requested version from R2
+    default: 'false'
+  ssh-host:
+    description: Domestic origin SSH host
+    required: true
+  ssh-user:
+    description: Domestic origin SSH account
+    required: true
+  ssh-password:
+    description: Domestic origin SSH password
+    required: true
+  known-hosts:
+    description: Pinned domestic-feed SSH host key
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve stable Coder release
+      id: source
+      uses: actions/github-script@v7
+      env:
+        SOURCE_RUN_ID: ${{ inputs.source-run-id }}
+        USE_R2: ${{ inputs.use-r2 }}
+      with:
+        script: |
+          const runId = process.env.SOURCE_RUN_ID;
+          if (!/^[1-9][0-9]*$/.test(runId)) throw new Error('Invalid Coder source run ID');
+          const params = { ...context.repo, run_id: runId };
+          const getRun = async () => (await github.rest.actions.getWorkflowRun(params)).data;
+          const run = await getRun();
+          if (String(run.id) !== runId || run.head_repository?.full_name !== `${params.owner}/${params.repo}` ||
+              run.path !== '.github/workflows/coder.yml' || run.head_branch !== 'deploy-coder' ||
+              !['push', 'workflow_dispatch'].includes(run.event) || !/^[a-f0-9]{40}$/.test(run.head_sha)) {
+            throw new Error('Expected a stable Coder packaging run from this repository');
+          }
+          // Re-running only failed jobs may reuse the last successful R2 upload.
+          let gate;
+          for (let attempt = run.run_attempt; attempt >= 1; attempt--) {
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+              ...params, attempt_number: attempt, per_page: 100,
+            });
+            const matches = jobs.filter(job => job.name === 'upload-stable-feed');
+            if (!matches.length) continue;
+            if (matches.length !== 1 || matches[0].conclusion !== 'success') {
+              throw new Error(`R2 upload did not succeed in attempt ${attempt}`);
+            }
+            gate = matches[0];
+            break;
+          }
+          if (!gate) throw new Error('No successful R2 upload in the source run');
+          const { data: file } = await github.rest.repos.getContent({
+            ...context.repo, path: 'build/products/coder.json', ref: run.head_sha,
+          });
+          const { version } = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
+          if (typeof version !== 'string' || !/^(0|[1-9]\d*)(\.(0|[1-9]\d*)){2}$/.test(version)) {
+            throw new Error('Invalid stable Coder version');
+          }
+          if (process.env.USE_R2 !== 'true') {
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, { ...params, per_page: 100 });
+            const ids = ['AilyCoder-windows-cn', 'AilyCoder-macos-cn', 'Coder-changelog'].map(name => {
+              const matches = artifacts.filter(item => item.name === name && !item.expired);
+              if (matches.length !== 1) throw new Error(`Missing or ambiguous source artifact: ${name}`);
+              return matches[0].id;
+            });
+            core.setOutput('ids', ids.join(','));
+          }
+          if ((await getRun()).run_attempt !== run.run_attempt) throw new Error('Source run was retried during validation');
+          core.setOutput('version', version);
+
+    - name: Install domestic publication tools
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-paramiko python3-yaml
+
+    - uses: actions/download-artifact@v4
+      if: inputs.use-r2 != 'true'
+      with:
+        github-token: ${{ github.token }}
+        run-id: ${{ inputs.source-run-id }}
+        artifact-ids: ${{ steps.source.outputs.ids }}
+        merge-multiple: true
+        path: ${{ runner.temp }}/coder-input
+
+    - name: Prepare verified domestic Coder bundle
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        USE_R2: ${{ inputs.use-r2 }}
+      run: |
+        mode=prepare
+        if [[ "$USE_R2" == true ]]; then mode=fetch-r2; fi
+        /usr/bin/python3 scripts/publish-coder-feed.py "$mode" "$RELEASE_VERSION" "$RUNNER_TEMP/coder-input" "$RUNNER_TEMP/coder-bundle"
+
+    - name: Upload and publish on the domestic server
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        FEED_HOST: ${{ inputs.ssh-host }}
+        FEED_USER: ${{ inputs.ssh-user }}
+        SSHPASS: ${{ inputs.ssh-password }}
+        FEED_KNOWN_HOSTS: ${{ inputs.known-hosts }}
+      run: /usr/bin/python3 scripts/upload-coder-feed.py "$RELEASE_VERSION" "$RUNNER_TEMP/coder-bundle"
+
+    - name: Verify public domestic Coder feed
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ steps.source.outputs.version }}
+      run: /usr/bin/python3 scripts/verify-coder-feed.py "$RELEASE_VERSION" "$RUNNER_TEMP/coder-bundle" "$VERIFY_URL"

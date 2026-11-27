@@ -261,17 +261,63 @@ test('artifacts support same-run retries and stable baselines wait for domestic 
   assert.equal(syncWorkflow.on.workflow_dispatch.inputs.use_r2.default, false);
   const repair = syncWorkflow.jobs['sync-stable-feed'];
   assert.equal(repair.if, "github.ref == 'refs/heads/deploy-coder'");
-  const sources = [workflow.jobs['sync-stable-feed'], repair];
-  for (const job of sources) {
-    const dispatch = job.steps.at(-1);
-    assert.equal(dispatch.run, 'bash scripts/dispatch-cn-feed.sh coder "$RELEASE_VERSION"');
-    assert.equal(dispatch.env.GH_TOKEN, '${{ secrets.CN_FEED_DISPATCH_TOKEN }}');
+  const regular = workflow.jobs['sync-stable-feed'];
+  for (const job of [regular, repair]) {
+    assert.equal(job['runs-on'], 'ubuntu-latest');
+    const publish = job.steps.at(-1);
+    assert.equal(publish.uses, './.github/actions/publish-coder-feed');
+    assert.equal(publish.env.PUBLIC_DIR, '${{ vars.DOMESTIC_FEED_PUBLIC_DIR }}');
+    assert.equal(publish.with['ssh-password'], '${{ secrets.TRIGGER_SERVER_PASSWORD }}');
+    assert.equal(publish.with['known-hosts'], '${{ secrets.DOMESTIC_FEED_KNOWN_HOSTS }}');
   }
-  assert.equal(sources[0].steps.at(-1).env.RELEASE_VERSION, '${{ needs.prepare.outputs.version }}');
-  assert.equal(sources[0].steps.at(-1).env.USE_R2, undefined);
-  assert.equal(repair.steps.at(-1).env.USE_R2, '${{ inputs.use_r2 }}');
-  assert.equal(repair.steps.at(-1).env.SOURCE_RUN_ID, '${{ inputs.source_run_id }}');
-  assert.equal(repair.steps.at(-1).env.SOURCE_SHA, '${{ steps.source.outputs.sha }}');
-  assert.equal(repair.steps.at(-1).env.SOURCE_ATTEMPT, '${{ steps.source.outputs.attempt }}');
-  assert.equal(repair.steps.at(-1).env.RELEASE_VERSION, '${{ steps.source.outputs.version }}');
+  assert.equal(regular.steps.at(-1).with['source-run-id'], '${{ github.run_id }}');
+  assert.equal(regular.steps.at(-1).with['use-r2'], undefined);
+  assert.equal(repair.steps.at(-1).with['source-run-id'], '${{ inputs.source_run_id }}');
+  assert.equal(repair.steps.at(-1).with['use-r2'], '${{ inputs.use_r2 }}');
+});
+
+const domestic = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/actions/publish-coder-feed/action.yml'), 'utf8'));
+async function resolveSource({ run = {}, jobs = [[], [{ name: 'upload-stable-feed', conclusion: 'success' }]],
+  artifacts = ['AilyCoder-windows-cn', 'AilyCoder-macos-cn', 'Coder-changelog'], useR2 = false, retry = false } = {}) {
+  const outputs = {};
+  const identity = { id: 123, run_attempt: 2, path: '.github/workflows/coder.yml', head_branch: 'deploy-coder',
+    event: 'workflow_dispatch', head_sha: environment.GITHUB_SHA, head_repository: { full_name: 'source/repo' }, ...run };
+  let reads = 0;
+  const actions = {
+    getWorkflowRun: async () => ({ data: { ...identity, run_attempt: reads++ && retry ? 3 : identity.run_attempt } }),
+    listJobsForWorkflowRunAttempt: 'jobs', listWorkflowRunArtifacts: 'artifacts',
+  };
+  const getContent = async ({ ref, path }) => {
+    assert.equal(ref, environment.GITHUB_SHA);
+    assert.equal(path, 'build/products/coder.json');
+    return { data: { content: Buffer.from('{"version":"0.1.7"}').toString('base64') } };
+  };
+  const github = { rest: { actions, repos: { getContent } }, async paginate(endpoint, args) {
+    assert.equal(args.run_id, '123');
+    if (endpoint === 'jobs') return jobs[2 - args.attempt_number];
+    assert.equal(endpoint, 'artifacts');
+    assert.equal(useR2, false);
+    return artifacts.map((name, i) => ({ name, id: i + 10, expired: false }));
+  } };
+  const source = domestic.runs.steps.find(step => step.id === 'source');
+  await vm.runInNewContext(`(async () => { ${source.with.script} })()`, {
+    Buffer, github, context: { repo: { owner: 'source', repo: 'repo' } },
+    process: { env: { SOURCE_RUN_ID: '123', USE_R2: String(useR2) } }, core: { setOutput(k, v) { outputs[k] = v; } },
+  });
+  return outputs;
+}
+
+test('domestic publication binds the signed artifacts and R2 success to the stable source run', async () => {
+  assert.deepEqual(await resolveSource(), { ids: '10,11,12', version: '0.1.7' });
+  assert.deepEqual(await resolveSource({ useR2: true }), { version: '0.1.7' });
+  await assert.rejects(resolveSource({ run: { event: 'pull_request' } }), /stable Coder packaging run/);
+  await assert.rejects(resolveSource({ run: { head_repository: { full_name: 'fork/repo' } } }), /stable Coder packaging run/);
+  await assert.rejects(resolveSource({ useR2: true, jobs: [[{ name: 'upload-stable-feed', conclusion: 'failure' }]] }),
+    /R2 upload did not succeed/);
+  await assert.rejects(resolveSource({ artifacts: ['AilyCoder-windows-cn'] }), /source artifact/);
+  await assert.rejects(resolveSource({ retry: true }), /retried during validation/);
+  const download = domestic.runs.steps.find(step => step.uses === 'actions/download-artifact@v4');
+  assert.equal(download.with['artifact-ids'], '${{ steps.source.outputs.ids }}');
+  assert.equal(download.with['run-id'], '${{ inputs.source-run-id }}');
+  assert.equal(download.if, "inputs.use-r2 != 'true'");
 });

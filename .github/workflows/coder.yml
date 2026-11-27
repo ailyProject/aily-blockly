@@ -565,11 +565,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Sync domestic Coder feed
+      - name: Publish domestic Coder feed
+        uses: ./.github/actions/publish-coder-feed
         env:
-          GH_TOKEN: ${{ secrets.CN_FEED_DISPATCH_TOKEN }}
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: bash scripts/dispatch-cn-feed.sh coder "$RELEASE_VERSION"
+          FEED_PORT: ${{ vars.DOMESTIC_FEED_SSH_PORT || '22' }}
+          STAGING_ROOT: ${{ vars.DOMESTIC_FEED_STAGING_ROOT }}
+          PUBLIC_DIR: ${{ vars.DOMESTIC_FEED_PUBLIC_DIR }}
+          VERIFY_URL: ${{ vars.DOMESTIC_FEED_VERIFY_URL || 'https://dl.yiyu.pro/blockly' }}
+        with:
+          source-run-id: ${{ github.run_id }}
+          ssh-host: ${{ secrets.TRIGGER_SERVER_HOST }}
+          ssh-user: ${{ secrets.TRIGGER_SERVER_USER }}
+          ssh-password: ${{ secrets.TRIGGER_SERVER_PASSWORD }}
+          known-hosts: ${{ secrets.DOMESTIC_FEED_KNOWN_HOSTS }}
 
   save-source-baseline:
     needs: [prepare, publish-release, sync-stable-feed]
