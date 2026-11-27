@@ -1,9 +1,11 @@
-import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import type { CloudBoardProfile } from '../../utils/cloud-build-settings.utils';
+import { readSavedAbiAfterRecoveryFailure, restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import { changedBoardKeys, forgetSavedBoardSelections, refreshLiveBoardDropdowns } from './services/blockly-board-dropdowns';
 import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
-import { recoverAbsProjectOperation } from '../../integrations/blockly/abs/abs-project-restart';
+import { recoverAbsProjectOperation, settleAbsProjectOpen } from '../../integrations/blockly/abs/abs-project-restart';
 import { AbsOperationJournal } from '../../integrations/blockly/abs/abs-operation-journal';
 import { sameAbsSavedState } from '../../integrations/blockly/abs/abs-save-semantics';
-import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback,
+import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback, deferredAbsLoadNormalization,
   type AbsLoadNormalizationInput, type AbsLoadNormalizationDeferred } from '../../integrations/blockly/abs/abs-load-normalization';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
@@ -28,7 +30,7 @@ import { _ProjectService } from './services/project.service';
 import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
-import { ProjectService, projectDataRuntime, ProjectDataError, type AilyDataRef, type DeferredProjectDataNormalization } from '@domain/project/public-api';
+import { BoardAuthPromptService, ProjectService, projectDataRuntime, ProjectDataError, type AilyDataRef, type DeferredProjectDataNormalization } from '@domain/project/public-api';
 import type { BlocklyWorkspaceEditLease } from './services/blockly-workspace-edit-lease';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
@@ -38,8 +40,6 @@ import { Subscription } from 'rxjs';
 import { projectResourceGc } from './services/project-resource-gc.service';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
 import { isBuildWorkspaceBusyError } from './services/generated-code-artifacts';
-import { AuthService } from '@core/auth/public-api';
-import { boardRequiresCloudAuth } from './board-auth-gate';
 import { canTransferProjectAbi } from './utils/project-abi-transfer';
 import { assertKnownMissingLibraryRecoverySources, installMissingLibrariesManaged, type MissingLibraryInstall } from './services/missing-project-libraries';
 import { readManagedLibraryEnvironment } from '../../services/domains/project/project-managed-library-environment';
@@ -137,7 +137,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     private codeViewerIpcService: CodeViewerIpcService,
     private blocklyLibraryPackageService: BlocklyLibraryPackageService,
     private generatorRuntime: BlocklyGeneratorRuntimeService,
-    private authService: AuthService,
+    private boardAuthPrompt: BoardAuthPromptService,
   ) { }
 
   ngOnInit(): void {
@@ -169,7 +169,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           }
           this._projectService.currentProjectPath = requestedProjectPath;
           this.toolboxReadyProjectPath = null;
-          this.projectService.currentProjectPath = requestedProjectPath;
+          // ProjectService already owns the view after a normal navigation.
+          // Confirming that route must preserve the original activation revision.
+          if (this.projectService.currentProjectPath !== requestedProjectPath) {
+            this.projectService.currentProjectPath = requestedProjectPath;
+          }
           this.projectService.beginBlocklyProjectLoad(requestedProjectPath);
           projectDataRuntime.configure(params['path']);
           dataSession = projectDataRuntime.getSessionToken();
@@ -195,7 +199,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
             this.abortFailedProjectLoad();
             this.uiService.updateFooterState({ state: 'error', text: detail });
           }
-          this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail);
+          if (cancellation?.code === 'ABS_OPERATION_LOCATION_UNPROVEN') {
+            this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail, cancellation.code);
+          } else {
+            this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail);
+          }
           this.message.error(detail);
         }
       } else {
@@ -212,6 +220,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.boardConfigUpdatedSubscription = this.projectService.boardConfigUpdatedSubject.subscribe((boardConfig) => {
       this.applyRuntimeBoardConfig(boardConfig);
     });
+    this.boardConfigUpdatedSubscription.add(this.projectService.cloudBoardHydratedSubject.subscribe(boardConfig => {
+      this.applyRuntimeBoardConfig(boardConfig, true);
+    }));
 
     // 阻止鼠标按键前进后退
     window.history.replaceState(null, '', window.location.href);
@@ -283,10 +294,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   async loadProject(projectPath, assertCurrent: () => void = () => {}) {
-    // Ctrl/Cmd+R enters this route directly, before AppComponent's async init
-    // completes. Capture dependency settings only after the shared local config
-    // is loaded; warm project opens reuse the same resolved promise.
-    await this.configService.init();
+    // A direct renderer refresh can reach this route before stored cloud
+    // preferences and their login state have settled.
+    await this.configService.initializeProjectCompileBackend();
     assertCurrent();
     const session = this.projectService.getProjectDependencySession(projectPath);
     const assertSession = () => {
@@ -305,7 +315,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.stopPackageJsonDependencyWatch();
     this.clearProjectLoadedCodeRefreshTimer();
     // 打开时按已保存的根清单恢复未保存的库安装状态。
-    await this.projectService.discardLibraryChanges(projectPath);
+    const libraryWritesDeferred = await this.restoreSavedLibrariesForOpen(projectPath, assertCurrent);
     assertCurrent();
     // 加载项目package.json
     let packageJson = JSON.parse(
@@ -330,8 +340,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const hasMissingLocalLibrary = [...this.getDeclaredBlocklyLibraryDependencies(packageJson)]
       .some(([name, version]) => version.startsWith('file:')
         && !this.isBlocklyLibraryPackageReady(projectPath, name));
-    const dependenciesInstalled = hasMissingLocalLibrary
-      ? false : await this.npmService.ensureProjectDependenciesInstalled(projectPath, { deferSuccessNotice: true }, session);
+    const dependenciesInstalled = hasMissingLocalLibrary ? false : libraryWritesDeferred
+      ? await this.npmService.installedOk(projectPath, session)
+      : await this.npmService.ensureProjectDependenciesInstalled(projectPath, { deferSuccessNotice: true }, session);
     assertCurrent();
     if (!dependenciesInstalled && !hasMissingLocalLibrary) {
       throw new Error('项目依赖安装未完成，无法继续加载 Blockly 项目。');
@@ -339,9 +350,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     const missingDeclaredLibraries: string[] = [];
     let dependencyInstallError = '';
-    const initiallyInstalled = await this.npmService.installedOk(projectPath);
+    // The normal preparation has already verified every declared dependency.
+    // Only the missing-local-library path bypasses it and needs a separate check.
+    const needsDependencyRepair = !dependenciesInstalled && !await this.npmService.installedOk(projectPath, session);
     assertCurrent();
-    if (!initiallyInstalled) {
+    if (needsDependencyRepair) {
       // 终端进入项目目录，安装项目依赖
       // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS') });
       setTimeout(() => {
@@ -406,21 +419,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     });
     await this.projectService.loadBoardMenuConfig();
     assertCurrent();
-    let boardJson = await this.projectService.resolveBoardConfigForRuntime();
+    const boardJson = await this.projectService.resolveBoardConfigForRuntime(undefined, null);
     assertCurrent();
 
     this.projectService.currentBoardConfig = boardJson;
     this.blocklyService.boardConfig = boardJson;
     window['boardConfig'] = boardJson;
-    if (this.projectService.isCloudBuild()) {
-      // Restore the saved/effective pin selection before generators or source
-      // captures observe this board. Opening Upload later must not change it.
-      await this.projectService.getBoardConfigMenu();
-      assertCurrent();
-      boardJson = this.projectService.currentBoardConfig || boardJson;
-      this.blocklyService.boardConfig = boardJson;
-      window['boardConfig'] = boardJson;
-    }
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
@@ -494,7 +498,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const loadLease = this.blocklyService.acquireWorkspaceEditLease();
     try {
       await this.ngZone.runOutsideAngular(() =>
-        this.blocklyService.loadProjectDocumentForOpen(projectDocument, loadLease, assertCurrent));
+        this.blocklyService.loadProjectDocumentForOpen(projectDocument, loadLease, assertCurrent, this.projectService.isCloudBuild()));
       // Comments settle after rendering. Keep queued pointer/keyboard input out
       // of this frame gap: a drag can detach a child before /roots admission.
       await this.waitForNextFrame(session.signal);
@@ -525,7 +529,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // Even an older plain-ABS generation, or a deferred load, can retain resource
     // roots absent from the current canvas. A successful normalization also just
     // published complete history; never GC only the active document afterwards.
-    if (!usedBoardTemplateAbi && !completeAbs && !loadNormalization && !deferredNormalization && !recoveredOperation) {
+    const retainsAbsCompanion = ['project.abs', 'project.abs.map.json'].some(
+      name => this.electronService.exists(this.electronService.pathJoin(projectPath, name)));
+    if (!usedBoardTemplateAbi && !completeAbs && !retainsAbsCompanion && !loadNormalization && !deferredNormalization && !recoveredOperation) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
         if (cleanup.deleted.length > 0) {
@@ -535,7 +541,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         console.warn('[ProjectResourceGC] Resource cleanup was skipped:', error);
       }
     }
-    if (!usedBoardTemplateAbi && this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
+    if (!usedBoardTemplateAbi && !deferredNormalization && this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
       packageJson = this.readProjectPackageJson(projectPath) || packageJson;
       this.applyProjectPackageJson(packageJson);
     }
@@ -567,11 +573,28 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // 检查是否需要显示新手引导
     this.checkBlocklyOnboarding();
 
-    // 7. 后台安装开发板依赖
+    // A slow gateway must not keep this editor's dependency task alive and block a later reopen.
+    if (this.projectService.isCloudBuild()) {
+      void this.projectService.hydrateCloudBoardAfterOpen(boardJson, assertCurrent,
+        publish => this.blocklyService.runProjectOperation(async () => publish())).then(profile => {
+        if (profile && !session.signal.aborted) return this.finishOpenedBoardDependencies(
+          session, assertCurrent, missingDeclaredLibraries.length, profile);
+      }).catch(error => {
+        if (!session.signal.aborted) console.warn('[ProjectLoad] Background board resources:', error);
+      });
+    } else {
+      await this.finishOpenedBoardDependencies(session, assertCurrent, missingDeclaredLibraries.length);
+    }
+  }
+
+  private async finishOpenedBoardDependencies(session: ProjectDependencySession, assertCurrent: () => void,
+    missingCount: number, openedCloudProfile?: CloudBoardProfile): Promise<void> {
     try {
-      await this.npmService.installBoardDeps(session, { showSuccessNotice: false });
       assertCurrent();
-      if (missingDeclaredLibraries.length === 0) this.noticeService.update({
+      await this.npmService.installBoardDeps(session,
+        openedCloudProfile ? { showSuccessNotice: false, openedCloudProfile } : { showSuccessNotice: false });
+      assertCurrent();
+      if (missingCount === 0) this.noticeService.update({
         title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
         text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
         state: 'done', progress: 100, setTimeout: 3000,
@@ -589,31 +612,33 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     try {
       const boardPackageJson = await this.projectService.getBoardPackageJson();
       this.projectService.assertProjectDependencySession(session);
-      if (!boardRequiresCloudAuth(boardPackageJson)) {
-        return;
-      }
-
-      const authState = this.authService.getAuthInitializationState();
-      if (authState === 'idle' || authState === 'checking') {
-        await this.authService.initializeAuth();
+      await this.boardAuthPrompt.promptIfRequired(boardPackageJson, () => {
         this.projectService.assertProjectDependencySession(session);
-      }
-
-      if (
-        this.projectService.currentProjectPath !== projectPath
-        || this.authService.isLoggedIn
-      ) {
-        return;
-      }
-
-      this.message.warning(
-        this.translate.instant('BLOCKLY_EDITOR.BOARD_CLOUD_AUTH_REQUIRED'),
-        { nzDuration: 6000 },
-      );
-      this.authService.requestLogin('board-cloud-service');
+        return this.projectService.currentProjectPath === projectPath;
+      });
     } catch (error) {
       console.warn('[ProjectLoad] Failed to check board authentication requirement:', error);
     }
+  }
+
+  private async restoreSavedLibrariesForOpen(project: string, assertCurrent: () => void): Promise<boolean> {
+    try { await this.projectService.discardLibraryChanges(project); }
+    catch (error) {
+      // Electron invoke can carry only the main process's message.
+      const { code, message } = (error ?? {}) as { code?: string; message?: string };
+      if (code !== 'ABS_TRANSACTION_PENDING' && message !== "Error invoking remote method 'library-dependencies': Error: An ABS generation is pending. Recover or explicitly abandon it before publishing project files.") throw error;
+      const port = await openAbsHostStorage(project, assertCurrent);
+      try { await settleAbsProjectOpen(port, project, assertCurrent); }
+      catch (recoveryError) {
+        // The host refused dependency writes. Leave those unchanged while the
+        // independently readable saved ABI supplies the canvas.
+        await readSavedAbiAfterRecoveryFailure(port, recoveryError, assertCurrent);
+        return true;
+      }
+      assertCurrent();
+      await this.projectService.discardLibraryChanges(project);
+    }
+    return false;
   }
 
   private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void, signal?: AbortSignal): Promise<{
@@ -628,9 +653,21 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
     const absPort = await openAbsHostStorage(projectPath, assertCurrent);
-    const recovery = await recoverAbsProjectOperation(absPort, projectPath, assertCurrent);
-    const derivedAbi = recovery ? null : await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
-    let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
+    let recovery: Awaited<ReturnType<typeof recoverAbsProjectOperation>> = null;
+    let derivedAbi: string | null = null;
+    let savedAbi: string | null = null;
+    let deferredRecovery: AbsLoadNormalizationDeferred | undefined;
+    try {
+      recovery = await recoverAbsProjectOperation(absPort, projectPath, assertCurrent);
+      if (!recovery) derivedAbi = await restoreAbsProjectCaches(absPort, projectPath, assertCurrent, { preferSavedAbi: true });
+    } catch (error) {
+      // The saved ABI may be healthy even when a retained recovery record cannot
+      // be opened. Render it without publishing normalization or retiring files.
+      const { abi, code } = await readSavedAbiAfterRecoveryFailure(absPort, error, assertCurrent);
+      savedAbi = abi;
+      deferredRecovery = deferredAbsLoadNormalization(projectPath, code);
+    }
+    let abiContent = savedAbi ?? derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
@@ -641,7 +678,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     projectAbi = recovery ? recovery.document : await this.projectService.ensureProjectDataSchemaForLoad(
       projectPath,
       projectAbi,
-      abiContent,
+      deferredRecovery ? undefined : abiContent,
       assertCurrent,
       text => { diskText = text; },
       prepared => { normalization = prepared; },
@@ -649,7 +686,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     assertCurrent();
     // Anchor the exact acknowledged publication, not a later external writer.
     abiContent = '';
-    const normalizationPreparation = normalization
+    const normalizationPreparation = deferredRecovery ? { outcome: deferredRecovery } : normalization
       ? await prepareAbsLoadNormalization(projectPath, normalization, absPort, assertCurrent) : undefined;
     assertCurrent();
 
@@ -864,9 +901,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.projectLoadedCodeRefreshTimer = setTimeout(attempt, this.projectLoadedCodeRefreshDelayMs);
   }
 
-  private applyRuntimeBoardConfig(boardConfig: any): void {
+  private applyRuntimeBoardConfig(boardConfig: any, preserveFieldValues = false): void {
+    const previous = this.blocklyService.boardConfig;
+    const workspace = this.blocklyService.workspace;
+    if (!preserveFieldValues && workspace) forgetSavedBoardSelections(workspace);
     const cdcEnabled = !!boardConfig?._cdcEnabled;
-    const shouldRestoreSerialFields = this.runtimeCdcEnabled === true && !cdcEnabled;
+    const shouldRestoreSerialFields = !preserveFieldValues && this.runtimeCdcEnabled === true && !cdcEnabled;
     const serialFieldSnapshots = shouldRestoreSerialFields && Array.isArray(boardConfig?.cdcSerialPort)
       ? this.blocklyService.snapshotSerialFieldValues()
       : null;
@@ -875,6 +915,13 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     window['boardConfig'] = boardConfig;
     if (this.generatorRuntime.isActive()) {
       this.generatorRuntime.updateBoardConfig(boardConfig);
+    }
+    if (preserveFieldValues) {
+      const changed = changedBoardKeys(previous, boardConfig);
+      this.blocklyService.refreshBoardDependentBlockDefinitions(changed);
+      if (workspace && changed.size) refreshLiveBoardDropdowns(workspace, previous, boardConfig, changed);
+      this.runtimeCdcEnabled = cdcEnabled;
+      return;
     }
     this.blocklyService.refreshBoardDependentBlockDefinitions();
     this.blocklyService.syncSerialDynamicToolboxBlocks();

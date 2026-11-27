@@ -1,6 +1,6 @@
 
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders, HttpErrorResponse, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpContext, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Observable, throwError, from, of } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
@@ -8,6 +8,7 @@ import { isCmdTerminalOutput, CmdService, CmdOutput, PlatformService } from '@co
 import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { preserveUnpairedCloudProjectFile } from './legacy-cloud-project';
+import { SKIP_CONNECTIVITY_RETRY } from '../../../interceptors/retry.interceptor';
 
 declare global {
   interface Window {
@@ -71,9 +72,12 @@ export class CloudService {
     pid?: string;
 
     projectData?: any; // 新增的项目数据对象
-
     archive?: string;
+    archiveContents?: ArrayBuffer;
     category?: 'blockly' | 'coder';
+    requestId?: string;
+    expectedArchiveSha256?: string;
+    expectedArchiveRevision?: string;
   }): Observable<any> {
     const formData = new FormData();
 
@@ -84,10 +88,13 @@ export class CloudService {
     }
 
     if (params.pid) formData.append('pid', params.pid);
+    if (params.requestId) formData.append('requestId', params.requestId);
+    if (params.expectedArchiveSha256) formData.append('expectedArchiveSha256', params.expectedArchiveSha256);
+    if (params.expectedArchiveRevision) formData.append('expectedArchiveRevision', params.expectedArchiveRevision);
 
     if (params.archive) {
       // 读取二进制文件（不指定编码参数，返回原始Buffer）
-      const fileBuffer = window['fs'].readFileSync(params.archive, null);
+      const fileBuffer = params.archiveContents ?? window['fs'].readFileSync(params.archive, null);
       const archiveName = window['path'].basename(params.archive);
       const file = new File([fileBuffer], archiveName, { type: 'application/x-7z-compressed' });
 
@@ -111,10 +118,17 @@ export class CloudService {
 
     console.log('发送请求到:', this.apiUrl);
 
-    return this.http.post<any>(this.apiUrl, formData, { headers })
-      .pipe(
-        catchError(this.handleError)
-      );
+    if (params.requestId) {
+      return this.http.post<any>(this.apiUrl, formData, {
+        headers, context: new HttpContext().set(SKIP_CONNECTIVITY_RETRY, true),
+      });
+    }
+
+    return this.http.post<any>(this.apiUrl, formData, { headers }).pipe(catchError(this.handleError));
+  }
+
+  observeSyncRequest(requestId: string): Observable<any> {
+    return this.http.get<any>(`${this.apiUrl}/requests/${encodeURIComponent(requestId)}`);
   }
 
   /**
@@ -155,10 +169,15 @@ export class CloudService {
       .pipe(catchError(this.handleError));
   }
 
-  openProjectArchive(projectId: string): Observable<string> {
-    return this.downloadProject(projectId).pipe(
-      switchMap(blob => from(this.downloadAndExtractArchive(blob))),
-    );
+  openProjectArchive(projectId: string): Observable<{ path: string; archiveSha256: string }> {
+    return this.downloadProject(projectId).pipe(switchMap(blob => from(this.extractObservedArchive(blob))));
+  }
+
+  private async extractObservedArchive(blob: Blob): Promise<{ path: string; archiveSha256: string }> {
+    const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+    const archiveSha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+
+    return { path: await this.downloadAndExtractArchive(blob), archiveSha256 };
   }
 
   /**

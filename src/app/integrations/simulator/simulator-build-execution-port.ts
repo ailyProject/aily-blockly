@@ -1,11 +1,13 @@
 import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import type { SceneArtifactRebuildRequest } from '@aily-project/simulator-protocol/scene';
 import type { SimulatorSubappHostArtifactDescriptorV1 } from '@aily-project/simulator-protocol/host';
+import { isBuildCancelled } from '../../services/domains/build/build-cancellation';
 
 import type {
   SimulatorBuildExecutionObserver,
   SimulatorBuildExecutionPort,
 } from './simulator-build-callback-authority';
+
 import type {
   SimulatorMainAgentSceneChangePort,
   SimulatorMainAgentSceneChangeRequest,
@@ -56,6 +58,7 @@ export interface BlocklySimulatorBuildExecutionPortOptions {
   mainAgent?: SimulatorMainAgentSceneChangePort;
   builder: SimulatorBlocklyBuilderPort;
   artifacts: SimulatorLatestArtifactDescriptorPort;
+
   readCompileScene(revision: string, signal: AbortSignal): Promise<SceneEditorDocumentV2>;
 }
 
@@ -73,6 +76,7 @@ type SimulatorBuildErrorCode =
  * Artifact descriptor. It never imports or controls Simulator Runtime state.
  */
 export class BlocklySimulatorBuildExecutionPort
+
 implements SimulatorBuildExecutionPort {
   private readonly projectRoot: string;
   private readonly projectIdentity: string;
@@ -85,14 +89,17 @@ implements SimulatorBuildExecutionPort {
 
   constructor(options: BlocklySimulatorBuildExecutionPortOptions) {
     this.projectRoot = requireNonEmpty(options.projectRoot, 'projectRoot');
+
     this.projectIdentity = requirePortableIdentifier(
       options.projectIdentity,
       'projectIdentity',
     );
+
     this.sceneId = requirePortableIdentifier(
       options.sceneId ?? 'main',
       'sceneId',
     );
+
     if (
       !options.activeProject
       || typeof options.activeProject.readActiveBinding !== 'function'
@@ -100,21 +107,26 @@ implements SimulatorBuildExecutionPort {
     ) {
       throw new TypeError('Active Project binding port is invalid.');
     }
+
     if (options.mainAgent && typeof options.mainAgent.execute !== 'function') {
       throw new TypeError('Simulator main-Agent port is invalid.');
     }
+
     if (!options.builder || typeof options.builder.build !== 'function') {
       throw new TypeError('Blockly Builder port is invalid.');
     }
+
     if (
       !options.artifacts
       || typeof options.artifacts.readLatest !== 'function'
     ) {
       throw new TypeError('Latest Artifact descriptor port is invalid.');
     }
+
     if (typeof options.readCompileScene !== 'function') {
       throw new TypeError('Current compile Scene reader is invalid.');
     }
+
     this.activeProject = options.activeProject;
     this.mainAgent = options.mainAgent;
     this.builder = options.builder;
@@ -136,6 +148,7 @@ implements SimulatorBuildExecutionPort {
     // A caller with an explicit reconciliation port can request its existing workflow.
     if (this.mainAgent && request.reason === 'graph-semantic-changed') {
       observer.report('generating', 250);
+
       const mainAgentRequest: SimulatorMainAgentSceneChangeRequest = {
         schemaVersion: 1,
         kind: 'aily-simulator-main-agent-scene-change-request',
@@ -146,7 +159,9 @@ implements SimulatorBuildExecutionPort {
         graphSemanticRevision: request.sceneRevision,
         sceneDocument: structuredClone(request.sceneDocument),
       };
+
       let mainAgentReceipt;
+
       try {
         mainAgentReceipt = await this.mainAgent.execute(
           mainAgentRequest,
@@ -155,8 +170,10 @@ implements SimulatorBuildExecutionPort {
       } catch (error) {
         throw mappedError(error, signal, 'generation-failed');
       }
+
       throwIfAborted(signal);
       this.requireActiveBlocklyProject();
+
       if (
         mainAgentReceipt.requestId !== request.requestId
         || mainAgentReceipt.projectIdentity !== request.projectIdentity
@@ -170,18 +187,24 @@ implements SimulatorBuildExecutionPort {
           'Simulator main Agent returned a mismatched completion receipt.',
         );
       }
+
       observer.diagnostic?.('agent-resolved');
     }
 
     observer.report('compiling', 500);
+
     try {
       const sceneDocument = await this.readCompileScene(request.sceneRevision, signal);
+
       throwIfAborted(signal);
       this.requireActiveBlocklyProject();
+
       if (sceneDocument.graphSemanticRevision !== request.sceneRevision || sceneDocument.sceneId !== request.sceneId) {
         throw new Error('Simulator Scene changed before compilation.');
       }
+
       observer.diagnostic?.('builder-started');
+
       await this.builder.build({
         requestId: request.requestId,
         projectRoot: this.projectRoot,
@@ -189,21 +212,26 @@ implements SimulatorBuildExecutionPort {
         graphSemanticRevision: request.sceneRevision,
         sceneDocument,
       }, signal);
+
       observer.diagnostic?.('builder-resolved');
     } catch (error) {
       throw mappedError(error, signal, 'compile-failed');
     }
+
     throwIfAborted(signal);
     this.requireActiveBlocklyProject();
-
     observer.report('staging', 900);
+
     try {
       observer.diagnostic?.('artifact-read-started');
+
       const artifact = await this.artifacts.readLatest(
         this.projectIdentity,
         signal,
       );
+
       observer.diagnostic?.('artifact-read-resolved');
+
       return artifact;
     } catch (error) {
       throw mappedError(error, signal, 'artifact-staging-failed');
@@ -230,6 +258,7 @@ implements SimulatorBuildExecutionPort {
 
   private requireActiveBlocklyProject(): SimulatorActiveProjectBinding {
     const active = this.activeProject.readActiveBinding();
+
     if (
       !active
       || active.editorKind !== 'blockly'
@@ -245,6 +274,7 @@ implements SimulatorBuildExecutionPort {
         'The bound Blockly Project is no longer active.',
       );
     }
+
     return active;
   }
 }
@@ -257,16 +287,19 @@ function mappedError(
   if (signal.aborted) {
     return buildError('cancelled', abortReason(signal).message);
   }
-  if (fallback === 'compile-failed' && error && typeof error === 'object'
-    && 'errorCode' in error && error.errorCode === 'build-cancelled') {
+
+  if (fallback === 'compile-failed' && (isBuildCancelled(error)
+    || (error && typeof error === 'object' && 'errorCode' in error && error.errorCode === 'build-cancelled'))) {
     return buildError('cancelled', error instanceof Error ? error.message : 'Blockly Build was cancelled.');
   }
+
   if (
     error instanceof Error
     && 'simulatorBuildErrorCode' in error
   ) {
     return error;
   }
+
   return buildError(
     fallback,
     error instanceof Error ? error.message : String(error),
@@ -296,6 +329,7 @@ function requireNonEmpty(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.trim().length < 1) {
     throw new TypeError(`${label} is required.`);
   }
+
   return value;
 }
 
@@ -306,5 +340,6 @@ function requirePortableIdentifier(value: unknown, label: string): string {
   ) {
     throw new TypeError(`${label} is invalid.`);
   }
+
   return value;
 }

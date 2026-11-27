@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs');
+const { readSaveSnapshot } = require('./project-save-snapshot');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { rootAttachment, storageExecutor, observeStorageExecutor } = require('./project-file-lock-owner');
@@ -121,7 +122,7 @@ function matchesNativeSuccessor(root, access, pointer, successor, actual) {
   const folder = path.join(root, '.aily/abs-sync/recoveries');
   const snapshotBytes = access.readRegular(path.join(folder, `operation-${pointer.id}.json`));
   if (snapshotBytes === null || digest(snapshotBytes) !== pointer.hash) return false;
-  const snapshot = parseProgramRecord(snapshotBytes);
+  const snapshot = readSaveSnapshot(parseProgramRecord(snapshotBytes), name => access.readRegular(path.join(folder, name)));
   const requestKey = digest('native-save-v2\0' + requestId).slice(7);
   const index = parseProgramRecord(access.readRegular(path.join(folder, `request-${requestKey}.json`)));
   if (snapshot?.version !== 1 || snapshot.kind !== 'document-save' || snapshot.id !== pointer.id || snapshot.project !== root

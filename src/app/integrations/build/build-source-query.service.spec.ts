@@ -277,6 +277,17 @@ describe('Coder live persistence boundary', () => {
     expect(await service.hasSavedProject(root)).toBeFalse(); service.unregisterPersistenceBridge(root, bridge);
     expect(await service.hasSavedProject(root)).toBeFalse(); expect(bridge.saveAll).not.toHaveBeenCalled();
   });
+  it('rechecks the captured build buffer without saving any files', async () => {
+    expect(service.captureBuildBuffer(root)).toBeUndefined();
+    service.registerPersistenceBridge(root, bridge);
+    const current = service.captureBuildBuffer(root)!;
+    expect(await current()).toBeTrue();
+    bridge.hasUnsavedChanges.and.resolveTo(true);
+    expect(await current()).toBeFalse();
+    service.registerPersistenceBridge(root, { ...bridge, hasUnsavedChanges: async () => false });
+    expect(await current()).toBeFalse();
+    expect(bridge.saveAll).not.toHaveBeenCalled();
+  });
   for (const action of ['unregister', 'replace']) it(`rejects a bridge ${action} while checking`, async () => {
     service.registerPersistenceBridge(root, bridge);
     bridge.hasUnsavedChanges.and.callFake(async () => {

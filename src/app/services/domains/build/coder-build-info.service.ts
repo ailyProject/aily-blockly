@@ -41,7 +41,7 @@ export class CoderBuildInfoService {
     } });
   }
 
-  private async calculateCodeHash(projectPath: string): Promise<string> {
+  async calculateCodeHash(projectPath: string): Promise<string> {
     const packagePath = this.electronService.pathJoin(projectPath, 'package.json');
     const manifest = JSON.parse(window['fs'].readFileSync(packagePath, 'utf8'));
     const buildManifest = Object.fromEntries(

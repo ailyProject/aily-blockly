@@ -22,9 +22,34 @@ describe('CmdService command lifecycle', () => {
     expect(observer).not.toHaveBeenCalled();
     status.and.resolveTo({ streamId: 'original', state: 'exited', code: 0, terminationConfirmed: true, ownershipReleased: true });
     tick(500);
+    expect(observer).not.toHaveBeenCalled();
+    tick(500);
     expect(observer).toHaveBeenCalledOnceWith(jasmine.objectContaining({ type: 'close', streamId: 'original', recovered: true }));
     expect(run).toHaveBeenCalledTimes(1);
     expect(callbacks.size).toBe(0);
+  }));
+
+  it('keeps the original build output and close when the status poll resolves first', fakeAsync(() => {
+    let receive!: (event: any) => void;
+    const status = jasmine.createSpy('status').and.resolveTo({
+      streamId: 'build', state: 'exited', code: 0, ownershipReleased: true
+    });
+    window['cmd'] = { status, run: async () => ({ success: true }),
+      onData: (_id: string, callback: (event: any) => void) => { receive = callback; return () => {}; }
+    };
+    const service = new CmdService({ update() {} } as any);
+    const observer = jasmine.createSpy('build events');
+    service.spawn('node', [], { streamId: 'build', observeExit: true }).subscribe(observer);
+    tick(500);
+    expect(observer).not.toHaveBeenCalled();
+    receive({ type: 'stdout', streamId: 'build', data: 'compile complete' });
+    receive({ type: 'close', streamId: 'build', code: 0 });
+    tick(500);
+    expect(observer.calls.count()).toBe(2);
+    expect(observer.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+      type: 'close', stdout: 'compile complete'
+    }));
+    expect(observer.calls.mostRecent().args[0].recovered).toBeUndefined();
   }));
 
   it('returns an unconfirmed stop instead of leaving a fenced foreground caller waiting for IPC', fakeAsync(() => {
@@ -36,6 +61,20 @@ describe('CmdService command lifecycle', () => {
     tick(200);
     expect(result).toHaveBeenCalledOnceWith(false);
     expect(kill).toHaveBeenCalledOnceWith('original');
+  }));
+
+  it('retains the exact host admission refusal through its original stream', fakeAsync(() => {
+    const run = jasmine.createSpy('run').and.resolveTo({ success: false, streamId: 'original',
+      error: 'The previous cache owner is unverified.', code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED', buildOutcome: 'not-started' });
+    window['cmd'] = { run, onData: () => () => {} };
+    const service = new CmdService({ update() {} } as any);
+    const rejected = jasmine.createSpy('rejected');
+    service.spawn('node', [], { streamId: 'original', buildWorkspace: '/captured' }).subscribe({ error: rejected });
+    flushMicrotasks();
+    expect(rejected).toHaveBeenCalledOnceWith(jasmine.objectContaining({
+      code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED', buildOutcome: 'not-started',
+    }));
+    expect(run).toHaveBeenCalledTimes(1);
   }));
 
   it('settles a queued npm command by its own receipt and starts the next command once', fakeAsync(() => {
@@ -59,6 +98,8 @@ describe('CmdService command lifecycle', () => {
     expect(run).toHaveBeenCalledTimes(1);
     const lateClose = listeners.get('first')!;
     status.and.resolveTo({ streamId: 'first', state: 'exited', code: 0, ownershipReleased: true });
+    tick(500);
+    expect(first).not.toHaveBeenCalled();
     tick(500);
     expect(first).toHaveBeenCalledOnceWith(jasmine.objectContaining({ streamId: 'first', code: 0, recovered: true }));
     expect(run.calls.allArgs().map(([options]) => options.streamId)).toEqual(['first', 'next']);

@@ -1,6 +1,7 @@
 import * as Blockly from 'blockly';
 import 'blockly/blocks';
 import { loadBlocklyWorkspace } from './blockly-performance';
+import { primeBlocklyTextWidths } from './blockly-text-measurement';
 
 describe('batched Blockly text measurement', () => {
   let host: HTMLDivElement;
@@ -38,6 +39,22 @@ describe('batched Blockly text measurement', () => {
     loadBlocklyWorkspace(workspace, state);
     expect(geometry()).toEqual(expectedGeometry);
     expect(Blockly.serialization.workspaces.save(workspace)).toEqual(expectedState);
+  });
+
+  it('reads the font once per text and SVG class, preserving the first field in workspace order', () => {
+    workspace = Blockly.inject(host, {sounds: false});
+    const elements = ['first', 'duplicate', 'other-class'].map(id => {
+      const block = workspace.newBlock('text', id);
+      block.setFieldValue('repeated', 'TEXT');
+      block.initSvg();
+      return (block.getField('TEXT') as any).textElement_ as SVGTextElement;
+    });
+    elements[2].classList.add('distinct-font');
+    const reads = spyOn(window, 'getComputedStyle').and.callThrough();
+    Blockly.utils.dom.startTextWidthCache();
+    try { primeBlocklyTextWidths(workspace); } finally { Blockly.utils.dom.stopTextWidthCache(); }
+    const measured = reads.calls.allArgs().map(([element]) => element);
+    expect(elements.map(element => measured.filter(node => node === element).length)).toEqual([1, 0, 1]);
   });
 
   it('restores the block serializer after a failed load and allows the next load', () => {

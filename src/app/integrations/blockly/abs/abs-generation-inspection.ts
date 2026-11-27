@@ -1,7 +1,7 @@
 import { absMapJson } from './abs-map-json';
 import { AbsBaselineStore, AbsDiskSnapshot } from './abs-baseline-store';
-import { absJson, hashAbsText } from './abs-identity-map';
-import { ABS_PROJECTION_VERSION, AbsIdentityMap, AbsSyncError } from './abs-state';
+import { absJson, hashAbsText, supportsAbsProjectionForEditing } from './abs-identity-map';
+import { AbsIdentityMap, AbsSyncError } from './abs-state';
 
 /** Disk diagnosis is separate from workspace preparation and never grants apply authority. */
 export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsIdentityMap['scope']) {
@@ -14,7 +14,7 @@ export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsId
   if (pending) issues.push('ABS_TRANSACTION_PENDING');
   if (!baseline) issues.push(disk.map === null ? 'ABS_INITIALIZATION_REQUIRED' : 'ABS_BASELINE_MISSING');
   else {
-    if (baseline.map.projectionVersion !== ABS_PROJECTION_VERSION) issues.push('ABS_PROJECTION_UPGRADE_REQUIRED');
+    if (!supportsAbsProjectionForEditing(baseline.map.projectionVersion)) issues.push('ABS_PROJECTION_UPGRADE_REQUIRED');
     if (absJson(baseline.map.scope) !== absJson(scope)) issues.push('ABS_SCOPE_INVALID');
     if (disk.map !== absMapJson(baseline.map)) issues.push('ABS_MAP_INVALID');
     if (workspaceMode !== 'project-v1' && disk.abs !== baseline.abs) issues.push('ABS_SOURCE_CONFLICT');

@@ -6,16 +6,20 @@ const { spawn, exec, execFileSync } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const targetCompileContext = require('./target-compile-context');
-const { prepareCompileSource } = require('./compile-source');
+const { prepareCompileSource, captureBlocklyCompileSource } = require('./compile-source');
 const { captureLibrarySource, createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
 const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDeliveryTicket } = require('./compile-delivery');
+const { invalidateBlocklyUploadState } = require('./blockly-upload-state');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource, confirmPreparedBuildSource } = require('./build-source-capture');
-const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs } = require('./build-execution-workspace');
+
+const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs,
+    validateSharedBuildLaunch, confirmSharedBuildInputs, mergeGeneratorInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild,
+    resolveBuildExecution, retainSharedBuildSource } = require('./build-execution-workspace');
+
 const { resolvePlatformResourceRoots, resolveBoardResourceDirectory, prepareBuilderToolsPath, prepareBuilderLibraryPath } = require('./platform-resource-roots');
 const { readBuilderCapabilities } = require('./builder-capabilities');
-
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json';
 
@@ -28,9 +32,11 @@ const logger = {
 
 function formatFatalError(error) {
     if (!error) return 'Unknown error';
+
     if (error instanceof Error) {
         return error.stack || error.message;
     }
+
     return String(error);
 }
 
@@ -59,35 +65,78 @@ process.on('unhandledRejection', (reason) => {
 
 async function main() {
     const configPath = process.argv[2];
+
     if (!configPath) {
         logger.error('Usage: node preprocess.js <config-path>');
         process.exit(1);
     }
 
     let config;
+
     try {
         config = readBuildRequest(configPath);
+
+        if (config.execution?.layout === 'shared' && config.execution.operation === 'preprocess') {
+            config = validateSharedBuildLaunch(configPath, config.currentProjectPath, 'preprocess');
+        }
+
+        assertSharedBuildSupervisor(config);
     } catch (error) {
         logger.error('Failed to read config file:', error);
         process.exit(1);
     }
 
     if (config.execution) recordFor(config);
-    const workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
+
     const standalone = config.execution?.operation === 'preprocess';
+    let workspace;
+
+    try {
+        workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
+    } catch (error) {
+        if (standalone && config.execution.layout === 'shared') {
+            settleUnstartedSharedBuild(config.currentProjectPath, config.execution, error);
+        }
+
+        throw error;
+    }
+
     let completed = false;
+
     try {
         if (standalone) startBuildExecution(config, workspace);
+
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
+
+        if (standalone && config.execution.layout === 'shared' && !config.explicitPreprocess
+            && resolveBuildExecution(config.currentProjectPath, config)?.layout === 'shared') {
+            completed = true;
+
+            return;
+        }
+
         invalidateBuildDeliveryTicket(config.currentProjectPath);
+
+        if (standalone && config.execution.layout === 'shared') invalidateBlocklyUploadState(config.currentProjectPath);
+
         // Library preparation can spawn an archive extractor before the Builder.
         workspace.markDelegated();
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
         confirmPreparedBuildSource(config);
+        confirmSharedBuildInputs(config);
+
+        if (standalone && config.execution.layout === 'shared' && config.explicitPreprocess) {
+            const filename = path.join(config.currentProjectPath, '.temp', 'sketch', 'sketch.ino');
+
+            retainSharedBuildSource(config, captureBlocklyCompileSource(config, filename));
+        }
+
         completed = true;
     } finally {
         workspace.release();
+
         if (standalone) {
             finishBuildExecution(config, completed);
             retireStandalonePreprocessInputs(config);
@@ -105,42 +154,50 @@ async function preprocessProject(config, workspace) {
         devmode,
         partitionFilePath: customPartitionFilePath
     } = config;
+
     const developmentMode = devmode === true || devmode?.enabled === true;
     const libraryEvidence = config.recordProjectDelivery === true ? createLibraryProjectionRecorder() : undefined;
-
     // 1. 路径准备
     const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+
     const tempPath = isAilyCode
         ? ailyCodeProject.resolveCompileWorkspacePath(currentProjectPath)
         : path.join(currentProjectPath, '.temp');
+
     const buildPath = path.join(currentProjectPath, '.build');
     const sketchPath = isAilyCode ? tempPath : path.join(tempPath, 'sketch');
     const sketchFilePath = path.join(sketchPath, 'sketch.ino');
+
     const compileSourcePath = isAilyCode
         ? ailyCodeProject.resolveCompileSourcePath(currentProjectPath)
         : sketchFilePath;
+
     const localLibrariesPath = isAilyCode
         ? ailyCodeProject.resolveLibrariesPath(currentProjectPath)
         : null;
+
     const librariesPath = path.join(tempPath, 'libraries');
+
     const preprocessCachePath = isAilyCode
         ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
         : path.join(tempPath, 'preprocess.json');
     
     const resources = resolvePlatformResourceRoots(appDataPath);
     const { compilerPath, sdkPath, toolsPath, readOnly: readOnlyResources } = resources;
-
     // 2. 读取项目信息
     const projectPackageJsonPath = path.join(currentProjectPath, 'package.json');
+
     if (!fs.existsSync(projectPackageJsonPath)) {
         throw new Error(`未找到项目包文件: ${projectPackageJsonPath}`);
     }
-    const projectPackageJson = JSON.parse(fs.readFileSync(projectPackageJsonPath, 'utf8'));
-    const dependencies = projectPackageJson.dependencies || {};
 
+    const projectPackageJson = JSON.parse(fs.readFileSync(projectPackageJsonPath, 'utf8'));
+
+    if (config.execution?.layout === 'shared') mergeGeneratorInputs(projectPackageJson, config);
+
+    const dependencies = projectPackageJson.dependencies || {};
     const macros = projectPackageJson.macros || projectPackageJson.MACROS || (projectPackageJson.projectConfig && projectPackageJson.projectConfig.macros) || [];
     const projectConfig = projectPackageJson.projectConfig || {};
-
     // 3. 读取板子信息
     const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
     const boardJsonPath = path.join(boardModulePath, 'board.json');
@@ -149,38 +206,48 @@ async function preprocessProject(config, workspace) {
     if (!fs.existsSync(boardJsonPath)) {
         throw new Error(`未找到板子配置文件: ${boardJsonPath}`);
     }
+
     const boardJson = JSON.parse(fs.readFileSync(boardJsonPath, 'utf8'));
 
     if (!fs.existsSync(boardPackageJsonPath)) {
         throw new Error(`未找到板子包文件: ${boardPackageJsonPath}`);
     }
+
     const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
+
     const testContextInputs = targetCompileContext.captureInputs([
         projectPackageJsonPath, boardJsonPath, boardPackageJsonPath,
     ], { projectManifest: projectPackageJsonPath });
-    const boardDependencies = boardPackageJson.boardDependencies || {};
 
+    const boardDependencies = boardPackageJson.boardDependencies || {};
     let compiler = '';
     let fullCompilerPath = '';
     let fullSdkPath = '';
     const toolVersions = [];
+
     Object.entries(boardDependencies).forEach(([key, version]) => {
         if (key.startsWith('@aily-project/compiler-')) {
             const name = key.replace(/^@aily-project\/compiler-/, '');
+
             compiler = name + '@' + version;
             fullCompilerPath = resolveBoardResourceDirectory(compilerPath, 'compiler', name, version);
+
             toolVersions.push(compiler);
         } else if (key.startsWith('@aily-project/sdk-')) {
             const name = key.replace(/^@aily-project\/sdk-/, '');
+
             fullSdkPath = resolveBoardResourceDirectory(sdkPath, 'sdk', name, version);
         } else if (key.startsWith('@aily-project/tool-')) {
             let toolName = key.replace(/^@aily-project\/tool-/, '');
+
             if (toolName.startsWith('idf_')) {
                 toolName = 'esp32-arduino-libs';
             }
+
             toolVersions.push(toolName + '@' + version);
         }
     });
+
     if (!fullCompilerPath || !fullSdkPath) {
         throw new Error('未找到编译器或SDK信息');
     }
@@ -188,6 +255,7 @@ async function preprocessProject(config, workspace) {
     // 缓存文件路径
     const cacheFilePath = path.join(tempPath, 'library-cache.json');
     let libraryCache = {};
+
     if (fs.existsSync(cacheFilePath)) {
         try {
             libraryCache = JSON.parse(fs.readFileSync(cacheFilePath, 'utf8'));
@@ -198,7 +266,9 @@ async function preprocessProject(config, workspace) {
 
     // 1. 创建文件夹
     mkdirp(tempPath);
+
     if (!isAilyCode) mkdirp(librariesPath);
+
     // Cache invalidation is a workspace mutation; do it only under the owner.
     fs.rmSync(preprocessCachePath, { force: true });
 
@@ -214,15 +284,19 @@ async function preprocessProject(config, workspace) {
         currentProjectPath,
         isAilyCode
     );
+
     logger.log(`开始处理 ${libsPath.length} 个库文件`);
+
     let copiedLibraries = [];
     let librarySearchPaths;
     let projectLibraryPaths = [];
+
     if (isAilyCode) {
         // Remove the obsolete projection created by older builds. New builds
         // never create .temp/lib* or copy/hard-link dependency sources.
         rm(path.join(currentProjectPath, '.temp', 'libraries'));
         rm(path.join(currentProjectPath, '.temp', 'library-cache.json'));
+
         librarySearchPaths = await resolveCoderLibrarySearchPaths(
             libsPath,
             currentProjectPath,
@@ -231,24 +305,33 @@ async function preprocessProject(config, workspace) {
             libraryEvidence,
             compiler
         );
+
         projectLibraryPaths = librarySearchPaths;
+
         if (projectPackageJson.arduinoSketch === true) {
             const arduinoLibraries = ailyCodeProject.collectArduinoLibraryDirectories(currentProjectPath);
+
             // Arduino sketchbooks may contain symlinked library folders. Record
             // each canonical library independently, rather than rejecting links
             // merely because they leave the sketchbook's parent directory.
             if (libraryEvidence) for (const directory of arduinoLibraries) {
                 for (const name of fs.readdirSync(directory)) {
                     const libraryPath = path.join(directory, name);
+
                     if (!fs.existsSync(libraryPath) || !fs.statSync(libraryPath).isDirectory()) continue;
+
                     const canonical = fs.realpathSync(libraryPath);
+
                     libraryEvidence.add(`arduino:${canonical}`, libraryEvidence.capture(canonical), canonical);
                 }
             }
+
             librarySearchPaths = [...new Set([...arduinoLibraries, ...librarySearchPaths])];
         }
     } else {
         const componentLibraries = collectComponentLibraries(currentProjectPath);
+        const shared = config.execution?.layout === 'shared';
+
         copiedLibraries = await processLibrariesParallel(
             libsPath,
             librariesPath,
@@ -256,9 +339,12 @@ async function preprocessProject(config, workspace) {
             za7Path,
             developmentMode,
             libraryCache,
-            libraryEvidence
+            libraryEvidence,
+            shared
         );
-        copiedLibraries.push(...await processComponentLibraries(componentLibraries, librariesPath, libraryEvidence));
+
+        copiedLibraries.push(...await processComponentLibraries(componentLibraries, librariesPath, libraryEvidence, shared));
+
         librarySearchPaths = [librariesPath];
     }
 
@@ -274,6 +360,7 @@ async function preprocessProject(config, workspace) {
     // 4. 清理未使用的库
     if (!isAilyCode && fs.existsSync(librariesPath)) {
         const librariesItems = fs.readdirSync(librariesPath);
+
         const existingFolders = librariesItems
             .filter(item => fs.statSync(path.join(librariesPath, item)).isDirectory());
 
@@ -285,7 +372,9 @@ async function preprocessProject(config, workspace) {
 
                 if (!shouldKeep) {
                     const folderToDelete = path.join(librariesPath, folder);
+
                     logger.log(`删除未使用的库文件夹: ${folder}`);
+
                     try {
                         rm(folderToDelete);
                     } catch (error) {
@@ -303,6 +392,7 @@ async function preprocessProject(config, workspace) {
 
     // 7. 获取编译命令
     let compilerParam = boardJson.compilerParam;
+
     if (!compilerParam) {
         throw new Error('未找到编译命令(compilerParam)');
     }
@@ -314,10 +404,13 @@ async function preprocessProject(config, workspace) {
         if (compilerParamList[i] === '-b' || compilerParamList[i] === '--board') {
             if (i + 1 < compilerParamList.length) {
                 boardType = compilerParamList[i + 1];
+
                 compilerParamList.splice(i, 2);
+
                 break;
             }
         }
+
         if (compilerParamList[i] === '-v' || compilerParamList[i] === '--verbose') {
             compilerParamList.splice(i, 1);
             i--;
@@ -328,8 +421,10 @@ async function preprocessProject(config, workspace) {
 
     // 8. 解析项目编译参数
     let buildProperties = '';
+
     if (projectConfig) {
         const buildPropertyParams = [];
+
         for (const [key, value] of getBoardOptionEntries(projectConfig)) {
             buildPropertyParams.push(`--board-options ${key}=${value}`);
 
@@ -344,7 +439,9 @@ async function preprocessProject(config, workspace) {
                 });
             }
         }
+
         buildProperties = buildPropertyParams.join(' ');
+
         if (buildProperties) {
             buildProperties = ' ' + buildProperties;
         }
@@ -352,6 +449,7 @@ async function preprocessProject(config, workspace) {
 
     if (macros) {
         let macroParams = [];
+
         macros.forEach(macroDef => {
             if (Array.isArray(macroDef)) {
                 macroDef.forEach(macro => {
@@ -361,6 +459,7 @@ async function preprocessProject(config, workspace) {
                 macroParams.push(`--build-macros ${macroDef}`);
             }
         });
+
         if (macroParams.length > 0) {
             buildProperties += ' ' + macroParams.join(' ');
         }
@@ -370,11 +469,14 @@ async function preprocessProject(config, workspace) {
 
     // 9. 同步编译器工具
     if (!readOnlyResources) await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath, compiler);
+
     const builderToolsPath = prepareBuilderToolsPath(appDataPath, resources, fullCompilerPath, compiler);
 
     // 10. 执行预编译
     logger.log('开始预编译...');
+
     const builderCommand = 'aily-builder';
+
     const pre_args = [
         'preprocess',
         // `...parseArgs(compilerParam)`,
@@ -386,8 +488,10 @@ async function preprocessProject(config, workspace) {
         '--tool-versions', `"${toolVersions.join(',')}"`,
         '--save-result', `"${preprocessCachePath}"`
     ];
+
     const explicitPaths = projectLibraryPaths.length && readBuilderCapabilities(builderCommand).projectLibraryPaths
         ? new Set(projectLibraryPaths) : new Set();
+
     for (const librarySearchPath of librarySearchPaths) {
         pre_args.push(explicitPaths.has(librarySearchPath) ? '--project-library-path' : '--libraries-path', `"${librarySearchPath}"`);
     }
@@ -424,15 +528,19 @@ async function preprocessProject(config, workspace) {
         });
 
         let spawnError;
+
         preChild.on('close', (code, signal) => {
             if (spawnError) { reject(spawnError); return; }
+
             if (signal) {
                 reject(new Error(`预编译进程被信号终止: ${signal}`));
+
                 return;
             }
 
             if (code !== 0) {
                 reject(new Error(`预编译失败，退出码: ${code}`));
+
                 return;
             }
 
@@ -441,18 +549,20 @@ async function preprocessProject(config, workspace) {
 
         preChild.on('error', (error) => {
             spawnError = new Error(`预编译进程错误: ${error.message}`);
+
             if (!preChild.pid) reject(spawnError);
         });
     });
 
     workspace.assertBuilderIdle();
+
     try {
         targetCompileContext.publishTargetCompileContext(preprocessCachePath, currentProjectPath, testContextInputs);
     } catch (error) {
         logger.warn('无法写入 C++ 测试上下文:', error.message);
     }
-    if (libraryEvidence) writeLibraryProjections(config, libraryEvidence);
 
+    if (libraryEvidence) writeLibraryProjections(config, libraryEvidence);
 }
 
 // Helpers
@@ -466,6 +576,7 @@ function mkdirp(dir) {
 function rm(pathToRemove) {
     try {
         const stats = fs.lstatSync(pathToRemove);
+
         fs.rmSync(pathToRemove, { recursive: true, force: true });
     } catch (e) {
         // Ignore ENOENT (file not found), rethrow others
@@ -486,7 +597,9 @@ function copyCustomPartitionFile({
     const sourcePartitionFile = isAilyCode
         ? path.join(path.dirname(compileSourcePath), 'partitions.csv')
         : path.join(currentProjectPath, 'src', 'partitions.csv');
+
     const legacyPartitionFile = path.join(currentProjectPath, 'partitions.csv');
+
     const candidates = [
         { filePath: sourcePartitionFile, kind: 'source' },
         { filePath: legacyPartitionFile, kind: 'legacy' },
@@ -497,6 +610,7 @@ function copyCustomPartitionFile({
     ].filter(candidate => candidate.filePath && fs.existsSync(candidate.filePath));
 
     const selected = candidates[0];
+
     if (!selected) {
         throw new Error(`选择了自定义分区方案，但未找到 partitions.csv 分区文件。请将文件保存到 ${sourcePartitionFile}`);
     }
@@ -508,9 +622,11 @@ function copyCustomPartitionFile({
     const destPartitionFilePath = isAilyCode
         ? sourcePartitionFile
         : path.join(sketchPath, 'partitions.csv');
+
     if (path.resolve(selected.filePath) === path.resolve(destPartitionFilePath)) {
         return;
     }
+
     try {
         fs.copyFileSync(selected.filePath, destPartitionFilePath);
     } catch (error) {
@@ -530,6 +646,7 @@ function collectDependencyLibraryPackages(projectDependencies, currentProjectPat
  */
 function collectComponentLibraries(currentProjectPath) {
     const componentsPath = path.join(currentProjectPath, 'components');
+
     if (!fs.existsSync(componentsPath) || !fs.statSync(componentsPath).isDirectory()) {
         return [];
     }
@@ -564,14 +681,17 @@ function collectWorkspaceLibraries(librariesPath) {
  * so pass it explicitly. Keep it first: later project/package roots retain
  * their existing override precedence.
  */
+
 function prependSdkLibrarySearchPath(fullSdkPath, librarySearchPaths) {
     const current = Array.isArray(librarySearchPaths) ? librarySearchPaths : [];
     const sdkLibrariesPath = path.join(fullSdkPath, 'libraries');
+
     if (!fs.existsSync(sdkLibrariesPath) || !fs.statSync(sdkLibrariesPath).isDirectory()) {
         return current;
     }
 
     const sdkRoot = path.resolve(sdkLibrariesPath);
+
     return [
         sdkLibrariesPath,
         ...current.filter(searchPath => path.resolve(searchPath) !== sdkRoot)
@@ -584,49 +704,63 @@ function prependSdkLibrarySearchPath(fullSdkPath, librarySearchPaths) {
  * library. Components are intentionally refreshed every build: their source
  * is local, small, and must never be hidden behind the npm library cache.
  */
-async function processComponentLibraries(componentLibraries, librariesPath, evidence) {
+async function processComponentLibraries(componentLibraries, librariesPath, evidence, shared = false) {
     const copied = [];
+
     for (const component of componentLibraries) {
         const targetPath = resolveLibraryTargetPath(librariesPath, component.name);
+
         if (!targetPath) {
             logger.warn(`忽略不安全的组件库名称: ${String(component.name)}`);
+
             continue;
         }
+
         try {
             // Fingerprinting also rejects nested links that escape the library root.
             createLibrarySourceFingerprint(component.sourcePath);
             rm(targetPath);
+
             const before = evidence?.capture(component.sourcePath);
-            linkItem(component.sourcePath, targetPath, !!evidence);
+
+            linkItem(component.sourcePath, targetPath, shared || !!evidence);
+
             if (evidence) evidence.add(`component:${component.name}`, before, targetPath, [], true);
+
             copied.push(component.name);
         } catch (error) {
             throw new Error(`组件库 ${component.name} 处理失败: ${error.message}`);
         }
     }
+
     return copied;
 }
 
-async function processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence) {
-    const tasks = libsPath.map(lib => processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence));
+async function processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence, shared = false) {
+    const tasks = libsPath.map(lib => processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence, shared));
     const results = await Promise.all(tasks);
+
     const failures = results.flatMap((result, index) => result.success ? [] : [
         `${typeof libsPath[index] === 'string' ? libsPath[index] : libsPath[index].packageName}: ${result.error}`
     ]);
+
     if (failures.length > 0) {
         throw new Error(`Library source preparation failed:\n${failures.join('\n')}`);
     }
     
     const copiedLibraries = [];
+
     results.forEach(result => {
         copiedLibraries.push(...result.targetNames);
     });
+
     return copiedLibraries;
 }
 
 async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7Path, localLibrariesPath, evidence, compiler) {
     const result = [];
     const seen = new Set();
+
     const localizedSourceRoots = collectLocalizedCoderSourceRoots(
         localLibrariesPath,
         currentProjectPath
@@ -634,32 +768,43 @@ async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7P
 
     const append = (sourcePath, owner = 'coder-local', inputs = []) => {
         if (!sourcePath || !fs.existsSync(sourcePath)) return;
+
         const canonical = fs.realpathSync(sourcePath);
+
         if (seen.has(canonical)) return;
+
         // Reject escaping/cyclic links before handing a source tree to the builder.
         const source = captureLibrarySource(canonical);
         const builderPath = prepareBuilderLibraryPath(compiler, source);
+
         if (evidence) evidence.add(owner, source, builderPath, inputs);
+
         seen.add(canonical);
         result.push(builderPath);
     };
 
     for (const lib of libsPath) {
         const packageName = typeof lib === 'string' ? lib : lib.packageName;
+
         const packageRoot = typeof lib === 'string'
             ? path.join(currentProjectPath, 'node_modules', lib)
             : lib.packagePath;
+
         const sourcePathBase = path.join(packageRoot, 'src');
         const inputs = evidence ? [evidence.capture(path.join(packageRoot, 'package.json'))] : [];
 
         if (!fs.existsSync(sourcePathBase)) {
             const sourceZipPath = path.join(packageRoot, 'src.7z');
+
             if (!fs.existsSync(sourceZipPath)) {
                 logger.warn(`库 ${packageName} 没有 src 或 src.7z，已跳过`);
+
                 continue;
             }
+
             try {
                 if (evidence) inputs.push(evidence.capture(sourceZipPath));
+
                 extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePathBase);
             } catch (error) {
                 throw new Error(`库 ${packageName} 解压失败: ${error.message}`);
@@ -668,8 +813,10 @@ async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7P
 
         const sourcePath = resolveNestedSrcPath(sourcePathBase);
         const packageOverrides = localizedSourceRoots.get(packageName);
+
         if (!packageOverrides?.size) {
             for (const searchRoot of coderLibraryCompileSearchRoots(sourcePath)) append(searchRoot, packageName, inputs);
+
             continue;
         }
 
@@ -687,6 +834,7 @@ async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7P
     // Arduino libraries also contribute their src/ directory because that is
     // the public include and recursive compilation root.
     for (const searchRoot of coderLibraryCompileSearchRoots(localLibrariesPath)) append(searchRoot);
+
     return result;
 }
 
@@ -700,75 +848,98 @@ function canonicalExistingPath(candidate) {
 
 function collectLocalizedCoderSourceRoots(localLibrariesPath, currentProjectPath) {
     const result = new Map();
+
     if (!localLibrariesPath || !fs.existsSync(localLibrariesPath)) return result;
 
     for (const entry of fs.readdirSync(localLibrariesPath, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+
         const receiptPath = path.join(localLibrariesPath, entry.name, CODER_LOCAL_LIBRARY_RECEIPT);
         let receipt;
+
         try {
             receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
         } catch {
             continue;
         }
+
         if (receipt?.source !== 'aily-chat'
             || typeof receipt.sourcePackage !== 'string'
             || typeof receipt.sourceLibraryRoot !== 'string') {
             continue;
         }
+
         const sourceRoot = path.resolve(currentProjectPath, receipt.sourceLibraryRoot);
+
         if (!isPathWithin(path.resolve(currentProjectPath), sourceRoot)) continue;
+
         const roots = result.get(receipt.sourcePackage) || new Set();
+
         roots.add(canonicalExistingPath(sourceRoot));
         result.set(receipt.sourcePackage, roots);
     }
+
     return result;
 }
 
 function coderPackageLibraryRoots(sourcePath) {
     if (!fs.existsSync(sourcePath)) return [];
+
     const entries = fs.readdirSync(sourcePath, { withFileTypes: true })
         .filter(entry => !entry.name.startsWith('.'));
+
     if (entries.some(entry => !entry.isDirectory())) return [sourcePath];
+
     return entries.filter(entry => entry.isDirectory()).map(entry => path.join(sourcePath, entry.name));
 }
 
 function coderLibraryCompileSearchRoots(sourcePath) {
     if (!sourcePath || !fs.existsSync(sourcePath)) return [];
+
     const result = [sourcePath];
+
     for (const libraryRoot of coderPackageLibraryRoots(sourcePath)) {
         const manifestPath = path.join(libraryRoot, 'library.properties');
         const standardSourceRoot = path.join(libraryRoot, 'src');
+
         if (fs.existsSync(manifestPath)
             && fs.existsSync(standardSourceRoot)
             && fs.statSync(standardSourceRoot).isDirectory()) {
             result.push(standardSourceRoot);
         }
     }
+
     return result;
 }
 
-async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence) {
+async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache, evidence, shared = false) {
     try {
         const packageName = typeof lib === 'string' ? lib : lib.packageName;
+
         const packageRoot = typeof lib === 'string'
             ? path.join(currentProjectPath, 'node_modules', lib)
             : lib.packagePath;
+
         const defaultPackageRoot = path.join(currentProjectPath, 'node_modules', packageName);
+
         const cacheKey = path.resolve(packageRoot) === path.resolve(defaultPackageRoot)
             ? packageName
             : path.relative(currentProjectPath, packageRoot).split(path.sep).join('/');
+
         const sourcePathBase = path.join(packageRoot, 'src');
         const inputs = evidence ? [evidence.capture(path.join(packageRoot, 'package.json'))] : [];
-
         // Prepare source
         let sourcePath = sourcePathBase;
+
         if (!fs.existsSync(sourcePath)) {
             const sourceZipPath = path.join(packageRoot, 'src.7z');
+
             if (fs.existsSync(sourceZipPath)) {
                 try {
                     if (evidence) inputs.push(evidence.capture(sourceZipPath));
-                    extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath);
+
+                    if (shared) sourcePath = prepareSharedLibraryArchive(za7Path, sourceZipPath, librariesPath, cacheKey);
+                    else extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath);
                 } catch (error) {
                     return { targetNames: [], success: false, error: `解压失败: ${error.message}` };
                 }
@@ -781,16 +952,22 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
 
         const sourceFingerprint = createLibrarySourceFingerprint(sourcePath);
         const hasDirectFiles = hasDirectSourceFiles(sourcePath);
+
         const projections = hasDirectFiles
             ? [{ source: sourcePath, name: packageName.split('/').pop() }]
             : fs.readdirSync(sourcePath).filter(name => !name.startsWith('.') && fs.statSync(path.join(sourcePath, name)).isDirectory())
                 .map(name => ({ source: path.join(sourcePath, name), name }));
+
         for (const entry of projections) {
             entry.target = resolveLibraryTargetPath(librariesPath, entry.name);
+
             if (!entry.target) throw new Error('Invalid library projection target.');
         }
+
         const cached = libraryCache[cacheKey];
-        if (!evidence && !devmode && cached && isLibraryCacheValid(cached, sourceFingerprint, projections)) {
+
+        if (!evidence && !devmode && cached && (!shared || cached.shared === true)
+            && isLibraryCacheValid(cached, sourceFingerprint, projections)) {
             return { targetNames: cached.targetNames, success: true };
         }
 
@@ -801,29 +978,90 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
         if (evidence) for (const entry of projections) {
             // Remove old hard links before taking file-state evidence; strict builds copy bytes.
             rm(entry.target);
+
             entry.before = evidence.capture(entry.source);
         }
+
         let result;
+
         if (hasDirectFiles) {
-            result = await processLibraryWithHeaders(packageName, sourcePath, librariesPath, !!evidence);
+            result = await processLibraryWithHeaders(packageName, sourcePath, librariesPath, shared || !!evidence);
         } else {
-            result = await processLibraryDirectories(packageName, sourcePath, librariesPath, !!evidence);
+            result = await processLibraryDirectories(packageName, sourcePath, librariesPath, shared || !!evidence);
         }
 
         if (result.success) {
             if (evidence) for (const entry of projections) evidence.add(packageName, entry.before, entry.target, inputs);
+
             libraryCache[cacheKey] = {
                 schemaVersion: LIBRARY_CACHE_SCHEMA_VERSION,
+                ...(shared ? { shared: true } : {}),
                 sourceFingerprint,
                 hasHeaderFiles: hasDirectFiles,
                 targetNames: result.targetNames
             };
         }
-        return result;
 
+        return result;
     } catch (error) {
         return { targetNames: [], success: false, error: error.message };
     }
+}
+
+function prepareSharedLibraryArchive(za7Path, sourceZipPath, librariesPath, cacheKey) {
+    const archiveRoot = path.join(path.dirname(librariesPath), 'library-archives');
+    const fingerprint = createLibrarySourceFingerprint(sourceZipPath);
+    const cacheKeyHash = crypto.createHash('sha256').update(cacheKey).digest('hex');
+    const archive = path.join(archiveRoot, cacheKeyHash.slice(0, 20));
+
+    for (const directory of [archiveRoot, archive]) {
+        fs.mkdirSync(directory, { recursive: true });
+
+        if (fs.realpathSync(directory) !== directory) throw new Error('Library archive cache must be project-owned.');
+    }
+
+    const target = path.join(archive, 'src');
+    const proofPath = path.join(archive, 'proof.json');
+    const proofStat = fs.lstatSync(proofPath, { throwIfNoEntry: false });
+
+    if (proofStat && (!proofStat.isFile() || proofStat.nlink !== 1 || proofStat.size > 512)) {
+        throw new Error('Invalid library archive cache receipt.');
+    }
+
+    let proof;
+
+    try { if (proofStat) proof = JSON.parse(fs.readFileSync(proofPath, 'utf8')); }
+    catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+
+    const targetStat = fs.lstatSync(target, { throwIfNoEntry: false });
+
+    if (targetStat) {
+        if (!targetStat.isDirectory() || fs.realpathSync(target) !== target) {
+            throw new Error('Library source archive cache must be project-owned.');
+        }
+
+        if (proof?.cacheKeyHash === cacheKeyHash && proof.archiveFingerprint === fingerprint
+            && proof.sourceFingerprint === createLibrarySourceFingerprint(target)) return target;
+
+        fs.rmSync(target, { recursive: true, force: true });
+    }
+
+    if (proofStat) fs.unlinkSync(proofPath);
+
+    extractLibrarySourceArchive(za7Path, sourceZipPath, target);
+
+    if (createLibrarySourceFingerprint(sourceZipPath) !== fingerprint) {
+        if (fs.realpathSync(target) === target) fs.rmSync(target, { recursive: true, force: true });
+
+        throw new Error('Library archive changed during shared build preparation.');
+    }
+
+    if (fs.realpathSync(target) !== target) throw new Error('Library source archive cache must be project-owned.');
+
+    fs.writeFileSync(proofPath, JSON.stringify({ cacheKeyHash, archiveFingerprint: fingerprint,
+        sourceFingerprint: createLibrarySourceFingerprint(target) }), { flag: 'wx' });
+
+    return target;
 }
 
 function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
@@ -836,9 +1074,11 @@ function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
     const packageIdentity = fs.statSync(physicalPackagePath, { bigint: true });
     const archiveIdentity = fs.statSync(physicalArchivePath, { bigint: true });
     const sameFile = (before, after) => before.dev === after.dev && before.ino === after.ino;
+
     const assertInputsUnchanged = () => {
         const currentPackage = fs.statSync(physicalPackagePath, { bigint: true });
         const currentArchive = fs.statSync(physicalArchivePath, { bigint: true });
+
         if (fs.realpathSync(packagePath) !== physicalPackagePath
             || fs.realpathSync(sourceZipPath) !== physicalArchivePath
             || !sameFile(packageIdentity, currentPackage)
@@ -849,6 +1089,7 @@ function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
             throw new Error('Library package inputs changed during source extraction.');
         }
     };
+
     const physicalSourcePath = path.join(physicalPackagePath, path.basename(sourcePath));
     const extractPath = fs.mkdtempSync(path.join(physicalPackagePath, '.src-extract-'));
     const extractIdentity = fs.lstatSync(extractPath, { bigint: true });
@@ -857,10 +1098,12 @@ function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
         assertInputsUnchanged();
         execFileSync(za7Path, ['x', physicalArchivePath, `-o${extractPath}`, '-y']);
         assertInputsUnchanged();
+
         // A concurrent producer owns a newly appeared src; never remove it.
         if (fs.existsSync(physicalSourcePath)) {
             throw new Error('Library source destination appeared during archive extraction.');
         }
+
         normalizeExtractedSourceDirectory(extractPath, physicalSourcePath);
     } finally {
         // Cleanup only this extraction directory, not a rebound alias/entry.
@@ -872,6 +1115,7 @@ function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
 function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
     const extractedItems = fs.readdirSync(extractPath).filter(item => !item.startsWith('.'));
     const nestedSourcePath = path.join(extractPath, 'src');
+
     const extractedSourcePath = extractedItems.length === 1 && extractedItems[0] === 'src' && fs.statSync(nestedSourcePath).isDirectory()
         ? nestedSourcePath
         : extractPath;
@@ -889,6 +1133,7 @@ function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
 
 function isPathWithin(rootPath, candidatePath) {
     const relativePath = path.relative(rootPath, candidatePath);
+
     return relativePath === ''
         || (!relativePath.startsWith(`..${path.sep}`) && relativePath !== '..' && !path.isAbsolute(relativePath));
 }
@@ -898,8 +1143,10 @@ function isLibraryCacheValid(cached, sourceFingerprint, projections) {
         && cached.sourceFingerprint === sourceFingerprint
         && Array.isArray(cached.targetNames)
         && cached.targetNames.length === projections.length
+
         && projections.every(entry => {
             if (!cached.targetNames.includes(entry.name)) return false;
+
             try {
                 return createLibrarySourceFingerprint(entry.source) === createLibrarySourceFingerprint(entry.target);
             } catch {
@@ -913,8 +1160,10 @@ function removeCachedLibraryTargets(cached, librariesPath) {
 
     for (const targetName of cached.targetNames) {
         const targetPath = resolveLibraryTargetPath(librariesPath, targetName);
+
         if (!targetPath) {
             logger.warn(`忽略不安全的库缓存目标: ${String(targetName)}`);
+
             continue;
         }
 
@@ -932,35 +1181,46 @@ function resolveLibraryTargetPath(librariesPath, targetName) {
     }
 
     const librariesRoot = path.resolve(librariesPath);
+
     if (fs.existsSync(librariesRoot) && fs.lstatSync(librariesRoot).isSymbolicLink()) {
         throw new Error('Library projection root must not be a symlink/junction.');
     }
+
     const targetPath = path.resolve(librariesRoot, targetName);
+
     if (fs.existsSync(targetPath) && fs.lstatSync(targetPath).isSymbolicLink()) {
         throw new Error('Library projection target must not be a symlink/junction.');
     }
+
     return isPathWithin(librariesRoot, targetPath) ? targetPath : null;
 }
 
 function resolveNestedSrcPath(sourcePath) {
     if (!fs.existsSync(sourcePath)) return sourcePath;
+
     try {
         let items = fs.readdirSync(sourcePath).filter(item => !item.startsWith('.'));
+
         while (items.length === 1 && items[0] === 'src') {
             const nested = path.join(sourcePath, 'src');
+
             if (fs.statSync(nested).isDirectory()) {
                 sourcePath = nested;
                 items = fs.readdirSync(sourcePath).filter(item => !item.startsWith('.'));
+
                 continue;
             }
+
             break;
         }
     } catch (e) {}
+
     return sourcePath;
 }
 
 function hasDirectSourceFiles(sourcePath) {
     if (!fs.existsSync(sourcePath)) return false;
+
     try {
         return fs.readdirSync(sourcePath, { withFileTypes: true })
             .some(entry => !entry.name.startsWith('.') && entry.isFile());
@@ -977,6 +1237,7 @@ async function processLibraryWithHeaders(lib, sourcePath, librariesPath, copyOnl
 
     try {
         linkItem(sourcePath, targetPath, copyOnly);
+
         return { targetNames: [targetName], success: true };
     } catch (e) {
         return { targetNames: [], success: false, error: e.message };
@@ -985,31 +1246,38 @@ async function processLibraryWithHeaders(lib, sourcePath, librariesPath, copyOnl
 
 async function processLibraryDirectories(lib, sourcePath, librariesPath, copyOnly = false) {
     const targetNames = [];
+
     if (!fs.existsSync(sourcePath)) return { targetNames: [], success: true };
 
     const items = fs.readdirSync(sourcePath);
+
     for (const item of items) {
         if (item.startsWith('.')) continue;
+
         const fullSourcePath = path.join(sourcePath, item);
+
         if (fs.statSync(fullSourcePath).isDirectory()) {
             const targetPath = path.join(librariesPath, item);
             
             rm(targetPath);
-
             linkItem(fullSourcePath, targetPath, copyOnly);
             targetNames.push(item);
         }
     }
+
     return { targetNames, success: true };
 }
 
 function linkItem(src, dest, copyOnly = false) {
     const stat = fs.statSync(src);
+
     if (stat.isDirectory()) {
         if (!fs.existsSync(dest)) {
             fs.mkdirSync(dest, { recursive: true });
         }
+
         const items = fs.readdirSync(src);
+
         for (const item of items) {
             linkItem(path.join(src, item), path.join(dest, item), copyOnly);
         }
@@ -1017,7 +1285,9 @@ function linkItem(src, dest, copyOnly = false) {
         if (fs.existsSync(dest)) {
             fs.unlinkSync(dest);
         }
+
         if (copyOnly) { fs.copyFileSync(src, dest); return; }
+
         try {
             fs.linkSync(src, dest);
         } catch (e) {
@@ -1029,8 +1299,11 @@ function linkItem(src, dest, copyOnly = false) {
 
 async function syncCompilerToolsToToolsPath(compilerPath, toolsPath, compilerDirName) {
     if (!fs.existsSync(compilerPath)) return;
+
     const relative = path.relative(toolsPath, compilerPath);
+
     if (!relative || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative))) return;
+
     mkdirp(toolsPath);
     
     const targetCompilerPath = path.join(toolsPath, compilerDirName);

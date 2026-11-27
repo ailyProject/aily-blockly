@@ -30,10 +30,15 @@ function codeIdentity(execPath, appPath) {
   const inputs = ['package.json', 'electron/main.js', 'electron/preload.js', 'renderer/index.html',
     'electron/project-repair-environment.js', 'electron/project-repair-lineage.js', 'electron/project-repair-commit.js', 'electron/project-repair-normalization.js',
     'electron/project-recovery-receipts.js', 'electron/project-repair-handoff.js', 'electron/project-repair-primary.js',
-    'electron/project-file-access.js', 'electron/project-lock.js', 'electron/project-copy-admission.js', 'electron/project-copy-source.js', 'electron/child-script-path.js', 'child/scripts/native-file-lock.js',
-    'child/scripts/build-workspace-lease.js', 'child/scripts/system-boot-id.js', 'child/scripts/process-state.js'].sort();
-  return hash(JSON.stringify([key(execPath), key(appPath), ...inputs.map(relative => {
-    const root = path.extname(appPath) === '.asar' && relative.startsWith('child/scripts/') ? path.dirname(appPath) : appPath;
+    'electron/project-file-access.js', 'electron/project-file-lock-owner.js', 'electron/project-lock.js', 'electron/project-copy-admission.js',
+    'electron/project-copy-source.js', 'electron/child-script-path.js', 'child/scripts/native-file-lock.js',
+    'child/scripts/build-workspace-lease.js', 'child/scripts/build-process-identity.js', 'child/scripts/system-boot-id.js', 'child/scripts/process-state.js'];
+  const archiveBinding = `electron/native/windows-process/${process.arch}/aily-job.node`;
+  if (process.platform === 'win32') inputs.push('electron/owned-process.js', archiveBinding);
+  const packed = path.extname(appPath) === '.asar';
+  return hash(JSON.stringify([key(execPath), key(appPath), ...inputs.sort().map(relative => {
+    const root = packed && relative === archiveBinding ? appPath + '.unpacked'
+      : packed && relative.startsWith('child/scripts/') ? path.dirname(appPath) : appPath;
     const file = path.join(root, relative);
     return [relative, fs.existsSync(file) ? hash(fs.readFileSync(file)) : null];
   })]));

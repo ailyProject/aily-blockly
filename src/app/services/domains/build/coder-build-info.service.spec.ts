@@ -5,7 +5,8 @@ import { recordCompileNotices } from '../../../../../tests/fixtures/compile-noti
 import { NpmService } from '../dependencies/public-api';
 import { CmdService } from '@core/platform/public-api';
 import { of, Subject } from 'rxjs';
-import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { canOfferLocalBuildFallback, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { ProjectBuildReceipts } from '../../integrations/automation/project-build-receipts';
 
 describe('Coder build metadata', () => {
   const root = '/projects/coder';
@@ -264,18 +265,27 @@ describe('Coder build metadata', () => {
     compiler.application.currentProcessState = 'IDLE';
     compiler.application.startBuild = () => { compiler.application.currentProcessState = 'BUILDING'; return true; };
     compiler.application.finishBuild = (ok: boolean) => { compiler.application.currentProcessState = ok ? 'IDLE' : 'ERROR'; };
-    Object.assign(compiler.npmService, { prepareCompileBackend: async () => {
-      if (!local && stage !== 'cloud-execution') throw new Error('unsupported board');
+    const fault = stage === 'cloud-execution'
+      ? Object.assign(new Error('This CI resource generator requires a supported exact SDK and citool version.'), { code: 'CI_RESOURCE_UNSUPPORTED' })
+      : Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+    Object.assign(compiler.npmService, { ensureCloudLibrarySources: async () => {}, prepareCompileBackend: async () => {
+      if (!local && stage !== 'cloud-execution') throw fault;
     }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
       expect(local).toBeTrue(); expect(owners).toBe(1);
       if (stage === 'cancel-preparation') { compiler.cancel(); throw new Error('cancelled'); }
     }) });
-    spyOn(compiler, 'runCloudCompile').and.rejectWith(new Error('gateway failed'));
+    spyOn(compiler, 'runCloudCompile').and.rejectWith(fault);
     const result = await compiler.runCompileFromDisk();
     expect(result.success).toBeFalse();
+    expect(result.result).toEqual(jasmine.objectContaining({
+      code: fault.code, text: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', fullStdErr: fault.message,
+    }));
+    expect(compiler.runCloudCompile).toHaveBeenCalledTimes(stage === 'cloud-execution' ? 1 : 0);
     expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
     expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
-    const retry = compiler.handleFailNotice.calls.mostRecent().args[4];
+    const [, , summary, detail, retry] = compiler.handleFailNotice.calls.mostRecent().args;
+    expect(summary).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+    expect(detail).toBe(fault.message);
     expect(retry).toEqual(jasmine.any(Function)); expect(owners).toBe(0);
     const pending = retry(); await retry(); await pending;
     expect(compiler.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
@@ -289,7 +299,40 @@ describe('Coder build metadata', () => {
     if (stage === 'local-error') expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toBeUndefined();
   });
 
+  it('checks the local Coder firmware under cloud preference without contacting the cloud target', async () => {
+    const compiler: any = createCompiler(() => 0);
+    project.isCloudBuild = () => true;
+    Object.assign(compiler.configService, { getCompileBackend: () => 'cloud', getCompileSettingsKey: () => 'cloud' });
+    const verify = window['builder'].canReuseCoderUpload = jasmine.createSpy('localReceipt').and.resolveTo(true);
+    expect(await compiler.canReuseLocalCoderBuildForUpload(root, () => false)).toBeTrue();
+    expect(verify).toHaveBeenCalledOnceWith({ currentProjectPath: root, boardModule: '@aily-project/board-test', appDataPath: '/app-data' });
+    expect(compiler.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+    verify.and.resolveTo(false);
+    expect(await compiler.canReuseLocalCoderBuildForUpload(root, () => false)).toBeFalse();
+  });
+
+  it('checks a cached Coder cloud firmware against current disk inputs under local preference', async () => {
+    const compiler: any = createCompiler(() => 0);
+    project.isCloudBuild = () => false;
+    const originalCloud = window['cloudBuild'];
+    const reusable = jasmine.createSpy('cloudReceipt').and.resolveTo(true);
+    window['cloudBuild'] = { reusable };
+    try {
+      expect(await compiler.canReuseCloudBuildForUpload(root)).toBeTrue();
+      expect(reusable).toHaveBeenCalledOnceWith({ config: jasmine.objectContaining({
+        currentProjectPath: root, code: files.get(root + '/sketch/src/main.cpp'), sourceCapture: { digest: 'captured' },
+      }), forUpload: true });
+      expect(compiler.npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+      reusable.and.callFake(async () => { project.currentProjectPath = '/elsewhere'; return true; });
+      expect(await compiler.canReuseCloudBuildForUpload(root)).toBeFalse();
+    } finally {
+      window['cloudBuild'] = originalCloud;
+    }
+  });
+
   function createSwitchingCompiler(exitCode = 0) {
+    files.set(`${root}/node_modules/@aily-project/board-test/package.json`, '{"name":"@aily-project/board-test","version":"1.0.0"}');
+    files.set(`${root}/node_modules/@aily-project/board-test/board.json`, '{"name":"test"}');
     const compiler: any = createCompiler(() => exitCode);
     const operation = { local: false, useLocal() { this.local = true; }, useCloud() { this.local = false; }, release: jasmine.createSpy('release') };
     project.beginBuildBackendOperation = () => operation;
@@ -303,6 +346,63 @@ describe('Coder build metadata', () => {
     return { compiler, operation };
   }
 
+  it('prepares a blocked Coder project for one explicit local build without rechecking the cloud target', async () => {
+    const { compiler, operation } = createSwitchingCompiler();
+    let dependenciesBlocked = true;
+    project.getProjectDependencyBlockMessage = () => dependenciesBlocked ? 'Dependency preparation failed' : undefined;
+    operation.release.and.callFake(() => { operation.local = false; });
+    const cloudPreflight = spyOn(compiler.npmService, 'prepareCompileBackend').and.rejectWith(
+      Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' }),
+    );
+    const prepareLocal = compiler.npmService.prepareLocalCompileBackend.and.callFake(async (projectPath: string) => {
+      expect(projectPath).toBe(root);
+      expect(operation.local).toBeTrue();
+      dependenciesBlocked = false;
+    });
+
+    const result = await compiler.runLocalCompileFromDisk(root);
+
+    expect(result.success).toBeTrue();
+    expect(prepareLocal).toHaveBeenCalledTimes(1);
+    expect(prepareLocal).toHaveBeenCalledBefore(compiler.npmService.assertCoderDependenciesReady);
+    expect(compiler.npmService.assertCoderDependenciesReady).toHaveBeenCalledBefore(compiler.runOneShotCommand);
+    expect(compiler.runOneShotCommand).toHaveBeenCalledTimes(1);
+    expect(cloudPreflight).not.toHaveBeenCalled();
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    expect(operation.release).toHaveBeenCalledTimes(1);
+    expect(operation.local).toBeFalse();
+    expect(compiler.configService.getCompileBackend()).toBe('cloud');
+    expect(compiler.configService.getCompileSettingsKey()).toBe('cloud');
+
+    const ordinaryBuild = await compiler.runCompileFromDisk();
+    expect(ordinaryBuild.result.code).toBe('CLOUD_TARGET_UNAVAILABLE');
+    expect(cloudPreflight).toHaveBeenCalledTimes(1);
+    expect(prepareLocal).toHaveBeenCalledTimes(1);
+    expect(compiler.runOneShotCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the existing local retry when a ready Coder project loses its cloud target during build readiness checks', async () => {
+    const { compiler } = createSwitchingCompiler();
+    const cloudPreflight = spyOn(compiler.npmService, 'prepareCompileBackend').and.resolveTo();
+    const error = Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' });
+    const assertReady = compiler.npmService.assertCoderDependenciesReady.and.rejectWith(error);
+    const recordCloudFailure = jasmine.createSpy('recordCloudFailure');
+
+    const result = await compiler.runCompileFromDisk({ requestId: 'cloud-target-lost', localFallback: { recordCloudFailure } });
+
+    expect(result.success).toBeFalse();
+    expect(result.result.code).toBe('CLOUD_TARGET_UNAVAILABLE');
+    expect(result.result.buildLog.requestId).toBe('cloud-target-lost');
+    expect(cloudPreflight).toHaveBeenCalledBefore(assertReady);
+    expect(assertReady).toHaveBeenCalledOnceWith(root, 'cloud-build');
+    expect(recordCloudFailure).toHaveBeenCalledOnceWith(error, jasmine.any(Function));
+    await expectAsync(recordCloudFailure.calls.mostRecent().args[1]()).toBeResolved();
+    expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toEqual(jasmine.any(Function));
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+  });
+
   it('does not report cloud analysis as a Build success', async () => {
     const { compiler } = createSwitchingCompiler();
     project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', profileDigest: 'profile', capabilities: { analysis: true } });
@@ -310,6 +410,114 @@ describe('Coder build metadata', () => {
     expect((await compiler.runCompileFromDisk({ preprocessOnly: true })).success).toBeTrue();
     expect(compiler.metrics.record).not.toHaveBeenCalled();
     expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+  });
+
+  for (const backend of ['local', 'cloud']) it(`rejects a Coder buffer edited during a ${backend} compile`, async () => {
+    let saved = true;
+    const compiler: any = backend === 'cloud' ? createSwitchingCompiler().compiler : createCompiler(() => {
+      saved = false;
+      return 0;
+    });
+    if (backend === 'cloud') compiler.runCloudCompile.and.callFake(async () => {
+      saved = false;
+      return { success: true };
+    });
+    const check = jasmine.createSpy('buffer is saved').and.callFake(async () => saved);
+    compiler.application.captureCoderBuildBuffer = jasmine.createSpy('capture buffer').and.returnValue(check);
+    const validate = spyOn(compiler.compileValidationService, 'triggerAfterSuccessfulCompile');
+
+    const result = await compiler.runCompileFromDisk();
+
+    expect(compiler.application.captureCoderBuildBuffer).toHaveBeenCalledOnceWith(root);
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(result).toEqual(jasmine.objectContaining({ success: false, result: jasmine.objectContaining({
+      state: 'error', code: 'BUILD_SOURCE_STALE', text: 'BLOCKLY_EDITOR.BUILD.SOURCE_STALE.inputs',
+      fullStdErr: jasmine.stringMatching('The Coder editor changed during compilation'),
+    }) }));
+    expect(compiler.handleFailNotice.calls.mostRecent().args.slice(2, 5)).toEqual([
+      'BLOCKLY_EDITOR.BUILD.SOURCE_STALE.inputs', jasmine.stringMatching('BUILD_SOURCE_STALE:'), undefined,
+    ]);
+    expect(validate).not.toHaveBeenCalled();
+    expect(readManifest().buildInfo.lastBuildStatus).toBe('failed');
+  });
+
+  it('reports an uncompiled cloud profile with its capability detail and a manual local action', async () => {
+    const { compiler } = createSwitchingCompiler();
+    project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', capabilities: { compile: false } });
+
+    const result = await compiler.runCompileFromDisk();
+
+    expect(result.success).toBeFalse();
+    expect(result.result).toEqual(jasmine.objectContaining({
+      code: 'CLOUD_COMPILE_UNSUPPORTED', text: 'PROJECT.CLOUD_TARGET_UNAVAILABLE',
+      fullStdErr: 'This cloud target does not support compilation.',
+    }));
+    expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toEqual(jasmine.any(Function));
+    expect(compiler.runCloudCompile).not.toHaveBeenCalled();
+    expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+  });
+
+  for (const stage of ['board-support', 'target-profile', 'cloud-run', 'nested-upload', 'unconfirmed', 'analysis']) {
+    it(`reports Coder cloud failure without starting local compilation: ${stage}`, async () => {
+      const { compiler, operation } = createSwitchingCompiler();
+      Object.assign(operation, { isNested: stage === 'nested-upload' });
+      const offline = Object.assign(new Error('Gateway unavailable'), { code: 'gateway_closing', httpStatus: 503 });
+      compiler.npmService.prepareCompileBackend = async () => { if (stage === 'board-support') throw offline; };
+      if (stage === 'target-profile') project.getCloudBoardProfile = async () => { throw offline; };
+      if (stage === 'analysis') project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test',
+        profileDigest: 'profile', capabilities: { analysis: true } });
+      const compatibility = Object.assign(new Error('Unsupported SDK'), {
+        code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported',
+      });
+      compiler.runCloudCompile.and.rejectWith(stage === 'unconfirmed' ? Object.assign(compatibility, { remoteCleanupConfirmed: false })
+        : stage === 'cloud-run' ? compatibility : offline);
+      let guard: (() => Promise<void>) | undefined;
+      const result = await compiler.runCompileFromDisk({ requestId: 'coder-cloud-failure', preprocessOnly: stage === 'analysis', localFallback: {
+        recordCloudFailure: (error: unknown, check: () => Promise<void>) => { if (canOfferLocalBuildFallback(error)) guard = check; },
+      } });
+      expect(result.success).toBeFalse();
+      expect(result.result.buildLog.requestId).toBe('coder-cloud-failure');
+      expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+      expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+      if (['board-support', 'target-profile', 'cloud-run'].includes(stage)) {
+        expect(guard).toEqual(jasmine.any(Function));
+        if (guard) await expectAsync(guard()).toBeResolved();
+      } else expect(guard).toBeUndefined();
+      if (stage === 'cloud-run' && guard) {
+        files.set(`${root}/sketch/src/helper.h`, '#define VALUE 2');
+        await expectAsync(guard()).toBeRejectedWithError(/source changed/);
+      }
+      expect(operation.release).toHaveBeenCalledTimes(1);
+      expect(compiler.configService.getCompileBackend()).toBe('cloud');
+    });
+  }
+
+  it('locally compiles Coder after receiving a checked CI resource incompatibility receipt', async () => {
+    const { compiler, operation } = createSwitchingCompiler();
+    operation.release.and.callFake(() => { operation.local = false; });
+    const failure = Object.assign(new Error('Unsupported CI SDK version'), {
+      code: 'CI_RESOURCE_UNSUPPORTED', ciResourceReason: 'sdk-toolchain-unsupported',
+    });
+    compiler.runCloudCompile.and.rejectWith(failure);
+    const receipts = new ProjectBuildReceipts();
+    const run = (requestId: string, from?: string) => receipts.start(root, { version: 1, requestId, waitMs: 10_000 }, 'full',
+      async localFallback => {
+        const outcome = await compiler.runCompileFromDisk({ requestId, localFallback });
+        return { ok: outcome.success, code: outcome.result.code, buildLog: outcome.result.buildLog };
+      }, from);
+
+    const cloud = await run('original-cloud');
+    expect(cloud.result).toEqual(jasmine.objectContaining({ ok: false, code: failure.code, localFallback: { fromRequestId: 'original-cloud' } }));
+    expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+
+    const result = await run('explicit-local', cloud.result?.['localFallback']?.fromRequestId);
+    expect(result.result?.['ok']).toBeTrue();
+    expect(compiler.runCloudCompile).toHaveBeenCalledTimes(1);
+    expect(compiler.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
+    expect(compiler.runOneShotCommand).toHaveBeenCalledTimes(1);
+    expect(result.result?.['buildLog'].requestId).toBe('explicit-local');
+    expect(project.isCloudBuild()).toBeTrue();
   });
 
   for (const exitCode of [0, 1]) it(`returns the local result and publishes metadata only once after cloud handoff (exit ${exitCode})`, async () => {
@@ -335,7 +543,7 @@ describe('Coder build metadata', () => {
     expect(JSON.parse(request[1]).ailyBuilderPath).toBe('/builder');
   });
 
-  for (const ending of ['cloud', 'local', 'unsupported', 'cancel']) it(`keeps the Coder request and metadata through a round trip ending in ${ending}`, async () => {
+  for (const ending of ['cloud', 'local', 'unsupported', 'outage', 'cancel']) it(`keeps the Coder request and metadata through a round trip ending in ${ending}`, async () => {
     const { compiler, operation } = createSwitchingCompiler();
     compiler.runOneShotCommand.and.callThrough();
     const commands = [new Subject<any>(), new Subject<any>()];
@@ -347,6 +555,7 @@ describe('Coder build metadata', () => {
       getCoderProjectContext: () => project,
       resolveCompileBackend: async () => {
         if (ending === 'unsupported') throw Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+        if (ending === 'outage') throw Object.assign(new Error('Cloud worker offline'), { code: 'CLOUD_BOARD_OFFLINE' });
         return 'cloud';
       },
     });
@@ -383,17 +592,19 @@ describe('Coder build metadata', () => {
       expect(result.result.buildLog.error).toContain('streaming');
       expect(files.get(result.result.buildLog.path)).toContain('compiling locally');
     }
-    expect(result.result.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
-    expect(compiler.metrics.record.calls.allArgs()).toEqual(ending === 'cancel' || ending === 'unsupported'
+    expect(result.result.state).toBe(ending === 'cancel' ? 'warn' : ['unsupported', 'outage'].includes(ending) ? 'error' : 'done');
+    expect(compiler.metrics.record.calls.allArgs()).toEqual(['cancel', 'unsupported', 'outage'].includes(ending)
       ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
     if (ending === 'unsupported') {
-      expect(result.result.text).toContain('Board no longer supports cloud builds');
+      expect(result.result.code).toBe('CLOUD_BOARD_UNSUPPORTED');
+      expect(result.result.text).toBe('PROJECT.CLOUD_TARGET_UNAVAILABLE');
+      expect(result.result.fullStdErr).toContain('Board no longer supports cloud builds');
       expect(launches).toBe(1);
       expect(operation.local).toBeFalse();
       expect(compiler.localSwitchAction).toBeUndefined();
       expect(readManifest().buildInfo.lastBuildStatus).toBe('failed');
     }
-    expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
+    expect(clouds).toBe(['cancel', 'unsupported', 'outage'].includes(ending) ? 1 : 2);
     expect(compiler.application.finishBuild).toHaveBeenCalledTimes(1); expect(save).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);
     expect(window['builder'].captureBuildSource).toHaveBeenCalledTimes(1);
@@ -659,7 +870,7 @@ describe('Coder build metadata', () => {
       return '@aily-project/board-test';
     });
     const result = await service.runCompileFromDisk();
-    expect(result.success).toBeFalse(); expect(result.result.text).toContain('BUILD_SOURCE_STALE');
+    expect(result.success).toBeFalse(); expect(result.result.code).toBe('BUILD_SOURCE_STALE');
     expect((service as any).runOneShotCommand).not.toHaveBeenCalled();
   });
 
@@ -678,7 +889,7 @@ describe('Coder build metadata', () => {
       if (filename.includes('compile-request-')) writeManifest({ ...readManifest(), entry: 'src/other.cpp' });
     };
     const result = await service.runCompileFromDisk();
-    expect(result.success).toBeFalse(); expect(result.result.text).toContain('BUILD_SOURCE_STALE');
+    expect(result.success).toBeFalse(); expect(result.result.code).toBe('BUILD_SOURCE_STALE');
     expect((service as any).runOneShotCommand).not.toHaveBeenCalled();
   });
 

@@ -9,22 +9,44 @@ export class TerminalService {
 
   isLocked = false;
 
-  currentPid;
+  currentPid?: number;
+  private createRequest = 0;
+  private legacyOutputBound = false;
+  private legacyOutput?: (data: string) => void;
 
   constructor(
   ) { }
 
-  async create(opts) {
+  async create(opts): Promise<number> {
+    const request = ++this.createRequest;
     const { pid } = await window['terminal'].init({
       cols: 120,
       rows: 200,
       cwd: opts.cwd
-    })
-    this.currentPid = pid;
+    });
+    if (request === this.createRequest) this.currentPid = pid;
+    return pid;
   }
 
-  close() {
-    window['terminal'].close({ pid: this.currentPid });
+  listen(pid: number, callback: (data: string) => void): () => void {
+    const bridge = window['terminal'];
+    if (typeof bridge.onPidData === 'function') {
+      return bridge.onPidData(pid, ({ data }) => callback(data));
+    }
+    // Earlier preloads expose just one global stream without an unsubscribe API.
+    if (!this.legacyOutputBound) {
+      bridge.onData((data: string) => this.legacyOutput?.(data));
+      this.legacyOutputBound = true;
+    }
+    this.legacyOutput = callback;
+    return () => {
+      if (this.legacyOutput === callback) this.legacyOutput = undefined;
+    };
+  }
+
+  close(pid: number) {
+    if (this.currentPid === pid) this.currentPid = undefined;
+    window['terminal'].close({ pid });
   }
 
   resize(opts) {

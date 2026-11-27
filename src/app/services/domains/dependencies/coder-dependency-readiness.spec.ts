@@ -1,5 +1,6 @@
 import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
 import { ProjectService } from '@domain/project/public-api';
+import { canOfferLocalBuildFallback } from '../../../utils/cloud-build-progress.utils';
 import { NpmService } from './npm.service';
 
 describe('Coder dependency installation and recovery', () => {
@@ -48,6 +49,104 @@ describe('Coder dependency installation and recovery', () => {
   });
 
   afterEach(() => Object.assign(window, original));
+
+  function failCloudBoardProfile(error: Error): void {
+    project.configService.getCompileBackend = npm.configService.getCompileBackend = () => 'cloud';
+    project.configService.getCompileSettingsKey = npm.configService.getCompileSettingsKey = () => 'cloud';
+    session = project.getProjectDependencySession('/project');
+    project.resolveCompileBackend = jasmine.createSpy('boardSupport').and.resolveTo('cloud');
+    project.getCloudBoardProfile = jasmine.createSpy('cloudProfile').and.rejectWith(error);
+    npm.ensureCloudLibrarySources = jasmine.createSpy('cloudSources').and.resolveTo();
+    npm.installBoardDeps.and.callFake(NpmService.prototype.installBoardDeps);
+  }
+
+  for (const code of ['CLOUD_TARGET_UNAVAILABLE', 'CLOUD_BOARD_UNSUPPORTED', 'CI_RESOURCE_UNSUPPORTED']) it(`offers a manual local build after ${code} settles`, async () => {
+    const targetError = Object.assign(new Error('Original unsupported configuration detail'), { code });
+    failCloudBoardProfile(targetError);
+    const retryLocally = jasmine.createSpy('retryLocally').and.resolveTo();
+    npm.application.updateNotice.and.callFake((notice: { onRetryLocally?: () => void }) => notice.onRetryLocally?.());
+
+    expect(await npm.ensureProjectAndBoardDeps('/project', { onRetryLocally: retryLocally }, session)).toBeFalse();
+    expect(project.getCloudBoardProfile).toHaveBeenCalledOnceWith({}, session);
+    expect(project.getProjectDependencyStatus('/project')).toBe('error');
+    expect(retryLocally).not.toHaveBeenCalled();
+    expect(npm.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
+    const notice = npm.application.updateNotice.calls.mostRecent().args[0];
+    expect(notice).toEqual(jasmine.objectContaining({
+      title: 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE', text: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', detail: targetError.message,
+      state: 'error', onRetry: jasmine.any(Function), onRetryLocally: jasmine.any(Function),
+    }));
+
+    await notice.onRetryLocally();
+    expect(retryLocally).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores local build actions after dependency recovery or session replacement', async () => {
+    failCloudBoardProfile(Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' }));
+    const retryLocally = jasmine.createSpy('retryLocally');
+    await npm.ensureProjectAndBoardDeps('/project', { onRetryLocally: retryLocally }, session);
+    const { onRetryLocally } = npm.application.updateNotice.calls.mostRecent().args[0];
+
+    project.setProjectDependencyResult(session, true);
+    await onRetryLocally();
+    lifecycle.cancel('/project');
+    lifecycle.release(session);
+    const replacement = project.getProjectDependencySession('/project');
+    project.setProjectDependencyResult(replacement, false);
+    await onRetryLocally();
+
+    expect(retryLocally).not.toHaveBeenCalled();
+  });
+
+  it('rechecks a confirmed Coder preflight failure for a new cloud build request', async () => {
+    const unavailable = Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' });
+    const unsupported = Object.assign(new Error('This board does not support cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+    failCloudBoardProfile(unavailable);
+    expect(await npm.ensureProjectAndBoardDeps('/project', undefined, session)).toBeFalse();
+    expect(project.hasCoderCloudPreflightFailure('/project')).toBeTrue();
+    expect(canOfferLocalBuildFallback(unsupported)).toBeFalse();
+
+    project.getCloudBoardProfile.and.rejectWith(unsupported);
+    const failure = await npm.prepareCompileBackend('/project', () => false, true).catch((error: unknown) => error);
+    expect(project.getCloudBoardProfile.calls.mostRecent().args).toEqual([{ refresh: true }, session]);
+    expect(failure).toEqual(jasmine.objectContaining({ code: 'CLOUD_BOARD_UNSUPPORTED', message: unsupported.message }));
+    expect(canOfferLocalBuildFallback(failure)).toBeTrue();
+    expect(canOfferLocalBuildFallback(unsupported)).toBeFalse();
+    expect(npm.installBoardDeps).toHaveBeenCalledTimes(1);
+
+    project.setProjectDependencyResult(session, false);
+    expect(project.hasCoderCloudPreflightFailure('/project')).toBeFalse();
+    await npm.prepareCompileBackend('/project', () => false, true);
+    expect(project.getCloudBoardProfile).toHaveBeenCalledTimes(2);
+  });
+
+  it('reapplies cloud dependency preparation when the same target becomes available', async () => {
+    failCloudBoardProfile(Object.assign(new Error('Cloud target unavailable'), { code: 'CLOUD_TARGET_UNAVAILABLE' }));
+    expect(await npm.ensureProjectAndBoardDeps('/project', undefined, session)).toBeFalse();
+    project.getCloudBoardProfile.and.resolveTo({ boardModule: '@aily-project/board-test' });
+
+    await npm.prepareCompileBackend('/project', () => false, true);
+
+    expect(project.getProjectDependencyStatus('/project')).toBe('ready');
+    expect(project.hasCoderCloudPreflightFailure('/project')).toBeFalse();
+    expect(npm.installBoardDeps).toHaveBeenCalledTimes(2);
+  });
+
+  for (const code of ['AUTH_TOKEN_INVALID', 'GATEWAY_TIMEOUT', 'CI_RESOURCE_PREPARATION_FAILED', undefined]) {
+    it(`keeps dependency retry as the only action for ${code ?? 'an unstructured error'}`, async () => {
+      failCloudBoardProfile(Object.assign(new Error('Cloud target unavailable'), { code }));
+      const retryLocally = jasmine.createSpy('retryLocally');
+
+      expect(await npm.ensureProjectAndBoardDeps('/project', { onRetryLocally: retryLocally }, session)).toBeFalse();
+      const notice = npm.application.updateNotice.calls.mostRecent().args[0];
+      expect(notice.title).toBe('NPM.DEPENDENCY_INSTALL_FAILED_TITLE');
+      expect(notice.text).toBe('NPM.BOARD_DEPS_INSTALL_FAILED');
+      expect(project.hasCoderCloudPreflightFailure('/project')).toBeFalse();
+      expect(notice.onRetry).toEqual(jasmine.any(Function));
+      expect(notice.onRetryLocally).toBeUndefined();
+      expect(retryLocally).not.toHaveBeenCalled();
+    });
+  }
 
   it('repairs an error dependency session completely before a local retry can compile', async () => {
     project.setProjectDependencyResult(session, false);
@@ -236,6 +335,64 @@ describe('Coder dependency installation and recovery', () => {
     expect(lifecycle.getStatus('/project')).toBe('error');
     expect(npm.application.updateNotice.calls.mostRecent().args[0].onRetry).toEqual(jasmine.any(Function));
     expect(window['npm'].run).not.toHaveBeenCalled();
+  });
+
+  for (const code of ['CLOUD_TARGET_UNAVAILABLE', 'CI_RESOURCE_UNSUPPORTED']) it(`returns ${code} to the compile owner while ordinary preflight reports dependency retry`, async () => {
+    const targetError = Object.assign(new Error('Original unsupported configuration detail'), { code });
+    failCloudBoardProfile(targetError);
+    project.setProjectDependencyResult(session, true);
+
+    await expectAsync(npm.assertCoderDependenciesReady('/project', 'cloud-build')).toBeRejectedWith(targetError);
+    expect(npm.application.updateNotice).not.toHaveBeenCalled();
+
+    project.setProjectDependencyResult(session, true);
+    await expectAsync(npm.assertCoderDependenciesReady('/project')).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
+    expect(npm.application.updateNotice).toHaveBeenCalledOnceWith(jasmine.objectContaining({
+      title: 'NPM.DEPENDENCY_INSTALL_FAILED_TITLE', detail: targetError.message, onRetry: jasmine.any(Function),
+    }));
+  });
+
+  it('admits a firmware upload with ready disk dependencies when the cloud target is unavailable', async () => {
+    failCloudBoardProfile(new Error('Cloud target offline'));
+    project.setProjectDependencyResult(session, true);
+
+    await npm.assertCoderDependenciesReady('/project', 'firmware-upload');
+    expect(npm.installedOk).toHaveBeenCalled();
+    expect(project.getCloudBoardProfile).not.toHaveBeenCalled();
+    expect(npm.application.updateNotice).not.toHaveBeenCalled();
+  });
+
+  it('admits the fresh idle session after a backend settings change only for firmware verification', async () => {
+    const previous = project.getProjectDependencySession('/project');
+    project.setProjectDependencyResult(previous, true);
+    failCloudBoardProfile(new Error('offline'));
+    expect(previous.signal.aborted).toBeTrue();
+    expect(project.getProjectDependencyStatus('/project')).toBe('idle');
+
+    await npm.assertCoderDependenciesReady('/project', 'firmware-upload');
+
+    expect(npm.installedOk).toHaveBeenCalled();
+    expect(project.getCloudBoardProfile).not.toHaveBeenCalled();
+    expect(project.getProjectDependencyStatus('/project')).toBe('idle');
+    npm.installedOk.and.resolveTo(false);
+    await expectAsync(npm.assertCoderDependenciesReady('/project', 'firmware-upload')).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
+    expect(project.getProjectDependencyStatus('/project')).toBe('error');
+  });
+
+  it('allows cloud artifact verification under local preferences when the compiler is missing', async () => {
+    const originalCloud = window['cloudBuild'];
+    const hasArtifact = jasmine.createSpy('hasArtifact').and.resolveTo(true);
+    window['cloudBuild'] = { hasArtifact };
+    try {
+      lifecycle.setResult(session, true);
+      window['path'].isExists = (path: string) => !path.endsWith('/boards.txt');
+      await npm.assertCoderDependenciesReady('/project', 'firmware-upload');
+      expect(hasArtifact).toHaveBeenCalledOnceWith({ projectPath: '/project' });
+      hasArtifact.and.resolveTo(false);
+      await expectAsync(npm.assertCoderDependenciesReady('/project', 'firmware-upload')).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
+    } finally {
+      window['cloudBuild'] = originalCloud;
+    }
   });
 
   for (const missing of ['package', 'version', 'boards.txt', 'tool-directory', 'tool-executable']) {

@@ -9,15 +9,41 @@ describe('workspace execution and protected recovery activity', () => {
     service = Object.create(BlocklyService.prototype); internal = service;
     root = document.createElement('div'); document.body.append(root);
     const recovery = new BehaviorSubject(false);
+    const aiOperationWriting = new BehaviorSubject(false);
     gate = new BlocklyWorkspaceEditGate(required => recovery.next(required));
     Object.assign(internal, { workspaceEditGate: gate, workspaceRecoveryRequiredSubject: recovery,
       _workspace: { getParentSvg: () => ({ parentElement: root }), cancelCurrentGesture() {}, hideChaff() {} },
       _aiWriting: new BehaviorSubject(false), aiWritingSources: new Set(),
+      aiOperationWritingSubject: aiOperationWriting, aiOperationWriting$: aiOperationWriting.asObservable(),
       _aiWaitWriting: new BehaviorSubject(false), _aiExecutionActive: new BehaviorSubject(false),
       aiExecutionActiveSources: new Set(), aiWaitWritingGeneration: 0 });
   });
   afterEach(() => { service.clearAiWaitWriting(); internal.releaseWorkspaceInputFence?.(); root.remove(); });
   const click = () => root.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+  it('reports only explicit AI writers while manual editing, execution and recovery keep their own lifetimes', () => {
+    const changes: boolean[] = [];
+    const sub = service.aiOperationWriting$.subscribe(value => changes.push(value));
+    const manual = service.acquireWorkspaceEditLease();
+    expect(service.aiWriting).toBeTrue();
+    service.setAiExecutionActive('chat-session', true);
+    expect(service.aiOperationWriting).toBeFalse();
+    service.setAiWritingActive('live-blockly-operation', true);
+    service.aiWriting = true; // Legacy Chat may overlap the automation bridge.
+    service.setAiExecutionActive('chat-session', false);
+    service.setAiWritingActive('live-blockly-operation', false);
+    expect(service.aiOperationWriting).toBeTrue();
+    service.aiWriting = false;
+    expect(service.aiWriting).toBeTrue();
+    const recovery = manual.quarantine('readback failed') as BlocklyWorkspaceRecoveryGrant;
+    manual.release();
+    const repair = service.acquireWorkspaceRecoveryLease(recovery);
+    expect(service.aiWriting).toBeTrue();
+    expect(service.aiOperationWriting).toBeFalse();
+    repair.completeRecovery(); repair.release();
+    expect(changes).toEqual([false, true, false]);
+    sub.unsubscribe();
+  });
 
   it('keeps background save leases out of the AI mask and permits canvas navigation', () => {
     const background = document.createElement('div'); background.className = 'blocklyMainBackground'; root.append(background);

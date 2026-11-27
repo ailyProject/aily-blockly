@@ -20,7 +20,6 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { watchDiscoveryFile } = require('./cli-discovery-lifecycle');
-
 const BRIDGE_VERSION = 1;
 
 function getBridgeDir() {
@@ -35,6 +34,7 @@ function safeWriteDiscoveryFile(filePath, data) {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(data), { mode: 0o600 });
+
     try {
       fs.chmodSync(filePath, 0o600);
     } catch (_) {
@@ -55,6 +55,7 @@ function safeWriteDiscoveryFile(filePath, data) {
  * @param {object} [deps.logger]
  * @returns {{ close: () => void, updateProject: (project: string|null) => void, getPort: () => number|null }}
  */
+
 function startCliBridge({ handleCommand, getStatus, logger = console }) {
   const token = crypto.randomBytes(16).toString('hex');
   const pid = process.pid;
@@ -68,6 +69,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
     safeWriteDiscoveryFile(discoveryFile, {
       version: BRIDGE_VERSION,
       nativeSaveReceiptVersion: 2,
+      ...(getStatus?.()?.nativeSaveWriterVersion === 1 ? { nativeSaveWriterVersion: 1 } : {}),
       pid,
       port,
       token,
@@ -82,28 +84,35 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
   const server = http.createServer((req, res) => {
     const sendJson = (statusCode, obj) => {
       if (res.destroyed || res.writableEnded) return;
+
       const body = JSON.stringify(obj);
+
       res.writeHead(statusCode, {
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(body),
       });
+
       res.end(body);
     };
 
     // 健康检查(无需 token):用于 CLI 判断实例存活
     if (req.method === 'GET' && req.url === '/ping') {
       let status = {};
+
       try {
         status = (getStatus && getStatus()) || {};
       } catch (_) {
         /* ignore */
       }
+
       sendJson(200, { ok: true, pid, ...status, nativeSaveReceiptVersion: 2 });
+
       return;
     }
 
     if (req.method !== 'POST' || req.url !== '/command') {
       sendJson(404, { ok: false, message: 'Not Found' });
+
       return;
     }
 
@@ -111,60 +120,78 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
     let size = 0;
     let aborted = false;
     let commandAbortController = null;
+
     req.on('data', (chunk) => {
       size += chunk.length;
+
       if (size > 1024 * 1024) {
         aborted = true;
+
         sendJson(413, { ok: false, message: 'Payload too large' });
         req.destroy();
+
         return;
       }
+
       chunks.push(chunk);
     });
+
     req.on('end', () => {
       if (aborted) return;
+
       let payload;
+
       try {
         payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
       } catch (_) {
         sendJson(400, { ok: false, message: 'Invalid JSON body' });
+
         return;
       }
 
       if (!payload || payload.token !== token) {
         sendJson(401, { ok: false, message: 'Unauthorized (token mismatch)' });
+
         return;
       }
 
       const action = String(payload.action || '');
+
       if (!action) {
         sendJson(400, { ok: false, message: 'Missing action' });
+
         return;
       }
 
       if (action === 'status') {
         let status = {};
+
         try {
           status = (getStatus && getStatus()) || {};
         } catch (_) {
           /* ignore */
         }
+
         sendJson(200, { ok: true, ...status });
+
         return;
       }
 
       commandAbortController = new AbortController();
+
       const abortDisconnectedCommand = () => {
         if (!res.writableEnded) {
           commandAbortController.abort(new Error('CLI bridge client disconnected.'));
         }
       };
+
       res.once('close', abortDisconnectedCommand);
 
       Promise.resolve()
         .then(() => handleCommand(action, payload, commandAbortController.signal))
         .then((result) => {
           const out = result || { ok: false, message: 'No result' };
+
           sendJson(out.ok ? 200 : 400, out);
         })
         .catch((err) => {
@@ -175,12 +202,16 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
           res.removeListener('close', abortDisconnectedCommand);
         });
     });
+
     req.on('aborted', () => {
       aborted = true;
+
       commandAbortController?.abort(new Error('CLI bridge request was aborted.'));
     });
+
     req.on('error', () => {
       commandAbortController?.abort(new Error('CLI bridge request failed.'));
+
       if (!aborted) sendJson(400, { ok: false, message: 'Request error' });
     });
   });
@@ -191,10 +222,15 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
 
   server.listen(0, '127.0.0.1', async () => {
     const port = server.address().port;
+
     identity = await watchDiscoveryFile(discoveryFile, instanceId, logger);
+
     if (closed) return;
+
     writeDiscovery(port);
+
     published = true;
+
     logger.log(`[cli-bridge] 已启动,端口 ${port},发现文件 ${discoveryFile}`);
   });
 
@@ -205,12 +241,16 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
       /* ignore */
     }
   };
+
   process.on('exit', cleanup);
 
   return {
+    getInstanceId: () => instanceId,
     close: () => {
       closed = true;
+
       cleanup();
+
       try {
         server.close();
       } catch (_) {
@@ -219,14 +259,20 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
     },
     updateProject: (project) => {
       const nextProject = project || null;
+
       if (nextProject === currentProject) return;
+
       currentProject = nextProject;
+
       const addr = server.address();
+
       if (addr && published && !closed) writeDiscovery(addr.port);
     },
     getPort: () => {
       if (!published || closed) return null;
+
       const addr = server.address();
+
       return addr ? addr.port : null;
     },
   };

@@ -70,7 +70,9 @@ async function downloadFileWithProgress(fileUrl, destination, onProgress, option
     }
   } catch (error) {
     // pipeline has closed the file before rejecting, including on Windows.
-    try { await fs.promises.rm(destination, { force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* private staging cleanup retries */ }
+    if (!options.downloadIntoPrivateStaging) {
+      try { await fs.promises.rm(destination, { force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* best effort */ }
+    }
     throw signal.aborted ? signal.reason : error;
   } finally {
     clearTimeout(timeout);

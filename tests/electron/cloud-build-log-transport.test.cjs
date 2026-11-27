@@ -14,12 +14,16 @@ const source = ts.createSourceFile('preload.js', fs.readFileSync(path.join(__dir
 const method = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'invokeCloudBuild');
 assert(method);
 
-for (const logComplete of [true, false, undefined]) {
-  test(`cloud log completeness ${logComplete} survives IPC and preload without changing the compiler error`, async t => {
+for (const fault of [
+  { code: 'COMPILE_ERROR', logComplete: true },
+  { code: 'COMPILE_ERROR', logComplete: false },
+  { code: 'COMPILE_ERROR' },
+  { code: 'gateway_closing', httpStatus: 503, cleanupConfirmed: false, remoteCleanupConfirmed: false },
+]) {
+  test(`cloud failure ${JSON.stringify(fault)} survives IPC and preload`, async t => {
     t.mock.method(CloudBuildBroker.prototype, 'configuration', async () => ({}));
     t.mock.method(CloudBuildBroker.prototype, 'run', async () => {
-      throw Object.assign(new Error('Actual compiler failure'), { code: 'COMPILE_ERROR',
-        ...(logComplete === undefined ? {} : { logComplete }) });
+      throw Object.assign(new Error('Actual cloud failure'), fault);
     });
     const handlers = new Map();
     const frame = {};
@@ -27,14 +31,15 @@ for (const logComplete of [true, false, undefined]) {
     registerCloudBuildHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
       getOwner: () => ({ projectPath: path.join(os.tmpdir(), 'owned-log-transport') }),
       getGatewaySettings: () => ({}), getAuth: () => ({}), querySource: async () => ({}),
-      getRuntimeRoot: () => path.join(os.tmpdir(), 'owned-log-runtime'), backend: 'cloud', platform: 'win32', getRegion: () => 'cn' });
+      getRuntimeRoot: () => path.join(os.tmpdir(), 'owned-log-runtime'), backend: 'cloud', getRegion: () => 'cn' });
     const invoke = vm.runInNewContext('(' + method.getText(source) + ')', { ipcRenderer: {
       invoke: (channel, payload) => handlers.get(channel)({ sender, senderFrame: frame }, payload),
     } });
     await assert.rejects(invoke({ action: 'compile', requestId: 'bound-request' }), error => {
-      assert.equal(error.code, 'COMPILE_ERROR');
-      assert.equal(error.message, 'Actual compiler failure');
-      assert.equal(error.logComplete, logComplete);
+      assert.equal(error.message, 'Actual cloud failure');
+      for (const field of ['code', 'logComplete', 'httpStatus', 'cleanupConfirmed', 'remoteCleanupConfirmed']) {
+        assert.equal(error[field], fault[field]);
+      }
       return true;
     });
   });

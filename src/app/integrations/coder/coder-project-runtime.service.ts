@@ -1,6 +1,7 @@
 import type { IMenuItem } from '../../configs/menu.config';
 import { Injectable, Injector } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
+import { TranslateService } from '@ngx-translate/core';
 import { NoticeService, WorkflowService } from '@core/app-shell/public-api';
 import { CmdService, LogService } from '@core/platform/public-api';
 import { ProjectService, CODER_BOARD_REQUIRED_MESSAGE, type CoderExecutionPort } from '@domain/project/public-api';
@@ -49,6 +50,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     private readonly serial: SerialService,
     private readonly notices: NoticeService,
     private readonly logs: LogService,
+    private readonly translate: TranslateService,
   ) {
     projects.currentProjectPath$.subscribe(path => {
       if (this.key(path) === this.key(this.activePath)) return;
@@ -116,7 +118,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     session.notice.stateSubject.subscribe(notice => {
       if (notice?.onRetryLocally) {
         const retry = notice.onRetryLocally;
-        const current = this.projects.captureCurrentProjectGuard();
+        const current = session.project.captureCurrentProjectGuard();
         notice = { ...notice, onRetryLocally: () => {
           if (!this.isActive(path) || !current() || session.busy) return;
           // The explicit retry repairs dependencies and must still participate
@@ -124,15 +126,20 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
           return this.run(path, 'build', async () => {
             await retry();
             return { state: session.state.notice?.state || 'error' };
-          }, true).catch(() => undefined);
+          }, { repairLocalDependencies: true }).catch(() => undefined);
         } };
       }
+      const previous = session.state.notice;
       session.state = { ...session.state, notice };
       session.noticePresented = false;
       this.publish();
       if (this.isActive(path)) {
-        notice ? this.notices.update({ ...notice, sendToLog: false }) : this.notices.clear();
-        if (notice) session.noticePresented = true;
+        if (notice) {
+          this.notices.update({ ...notice, sendToLog: false });
+          session.noticePresented = true;
+        } else if (!previous?.preparationId || previous.preparationId === this.notices.data?.preparationId) {
+          this.notices.clear();
+        }
       }
     });
     session.log.stateSubject.subscribe(log => {
@@ -150,18 +157,33 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     this.states$.next(new Map([...this.sessions].map(([path, session]) => [path, session.state])));
   }
 
-  private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>, repairLocalDependencies = false): Promise<any> {
+  private async run(path: string, kind: 'build' | 'upload',
+    execute: (session: CoderProjectSession, cloudPreflightCurrent?: () => boolean) => Promise<any>,
+    { repairLocalDependencies = false, preprocessOnly = false, requestBoundFallback = false } = {}): Promise<any> {
     if (this.projects.isProjectTransitionInProgress(path)) throw new Error('工程配置正在更新，请完成后再编译或上传。');
     const dependencyBlock = this.projects.getProjectDependencyBlockMessage(path);
-    if (dependencyBlock && !repairLocalDependencies) throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
+    const recoverCloudPreflight = dependencyBlock && requestBoundFallback && this.isActive(path)
+      && this.projects.hasCoderCloudPreflightFailure(path);
+    if (dependencyBlock && !repairLocalDependencies && !recoverCloudPreflight) {
+      throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
+    }
+    const cloudPreflightCurrent = recoverCloudPreflight ? this.projects.captureCurrentProjectGuard() : undefined;
     const session = this.getSession(path);
     if (session.busy) throw new Error(`工程正在${session.busy === 'build' ? '编译' : '上传'}: ${path}`);
     session.busy = kind;
     session.state = { ...session.state, [kind]: 'doing' };
     const finish = this.projects.beginCoderOperation(kind, path);
     this.publish();
+    const visible = this.isActive(path);
+    const showPreparation = !preprocessOnly && !repairLocalDependencies && !(visible && this.notices.data?.state === 'doing');
+    const preparation = showPreparation ? session.notice.beginPreparation({
+      title: this.translate.instant(kind === 'build' ? 'BLOCKLY_EDITOR.BUILD.PREPARING_TITLE' : 'BLOCKLY_EDITOR.UPLOAD.UPLOADING_TITLE'),
+      ...(kind === 'upload' ? { text: this.translate.instant('BLOCKLY_EDITOR.UPLOAD.PREPARING_DATA') } : {}),
+      state: 'doing', showProgress: false,
+    }, visible) : undefined;
     try {
-      if (!repairLocalDependencies) await session.project.syncCurrentBoardConfig();
+      if (preparation) await preparation.painted;
+      if (!repairLocalDependencies && !recoverCloudPreflight) await session.project.syncCurrentBoardConfig();
       if (!session.builderObserved) {
         session.builderObserved = true;
         session.injector.get(BuilderService).buildFinishedSubject.subscribe(event => {
@@ -169,25 +191,39 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
           this.publish();
         });
       }
-      const result = await execute(session);
+      const result = await execute(session, cloudPreflightCurrent);
       session.state = { ...session.state, [kind]: result?.state || 'done' };
       return result;
     } catch (error: any) {
       session.state = { ...session.state, [kind]: error?.state || 'error' };
       throw error;
     } finally {
+      preparation?.close();
       finish();
       session.busy = null;
       this.publish();
     }
   }
 
-  build(path: string, options: { preprocessOnly?: boolean; clearCache?: boolean; requestId?: string } = {}): Promise<any> {
-    return this.run(path, 'build', async session => {
+  build(path: string, options: NonNullable<Parameters<CoderExecutionPort['build']>[1]> = {}): Promise<any> {
+    const recordCloudFailure = options.localFallback?.recordCloudFailure;
+    const requestBoundFallback = !!options.requestId && !options.preprocessOnly && !options.clearCache
+      && !!(recordCloudFailure || options.localFallback?.local);
+    return this.run(path, 'build', async (session, cloudPreflightCurrent) => {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);
-      return builder.build(path, options);
-    });
+      if (!cloudPreflightCurrent || !recordCloudFailure || options.localFallback?.local) return builder.build(path, options);
+      const assertActiveProject = () => {
+        if (!cloudPreflightCurrent()) throw new Error('The active Coder project changed after the cloud preflight.');
+      };
+      return builder.build(path, { ...options, localFallback: {
+        recordCloudFailure: (error, assertSourceCurrent) => recordCloudFailure(error, async () => {
+          assertActiveProject();
+          await assertSourceCurrent();
+          assertActiveProject();
+        }),
+      } });
+    }, { preprocessOnly: options.preprocessOnly, requestBoundFallback });
   }
 
   buildForSimulation(path: string, input: CoderSimulationBuildInput): Promise<unknown> {

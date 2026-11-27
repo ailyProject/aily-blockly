@@ -6,26 +6,34 @@ import { AiOperationRegistryService, BlocklyLiveOperationBridgeService } from '@
 describe('library discard before application quit', () => {
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);
+
     Object.defineProperty(service, 'currentProjectPath', { value: '/broken' });
     Object.defineProperty(service, 'coderProjects', { value: [{ path: '/healthy' }, { path: '/healthy' }] });
+
     service.libraryChanges = new Map([['/broken', {}]]);
     service.normalizeProjectPath = (path: string) => path;
     service.getProjectMode = () => 'blockly';
     service.getBlocklyProjectLoadStatus = () => ({ ready: true });
     service.rebuildBlocklyRuntimeAfterLibraryChange = jasmine.createSpy('rebuild').and.resolveTo();
+
     service.discardLibraryChanges = jasmine.createSpy('discard').and.callFake(async (path: string) => {
       if (path === '/broken') throw new Error('ENOENT package.json');
     });
+
     return service;
   }
+
   it('attempts every open project once and reports failures to the quit decision', async () => {
     const service = fixture();
+
     await expectAsync(service.discardLibraryChangesBeforeQuit()).toBeRejectedWithError(AggregateError);
     expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken'], ['/healthy']]);
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
   });
+
   it('does not rebuild the editor that is about to quit after successful recovery', async () => {
     const service = fixture(); service.discardLibraryChanges.and.resolveTo();
+
     await service.discardLibraryChangesBeforeQuit();
     expect(service.discardLibraryChanges).toHaveBeenCalledTimes(2);
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
@@ -35,41 +43,56 @@ describe('library discard before application quit', () => {
 describe('dirty checks after a rejected Blockly open', () => {
   function fixture(mode: string | null, status: { ready: boolean; error?: string }) {
     const service: any = Object.create(ProjectService.prototype);
+
     service.configService = { getCompileSettingsKey: () => 'local' };
     service.currentProjectPathSubject = new BehaviorSubject('/failed');
     service.stateSubject = new BehaviorSubject('error');
     service.getProjectMode = () => mode;
     service.getBlocklyProjectLoadStatus = () => status;
+
     if (mode !== 'coder' && status.error) service.blocklyProjectLoadFailure = { path: '/failed', error: status.error };
+
     const dirty = jasmine.createSpy('dirty').and.rejectWith(new Error('ProjectDataRuntime is not configured for flush.'));
+
     Object.defineProperty(service, 'application', { value: { hasUnsavedBlocklyChanges: dirty } });
+
     return { service, dirty };
   }
+
   it('allows close, switch and retry without querying a partial or destroyed Blockly runtime', async () => {
     const { service, dirty } = fixture('blockly', { ready: false, error: 'readback mismatch' });
+
     expect(await service.hasUnsavedChanges()).toBeFalse();
     expect(dirty).not.toHaveBeenCalled();
   });
+
   it('allows leaving a failed activation even if its manifest cannot identify the mode', async () => {
     const { service, dirty } = fixture(null, { ready: false, error: 'invalid manifest' });
+
     expect(await service.hasUnsavedChanges()).toBeFalse();
     expect(dirty).not.toHaveBeenCalled();
   });
+
   it('allows cancelling preparation before the editor can answer dirty-state queries', async () => {
     const { service, dirty } = fixture('blockly', { ready: false });
+
     service.beginBlocklyProjectLoad('/failed');
     expect(await service.hasUnsavedChanges()).toBeFalse();
     expect(dirty).not.toHaveBeenCalled();
   });
+
   it('still checks a loaded code editor that used the legacy opening route', async () => {
     const { service, dirty } = fixture('coder', { ready: false });
+
     service.beginBlocklyProjectLoad('/failed');
     service.stateSubject.next('loaded');
     await expectAsync(service.hasUnsavedChanges()).toBeRejectedWithError(/not configured/);
     expect(dirty).toHaveBeenCalledTimes(1);
   });
+
   it('does not let late load success or failure revive a cancelled or closed project', () => {
     const { service } = fixture('blockly', { ready: false });
+
     service.beginBlocklyProjectLoad('/failed');
     service.getProjectDependencySession('/failed');
     service.dependencyLifecycle.cancel('/failed');
@@ -77,17 +100,21 @@ describe('dirty checks after a rejected Blockly open', () => {
     service.markBlocklyProjectLoadFailed('/failed', 'late error');
     expect(service.stateSubject.value).toBe('loading');
     service.currentProjectPathSubject.next('');
+
     service.loadingBlocklyProjectPath = '';
+
     service.stateSubject.next('default');
     service.dependencyLifecycle.release(service.dependencyLifecycle.get('/failed'));
     service.markBlocklyProjectLoadFailed('/failed', 'late error');
     expect(service.stateSubject.value).toBe('default');
     expect(service.blocklyProjectLoadFailure).toBeNull();
   });
+
   for (const [mode, status] of [
     ['blockly', { ready: true }], ['blockly', { ready: false }], ['coder', { ready: false, error: 'coder error' }],
   ] as const) it(`retains the dirty-state error boundary for ${mode} ${JSON.stringify(status)}`, async () => {
     const { service, dirty } = fixture(mode, status);
+
     await expectAsync(service.hasUnsavedChanges()).toBeRejectedWithError(/not configured/);
     expect(dirty).toHaveBeenCalledTimes(1);
   });
@@ -97,28 +124,35 @@ describe('project lifecycle admission across sessions', () => {
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);
     const registry = new AiOperationRegistryService();
+
     service.projectLifecycle = new ProjectLifecycleGate();
     service.currentProjectPathSubject = new BehaviorSubject('/a');
     service.stateSubject = new BehaviorSubject('loaded');
     service.projectOpenTask = null;
+    service.projectNavigationIntentRevision = 0;
     service.projectOpeningChangedSubject = new Subject<void>();
     service.projectOpeningChanged$ = service.projectOpeningChangedSubject.asObservable();
     service.coderProjectsSubject = new BehaviorSubject([]);
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.messageService = { warning: jasmine.createSpy('warning') };
     service.stateSubject = new BehaviorSubject('loaded');
+
     Object.defineProperty(service, 'router', { value: { url: '/main/guide' } });
+
     service.getProjectMode = () => 'blockly';
     service.save = jasmine.createSpy('save').and.resolveTo({ success: true });
     service.projectOpenInternal = jasmine.createSpy('open').and.resolveTo(true);
     service.closeInternal = jasmine.createSpy('close').and.resolveTo(true);
     service.stopProjectCommands = jasmine.createSpy('stopCommands').and.resolveTo();
+
     Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path), closeConnectionGraphWindows: async () => true } });
+
     return { service, registry };
   }
 
   it('allows manual open, reload and close while a session remains active', async () => {
     const { service, registry } = fixture();
+
     registry.setActive('chat', true, { projectPath: '/a', sessionId: 'session-a' });
     expect(await service.projectOpen('/b')).toBeTrue();
     expect(await service.projectOpen('/a', { reason: 'reload' })).toBeTrue();
@@ -128,10 +162,13 @@ describe('project lifecycle admission across sessions', () => {
 
   it('does not let chat tool names or the former close bypass evade a real write', async () => {
     const { service, registry } = fixture();
+
     registry.setActive('write', true, { projectPath: '/a', blocksProjectLifecycle: true });
+
     for (const reason of ['open', 'reload', 'chat-tool-open', 'chat-tool-reload', 'chat-tool-create']) {
       expect(await service.projectOpen('/b', { reason })).toBeFalse();
     }
+
     expect(await service.close({ allowDuringChatTool: true })).toBeFalse();
     expect(service.projectOpenInternal).not.toHaveBeenCalled();
     expect(service.closeInternal).not.toHaveBeenCalled();
@@ -139,9 +176,13 @@ describe('project lifecycle admission across sessions', () => {
 
   it('keeps board ownership during its internal reload while blocking unrelated disposal', async () => {
     const { service, registry } = fixture();
+
     registry.setActive('chat', true, { projectPath: '/a' });
+
     const board = service.acquireProjectLifecycle(['/a']);
+
     service.boardSwitchLifecycle = { projectPath: '/a', token: board.token };
+
     expect(await service.projectOpen('/b', { reason: 'chat-tool-open' })).toBeFalse();
     expect(await service.close()).toBeFalse();
     await expectAsync(service.reloadAfterBoardSwitch('/a')).toBeResolved();
@@ -151,6 +192,7 @@ describe('project lifecycle admission across sessions', () => {
 
   it('propagates reload rejection instead of reporting a completed board switch', async () => {
     const { service } = fixture();
+
     service.projectOpenInternal.and.resolveTo(false);
     await expectAsync(service.reloadAfterBoardSwitch('/a')).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_RELOAD_REJECTED' }));
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
@@ -159,17 +201,23 @@ describe('project lifecycle admission across sessions', () => {
   it('waits for the latest Blockly edits to save before board reload', async () => {
     const { service } = fixture();
     let finishSave!: (value: { success: boolean }) => void;
+
     service.save.and.returnValue(new Promise(resolve => { finishSave = resolve; }));
+
     const reload = service.reloadAfterBoardSwitch('/a');
+
     expect(service.save).toHaveBeenCalledOnceWith('/a');
     expect(service.projectOpenInternal).not.toHaveBeenCalled();
     finishSave({ success: true });
+
     await reload;
+
     expect(service.projectOpenInternal).toHaveBeenCalledTimes(1);
   });
 
   it('retains the edited workspace when saving before board reload fails', async () => {
     const { service } = fixture();
+
     service.save.and.resolveTo({ success: false, error: 'disk full' });
     await expectAsync(service.reloadAfterBoardSwitch('/a')).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_RELOAD_REJECTED' }));
     expect(service.projectOpenInternal).not.toHaveBeenCalled();
@@ -177,7 +225,9 @@ describe('project lifecycle admission across sessions', () => {
 
   it('allows activating retained Coder projects during another project write, but not reload/disposal', async () => {
     const { service, registry } = fixture();
+
     service.getProjectMode = () => 'coder';
+
     service.coderProjectsSubject.next([{ path: '/a' }, { path: '/b' }]);
     registry.setActive('write-b', true, { projectPath: '/b', blocksProjectLifecycle: true });
     expect(await service.projectOpen('/b', { reason: 'chat-tool-open' })).toBeTrue();
@@ -189,12 +239,16 @@ describe('project lifecycle admission across sessions', () => {
 
   it('protects save-through-close and does not dispose if saving fails', async () => {
     const { service } = fixture();
+
     service.getBlocklyProjectLoadStatus = () => ({ ready: true });
+
     service.save = jasmine.createSpy('save').and.callFake(async () => {
       expect(service.isProjectTransitionInProgress('/a')).toBeTrue();
       expect(await service.projectOpen('/b')).toBeFalse();
+
       return { success: false, error: 'disk full' };
     });
+
     await expectAsync(service.close({ save: true })).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_SAVE_FAILED' }));
     expect(service.closeInternal).not.toHaveBeenCalled();
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
@@ -204,7 +258,9 @@ describe('project lifecycle admission across sessions', () => {
     const { service } = fixture();
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     bridge.projectService = service;
+
     const result = await bridge.execute({ operation: 'project_close', path: '/other' });
+
     expect(result.reason).toBe('project_mismatch');
     expect(service.closeInternal).not.toHaveBeenCalled();
     service.currentProjectPathSubject.next('');
@@ -214,6 +270,7 @@ describe('project lifecycle admission across sessions', () => {
 
   it('releases lifecycle ownership if the loader throws', async () => {
     const { service } = fixture();
+
     service.projectOpenInternal.and.rejectWith(new Error('load failed'));
     await expectAsync(service.projectOpen('/b')).toBeRejectedWithError('load failed');
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
@@ -223,20 +280,24 @@ describe('project lifecycle admission across sessions', () => {
   it('notifies after setting an opening task and after clearing that exact task', async () => {
     const { service } = fixture();
     let finishOpen!: (opened: boolean) => void;
+
     service.projectOpenInternal.and.returnValue(new Promise<boolean>(resolve => { finishOpen = resolve; }));
+
     const notifications: Array<{ path: string | null; opening: boolean }> = [];
+
     service.projectOpeningChanged$.subscribe(() => notifications.push({
       path: service.projectOpenTask?.path ?? null,
       opening: service.isProjectOpening,
     }));
 
     const opening = service.projectOpen('/b');
+
     expect(service.projectOpenTask.path).toBe('/b');
     expect(notifications).toEqual([{ path: '/b', opening: true }]);
-
     finishOpen(true);
     await expectAsync(opening).toBeResolvedTo(true);
     expect(service.projectOpenTask).toBeNull();
+
     expect(notifications).toEqual([
       { path: '/b', opening: true },
       { path: null, opening: false },
@@ -245,28 +306,37 @@ describe('project lifecycle admission across sessions', () => {
 
   it('remains opening when loaded is published before the task clears and then notifies readiness', async () => {
     const { service } = fixture();
+
     service.stateSubject.next('loading');
+
     let finishOpen!: (opened: boolean) => void;
+
     service.projectOpenInternal.and.returnValue(new Promise<boolean>(resolve => { finishOpen = resolve; }));
+
     const notifications: Array<{ state: string; opening: boolean }> = [];
     const openingAtLoaded: boolean[] = [];
+
     service.projectOpeningChanged$.subscribe(() => notifications.push({
       state: service.stateSubject.value,
       opening: service.isProjectOpening,
     }));
+
     service.stateSubject.subscribe((state: string) => {
       if (state === 'loaded') openingAtLoaded.push(service.isProjectOpening);
     });
 
     const opening = service.projectOpen('/b');
+
     service.stateSubject.next('loaded');
     expect(openingAtLoaded).toEqual([true]);
     expect(service.isProjectOpening).toBeTrue();
     expect(notifications).toEqual([{ state: 'loading', opening: true }]);
-
     finishOpen(true);
+
     await opening;
+
     expect(service.isProjectOpening).toBeFalse();
+
     expect(notifications).toEqual([
       { state: 'loading', opening: true },
       { state: 'loaded', opening: false },
@@ -276,8 +346,11 @@ describe('project lifecycle admission across sessions', () => {
   it('does not clear a replacement root task or notify its readiness from an old finally', async () => {
     const { service } = fixture();
     let finishOpen!: (opened: boolean) => void;
+
     service.projectOpenInternal.and.returnValue(new Promise<boolean>(resolve => { finishOpen = resolve; }));
+
     const notifications: Array<{ root: string; opening: boolean }> = [];
+
     service.projectOpeningChanged$.subscribe(() => notifications.push({
       root: service.currentProjectPath,
       opening: service.isProjectOpening,
@@ -285,6 +358,7 @@ describe('project lifecycle admission across sessions', () => {
 
     const openingA = service.projectOpen('/a');
     const taskA = service.projectOpenTask;
+
     const replacement = {
       ...taskA,
       path: '/b',
@@ -293,11 +367,15 @@ describe('project lifecycle admission across sessions', () => {
       promise: taskA.promise,
       lease: { token: Symbol('replacement-b'), release: jasmine.createSpy('releaseB') },
     };
+
     service.currentProjectPathSubject.next('/b');
+
     service.projectOpenTask = replacement;
 
     finishOpen(true);
+
     await openingA;
+
     expect(service.projectOpenTask).toBe(replacement);
     expect(service.isProjectOpening).toBeTrue();
     expect(replacement.lease.release).not.toHaveBeenCalled();
@@ -309,20 +387,25 @@ describe('project lifecycle admission across sessions', () => {
     const { service } = fixture();
     const failure = new Error('loader failed after opening');
     let failOpen!: (error: Error) => void;
+
     service.projectOpenInternal.and.returnValue(new Promise<boolean>((_resolve, reject) => { failOpen = reject; }));
+
     const notifications: Array<{ path: string | null; opening: boolean }> = [];
+
     service.projectOpeningChanged$.subscribe(() => notifications.push({
       path: service.projectOpenTask?.path ?? null,
       opening: service.isProjectOpening,
     }));
 
     const opening = service.projectOpen('/b');
+
     expect(notifications).toEqual([{ path: '/b', opening: true }]);
     failOpen(failure);
     expect(await opening.catch((error: unknown) => error)).toBe(failure);
     expect(service.projectOpenTask).toBeNull();
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
     expect(service.isProjectTransitionInProgress('/b')).toBeFalse();
+
     expect(notifications).toEqual([
       { path: '/b', opening: true },
       { path: null, opening: false },
@@ -331,22 +414,30 @@ describe('project lifecycle admission across sessions', () => {
 
   it('ends loading if editor teardown rejects before the new editor can report failure, and permits retry', async () => {
     const { service } = fixture();
+
     service.stateSubject = new BehaviorSubject('loaded');
+
     const failure = new Error('FocusManager teardown failed');
+
     service.projectOpenInternal.and.callFake(async (path: string) => {
       service.beginBlocklyProjectLoad(path);
+
       throw failure;
     });
+
     await expectAsync(service.projectOpen('/a', { reason: 'reload' })).toBeRejectedWith(failure);
     expect(service.stateSubject.value).toBe('error');
     expect(service.isProjectOpening).toBeFalse();
     expect(service.getBlocklyProjectLoadStatus('/a').error).toBe(failure.message);
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
+
     service.projectOpenInternal.and.callFake(async (path: string) => {
       service.beginBlocklyProjectLoad(path);
       service.markBlocklyProjectLoaded(path);
+
       return true;
     });
+
     expect(await service.projectOpen('/a', { reason: 'reload' })).toBeTrue();
     expect(service.stateSubject.value).toBe('loaded');
     expect(service.blocklyProjectLoadFailure).toBeNull();
@@ -354,7 +445,9 @@ describe('project lifecycle admission across sessions', () => {
 
   it('does not overwrite another load or Coder state when opening fails before Blockly preparation', async () => {
     const { service } = fixture();
+
     service.stateSubject = new BehaviorSubject('loaded');
+
     service.projectOpenInternal.and.rejectWith(new Error('preparation failed'));
     await expectAsync(service.projectOpen('/b')).toBeRejected();
     expect(service.stateSubject.value).toBe('loaded');
@@ -368,11 +461,14 @@ describe('project lifecycle admission across sessions', () => {
     const { service, registry } = fixture();
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     bridge.projectService = service; bridge.aiOperations = registry; bridge.mutationSequence = 0;
+
     bridge.executeOperation = async () => {
       expect(registry.hasBlocking('/a')).toBeTrue();
       expect(await service.close()).toBeFalse();
+
       throw new Error('write failed');
     };
+
     await expectAsync(bridge.execute({ operation: 'project_save', path: '/a' })).toBeRejectedWithError('write failed');
     expect(registry.hasBlocking('/a')).toBeFalse();
   });
@@ -383,7 +479,9 @@ describe('project lifecycle admission across sessions', () => {
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     bridge.projectService = service; bridge.aiOperations = registry;
     bridge.executeOperation = jasmine.createSpy('operation');
+
     const result = await bridge.execute({ operation: 'project_save', path: '/a' });
+
     expect(result.reason).toBe('project_lifecycle_busy');
     expect(bridge.executeOperation).not.toHaveBeenCalled();
     board.release();
@@ -392,11 +490,13 @@ describe('project lifecycle admission across sessions', () => {
   it('admits only the owning dependency-history synchronization and always permits token cleanup', async () => {
     const { service, registry } = fixture();
     const lease = service.acquireProjectLifecycle(['/a']);
+
     service.libraryHistoryNavigation = { token: 'history-owner', projectPath: '/a' };
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     bridge.projectService = service; bridge.aiOperations = registry; bridge.mutationSequence = 0;
     bridge.executeOperation = jasmine.createSpy('operation').and.resolveTo({ ok: true });
     const call = (action: string, token = 'history-owner') => bridge.execute({ operation: 'library_history_navigation', path: '/a', params: { action, token } });
+
     try {
       expect((await call('synchronize', 'other')).reason).toBe('project_lifecycle_busy');
       expect((await call('begin')).reason).toBe('project_lifecycle_busy');
@@ -409,15 +509,21 @@ describe('project lifecycle admission across sessions', () => {
 
   it('routes owned dependency synchronization through the mounted editor and releases after runtime failure', async () => {
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
+
     bridge.projectService = { currentProjectPath: '/a', getProjectMode: () => 'blockly',
       isLibraryMutationInProgress: () => true, ownsLibraryHistoryNavigation: (token: string) => token === 'owned',
       synchronizeLibraryHistoryNavigation: jasmine.createSpy('sync').and.resolveTo(),
       releaseLibraryHistoryNavigation: jasmine.createSpy('release') };
+
     bridge.getProjectRuntimeStatus = () => ({ ready: true });
+
     const call = (action: string) => bridge.executeOperation({ operation: 'library_history_navigation', params: { action, token: 'owned', changedPaths: ['package.json'] } });
+
     expect((await call('synchronize')).ok).toBeTrue();
     expect(bridge.projectService.synchronizeLibraryHistoryNavigation).toHaveBeenCalledOnceWith('owned', ['package.json']);
+
     bridge.getProjectRuntimeStatus = () => ({ ready: false });
+
     expect((await call('release')).ok).toBeTrue();
     expect(bridge.projectService.releaseLibraryHistoryNavigation).toHaveBeenCalledOnceWith('owned');
   });
@@ -432,23 +538,31 @@ describe('project lifecycle admission across sessions', () => {
       service.getRuntimeBoardModule = () => board;
       service.getPackageJson = async () => ({ dependencies: { [board]: '1' } });
       service.getBlocklyProjectLoadStatus = () => ({ ready: true });
+
       service.changeBoard = async () => {
         expect(registry.hasBlocking('/a')).toBeFalse();
+
         const lease = service.acquireProjectLifecycle(['/a']);
+
         service.boardSwitchLifecycle = { projectPath: '/a', token: lease.token };
+
         try { await service.reloadAfterBoardSwitch('/a'); board = target; }
         finally { service.boardSwitchLifecycle = null; lease.release(); }
       };
+
       const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
       bridge.projectService = service; bridge.aiOperations = registry;
       bridge.configService = { init: async () => {}, boardDict: { [target]: { version: '1' } } };
       bridge.blocklyEditor = { setAiWritingActive: jasmine.createSpy('canvasMask') };
       bridge.aiWritingDepth = 0;
+
       bridge.executeLibraryRuntimeSync = async () => {
         expect(registry.hasBlocking('/a')).toBeTrue();
         expect(await service.close()).toBeFalse();
+
         return { ready: true };
       };
+
       registry.setActive('chat', true, { projectPath: '/a' });
       expect((await bridge.executeBoardSwitch({ boardName: target })).ok).toBeTrue();
       expect(bridge.blocklyEditor.setAiWritingActive).not.toHaveBeenCalled();

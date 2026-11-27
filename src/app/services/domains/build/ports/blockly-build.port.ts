@@ -3,17 +3,20 @@ import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import type { BuildCheckpoint } from '../build-result-snapshot';
 import type { ProjectBuildLogReference } from '../project-build-log';
 import type { BuildSnapshot } from '../build-snapshot';
+import type { BuildLocalFallbackControl } from '../../../../utils/cloud-build-progress.utils';
 
 export interface BlocklyBuildInput {
   projectPath: string;
   graphSemanticRevision?: string;
   requestId?: string;
+  preprocessOnly?: boolean;
   clearCache?: boolean;
   simulationDebug?: boolean;
 
   sourceDocumentSchemaVersion?: 1 | 2;
 
   sceneDocument?: SceneEditorDocumentV2;
+  localFallback?: BuildLocalFallbackControl;
 }
 
 export interface BlocklyBuildOutcome {

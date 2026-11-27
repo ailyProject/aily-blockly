@@ -5,7 +5,7 @@ const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const { selectFirmwareFile } = require('./firmware-selection');
-const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
+const { readBlocklyUploadArtifacts, resolveEspSrUploadCommand } = require('./blockly-upload-state');
 const { canReuseCoderUpload } = require('./coder-upload-state');
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { resolveBuiltinUploader } = require('./builtin-uploaders');
@@ -282,7 +282,7 @@ function readUploadCommandFromPreprocess(currentProjectPath, localPreprocessPath
     }
 
     const upload = preprocess?.upload;
-    const command = normalizeUploadParam(upload?.command);
+    const command = normalizeUploadParam(resolveEspSrUploadCommand(preprocess, path.join(currentProjectPath, '.build')));
 
     if (!command) {
         return {
@@ -430,14 +430,13 @@ async function main() {
     //     uploadParam: configUploadParam
     // });
 
-    let coderWorkspace;
-    let uploadWorkspace;
+    let workspace;
     let verifiedArtifact;
 
     const verifyCurrentArtifact = () => {
-        if (!uploadWorkspace) return;
+        if (!verifiedArtifact) return;
 
-        uploadWorkspace.assertOwned();
+        workspace.assertOwned();
         verifyUploadArtifact(currentProjectPath, config.verifiedBuild);
     };
 
@@ -448,16 +447,13 @@ async function main() {
                 || path.resolve(buildPath) !== path.join(fs.realpathSync(currentProjectPath), '.build')) {
                 throw new Error('SIMULATION_UPLOAD_STALE: Verified Artifact upload configuration changed.');
             }
-
-            uploadWorkspace = acquireBuildWorkspace(currentProjectPath, 'verify');
-            verifiedArtifact = verifyUploadArtifact(currentProjectPath, config.verifiedBuild);
         }
 
         // 1. 路径准备
         if (config.verifyCoderBuild === true) {
-            coderWorkspace = acquireBuildWorkspace(currentProjectPath, 'verify');
+            workspace ??= acquireBuildWorkspace(currentProjectPath, 'verify');
 
-            const expectedBuildPath = path.join(coderWorkspace.projectRoot, '.build');
+            const expectedBuildPath = path.join(workspace.projectRoot, '.build');
 
             if (fs.realpathSync(buildPath) !== expectedBuildPath || !canReuseCoderUpload(config)) {
                 throw new Error('BUILD_ARTIFACT_STALE: Coder firmware or inputs changed; build again.');
@@ -465,12 +461,26 @@ async function main() {
         }
 
         if (config.buildExecution) {
-            const selected = require('./build-execution-workspace').resolveBuildExecution(config.buildExecution.logicalProjectPath);
+            const original = config.buildExecution;
+            let selected;
+
+            if (original.layout === 'shared') {
+                if (!process.env.AILY_BUILD_WORKSPACE_SUPERVISOR) throw new Error('Shared upload requires the managed process launcher.');
+
+                ({ workspace, selected } = require('./shared-build-firmware').acquireSharedBuildFirmware(original));
+            } else selected = require('./build-execution-workspace').resolveBuildExecution(original.logicalProjectPath);
 
             if (!selected || selected.currentProjectPath !== currentProjectPath || selected.buildPath !== buildPath
-                || selected.buildRequestId !== config.buildExecution.buildRequestId || selected.inputDigest !== config.buildExecution.inputDigest) {
+                || selected.buildRequestId !== original.buildRequestId || selected.inputDigest !== original.inputDigest) {
                 throw new Error('BUILD_ARTIFACT_STALE: Upload does not belong to the current completed build execution.');
             }
+
+            if (original.layout === 'shared') workspace.markDelegated();
+        }
+
+        if (config.expectedArtifactId !== undefined) {
+            workspace ??= acquireBuildWorkspace(currentProjectPath, 'verify');
+            verifiedArtifact = verifyUploadArtifact(currentProjectPath, config.verifiedBuild);
         }
 
         const tempPath = path.join(currentProjectPath, '.temp');
@@ -647,8 +657,7 @@ async function main() {
                     verifyCurrentArtifact();
 
                     const exitCode = await new Promise((resolveCmd, rejectCmd) => {
-                        coderWorkspace?.markDelegated();
-                        uploadWorkspace?.markDelegated();
+                        workspace?.markDelegated();
 
                         const child = spawn(shellCmd, cmdArgs, {
                             cwd: buildPath,
@@ -734,10 +743,11 @@ async function main() {
             return parsed;
         };
 
-        let command;
-        let templateArgs;
+        const { command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource);
 
-        ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
+        if (uploadParamSource === 'preprocess') {
+            isolateEsp32FlashReferences(command, templateArgs, buildPath, fullSdkPath);
+        }
 
         if (verifiedArtifact) assertVerifiedFirmwareArguments(verifiedArtifact, buildPath, templateArgs);
 
@@ -792,8 +802,7 @@ async function main() {
         // 12. 执行上传命令。部分旧版 SDK 包装脚本会吞掉底层工具的异常并返回 0，
         // 因此在透传输出的同时保留末尾内容，用致命错误文本兜底校正退出码。
         const result = await new Promise((resolve, reject) => {
-            coderWorkspace?.markDelegated();
-            uploadWorkspace?.markDelegated();
+            workspace?.markDelegated();
 
             const child = spawn(shellCommand, args, {
                 cwd: buildPath,
@@ -848,8 +857,7 @@ async function main() {
 
         process.exitCode = error.exitCode || 1;
     } finally {
-        uploadWorkspace?.release();
-        coderWorkspace?.release();
+        workspace?.release();
     }
 }
 
@@ -1053,6 +1061,46 @@ function parseArgs(str) {
     return args;
 }
 
+function isolateEsp32FlashReferences(command, args, buildPath, sdkPath) {
+    const unquote = arg => (arg || '').replace(/^"|"$/g, '');
+
+    if (!sdkPath || !args.some(arg => arg === 'write-flash' || arg === 'write_flash')) return;
+    if (args.includes('--no-fast-flash') || args.includes('--diff-with')) return;
+
+    const sdkTools = path.resolve(sdkPath, 'tools');
+
+    const isSdkFlasher = path.resolve(unquote(command)) === path.join(sdkTools, 'flasher.exe')
+        || path.resolve(unquote(args[0])) === path.join(sdkTools, 'flasher.py');
+
+    if (!isSdkFlasher) return;
+
+    const directoryOption = args.indexOf('--build-dir');
+
+    if (directoryOption < 0 || path.resolve(unquote(args[directoryOption + 1])) !== path.resolve(buildPath)) return;
+
+    // Espressif's flasher writes reference copies here after upload. Storing
+    // them beside the binaries would invalidate the completed-build receipt.
+    const temp = path.join(path.dirname(buildPath), '.temp');
+    const references = path.join(temp, 'esp32-flash-references');
+
+    try {
+        for (const directory of [temp, references]) {
+            fs.mkdirSync(directory, { recursive: true });
+
+            if (!fs.lstatSync(directory).isDirectory()) {
+                throw new Error('Invalid ESP32 flash reference directory.');
+            }
+        }
+    } catch (error) {
+        logger.warn('ESP32 差量参考目录不可用，将进行全量烧录:', error.message);
+        args.push('--no-fast-flash');
+
+        return;
+    }
+
+    args[directoryOption + 1] = wrapInQuotesIfNeeded(references);
+}
+
 function wrapInQuotesIfNeeded(value) {
     if (!value || value.startsWith('"') || !/\s/.test(value)) {
         return value;
@@ -1159,4 +1207,5 @@ module.exports = {
     selectUploadParamForPort,
     processUploadParams,
     selectUploadFirmwareFile,
+    isolateEsp32FlashReferences,
 };

@@ -27,12 +27,25 @@ describe('NotificationComponent progress animation', () => {
   afterEach(() => component.ngOnDestroy());
 
   it('查看详情传递通知自己的日志目标，不依赖终端 PID', () => {
-    const openLog = jasmine.createSpy('openLog');
+    const ui = Object.create(UiService.prototype) as UiService;
+    ui.isMainWindow = true;
+    const events = new BehaviorSubject<any>(null);
+    ui.actionSubject = events;
+    const publish = spyOn(events, 'next').and.callThrough();
+    const poll = spyOn(window, 'setInterval');
     const target = { timestamp: 1000, mergeKey: 'notice-error' };
-    const notice = new NotificationComponent({} as any, {} as any, { openLog } as any);
+    const notice = new NotificationComponent({} as any, {} as any, ui);
     notice.data = { state: 'error', detail: 'failure', logTarget: target };
     notice.view();
-    expect(openLog).toHaveBeenCalledOnceWith(target);
+    notice.view();
+    expect(ui.terminalIsOpen).toBeTrue();
+    expect(publish.calls.allArgs()).toEqual([
+      [{ action: 'open', type: 'bottom-sider', data: 'log' }],
+      [{ action: 'reveal', type: 'log', data: target }],
+      [{ action: 'open', type: 'bottom-sider', data: 'log' }],
+      [{ action: 'reveal', type: 'log', data: target }],
+    ]);
+    expect(poll).not.toHaveBeenCalled();
   });
 
   it('never goes negative when a shared frame timestamp predates a long render', () => {
@@ -165,6 +178,24 @@ describe('NotificationComponent owned notice lifecycle', () => {
         { provide: UiService, useValue: {} },
       ],
     }).compileComponents();
+  });
+
+  it('paints preparation directly and keeps later progress visible in the same panel', async () => {
+    const fixture = TestBed.createComponent(NotificationComponent);
+    fixture.detectChanges();
+    const prep = notices.beginPreparation({ title: 'Preparing build', state: 'doing', showProgress: false })!;
+    const panel = fixture.nativeElement.querySelector('.notification-box');
+    expect(panel.textContent).toContain('Preparing build');
+    expect(panel.classList.contains('animate__fadeInRight')).toBeFalse();
+    await prep.painted;
+    notices.update({ title: 'Compiling', state: 'doing', progress: 25 });
+    prep.close();
+    expect(panel.textContent).toContain('Compiling');
+    expect(panel.classList.contains('animate__fadeInRight')).toBeFalse();
+    notices.clear();
+    notices.update({ title: 'Other notification', state: 'done' });
+    expect(fixture.nativeElement.querySelector('.notification-box').classList.contains('animate__fadeInRight')).toBeTrue();
+    fixture.destroy();
   });
 
   it('renders the same running owner and Stop action after the editor view is recreated', () => {

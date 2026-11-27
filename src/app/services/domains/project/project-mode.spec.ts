@@ -14,6 +14,7 @@ describe('project mode boundaries', () => {
       getCompileSettingsKey: () => 'local',
       data: { recentlyProjects: [coder, blockly] },
       init: jasmine.createSpy('init').and.resolveTo(),
+      initializeProjectCompileBackend: jasmine.createSpy('compile backend initialization').and.resolveTo(),
       getPreferredChatAgentRuntimeMode: () => mode,
       getApplicationName: () => 'aily',
       getWebUrl: () => 'https://yiyu.pro',
@@ -24,6 +25,7 @@ describe('project mode boundaries', () => {
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.coderOperationSubject = new BehaviorSubject(null);
     service.coderProjectsSubject = new BehaviorSubject([]);
+    service.projectNavigationIntentRevision = 0;
     service.currentProjectPathSubject = new BehaviorSubject(blockly.path);
     service.stateSubject = new BehaviorSubject('loaded');
     service.projectActivationSubject = new Subject();
@@ -38,6 +40,28 @@ describe('project mode boundaries', () => {
     return service;
   }
 
+  it('selects a retained Coder tab in the host without releasing sibling leases', async () => {
+    const service = createService('coder');
+    const sibling = { name: 'Other Code', path: '/projects/code-other' };
+    service.currentProjectPathSubject.next(sibling.path);
+    service.coderProjectsSubject.next([sibling, coder]);
+    service.routerService = {
+      url: '/main/code-editor-pro', createUrlTree: jasmine.createSpy().and.returnValue({}),
+      isActive: jasmine.createSpy().and.returnValue(false), navigate: jasmine.createSpy().and.resolveTo(true),
+    };
+    const previous = window['projectLock'];
+    const tryAcquire = jasmine.createSpy('tryAcquire').and.resolveTo({ ok: true, alreadyHeld: true, viewToken: 'retained' });
+    const release = jasmine.createSpy('release');
+    window['projectLock'] = { tryAcquire, release };
+    try {
+      expect(await service.projectOpen(coder.path)).toBeTrue();
+      expect(tryAcquire.calls.allArgs()).toEqual([[coder.path, { provisional: true }], [coder.path]]);
+      expect(release).not.toHaveBeenCalled();
+      expect(service.currentProjectPath).toBe(coder.path);
+      expect(service.coderProjects).toEqual([sibling, coder]);
+    } finally { window['projectLock'] = previous; }
+  });
+
   it('recognizes source-only Coder projects and lets the manifest override a stale ABI', () => {
     expect(detectProjectMode({ manifest: { type: 'coder', entry: 'src/main.cpp' }, hasAbi: false, hasAci: false })).toBe('coder');
     expect(detectProjectMode({ manifest: { type: 'coder' }, hasAbi: true, hasAci: false })).toBe('coder');
@@ -46,6 +70,19 @@ describe('project mode boundaries', () => {
     expect(detectProjectMode({ manifest: { type: 'coder' }, hasAbi: false, hasAci: false, hasCompleteAbs: true })).toBe('coder');
     expect(detectProjectMode({ hasAbi: false, hasAci: true })).toBe('coder');
     expect(detectProjectMode({ manifest: { type: 'module' }, hasAbi: false, hasAci: false })).toBeNull();
+  });
+
+  it('does not read an inaccessible ABS companion to recognize a project with ABI', () => {
+    const service = Object.create(ProjectService.prototype);
+    service.electronService = { isElectron: true };
+    const previous = { fs: window['fs'], path: window['path'] };
+    const read = jasmine.createSpy('file read').and.throwError('ABS read denied');
+    window['path'] = { join: (...parts: string[]) => parts.join('/') };
+    window['fs'] = { existsSync: (file: string) => file.endsWith('/project.abi') || file.endsWith('/project.abs'), readFileSync: read };
+    try {
+      expect(service.getProjectMode('/project')).toBe('blockly');
+      expect(read).not.toHaveBeenCalled();
+    } finally { Object.assign(window, previous); }
   });
 
   it('filters before the six-item guide limit and preserves both modes when history changes', () => {
@@ -76,7 +113,8 @@ describe('project mode boundaries', () => {
         await expectAsync(service.projectOpen(target, { reason: 'chat-tool-open', interactive: false }))
           .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_VIEW_OWNER_UNKNOWN',
             projectView: jasmine.objectContaining({ project: target, sourceViewPreserved: true }) }));
-        expect(acquire).toHaveBeenCalledOnceWith(target);
+        if (mode === 'coder') expect(acquire).toHaveBeenCalledOnceWith(target, { provisional: true });
+        else expect(acquire).toHaveBeenCalledOnceWith(target, undefined);
         expect(service.modalService.confirm).not.toHaveBeenCalled();
         expect(service.currentProjectPath).toBe(blockly.path);
       } finally { window['projectLock'] = originalLock; }
@@ -153,7 +191,7 @@ describe('project mode boundaries', () => {
       expect(bridge.projectService.createDefaultNewProjectData).not.toHaveBeenCalled();
       if (mode === 'coder') {
         await bridge.executeProjectCreate({ boardName: 'board-uno' });
-        expect(createCoder).toHaveBeenCalledWith({ boardName: 'board-uno' }, undefined);
+        expect(createCoder).toHaveBeenCalledWith({ boardName: 'board-uno' }, undefined, undefined, undefined);
       }
     });
 

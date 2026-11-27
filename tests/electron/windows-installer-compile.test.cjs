@@ -28,6 +28,7 @@ for (const product of ['blockly', 'coder']) {
       appId: `pro.aily.shortcut-compile-test.${product}`,
       productName,
       electronVersion: require('electron/package.json').version,
+      artifactBuildStarted: path.join(root, config.artifactBuildStarted),
       directories: { buildResources: path.join(root, 'build'), output: path.join(directory, 'out') },
       publish: null,
       win: { target: 'nsis', signAndEditExecutable: false, icon: path.join(root, 'public/icon.ico') },

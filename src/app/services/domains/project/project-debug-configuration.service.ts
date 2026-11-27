@@ -68,6 +68,7 @@ export interface ProjectSelectedDebugTarget {
 
 export class ProjectDebugConfigurationService {
   private workspaceHashGeneration = 0;
+  private openingArtifact?: { projectPath: string };
   private readonly selectedDebugTargetByProject = new Map<string, string>();
   private debugTargetCaptureSuppressionDepth = 0;
 
@@ -124,7 +125,41 @@ export class ProjectDebugConfigurationService {
     }
   }
 
+  initializeForEditor(projectPath: string): ProjectDebugConfigurationState {
+    const builder = window['builder'];
+
+    if (!projectPath || !this.hasLocalProjectFileSystem()
+      || builder?.isolatedBuildExecutionVersion !== 1
+      || typeof builder.resolveBuildExecutionInWorker !== 'function') return this.refresh(projectPath);
+
+    // Breakpoint intents can be shown immediately. Resolving a retained build
+    // also hashes its inputs and firmware, which must stay off the renderer.
+    const request = this.openingArtifact = { projectPath };
+    const initial = this.refreshFromArtifact(projectPath, null);
+
+    const apply = (root?: string | null) => {
+      if (this.openingArtifact !== request || this.stateSubject.value.projectPath !== projectPath) return;
+
+      this.openingArtifact = undefined;
+
+      this.refreshFromArtifact(projectPath, root);
+    };
+
+    void builder.resolveBuildExecutionInWorker(projectPath).then(
+      (execution: { currentProjectPath: string } | null) => apply(execution?.currentProjectPath ?? null),
+      () => apply(), // Older child scripts may require the synchronous lookup.
+    );
+
+    return initial;
+  }
+
   refresh(projectPath: string): ProjectDebugConfigurationState {
+    this.openingArtifact = undefined;
+
+    return this.refreshFromArtifact(projectPath);
+  }
+
+  private refreshFromArtifact(projectPath: string, verifiedRoot?: string | null): ProjectDebugConfigurationState {
     if (!projectPath) {
       const empty = createEmptyProjectDebugConfigurationState();
 
@@ -142,7 +177,7 @@ export class ProjectDebugConfigurationService {
       configurationError = normalizeError(error);
     }
 
-    const artifact = this.readArtifactState(projectPath);
+    const artifact = this.readArtifactState(projectPath, verifiedRoot);
 
     const previous = this.stateSubject.value.projectPath === projectPath
       ? this.stateSubject.value
@@ -170,7 +205,9 @@ export class ProjectDebugConfigurationService {
       artifactSourcePath: artifact.sourcePath,
       artifactSourceSha256: artifact.sourceSha256,
       workspaceSourceSha256,
-      buildConsistency,
+      buildConsistency: this.openingArtifact && verifiedRoot === null
+        ? previous?.buildConsistency === 'dirty' ? 'dirty' : 'checking'
+        : buildConsistency,
       buildConsistencyError: artifact.consistencyError,
       configurationError,
       sourceMapError: artifact.error,
@@ -256,8 +293,8 @@ export class ProjectDebugConfigurationService {
       ...current,
       workspaceSourceSha256: '',
       buildConsistency: (
-        current.sourceMapRevision
-        && current.artifactSourceSha256
+        (current.sourceMapRevision && current.artifactSourceSha256)
+        || this.openingArtifact?.projectPath === projectPath
       )
         ? 'dirty'
         : 'artifact-unavailable',
@@ -367,6 +404,8 @@ export class ProjectDebugConfigurationService {
     const current = this.stateSubject.value.projectPath === projectPath
       ? this.stateSubject.value
       : this.refresh(projectPath);
+
+    this.openingArtifact = undefined;
 
     const state: ProjectDebugConfigurationState = {
       ...current,
@@ -566,6 +605,8 @@ export class ProjectDebugConfigurationService {
       'utf8',
     );
 
+    this.openingArtifact = undefined;
+
     const artifact = this.readArtifactState(projectPath);
 
     const previous = this.stateSubject.value.projectPath === projectPath
@@ -605,6 +646,7 @@ export class ProjectDebugConfigurationService {
 
   private readArtifactState(
     projectPath: string,
+    verifiedRoot?: string | null,
   ): {
     revision: string;
     sourcePath: string;
@@ -623,7 +665,9 @@ export class ProjectDebugConfigurationService {
     }
 
     const isolated = window['builder']?.isolatedBuildExecutionVersion === 1;
-    const artifactRoot = isolated ? window['builder'].resolveBuildProjectPath(projectPath) : projectPath;
+
+    const artifactRoot = verifiedRoot !== undefined ? verifiedRoot
+      : isolated ? window['builder'].resolveBuildProjectPath(projectPath) : projectPath;
 
     if (!artifactRoot) return { revision: '', sourcePath: '', sourceSha256: '', error: '', consistencyError: '' };
 

@@ -92,7 +92,7 @@ function procedureReferences(
     const definition = definitions.get(call.name.toLowerCase());
     if (!definition || definition.family !== call.contract.family || definition.returns !== call.contract.returns && !(call.contract.allowDiscardReturn && !call.contract.returns)
       || definition.params.length !== call.params.length
-      || definition.params.some((name, index) => name !== call.params[index])) fail(call.id, 'Procedure call has no matching definition/signature; use a host model operation.');
+      || definition.params.some((name, index) => name !== call.params[index])) fail(call.id, `Procedure call ${JSON.stringify(call.name)} has no matching definition/signature.`);
     refs.push({ blockId: call.id, statePath: call.contract.namePath, kind: 'procedure', modelId: definition.id });
   }
   return refs;

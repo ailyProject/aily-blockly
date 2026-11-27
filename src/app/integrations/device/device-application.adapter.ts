@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { ActionService, UiService } from '@core/app-shell/public-api';
+import { ActionService, NoticeService, UiService } from '@core/app-shell/public-api';
 import {
   DeviceActionFeedback,
   DeviceApplicationPort,
@@ -14,11 +14,16 @@ import { _UploaderService as BlocklyUploaderService } from '../../editors/blockl
 export class DeviceApplicationAdapter implements DeviceApplicationPort {
   constructor(
     private readonly actionService: ActionService,
+    private readonly notices: NoticeService,
     private readonly uiService: UiService,
     private readonly subappResourceLifecycle: SubappResourceLifecycleService,
     private readonly blocklyUploaderService: BlocklyUploaderService,
     private readonly linuxBoardConnector: LinuxBoardConnectorService,
   ) {}
+
+  beginUploadPreparation(title: string, text: string) {
+    return this.notices.beginPreparation({ title, text, state: 'doing', showProgress: false });
+  }
 
   hasActionListener(listenerId: string): boolean {
     return this.actionService.hasListener(listenerId);

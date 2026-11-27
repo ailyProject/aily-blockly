@@ -1,6 +1,7 @@
 import { BehaviorSubject, Subject } from 'rxjs';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
+import { ProjectNavigationTransition } from './project-navigation-transition';
 
 describe('Blockly dependency discard belongs to editor disposal', () => {
   function fixture() {
@@ -13,6 +14,8 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
       loadedBlocklyProjectPath: '/source',
       coderProjectsSubject: new BehaviorSubject([]), coderOperationsSubject: new BehaviorSubject(new Map()),
       projectLifecycle: new ProjectLifecycleGate(),
+      projectNavigationIntentRevision: 0,
+      viewRevision: 0,
       messageService: { error: jasmine.createSpy('error'), warning: jasmine.createSpy('warning') },
       getProjectMode: () => 'blockly',
       stopProjectCommands: async () => { events.push('stop'); },
@@ -101,11 +104,64 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     expect(await service.close()).toBeFalse(); expect(commit).not.toHaveBeenCalled(); expect(dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('closes the saved canvas without publishing dependency changes when damaged ABS recovery stays in place', async () => {
+    const { service, events } = fixture();
+    const commit = jasmine.createSpy('accept departure').and.resolveTo();
+    const dispose = jasmine.createSpy('dispose');
+    service.application.prepareBlocklyRecoveryDiscard = async () => ({ commit, dispose, preserveRecovery: true });
+    expect(await service.close()).toBeTrue();
+    expect(events).toEqual(['stop', 'dispose', 'close']);
+    expect(service.discardLibraryChanges).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  for (const problem of ['damaged journal', 'active writer'] as const) {
+    it(`checks same-project reload recovery before retiring the canvas with a ${problem}`, async () => {
+      const { service, events, mounted } = fixture();
+      const commit = jasmine.createSpy('release departure admission').and.resolveTo();
+      const dispose = jasmine.createSpy('dispose departure admission');
+      const writerBusy = Object.assign(new Error('original writer still active'), { code: 'PROJECT_FILE_BUSY' });
+      Object.assign(service, {
+        electronService: { isElectron: false, exists: () => true },
+        ensureProjectModeAllowed: async () => true,
+        dependencyLifecycleState: { beginPreparation: () => ({}) },
+        rememberDependencyBackend: (session: unknown) => session,
+        assertProjectDependencySession: () => {},
+        publishCoderWorkspaceContext: () => {}, publishCoderOperations: () => {},
+        projectActivationSubject: new Subject(),
+        waitForProjectOpenCompletion: jasmine.createSpy('load from saved ABI').and.resolveTo(),
+      });
+      service.application.prepareBlocklyRecoveryDiscard = jasmine.createSpy('preflight retained operation').and.callFake(async () => {
+        expect(mounted()).toBeTrue();
+        events.push('prepare');
+        if (problem === 'active writer') throw writerBusy;
+        return { commit, dispose, preserveRecovery: true };
+      });
+      const reload = service.projectOpenInternal('/source', { reason: 'chat-tool-reload' });
+      if (problem === 'active writer') {
+        await expectAsync(reload).toBeRejectedWith(writerBusy);
+        expect(events).toEqual(['stop', 'prepare']);
+        expect(mounted()).toBeTrue();
+        expect(commit).not.toHaveBeenCalled();
+        expect(service.waitForProjectOpenCompletion).not.toHaveBeenCalled();
+      } else {
+        expect(await reload).toBeTrue();
+        expect(events.slice(0, 3)).toEqual(['stop', 'prepare', 'dispose']);
+        expect(service.waitForProjectOpenCompletion).toHaveBeenCalledTimes(1);
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(dispose).toHaveBeenCalledTimes(1);
+      }
+      expect(service.application.prepareBlocklyRecoveryDiscard).toHaveBeenCalledOnceWith('/source', 'reload');
+      expect(service.discardLibraryChanges).not.toHaveBeenCalled();
+    });
+  }
+
   for (const decision of ['cancel', 'focus']) it(`retains the source activation after target lock ${decision}`, async () => {
     const { service, mounted } = fixture();
     const previous = window['projectLock'];
-    window['projectLock'] = { tryAcquire: async () => ({ ok: false, conflict: true, holder: { pid: 123 } }),
-      focusProcess: jasmine.createSpy('focus').and.resolveTo() };
+    const focusProcess = jasmine.createSpy('focus').and.resolveTo({ ok: true });
+    window['projectLock'] = { tryAcquire: async () => ({ ok: false, code: 'PROJECT_VIEW_OCCUPIED', focus: { viewToken: 'verified' } }), focusProcess };
     service.electronService = { exists: () => true, isElectron: true };
     service.ensureProjectModeAllowed = async () => true;
     service.promptProjectLockConflict = async () => decision;
@@ -114,7 +170,187 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
       expect(service.stateSubject.value).toBe('loaded'); expect(mounted()).toBeTrue();
       expect(service.discardLibraryChanges).not.toHaveBeenCalled();
       expect(service.router.navigate).not.toHaveBeenCalled();
+      if (decision === 'focus') expect(focusProcess).toHaveBeenCalledOnceWith('/target', 'verified');
+      else expect(focusProcess).not.toHaveBeenCalled();
     } finally { window['projectLock'] = previous; }
+  });
+
+  it('opens an unknown legacy lock as a copy after releasing the failed navigation', async () => {
+    const { service, mounted } = fixture();
+    const previous = window['projectLock'];
+    const focusProcess = jasmine.createSpy('focus');
+    window['projectLock'] = { tryAcquire: async () => ({ ok: false, code: 'PROJECT_VIEW_OWNER_UNKNOWN', holder: { pid: 123 } }), focusProcess };
+    service.electronService = { exists: () => true, isElectron: true };
+    service.ensureProjectModeAllowed = async () => true;
+    service.promptProjectLockConflict = jasmine.createSpy('conflict').and.resolveTo('copy');
+    service.openProjectCopy = jasmine.createSpy('open copy').and.callFake(async (source: string, stillCurrent: () => boolean) => {
+      expect(source).toBe('/target'); expect(stillCurrent()).toBeTrue();
+      expect(service.projectOpenTask).toBeNull();
+      expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
+      expect(mounted()).toBeTrue();
+      return true;
+    });
+    try {
+      expect(await service.projectOpen('/target')).toBeTrue();
+      expect(service.promptProjectLockConflict).toHaveBeenCalledOnceWith(true, true, false);
+      expect(service.openProjectCopy).toHaveBeenCalledTimes(1);
+      expect(focusProcess).not.toHaveBeenCalled();
+    } finally { window['projectLock'] = previous; }
+  });
+
+  it('offers a managed copy when an inherited ABS operation cannot be adopted', async () => {
+    const { service, mounted } = fixture();
+    service.projectOpenInternal = jasmine.createSpy('open').and.rejectWith(Object.assign(
+      new Error('The copied transaction could not be verified'), { code: 'ABS_OPERATION_LOCATION_UNPROVEN' },
+    ));
+    service.promptProjectLockConflict = jasmine.createSpy('conflict').and.resolveTo('copy');
+    service.openProjectCopy = jasmine.createSpy('copy').and.callFake(async (source: string, stillCurrent: () => boolean) => {
+      expect(stillCurrent()).toBeTrue();
+      expect(service.projectOpenTask).toBeNull();
+      expect(service.projectLifecycle.hasActive(source)).toBeFalse();
+      expect(mounted()).toBeTrue();
+      return true;
+    });
+    expect(await service.projectOpen('/target')).toBeTrue();
+    expect(service.promptProjectLockConflict).toHaveBeenCalledOnceWith(true, true, false);
+    expect(service.openProjectCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses managed copy directly from the directory picker when requested', async () => {
+    const { service } = fixture();
+    const previous = window['ipcRenderer'];
+    window['ipcRenderer'] = { invoke: async () => ({ canceled: false, filePaths: ['/target'] }) };
+    service.translate = { instant: (key: string) => key };
+    service.openProjectCopy = jasmine.createSpy('copy').and.resolveTo(true);
+    try {
+      expect(await service.selectAndOpenProject({ asCopy: true })).toBeTrue();
+      expect(service.openProjectCopy).toHaveBeenCalledOnceWith('/target', jasmine.any(Function));
+    } finally { window['ipcRenderer'] = previous; }
+  });
+
+  it('leaves the current project untouched when the directory picker is cancelled', async () => {
+    const { service, mounted } = fixture();
+    const previous = window['ipcRenderer'];
+    const invoke = jasmine.createSpy('picker').and.resolveTo({ canceled: true, filePaths: [] });
+    window['ipcRenderer'] = { invoke };
+    service.translate = { instant: (key: string) => key };
+    const beforeOpen = jasmine.createSpy('unsaved-project check');
+    try {
+      expect(await service.selectAndOpenProject({ beforeOpen })).toBeFalse();
+      expect(invoke).toHaveBeenCalledOnceWith('dialog-select-files', jasmine.objectContaining({
+        properties: ['openDirectory'],
+      }));
+      expect(beforeOpen).not.toHaveBeenCalled();
+      expect(mounted()).toBeTrue();
+    } finally { window['ipcRenderer'] = previous; }
+  });
+
+  it('opens a selected project directory in place after checking unsaved changes', async () => {
+    const { service } = fixture();
+    const previous = window['ipcRenderer'];
+    window['ipcRenderer'] = { invoke: jasmine.createSpy('picker').and.resolveTo({ canceled: false, filePaths: ['/target'] }) };
+    service.translate = { instant: (key: string) => key };
+    service.projectOpen = jasmine.createSpy('open').and.resolveTo(true);
+    const beforeOpen = jasmine.createSpy('unsaved-project check').and.callFake(async () => {
+      expect(service.projectOpen).not.toHaveBeenCalled();
+      return true;
+    });
+    try {
+      expect(await service.selectAndOpenProject({ beforeOpen })).toBeTrue();
+      expect(beforeOpen).toHaveBeenCalledTimes(1);
+      expect(service.projectOpen).toHaveBeenCalledOnceWith('/target');
+    } finally { window['ipcRenderer'] = previous; }
+  });
+
+  function scopedOpen(service: any) {
+    const previous = window['projectLock'];
+    const navigate = jasmine.createSpy('view navigation').and.resolveTo({ ok: true });
+    window['projectLock'] = { navigate };
+    const requestId = 'cec15bcf-8adf-4c69-828f-68eb8ea5b588';
+    const transition = new ProjectNavigationTransition();
+    const expected = { requestId, rendererGeneration: 3, sourceProject: '/source', projectPath: '/target' };
+    Object.assign(service, {
+      electronService: { isElectron: true, exists: () => true, currentRendererGeneration: 3 },
+      ensureProjectModeAllowed: async () => true,
+      rememberDependencyBackend: (session: unknown) => session,
+      assertProjectDependencySession: () => {},
+    });
+    service.application.settleEnvironmentBeforeOpen = jasmine.createSpy('preflight').and.resolveTo();
+    return {
+      navigate, transition, expected,
+      open: () => service.projectOpen('/target', { interactive: false, navigation: { requestId, transition } }),
+      restore: () => { window['projectLock'] = previous; },
+    };
+  }
+
+  it('cancels a Blockly target without taking the retained Coder tab out of the host', async () => {
+    const { service, graph, mounted } = fixture();
+    const f = scopedOpen(service);
+    service.getProjectMode = (path: string) => path === '/source' ? 'coder' : 'blockly';
+    service.coderProjectsSubject.next([{ path: '/source' }]);
+    service.warnConnectionGraphWindowCloseFailure = jasmine.createSpy('graph warning');
+    const tryAcquire = jasmine.createSpy('tryAcquire').and.resolveTo({ ok: true, viewToken: 'pending-target' });
+    const release = jasmine.createSpy('release').and.resolveTo({ ok: true });
+    Object.assign(window['projectLock'], { tryAcquire, release });
+    graph.and.resolveTo(false);
+    try {
+      expect(await f.open()).toBeFalse();
+      expect(f.navigate).not.toHaveBeenCalled();
+      expect(tryAcquire).toHaveBeenCalledOnceWith('/target', { provisional: true });
+      expect(release).toHaveBeenCalledOnceWith('/target', 'pending-target');
+      expect(service.currentProjectPath).toBe('/source');
+      expect(mounted()).toBeTrue();
+    } finally { f.restore(); }
+  });
+
+  it('releases the exact target reservation when source recovery is busy after preflight', async () => {
+    const { service, events, mounted } = fixture();
+    const f = scopedOpen(service);
+    service.application.prepareBlocklyRecoveryDiscard = async () => {
+      expect(service.application.settleEnvironmentBeforeOpen).toHaveBeenCalled();
+      throw Object.assign(new Error('source writer busy'), { code: 'PROJECT_FILE_BUSY' });
+    };
+    try {
+      await expectAsync(f.open()).toBeRejectedWithError('source writer busy');
+      expect(f.navigate.calls.allArgs()).toEqual([
+        ['reserve', f.expected],
+        ['release', f.expected, { pendingOnly: true }],
+      ]);
+      expect(service.currentProjectPath).toBe('/source');
+      expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
+      expect(mounted()).toBeTrue();
+      expect(events).toEqual(['stop']);
+    } finally { f.restore(); }
+  });
+
+  it('settles Stop before handoff while the external window synchronization reply is still pending', async () => {
+    const { service, events, graph, mounted } = fixture();
+    const f = scopedOpen(service);
+    let acknowledge!: (value: boolean) => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { started = resolve; });
+    graph.and.callFake(() => {
+      started();
+      return new Promise<boolean>(resolve => { acknowledge = resolve; });
+    });
+    try {
+      const original = service.withProjectLifecycleAdmission(() => {}, (owner: symbol) =>
+        service.projectOpen('/target', { interactive: false, lifecycleOwner: owner,
+          navigation: { requestId: f.expected.requestId, transition: f.transition } }));
+      await waiting;
+      expect(f.transition.stop()).toBeTrue();
+      expect(await original).toBeFalse();
+      expect(service.projectLifecycle.hasActive('/target')).toBeFalse();
+      acknowledge(true);
+      await Promise.resolve();
+      expect(f.navigate.calls.allArgs()).toEqual([
+        ['reserve', f.expected],
+        ['release', f.expected, { pendingOnly: true }],
+      ]);
+      expect(service.currentProjectPath).toBe('/source');
+      expect(events).toEqual([]);
+      expect(mounted()).toBeTrue();
+    } finally { f.restore(); }
   });
 
   it('keeps failed dependency recovery retryable without reviving the retired canvas', async () => {

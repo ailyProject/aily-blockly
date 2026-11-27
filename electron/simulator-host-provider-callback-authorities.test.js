@@ -2339,7 +2339,7 @@ test('a failed normal Builder keeps the previous Artifact and the same immutable
 });
 
 for (const firstFailure of [
-  { label: 'explicit normal Builder button cancellation', errorCode: 'build-cancelled', expectedStage: 'cancelled', expectedCode: 'cancelled' },
+  { label: 'explicit normal Builder button cancellation', outcome: { code: 'BUILD_CANCELLED', buildOutcome: 'cancelled' }, expectedStage: 'cancelled', expectedCode: 'cancelled' },
   { label: 'an ordinary warning with cancellation text', state: 'warn', expectedStage: 'failed', expectedCode: 'compile-failed' },
   { label: 'an ordinary compile error', state: 'error', expectedStage: 'failed', expectedCode: 'compile-failed' },
 ]) test(`Build callback preserves ${firstFailure.label} and retries the same immutable request`, async t => {
@@ -2365,7 +2365,7 @@ for (const firstFailure of [
       async buildActiveBlocklyProject() {
         if (++attempts === 1) throw Object.assign(new Error('已取消，耗时 1.23 秒'), {
           state: firstFailure.state ?? 'warn',
-          ...(firstFailure.errorCode ? { errorCode: firstFailure.errorCode } : {}),
+          ...firstFailure.outcome,
         });
       },
       cancelActiveBlocklyProjectBuild() { assert.fail('Normal button cancellation did not abort the Host request.'); },

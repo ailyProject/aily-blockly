@@ -52,16 +52,23 @@ function verifyUploadArtifact(projectPath, expected) {
     }
 
     const root = fs.realpathSync(projectPath);
-    const requestName = path.basename(String(expected.buildRequestPath || ''));
+    const relativeRequest = path.relative(root, String(expected.buildRequestPath || '')).split(path.sep).join('/');
+    const sharedRequest = /^(?:\.build\/requests|\.aily\/build-executions)\/([a-f0-9-]{36})\/config\.json$/.exec(relativeRequest);
 
-    if (!/^compile-request-[a-f0-9-]{36}\.json$/.test(requestName)
-        || path.resolve(expected.buildRequestPath) !== path.join(root, '.temp', requestName)) fail('Build request is unavailable.');
+    if (!/^\.temp\/compile-request-[a-f0-9-]{36}\.json$/.test(relativeRequest) && !sharedRequest) {
+        fail('Build request is unavailable.');
+    }
 
-    const requestBytes = readFile(root, `.temp/${requestName}`, 160 * 1024 * 1024);
+    const requestBytes = readFile(root, relativeRequest, 160 * 1024 * 1024);
 
     if (hash(requestBytes) !== expected.requestDigest) fail('Build request changed.');
 
     const config = JSON.parse(requestBytes);
+
+    if (sharedRequest && (config.execution?.layout !== 'shared' || config.execution.id !== sharedRequest[1]
+        || (config.execution.storage === 'cache') !== relativeRequest.startsWith('.build/requests/'))) {
+        fail('Shared build request identity changed.');
+    }
 
     if (fs.realpathSync(config.currentProjectPath) !== root || config.sourceCapture?.mode !== 'blockly') {
         fail('The build belongs to another project or mode.');

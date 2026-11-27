@@ -1,6 +1,6 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { combineLatest, distinctUntilChanged, lastValueFrom, map, ReplaySubject, Subject, timeout } from 'rxjs';
+import { distinctUntilChanged, lastValueFrom, map, ReplaySubject, Subject, timeout } from 'rxjs';
 import { ElectronService } from '@core/platform/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../../../configs/api.config';
@@ -110,11 +110,11 @@ export class ConfigService {
     private electronService: ElectronService,
     private authService: AuthService,
   ) {
-    combineLatest([this.authService.isLoggedIn$, this.authService.authSnapshot$]).pipe(
+    this.authService.isLoggedIn$.pipe(
       map(() => this.canUseCloudCompilation),
       distinctUntilChanged(),
     ).subscribe(() => {
-      // 仅云编译偏好受权益影响。本地工程刷新时恢复账号不能取消正在进行的加载；
+      // 仅云编译偏好受登录状态影响。本地工程刷新时恢复账号不能取消正在进行的加载；
       // 云偏好仍递增代号，防止退出再登录后复用退出前的云任务。
       if (getCompileBackend(this.data) === 'cloud') this.compileSettingsGeneration++;
       this.configReloaded$.next();
@@ -122,12 +122,20 @@ export class ConfigService {
   }
 
   get canUseCloudCompilation(): boolean {
-    return isCloudCompilationSupported(window['platform']?.type, this.data?.region)
+    return isCloudCompilationSupported(this.data?.region, this.data?.build_flavor)
       && this.authService.canUseCloudCompilation;
   }
   getCompileBackend(): CompileBackend {
     return this.canUseCloudCompilation ? getCompileBackend(this.data) : 'local';
   }
+  async initializeProjectCompileBackend(): Promise<void> {
+    await this.init();
+    if (getCompileBackend(this.data) !== 'cloud'
+      || !isCloudCompilationSupported(this.data?.region, this.data?.build_flavor)) return;
+    const auth = this.authService.getAuthInitializationState();
+    if (auth === 'idle' || auth === 'checking') await this.authService.initializeAuth('identity');
+  }
+
   getCloudBuildSettings(): CloudBuildSettings { return getCloudBuildSettings(this.data); }
   getCompileSettingsKey(): string {
     return JSON.stringify([getCompileSettingsKey(this.data), this.getCompileBackend(), this.compileSettingsGeneration]);
@@ -136,7 +144,7 @@ export class ConfigService {
   /** 云开关独立落盘并同步其他窗口，保留设置页中尚未应用的其他修改。 */
   async saveCompileSettings(): Promise<void> {
     // 关闭云模式时无需连接或校验网关，服务异常也不能妨碍用户切回本地编译。
-    // 保存用户偏好；实际执行始终通过 getCompileBackend() 检查当前账号权益。
+    // 保存用户偏好；实际执行始终通过 getCompileBackend() 检查当前登录状态和版本。
     const backend = getCompileBackend(this.data);
     const cloud = backend === 'cloud' ? this.getCloudBuildSettings() : { ...(this.data.cloud || {}) };
     this.data.compile = { ...(this.data.compile || {}), backend };

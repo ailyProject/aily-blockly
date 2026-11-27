@@ -1,4 +1,5 @@
 'use strict';
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -20,33 +21,45 @@ const modules = {
 for (const packaged of [false, true]) {
   test(`${packaged ? 'ASAR' : 'development'} main-process imports load child scripts before environment initialization`, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-child-paths-'));
+
     t.after(async () => {
       assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep));
       await fs.rm(root, { recursive: true, force: true });
     });
+
     const source = path.join(root, 'source');
     const resources = path.join(root, 'resources');
+
     await fs.mkdir(path.join(source, 'electron'), { recursive: true });
+
     for (const name of [...Object.keys(modules), 'child-script-path.js', 'project-file-access.js', 'project-file-lock-owner.js',
       'project-recovery-receipts.js', 'project-repair-environment.js', 'project-repair-commit.js']) {
       await fs.copyFile(path.join(__dirname, '../../electron', name), path.join(source, 'electron', name));
     }
+
     // Match build.files: production Electron dependencies live inside app.asar,
     // not in the source checkout's root node_modules.
     const electronModules = path.resolve(__dirname, '../../electron/node_modules');
+
     await fs.cp(path.dirname(require.resolve('semver/package.json', { paths: [electronModules] })),
       path.join(source, 'electron/node_modules/semver'), { recursive: true });
+
     const appRoot = packaged ? path.join(resources, 'app.asar') : source;
+
     if (packaged) {
       await fs.mkdir(resources);
       await createPackage(source, appRoot);
     }
+
     const childRoot = path.join(packaged ? resources : source, 'child');
+
     await packageBuildLockRuntime({ destination: childRoot, platform: process.platform, arch: process.arch });
     await fs.mkdir(path.join(childRoot, 'scripts'));
-    for (const name of ['native-file-lock.js', 'process-state.js', 'build-workspace-lease.js', 'system-boot-id.js']) {
+
+    for (const name of ['native-file-lock.js', 'process-state.js', 'build-workspace-lease.js', 'build-process-identity.js', 'system-boot-id.js']) {
       await fs.copyFile(path.join(__dirname, '../../child/scripts', name), path.join(childRoot, 'scripts', name));
     }
+
     const probe = `
       const assert = require('node:assert/strict');
       const path = require('node:path');
@@ -75,23 +88,33 @@ for (const packaged of [false, true]) {
       }).then(release => release());
       console.log(codeIdentity(process.execPath, appRoot));
     `;
+
     const environment = { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_PATH: '' };
+
     delete environment.AILY_CHILD_PATH;
+
     const runProbe = () => {
       const result = spawnSync(require('electron'), ['-e', probe, appRoot, resources, childRoot,
         String(packaged), JSON.stringify(Object.entries(modules))], {
         cwd: root, env: environment, encoding: 'utf8', windowsHide: true, timeout: 15000,
       });
+
       assert.equal(result.status, 0, result.stderr || result.error?.message);
       assert.match(result.stdout.trim(), /^sha256:[a-f0-9]{64}$/);
+
       return result.stdout.trim();
     };
+
     const originalIdentity = runProbe();
+
     await fs.appendFile(path.join(childRoot, 'scripts/native-file-lock.js'), '\n// Changed lock boundary.\n');
+
     const childChangedIdentity = runProbe();
+
     assert.notEqual(childChangedIdentity, originalIdentity, 'external child code participates in the host identity');
     await fs.appendFile(path.join(source, 'electron/child-script-path.js'), '\n// Changed path boundary.\n');
     if (packaged) await createPackage(source, appRoot);
+
     assert.notEqual(runProbe(), childChangedIdentity, 'the resolver participates in the host identity');
   });
 }

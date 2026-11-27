@@ -90,6 +90,7 @@ export async function getBoardConfig(projectService: ProjectService, section: un
           value: String(option.data),
           selected: option.check === true,
           available: item.disabled !== true && option.disabled !== true && !option.extra?.selectAction,
+          ...(option.disabled && typeof option.tooltip === 'string' ? { unavailable_reason: option.tooltip } : {}),
           ...(option.extra?.selectAction ? { select_action: option.extra.selectAction } : {}),
         })),
       };
@@ -134,7 +135,7 @@ export async function setBoardConfig(
       reason: 'board_config_action_unavailable',
       message: selection.extra?.selectAction
         ? `此选项还要求执行 ${selection.extra.selectAction}，配置工具不会隐式执行设备操作。`
-        : '当前配置选项已禁用。',
+        : (typeof selection.tooltip === 'string' ? selection.tooltip : '当前配置选项已禁用。'),
     };
   }
 

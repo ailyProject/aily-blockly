@@ -40,6 +40,7 @@ export async function launchAilyElectron(options: {
   appDataPath?: string;
   logConsole?: boolean;
   config?: Readonly<Record<string, unknown>>;
+  cloudAccessToken?: string;
   /** Serve a frozen build through the real production renderer server. */
   rendererDirectory?: string;
 } = {}): Promise<LaunchedAilyElectron> {
@@ -60,7 +61,7 @@ export async function launchAilyElectron(options: {
     // only installed packages/binaries into this test's disposable appdata;
     // never copy accounts, auth, projects, .npmrc, locks or subapp activations.
     const toolchainSeed = options.environment?.['AILY_E2E_TOOLCHAIN_SEED']
-      || process.env['AILY_E2E_TOOLCHAIN_SEED'];
+      ?? process.env['AILY_E2E_TOOLCHAIN_SEED'];
     if (toolchainSeed) {
       const seedProject = options.environment?.['AILY_E2E_TOOLCHAIN_PROJECT'] || process.env['AILY_E2E_TOOLCHAIN_PROJECT'];
       if (seedProject) await seedPlatform(seedProject, userDataDir, toolchainSeed);
@@ -83,6 +84,9 @@ export async function launchAilyElectron(options: {
     }
     if (options.config) {
       await writeFile(path.join(userDataDir, 'config.json'), JSON.stringify(options.config), 'utf8');
+    }
+    if (options.cloudAccessToken) {
+      await writeFile(path.join(userDataDir, '.aily'), JSON.stringify({ access_token: options.cloudAccessToken }), { mode: 0o600 });
     }
     let entry = '.', serve = Boolean(process.env['AILY_E2E_DEV_URL']);
     if (options.rendererDirectory) {

@@ -43,6 +43,17 @@ describe('structured ABS generation and batch precheck', () => {
     expect(report.ok).toBeTrue(); expect(report.deferredTypes).toEqual(['dynamic']); expect(report.nativeValidationRequired).toBeTrue();
     expect(precheckAbs('# ABS Schema: 2\nmissing()', contracts).ok).toBeFalse();
   });
+  it('looks up the literal contract for a shorthand value inside its containing block', () => {
+    const source = '# ABS Schema: 2\nemit(MODE=ONE, VALUE="literal")';
+    expect(precheckAbs(source, contracts).diagnostics).toEqual([]);
+    const noLiteralContract = { ...contracts,
+      blockContract: (type: string) => type === 'text' ? undefined : shapes.get(type),
+      argumentOrder: (type: string) => type === 'text' ? undefined : shapes.get(type)?.argumentOrder,
+    };
+    expect(precheckAbs(source, noLiteralContract).diagnostics).toEqual([
+      jasmine.objectContaining({ code: 'ABS_SYNTAX_INVALID' }),
+    ]);
+  });
   it('defers identity-bearing function adapters while checking their children and bounds locations', () => {
     const options = { ...contracts, deferType: (type: string) => type === 'procedure',
       blockContract: (type: string) => { if (type === 'procedure') throw new Error('identities not prepared'); return shapes.get(type); } };

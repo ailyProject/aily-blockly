@@ -10,7 +10,7 @@ const protocol = require('./protocol');
 const inputManifest = require('./input-manifest');
 const { captureSnapshot, captureIdentity } = require('./snapshot');
 const ciResources = require('./ci-resource-preparation');
-const { collectCloudArtifacts, removeOwnedDirectory } = require('./artifact-store');
+const { cloudArtifactWorkspace, collectCloudArtifacts, removeOwnedDirectory } = require('./artifact-store');
 const { captureCloudBuildAbi, publishCloudBuildSource } = require('./build-source');
 const { artifactUploadInfo: getArtifactUploadInfo } = require('./uploader');
 const { cloudUploadRequirements } = require('./cloud-recipe-upload');
@@ -42,8 +42,13 @@ function gatewayUrl(value) {
   return { url: url.toString().replace(/\/$/u, ''), local };
 }
 const abortFault = () => protocol.error('CANCELLED', 'Cloud build cancelled.');
+const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled', 'timed_out']);
 const staleSource = (sourceReason, message) => Object.assign(protocol.error('BUILD_SOURCE_STALE', message), { sourceReason });
 const AUTH_USER = Symbol('cloud-build-user');
+function buildCatalogScope(settings, board) {
+  return JSON.stringify([gatewayUrl(settings.gatewayUrl).url, settings.publicKey, settings[AUTH_USER],
+    board.boardModule, board.boardVersion, board.boardDigest]);
+}
 const CLIENT_INPUT_METRICS = ['captureMs', 'identityMs', 'manifestPrepareMs', 'manifestResolveMs', 'blobUploadMs', 'commitMs', 'encodingMs',
   'rawBytes', 'uniqueBytes', 'uploadedBytes', 'transferredBytes', 'reusedBytes', 'fileCount', 'blobCount', 'libraryCount', 'libraryHits', 'encodedFiles'];
 function clientInputMetrics(value) {
@@ -64,6 +69,23 @@ function targetProfileDigest(profile) {
   const value = profile?.digest || profile?.profileDigest;
   return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
     && (profile.digest === undefined || profile.profileDigest === undefined || profile.digest === profile.profileDigest) ? value : undefined;
+}
+// A digest covers the static Worker profile. Only the Gateway's capacity and priority
+// are dynamic. If any live digest or metric is unknown, fetch the complete directory.
+function profilesFromBoardSupport(support, boardDigest, known) {
+  if (support.boardDigest !== boardDigest || !Array.isArray(support.profiles) || !support.profiles.length) return;
+  const profiles = [], seen = new Set();
+  for (const entry of support.profiles) {
+    const digest = entry?.profileDigest, availability = entry?.availability, profile = known.get(digest);
+    if (!profile || profile.capabilities?.compile !== true || seen.has(digest)
+      || !['onlineNodes', 'freeSlots', 'idleNodes', 'priority'].every(key =>
+        Number.isSafeInteger(availability?.[key]) && availability[key] >= 0)
+      || availability.priority > 100 || availability.idleNodes > availability.onlineNodes) return;
+    seen.add(digest);
+    profiles.push({ ...profile, availability });
+  }
+  if (profiles.some(profile => profile.availability.freeSlots > 0) !== support.available) return;
+  return profiles;
 }
 function targetSelectionCandidates(caps, catalog, reference, action) {
   const selection = caps?.targetSelection;
@@ -110,9 +132,33 @@ function trustedGateway(settings, caps) {
   catch { throw protocol.error('SIGNATURE_INVALID', 'Gateway requires a valid Ed25519 signing public key.'); }
   return publicKey;
 }
+const usesIsolatedArtifacts = config => config?.isolatedCloudBuild === true;
+function sameBlocklyDocument(left, right) {
+  if (!left || !right) return left === right;
+  return left.scope === right.scope && left.pageId === right.pageId && left.documentSha256 === right.documentSha256;
+}
 function retainedBuildConfig(config) {
-  return Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
+  const retained = Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
     .filter(key => config[key] !== undefined).map(key => [key, config[key]]));
+  if (usesIsolatedArtifacts(config)) {
+    retained.isolatedCloudBuild = true;
+    if (config.generatedArtifacts !== undefined) retained.generatedArtifacts = config.generatedArtifacts?.map(({ fileName, content }) => ({ fileName, content })) ?? null;
+  }
+  return retained;
+}
+function retainedBuildBytes(config) {
+  return Buffer.byteLength(config.code || '') + (config.generatedArtifacts || []).reduce((size, artifact) =>
+    size + Buffer.byteLength(artifact.fileName) + Buffer.byteLength(artifact.content), 0);
+}
+function verifyArtifactFiles({ directory, manifest, signature, publicKey }) {
+  protocol.verifyManifest(manifest, signature, publicKey);
+  for (const artifact of manifest.artifacts) {
+    const filename = path.join(directory, ...artifact.path.split('/'));
+    const stat = fs.lstatSync(filename);
+    if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename
+      || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return false;
+  }
+  return true;
 }
 function supportedRequest(input) {
   if ((input.action && !['compile', 'analysis'].includes(input.action)) || (input.recordProjectDelivery !== undefined && input.recordProjectDelivery !== false)
@@ -198,6 +244,8 @@ class CloudBuildBroker {
     this.artifactRetryDelayMs = options.artifactRetryDelayMs ?? 250;
     this.retention = options.retention || {};
     this.requests = new Map(); this.active = new Map(); this.artifactUsers = new Map(); this.catalogCapabilities = new Map();
+    this.inactive = new Map();
+    this.buildCatalogs = new Map();
   }
   async authorization(settings, signal, refresh) {
     const destination = gatewayUrl(settings.gatewayUrl);
@@ -274,6 +322,7 @@ class CloudBuildBroker {
       if (error.code === 'ARTIFACT_INVALID') throw error;
       throw Object.assign(protocol.error('GATEWAY_UNREACHABLE', 'Gateway response was interrupted.'), { cause: error });
     }
+    bodyOptions.onResponseSize?.(bytes.length);
     let value;
     try { value = JSON.parse(bytes.toString('utf8')); }
     catch { throw Object.assign(protocol.error(response.ok ? 'PROTOCOL_UNSUPPORTED' : 'GATEWAY_HTTP_ERROR',
@@ -285,7 +334,7 @@ class CloudBuildBroker {
     return value;
   }
   capabilities(settings, signal) { return this.request(settings, '/api/v1/build/capabilities', undefined, signal); }
-  async boardSupport(settings, selector, signal) {
+  async boardSupport(settings, selector, signal, exact = false) {
     const { boardModule, boardVersion } = selector;
     if (typeof boardModule !== 'string' || boardModule.length > 256
         || !/^@[^/\\]+\/(?:board|coder)-[A-Za-z0-9_.-]+$/u.test(boardModule) || /[\x00-\x1f]/u.test(boardModule)
@@ -293,6 +342,7 @@ class CloudBuildBroker {
       throw protocol.error('TARGET_UNSUPPORTED', 'Invalid board support selector.');
     }
     const query = new URLSearchParams({ boardModule, boardVersion });
+    if (exact) query.set('boardDigest', selector.boardDigest);
     const support = await this.request(settings, `/api/v1/build/board-support?${query}`, undefined, signal,
       { maxResponseBytes: 1024 * 1024 });
     if (support.boardModule !== boardModule || support.boardVersion !== boardVersion
@@ -439,7 +489,7 @@ class CloudBuildBroker {
     // 网关可连接且签名身份可信即可启用，节点忙碌或离线不等于网关故障。
     return { healthy: true, settings: { gatewayUrl: settings.gatewayUrl, publicKey: publicKey.trim() } };
   }
-  targets(settings, signal, profileDigest, selector = {}) {
+  targets(settings, signal, profileDigest, selector = {}, owner) {
     if (profileDigest !== undefined && (typeof profileDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(profileDigest))) throw protocol.error('TARGET_UNSUPPORTED', 'Invalid target profile digest.');
     const params = new URLSearchParams();
     if (profileDigest !== undefined) params.set('profileDigest', profileDigest);
@@ -458,8 +508,9 @@ class CloudBuildBroker {
       return this.request(settings, '/api/v1/build/targets' + query, undefined, signal);
     }
     return (async () => {
-      // 先按板包名称和已安装版本检查支持，再保留内容摘要及编译环境的精确匹配。
-      this.assertBoardSupported(await this.boardSupport(settings, selector, signal));
+      const forBuild = !!owner && selector.forBuild === true && profileDigest === undefined;
+      const checkSupport = async () => this.assertBoardSupported(await this.boardSupport(settings, selector, signal));
+      if (!forBuild) await checkSupport();
       // 旧网关可能拒绝未知筛选参数，先协商能力，再选择服务端或本地筛选。
       const key = gatewayUrl(settings.gatewayUrl).url;
       let cached = this.catalogCapabilities.get(key);
@@ -471,19 +522,81 @@ class CloudBuildBroker {
       }
       const caps = await cached.promise;
       signal?.throwIfAborted();
+      // The priority-idle gateway publishes only board-authorized profiles. Its exact
+      // compile match already proves module support. Keep detailed reasons on a miss.
+      const supportsExactAdmission = forBuild && caps.targetLookupByBoard === true
+        && caps.targetSelection?.version === 1 && caps.targetSelection.policy === 'priority-idle-v1';
+      if (forBuild && !supportsExactAdmission) await checkSupport();
+      const ownerCurrent = () => owner && owner.isCurrent?.() !== false
+        && this.getOwner(owner.sender)?.generation === owner.generation && !owner.sender.isDestroyed?.();
+      const known = this.lastBoardCatalog;
+      const action = selector.compileAction === 'analysis' ? 'analysis' : 'compile';
+      let checkedExactSupport = false;
+      if (supportsExactAdmission && action === 'compile'
+          && known && known.sender === owner.sender && known.generation === owner.generation && known.publicKey === caps.publicKey) {
+        if (this.getAuth) await this.authorization(settings, signal);
+        if (known.scope === buildCatalogScope(settings, selector) && ownerCurrent()) {
+          const support = await this.boardSupport(settings, selector, signal, true);
+          checkedExactSupport = true;
+          if (support.boardDigest === selector.boardDigest) {
+            if (!support.supported && support.reason === 'identity_mismatch') {
+              throw protocol.error('CLOUD_TARGET_UNAVAILABLE', 'No cloud compiler matches the installed board contents.');
+            }
+            this.assertBoardSupported(support);
+            const profiles = profilesFromBoardSupport(support, selector.boardDigest, known.byDigest);
+            if (profiles && ownerCurrent()) {
+              return this.issueBuildCatalog(owner, known.scope, { ...known.catalog, profiles }, action, caps.publicKey);
+            }
+          }
+        }
+      }
       const endpoint = caps.targetLookupByBoard === true ? '/api/v1/build/targets' + query
         : '/api/v1/build/targets' + (profileDigest ? `?profileDigest=${profileDigest}` : '');
-      const catalog = await this.request(settings, endpoint, undefined, signal);
+      let responseSize;
+      const catalog = await this.request(settings, endpoint, undefined, signal,
+        owner ? { onResponseSize: size => { responseSize = size; } } : undefined);
       if (!Array.isArray(catalog.profiles)) throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid target catalog.');
-      return { ...catalog, profiles: catalog.profiles.filter(profile => ['boardModule', 'boardVersion', 'boardDigest'].every(key => selector[key] === undefined || profile[key] === selector[key])) };
+      const result = { ...catalog, profiles: catalog.profiles.filter(profile => boardKeys.every(key => profile[key] === selector[key])) };
+      delete result.catalogTicket;
+      const hasCompiler = result.profiles.some(profile => targetProfileDigest(profile)
+        && profile.runner === 'aily-builder' && profile.capabilities?.compile === true && profile.metadata?.fixture !== true);
+      if (supportsExactAdmission && !hasCompiler && !checkedExactSupport) await checkSupport();
+      if (!profileDigest && hasCompiler && responseSize <= 4 * 1024 * 1024 && ownerCurrent()) {
+        const scope = buildCatalogScope(settings, selector);
+        this.lastBoardCatalog = { sender: owner.sender, generation: owner.generation, scope, publicKey: caps.publicKey, catalog: result,
+          byDigest: new Map(result.profiles.map(profile => [targetProfileDigest(profile), profile]).filter(([digest]) => digest)) };
+        if (forBuild) return this.issueBuildCatalog(owner, scope, result, action, caps.publicKey);
+      }
+      return result;
     })();
+  }
+  issueBuildCatalog(owner, scope, catalog, action, publicKey) {
+    const ticket = crypto.randomUUID(), ttl = 30000;
+    if (this.buildCatalogs.size >= 4) this.discardBuildCatalog(this.buildCatalogs.keys().next().value);
+    const timer = setTimeout(() => this.discardBuildCatalog(ticket), ttl);
+    timer.unref?.();
+    this.buildCatalogs.set(ticket, { sender: owner.sender, generation: owner.generation, scope, action, publicKey,
+      expiresAt: Date.now() + ttl, timer, profiles: catalog.profiles });
+    return { ...catalog, catalogTicket: ticket };
+  }
+  discardBuildCatalog(ticket) {
+    clearTimeout(this.buildCatalogs.get(ticket)?.timer);
+    this.buildCatalogs.delete(ticket);
+  }
+  consumeBuildCatalog(ticket, record, board, action = 'compile') {
+    const saved = this.buildCatalogs.get(ticket);
+    if (!saved || saved.sender !== record.sender || saved.generation !== record.generation) return;
+    this.discardBuildCatalog(ticket);
+    if (saved.expiresAt > Date.now() && saved.action === action && saved.scope === buildCatalogScope(record.settings, board)) {
+      return { profiles: saved.profiles, publicKey: saved.publicKey };
+    }
   }
   owner(sender) {
     const owner = this.getOwner(sender);
     if (!owner || sender?.isDestroyed?.()) throw protocol.error('BUILD_OWNER_EXPIRED', 'The current application owner is unavailable.');
     return owner;
   }
-  async assertCurrent(record, config = record.config) {
+  async assertCurrent(record, config = record.config, workspace = record.config.sourceCapture?.workspace) {
     // 编译前后及烧录前复核页面、编辑器和实际文件，源码变化时禁止发布或复用旧产物。
     if (Number.isFinite(record.startedAt) && Date.now() - record.startedAt >= this.deadlineMs && !record.controller.signal.aborted) {
       record.controller.abort(protocol.error('BUILD_TIMEOUT', 'Cloud task exceeded its client deadline.'));
@@ -503,10 +616,13 @@ class CloudBuildBroker {
         throw staleSource('project', 'The active project changed during the cloud build.');
       }
       if (source.boardModule !== record.config.boardModule) throw staleSource('inputs', 'The active board changed during the cloud build.');
+      if (record.reactivating && (!source.activationId || source.mode !== config.sourceCapture?.mode)) {
+        throw staleSource('project', 'Cloud firmware requires the current editor activation.');
+      }
       if (source.mode === 'coder' && source.saved !== true) {
         throw protocol.error('BUILD_SOURCE_STALE', 'The Coder editor is unavailable or has unsaved changes.');
       }
-      const captured = record.config.sourceCapture?.workspace;
+      const captured = workspace;
       if (captured) {
         const live = source.workspace;
         if (live?.scope !== captured.scope) throw staleSource('workspace', 'Blockly workspace source is unavailable.');
@@ -571,6 +687,9 @@ class CloudBuildBroker {
     const requestId = input.requestId;
     if (typeof requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(requestId) || this.requests.has(requestId)) throw protocol.error('BUILD_BUSY', 'Cloud build request is invalid or already running.');
     const root = fs.realpathSync(input.config?.currentProjectPath);
+    if (usesIsolatedArtifacts(input.config) && input.config.sourceCapture?.mode !== 'blockly') {
+      throw protocol.error('INVALID_INPUT', 'Isolated cloud compilation requires a captured Blockly build.');
+    }
     if ([...this.requests.values()].some(item => item.root === root)) throw protocol.error('BUILD_BUSY', 'This project already has a cloud task.');
     const record = { requestId, buildRequestId: input.buildRequestId || requestId, root, sender, generation: owner.generation, config: input.config,
       settings: { ...(input.settings || {}) }, controller: new AbortController(), logsController: new AbortController(), onProgress, startedAt: Date.now(),
@@ -588,6 +707,7 @@ class CloudBuildBroker {
     // restore it; a failed/cancelled request must not retain the old authority.
     const previous = this.active.get(root);
     const releasePrevious = previous ? this.protectArtifact(previous) : undefined;
+    this.inactive.delete(root);
     this.requests.set(requestId, record); this.active.delete(root);
     const deadline = setTimeout(() => record.controller.abort(protocol.error('BUILD_TIMEOUT', 'Cloud task exceeded its client deadline.')), this.deadlineMs);
     deadline.unref?.();
@@ -605,12 +725,13 @@ class CloudBuildBroker {
       const discovery = new AbortController(), discoverySignal = AbortSignal.any([record.controller.signal, discovery.signal]);
       let caps, catalog;
       try {
+        const board = { boardModule: record.config.boardModule, boardVersion: boardPackage.version, boardDigest: identity };
+        const handoff = this.consumeBuildCatalog(input.catalogTicket, record, board, input.action || 'compile');
         [caps, catalog] = await Promise.all([this.capabilities(record.settings, discoverySignal),
-          this.targets(record.settings, discoverySignal, undefined, {
-            boardModule: record.config.boardModule, boardVersion: boardPackage.version, boardDigest: identity,
-          })]);
+          handoff ?? this.targets(record.settings, discoverySignal, undefined, board)]);
+        record.publicKey = trustedGateway(record.settings, caps);
+        if (handoff && handoff.publicKey !== caps.publicKey) catalog = await this.targets(record.settings, discoverySignal, undefined, board);
       } catch (error) { discovery.abort(error); throw error; }
-      record.publicKey = trustedGateway(record.settings, caps);
       // Respect a stricter advertised budget; older gateways retain their 128 MiB input default.
       const advertisedLimits = protocol.inputLimits(caps.limits === undefined ? { maxInputBytes: protocol.MAX_BYTES } : caps.limits);
       const largeInputs = caps.inputTransport?.version === 2 && caps.inputTransport.manifestFirst === true
@@ -738,6 +859,7 @@ class CloudBuildBroker {
         const statusStarted = performance.now();
         try {
           status = await this.request(record.settings, `/api/v1/build/jobs/${record.jobId}${cursor}`, undefined, record.controller.signal);
+          record.lastStatusServerFailure = undefined;
           const unchanged = status.stateVersion === observedVersion && status.lastSeq === observedSeq;
           // 代理忽略等待参数或网关等待容量不足时，退回普通轮询，防止高频空转。
           if (canWait && unchanged && performance.now() - statusStarted < waitBudget / 2) statusWaiting = false;
@@ -752,9 +874,11 @@ class CloudBuildBroker {
             statusWaiting = false; delay = this.activePollIntervalMs ?? this.pollIntervalMs; continue;
           }
           if (record.controller.signal.aborted || (error.httpStatus && error.httpStatus < 500 && error.httpStatus !== 429)) throw error;
+          record.lastStatusServerFailure = error.httpStatus >= 500 && error.httpStatus < 600 ? error : undefined;
           delay = Math.min(Math.max(delay, this.pollIntervalMs) * 2, 60000); this.progress(record, { stage: 'reconnecting' }); continue;
         }
         record.attempt = status.attempt;
+        record.remoteTerminal = status.jobId === record.jobId && terminalJobStates.has(status.status);
         this.progress(record, { stage: status.stage || status.status, progress: status.progress ?? status.stageProgress ?? 0, status: status.status, attempt: status.attempt });
         pullLogs(status.lastSeq);
         if (['succeeded', 'failed', 'timed_out'].includes(status.status)) {
@@ -779,7 +903,7 @@ class CloudBuildBroker {
             await this.assertCurrent(record);
             this.progress(record, { stage: 'preparing', previousJobId: record.jobId });
             record.previousCIJobId = record.jobId;
-            record.jobId = undefined; record.posted = false; record.postBody = undefined;
+            record.jobId = undefined; record.posted = false; record.postBody = undefined; record.remoteTerminal = false;
             record.selectedProfileDigest = undefined;
             record.submissionRequestId = 'ci-' + crypto.randomUUID();
             if (record.targetCandidates) record.targetCandidates = new Map([...record.targetCandidates]
@@ -800,10 +924,16 @@ class CloudBuildBroker {
       }
     } catch (error) {
       if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
-      await this.cancelRemote(record).catch(() => {});
-      const failure = error.cleanupConfirmed === false ? error
+      const stopped = await this.cancelRemote(record).catch(() => undefined);
+      let failure = error.cleanupConfirmed === false ? error
         : record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
-      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete });
+      if (failure.code === 'BUILD_TIMEOUT' && record.lastStatusServerFailure) failure = record.lastStatusServerFailure;
+      // A successful cancel HTTP response may only say "cancelling". Keep that
+      // distinct from a confirmed terminal job when the renderer considers a fallback.
+      const remoteCleanupConfirmed = !record.posted || record.remoteTerminal
+        || (stopped?.jobId === record.jobId && terminalJobStates.has(stopped?.status));
+      throw Object.assign(failure, capturedBuildSnapshot(), { logComplete: !record.controller.signal.aborted && record.logComplete,
+        ...(remoteCleanupConfirmed ? {} : { remoteCleanupConfirmed: false }) });
     } finally {
       clearTimeout(deadline);
       try { if (typeof releasePowerSaveBlocker === 'function') releasePowerSaveBlocker(); }
@@ -811,7 +941,7 @@ class CloudBuildBroker {
       record.logsController.abort();
       if (this.requests.get(requestId) === record && !record.cleanupBlocked) this.requests.delete(requestId);
       releasePrevious?.();
-      this.collectArtifacts(root);
+      this.collectArtifacts(root, undefined, usesIsolatedArtifacts(record.config));
     }
   }
   async fetchCompletedResult(record) {
@@ -840,6 +970,7 @@ class CloudBuildBroker {
         || previous.gatewayUrl !== gatewayUrl(record.settings.gatewayUrl).url
         || previous.publicKey.trim() !== record.publicKey.trim()
         || previous.manifest.action !== action
+        || usesIsolatedArtifacts(previous.config) !== usesIsolatedArtifacts(record.config)
         || previous.uploadPlan !== record.uploadPlan || !matchesUploadPlan(record.uploadPlan, previous.manifest)
         || previous.manifest.profileDigest !== (record.profile.digest || record.profile.profileDigest)
         || previous.snapshot.inputDigest !== record.snapshot.inputDigest) return null;
@@ -848,22 +979,16 @@ class CloudBuildBroker {
       lease = this.acquireArtifactLease(previous);
       if (fs.realpathSync(previous.directory) !== previous.directory || fs.lstatSync(previous.directory).isSymbolicLink()) return null;
       await this.assertCurrent(record); lease.assertOwned();
-      protocol.verifyManifest(previous.manifest, previous.signature, record.publicKey);
-      for (const artifact of previous.manifest.artifacts) {
-        const filename = path.join(previous.directory, ...artifact.path.split('/'));
-        const stat = fs.lstatSync(filename);
-        if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename
-            || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return null;
-      }
+      if (!verifyArtifactFiles(previous)) return null;
       // No awaits after the byte checks: only the freshly checked request can
       // regain upload authority. A disk-only receipt never grants permission.
       lease.assertOwned();
       record.buildSource = publishCloudBuildSource(record, previous.directory, previous.manifest.jobId);
     } catch { return null; } // Missing/corrupt/unavailable output falls back to a real build.
     finally { lease?.release(); }
-    this.active.set(record.root, { ...previous, config: retainedBuildConfig(record.config), settings: record.settings,
+    this.active.set(record.root, { ...previous, requestId: record.requestId, config: retainedBuildConfig(record.config), settings: record.settings,
       activationId: record.activationId, controller: new AbortController(), profile: record.profile,
-      ciPreparation: record.ciPreparation, inputLimits: record.inputLimits });
+      ciPreparation: record.ciPreparation, inputLimits: record.inputLimits, uploadWorkspace: undefined });
     this.progress(record, { stage: 'complete', progress: 100, reused: true });
     // This is the original completed job, not a newly executed cloud task.
     return { success: true, state: 'done', reused: true, text: 'Reused verified cloud build result.',
@@ -897,9 +1022,29 @@ class CloudBuildBroker {
     })();
     return record.cancelPromise;
   }
-  async cancel(sender, requestId) {
+  async cancel(sender, requestId, { discardCompletedArtifact = false } = {}) {
+    // 手动转本地可能与云结果发布同时到达。只撤销原请求发布的烧录权限。
+    const generation = discardCompletedArtifact ? this.owner(sender).generation : undefined;
+    let discarded = false;
+    if (generation !== undefined) {
+      const sameOwner = item => item.sender === sender && item.generation === generation;
+      for (const records of [this.active, this.inactive]) {
+        const artifact = [...records.values()].find(item => item.requestId === requestId && sameOwner(item));
+        if (!artifact) continue;
+        artifact.controller.abort(abortFault());
+        records.delete(artifact.root);
+        this.collectArtifacts(artifact.root, undefined, usesIsolatedArtifacts(artifact.config));
+        discarded = true;
+      }
+      for (const pending of this.requests.values()) {
+        if (pending.reactivating === requestId && sameOwner(pending)) {
+          pending.controller.abort(abortFault());
+          discarded = true;
+        }
+      }
+    }
     const record = this.requests.get(requestId);
-    if (!record || record.sender !== sender) return false;
+    if (!record || record.sender !== sender || (discardCompletedArtifact && record.generation !== generation)) return discarded;
     record.controller.abort(abortFault());
     await this.cancelRemote(record).catch(() => {});
     return true;
@@ -952,7 +1097,9 @@ class CloudBuildBroker {
         parts.pop();
       }
     }
-    const temporary = path.join(record.root, '.temp');
+    const isolated = usesIsolatedArtifacts(record.config);
+    const workspaceRoot = cloudArtifactWorkspace(record.root, { isolated, create: true });
+    const temporary = path.join(workspaceRoot, '.temp');
     fs.mkdirSync(temporary, { recursive: true });
     if (fs.realpathSync(temporary) !== temporary || fs.lstatSync(temporary).isSymbolicLink()) throw protocol.error('UNSAFE_PATH', 'Cloud import temporary directory is linked.');
     const staging = path.join(temporary, `cloud-import-${crypto.randomUUID()}`);
@@ -995,10 +1142,10 @@ class CloudBuildBroker {
       if (downloadFailure) throw downloadFailure;
       await this.assertCurrent(record);
       this.progress(record, { stage: 'verifying', progress: 100 });
-      const lease = acquireBuildWorkspace(record.root, 'publish');
+      const lease = acquireBuildWorkspace(cloudArtifactWorkspace(record.root, { isolated }), 'publish');
       try {
         await this.assertCurrent(record); lease.assertOwned();
-        const directory = path.join(record.root, '.build', 'cloud');
+        const directory = path.join(workspaceRoot, '.build', 'cloud');
         fs.mkdirSync(directory, { recursive: true });
         if (fs.lstatSync(directory).isSymbolicLink() || fs.realpathSync(directory) !== directory) throw protocol.error('UNSAFE_PATH', 'Cloud artifact directory is linked.');
         published = path.join(directory, `${record.jobId}-${crypto.randomUUID()}`);
@@ -1007,18 +1154,19 @@ class CloudBuildBroker {
         record.buildSource = publishCloudBuildSource(record, published);
         // 已验证产物的复用和烧录权限只保存在当前进程内，不额外写入无读取方的磁盘指针。
         const config = retainedBuildConfig(record.config);
-        this.active.set(record.root, { root: record.root, sender: record.sender, generation: record.generation, activationId: record.activationId,
+        this.active.set(record.root, { root: record.root, requestId: record.requestId,
+          sender: record.sender, generation: record.generation, activationId: record.activationId,
           config, settings: record.settings, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
           uploadPlan: record.uploadPlan, ciPreparation: record.ciPreparation, inputLimits: record.inputLimits,
           gatewayUrl: gatewayUrl(record.settings.gatewayUrl).url,
           snapshot: { inputDigest: record.snapshot.inputDigest, boardDigest: record.snapshot.boardDigest, boardVersion: record.snapshot.boardVersion },
           directory: published, manifest, signature: result.signature });
         this.trimCompletedRecords();
-        this.collectArtifacts(record.root, lease);
+        this.collectArtifacts(record.root, lease, isolated);
       } finally { lease.release(); }
-    } catch (error) { if (published) { try { removeOwnedDirectory(record.root, published); } catch { /* 不确定归属的路径保留现场。 */ } } throw error; }
+    } catch (error) { if (published) { try { removeOwnedDirectory(workspaceRoot, published); } catch { /* 不确定归属的路径保留现场。 */ } } throw error; }
     finally {
-      try { if (fs.existsSync(staging)) removeOwnedDirectory(record.root, staging); } catch { /* 暂存路径被替换时不能跟随链接清理。 */ }
+      try { if (fs.existsSync(staging)) removeOwnedDirectory(workspaceRoot, staging); } catch { /* 暂存路径被替换时不能跟随链接清理。 */ }
       delete record.staging;
     }
   }
@@ -1050,63 +1198,133 @@ class CloudBuildBroker {
       if (released) return; released = true;
       const count = this.artifactUsers.get(record.directory) - 1;
       if (count) this.artifactUsers.set(record.directory, count); else this.artifactUsers.delete(record.directory);
-      this.collectArtifacts(record.root);
+      this.collectArtifacts(record.root, undefined, usesIsolatedArtifacts(record.config));
     };
   }
-  acquireArtifactLease(record) { return acquireBuildWorkspace(record.root, 'verify'); }
-  collectArtifacts(root, lease) {
-    try {
-      const protectedDirectories = [...this.active.values()].filter(item => item.root === root).map(item => item.directory);
-      for (const item of this.requests.values()) if (item.root === root && item.staging) protectedDirectories.push(item.staging);
-      protectedDirectories.push(...this.artifactUsers.keys());
-      return collectCloudArtifacts(root, { protectedDirectories, retention: this.retention, lease });
-    } catch { return []; } // 工作区忙碌或路径归属不明确时延后清理。
+  acquireArtifactLease(record) {
+    const workspace = cloudArtifactWorkspace(record.root, { isolated: usesIsolatedArtifacts(record.config) });
+    return acquireBuildWorkspace(workspace, 'verify');
   }
-  trimCompletedRecords() {
-    let bytes = [...this.active.values()].reduce((sum, item) => sum + Buffer.byteLength(item.config.code || ''), 0);
-    const newestRoot = [...this.active.keys()].at(-1);
-    for (const [root, record] of this.active) {
-      if (this.active.size <= 1 || (this.active.size <= 16 && bytes <= 32 * 1024 * 1024)) break;
+  collectArtifacts(root, lease, isolated) {
+    const protectedDirectories = [...this.active.values()].filter(item => item.root === root).map(item => item.directory);
+    for (const item of this.requests.values()) if (item.root === root && item.staging) protectedDirectories.push(item.staging);
+    protectedDirectories.push(...this.artifactUsers.keys());
+    const layouts = isolated === undefined ? [false, true] : [isolated];
+    return layouts.flatMap(useIsolated => {
+      try {
+        const workspace = cloudArtifactWorkspace(root, { isolated: useIsolated });
+        return collectCloudArtifacts(workspace, { protectedDirectories, retention: this.retention, lease });
+      } catch { return []; } // 工作区忙碌或路径归属不明确时延后清理。
+    });
+  }
+  trimCompletedRecords(records = this.active) {
+    let bytes = [...records.values()].reduce((sum, item) => sum + retainedBuildBytes(item.config), 0);
+    const newestRoot = [...records.keys()].at(-1);
+    for (const [root, record] of records) {
+      if (records.size <= 1 || (records.size <= 16 && bytes <= 32 * 1024 * 1024)) break;
       if (root === newestRoot || this.artifactUsers.has(record.directory)) continue;
-      record.controller.abort(abortFault()); this.active.delete(root); bytes -= Buffer.byteLength(record.config.code || ''); this.collectArtifacts(root);
+      record.controller.abort(abortFault()); records.delete(root); bytes -= retainedBuildBytes(record.config);
+      this.collectArtifacts(root, undefined, usesIsolatedArtifacts(record.config));
     }
+  }
+  hasArtifact(sender, projectPath) {
+    const owner = this.owner(sender);
+    const record = this.active.get(fs.realpathSync(projectPath));
+    // A lookup hint only. Every consumer still verifies identity, inputs, signature and bytes.
+    return record?.sender === sender && record.generation === owner.generation
+      && record.manifest.action === 'compile' && !record.controller.signal.aborted;
+  }
+  hasUploadCandidate(sender, projectPath) {
+    if (this.hasArtifact(sender, projectPath)) return true;
+    const record = this.inactive.get(fs.realpathSync(projectPath));
+    return record?.sender === sender && record.generation === this.owner(sender).generation;
   }
   async artifactPath(sender, projectPath, config) {
     this.owner(sender);
     const root = fs.realpathSync(projectPath), record = this.active.get(root);
     if (!record || record.sender !== sender) return null;
-    // 复用权限只存在于当前进程的活动记录，磁盘上残留的结果文件不能自动恢复烧录权限。
-    await this.assertCurrent(record, config);
+    // Only a verified record bound to this activation can authorize an upload.
+    return this.checkedArtifactPath(record, config, record.uploadWorkspace);
+  }
+  async checkedArtifactPath(record, config, workspace) {
+    await this.assertCurrent(record, config, workspace);
     if (fs.realpathSync(record.directory) !== record.directory || fs.lstatSync(record.directory).isSymbolicLink()) throw protocol.error('UNSAFE_PATH', 'Active artifact directory changed.');
     return record.directory;
   }
-  async reusable(sender, config, profileDigest) {
+  async verifyUploadArtifact(record, config, workspace) {
+    const capabilities = await this.capabilities(record.settings, record.controller.signal);
+    if (trustedGateway(record.settings, capabilities).trim() !== record.publicKey.trim()
+        || negotiatedUploadPlan(capabilities, record.manifest.action) !== record.uploadPlan
+        || !matchesUploadPlan(record.uploadPlan, record.manifest)) return false;
+    await this.checkedArtifactPath(record, config, workspace);
+    return verifyArtifactFiles(record);
+  }
+  async reusable(sender, config, profileDigest, forUpload = false) {
     const root = fs.realpathSync(config.currentProjectPath), record = this.active.get(root);
-    if (!record || record.sender !== sender || config.code !== record.config.code || config.boardModule !== record.config.boardModule
-        || (profileDigest !== undefined && profileDigest !== record.manifest.profileDigest)) return false;
+    const candidate = record ?? (forUpload ? this.inactive.get(root) : undefined);
+    if (!candidate || candidate.sender !== sender || candidate.manifest.action !== 'compile'
+        || config.code !== candidate.config.code || config.boardModule !== candidate.config.boardModule
+        || usesIsolatedArtifacts(config) !== usesIsolatedArtifacts(candidate.config)
+        || (profileDigest !== undefined && profileDigest !== candidate.manifest.profileDigest)) return false;
+    const original = candidate.config.sourceCapture?.workspace;
+    const workspace = config === candidate.config ? candidate.uploadWorkspace ?? original : config.sourceCapture?.workspace;
+    if (!sameBlocklyDocument(workspace, original)) return false;
+    // A backend refresh can replace the generator with an equivalent runtime.
+    // Verify the new live stamp and the complete build input before using it.
+    if (!this.querySource && original && (workspace.revision !== original.revision
+        || workspace.runtimeRevision !== original.runtimeRevision)) return false;
+    if (!record) return this.reactivateUploadArtifact(candidate, config, workspace);
     try {
-      const capabilities = await this.capabilities(record.settings, record.controller.signal);
-      if (trustedGateway(record.settings, capabilities).trim() !== record.publicKey.trim()
-          || negotiatedUploadPlan(capabilities, record.manifest.action) !== record.uploadPlan
-          || !matchesUploadPlan(record.uploadPlan, record.manifest)) return false;
-      if (protocol.canonicalJson(config.sourceCapture?.workspace || null) !== protocol.canonicalJson(record.config.sourceCapture?.workspace || null)) return false;
-      if (!await this.artifactPath(sender, root, config)) return false;
-      protocol.verifyManifest(record.manifest, record.signature, record.publicKey);
-      for (const artifact of record.manifest.artifacts) {
-        const filename = path.join(record.directory, ...artifact.path.split('/'));
-        const stat = fs.lstatSync(filename);
-        if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return false;
-      }
+      if (!await this.verifyUploadArtifact(record, config, workspace)) return false;
+      if (this.active.get(root) !== record) return false;
+      if (workspace) record.uploadWorkspace = { ...workspace };
+      return true;
+    } catch (error) {
+      if (forUpload && error.sourceReason === 'project') return this.reactivateUploadArtifact(record, config, workspace);
+      return false;
+    }
+  }
+  async reactivateUploadArtifact(candidate, config, workspace) {
+    const { root, sender, generation } = candidate;
+    if (!this.querySource || !config.sourceCapture?.mode || config.sourceCapture.mode !== candidate.config.sourceCapture?.mode
+      || this.owner(sender).generation !== generation || [...this.requests.values()].some(request => request.root === root)) return false;
+    const currentCandidate = () => this.active.get(root) ?? this.inactive.get(root);
+    if (currentCandidate() !== candidate) return false;
+    const requestId = crypto.randomUUID();
+    const record = { ...candidate, requestId, config: retainedBuildConfig(config), activationId: undefined,
+      controller: new AbortController(), uploadWorkspace: workspace, reactivating: candidate.requestId };
+    this.requests.set(requestId, record);
+    let lease;
+    try {
+      // Revalidate using the current deployment and the original signed-in account.
+      const settings = await this.configuration();
+      if (settings.gatewayUrl !== candidate.gatewayUrl) return false;
+      record.settings = { ...settings, [AUTH_USER]: candidate.settings[AUTH_USER] };
+      lease = this.acquireArtifactLease(record);
+      if (!await this.verifyUploadArtifact(record, record.config, workspace)) return false;
+      lease.assertOwned();
+      if (record.controller.signal.aborted || !record.activationId || currentCandidate() !== candidate) return false;
+      record.requestId = candidate.requestId;
+      delete record.reactivating;
+      candidate.controller.abort(abortFault());
+      this.inactive.delete(root);
+      this.active.delete(root);
+      this.active.set(root, record);
+      this.trimCompletedRecords();
       return true;
     } catch { return false; }
+    finally {
+      this.requests.delete(requestId);
+      lease?.release();
+    }
   }
-  async artifactUploadInfo(sender, projectPath) {
+  async artifactUploadInfo(sender, projectPath, portType) {
     this.owner(sender);
     const root = fs.realpathSync(projectPath), record = this.active.get(root);
     if (!record || record.sender !== sender || !await this.reusable(sender, record.config) || this.active.get(root) !== record) {
       throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
     }
-    if (record.manifest.flashPlan?.protocol === 'cloud-recipe') return cloudUploadRequirements(record);
+    if (record.manifest.flashPlan?.protocol === 'cloud-recipe') return cloudUploadRequirements(record, { portType });
     const info = getArtifactUploadInfo(record);
     const boardRoot = path.join(root, 'node_modules', ...record.manifest.boardModule.split('/'));
     const boardPackage = JSON.parse(fs.readFileSync(path.join(boardRoot, 'package.json'), 'utf8'));
@@ -1135,9 +1353,10 @@ class CloudBuildBroker {
     try {
       releaseArtifact = this.protectArtifact(record);
       if (!await this.reusable(sender, record.config)) throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+      const workspace = record.uploadWorkspace;
       // consume launches the native uploader; a verify lease is not read-only here.
       workspaceLease.markDelegated();
-      return await consume(record, () => this.assertCurrent(record));
+      return await consume(record, () => this.assertCurrent(record, record.config, workspace));
     } finally {
       try { workspaceLease.release(); } finally { releaseArtifact?.(); }
     }
@@ -1150,9 +1369,10 @@ class CloudBuildBroker {
     try {
       releaseArtifact = this.protectArtifact(record);
       if (!await this.reusable(sender, record.config)) throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+      const workspace = record.uploadWorkspace;
       const identity = ciResources.overlaySnapshot(captureIdentity(record.config, record.profile), record.ciPreparation, { identityOnly: true, limits: record.inputLimits });
       let released = false;
-      return { record, identity, assertCurrent: () => this.assertCurrent(record), markDelegated: () => workspaceLease.markDelegated(), release: () => {
+      return { record, identity, assertCurrent: () => this.assertCurrent(record, record.config, workspace), markDelegated: () => workspaceLease.markDelegated(), release: () => {
         if (released) return; released = true;
         try { workspaceLease.release(); } finally { releaseArtifact?.(); }
       } };
@@ -1161,12 +1381,21 @@ class CloudBuildBroker {
       throw error;
     }
   }
-  invalidate(projectPath, sender) {
+  invalidate(projectPath, sender, preserveCompleted = false) {
     try {
       const root = fs.realpathSync(projectPath), generation = sender ? this.owner(sender).generation : undefined;
       const matches = record => record.root === root && (!sender || (record.sender === sender && record.generation === generation));
       const active = this.active.get(root);
-      if (active && matches(active)) { active.controller.abort(abortFault()); this.active.delete(root); }
+      const inactive = this.inactive.get(root);
+      if (!preserveCompleted && inactive && matches(inactive)) this.inactive.delete(root);
+      if (active && matches(active)) {
+        active.controller.abort(abortFault()); this.active.delete(root);
+        if (preserveCompleted && active.manifest.action === 'compile' && !this.requests.has(active.requestId)) {
+          // Navigation revokes the live grant. Keep only same-window, verified history as a candidate.
+          this.inactive.delete(root); this.inactive.set(root, active);
+          this.trimCompletedRecords(this.inactive);
+        }
+      }
       for (const record of this.requests.values()) if (matches(record)) {
         record.controller.abort(abortFault()); if (!record.cleanupBlocked) this.requests.delete(record.requestId); void this.cancelRemote(record).catch(() => {});
       }
@@ -1174,7 +1403,12 @@ class CloudBuildBroker {
     } catch { /* 项目已不存在或页面已失效，无需继续撤销。 */ }
   }
   invalidateOwner(sender, generation) {
+    if (this.lastBoardCatalog?.sender === sender && this.lastBoardCatalog.generation === generation) this.lastBoardCatalog = undefined;
+    for (const [ticket, saved] of this.buildCatalogs) {
+      if (saved.sender === sender && saved.generation === generation) this.discardBuildCatalog(ticket);
+    }
     const roots = new Set(), cancelled = [];
+    for (const [root, record] of this.inactive) if (record.sender === sender && record.generation === generation) this.inactive.delete(root);
     for (const [root, record] of this.active) if (record.sender === sender && record.generation === generation) {
       roots.add(root); record.controller.abort(protocol.error('BUILD_OWNER_EXPIRED', 'Build owner changed.')); this.active.delete(root);
     }
@@ -1185,12 +1419,17 @@ class CloudBuildBroker {
     for (const root of roots) this.collectArtifacts(root);
     return Promise.allSettled(cancelled);
   }
-  invalidateAll() {
-    const roots = new Set(this.active.keys()), cancelled = [];
-    for (const record of this.active.values()) record.controller.abort(abortFault());
-    this.active.clear();
+  invalidateAll({ keepCompleted = false } = {}) {
+    this.lastBoardCatalog = undefined;
+    if (!keepCompleted) this.inactive.clear();
+    for (const ticket of this.buildCatalogs.keys()) this.discardBuildCatalog(ticket);
+    const roots = new Set([...this.requests.values()].map(record => record.root)), cancelled = [];
+    for (const [root, record] of this.active) {
+      // Results published by a still-pending request have not cleared its final checks yet.
+      if (keepCompleted && !roots.has(root)) continue;
+      record.controller.abort(abortFault()); this.active.delete(root); roots.add(root);
+    }
     for (const record of this.requests.values()) {
-      roots.add(record.root);
       record.controller.abort(abortFault()); if (!record.cleanupBlocked) this.requests.delete(record.requestId); cancelled.push(this.cancelRemote(record));
     }
     for (const root of roots) this.collectArtifacts(root);

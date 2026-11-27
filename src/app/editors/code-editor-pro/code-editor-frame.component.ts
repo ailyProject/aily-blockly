@@ -1,7 +1,9 @@
 import { CoderProjectRuntimeService } from '../../integrations/coder/coder-project-runtime.service';
+
 import {
   CODER_BROWSER_EMBED_CONFIGURATION, type CoderBrowserEmbedConfiguration,
 } from '../../integrations/coder/coder-browser-embed.providers';
+
 import { openCoderBrowserDocument } from '../../integrations/coder/coder-browser-document';
 import { BrowserProjectDocumentService } from '../../integrations/project/browser-project-document.service';
 import { Component, ElementRef, OnInit, OnDestroy, AfterViewInit, ViewChild, Input, OnChanges, SimpleChanges, inject, isDevMode } from '@angular/core';
@@ -15,27 +17,32 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
-import { ProjectService } from '@domain/project/public-api';
+import { BoardAuthPromptService, ProjectService } from '@domain/project/public-api';
 import { BuilderService } from '../code-editor/services/builder.service';
 import { BuilderService as TopBuilderService } from '@domain/build/public-api';
 import { UploaderService } from '@domain/device/public-api';
+
 import { isCmdTerminalOutput,
   ElectronService,
   CmdService,
   type CmdOutput,
   type RendererLifecycleEvent,
 } from '@core/platform/public-api';
+
 import { ConfigService, ThemeService, ToolI18nService } from '@core/preferences/public-api';
+
 import {
   CodeEditorProProjectService,
   type CodeEditorProPersistenceBridge,
 } from './services/code-editor-pro-project.service';
+
 import { CodeSuggestionHostBridgeService } from './services/code-suggestion-host-bridge.service';
 import { NpmService } from '@domain/dependencies/public-api';
 import { resolveActualBuildOutputs, type BuildArtifactV1 } from '../../utils/builder.utils';
 import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-packages.utils';
-import { UiService } from '@core/app-shell/public-api';
+import { UiService, ProjectSaveMessageService, type ProjectSaveMessage } from '@core/app-shell/public-api';
 import { AiCoderDiffBridgeService } from '@integration/automation/public-api';
+
 import {
   ChildToolHostInfo,
   ChildToolProcessService,
@@ -43,11 +50,14 @@ import {
   type CoderEditorUpdateState,
   RequiredSubappService,
 } from '@integration/subapps/public-api';
+
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
+
 import {
   CoderLoadingComponent,
   CoderLoadingStage,
 } from './coder-loading/coder-loading.component';
+
 import {
   normalizeAilyCoderHostLanguage,
   toAilyCoderWorkbenchLocale,
@@ -107,6 +117,7 @@ const CODER_GIT_SYSTEM_DIRECTORIES = [
   '.workspace-history',
   'node_modules',
 ] as const;
+
 const CODER_GIT_PATHSPECS = [
   '.',
   ...CODER_GIT_SYSTEM_DIRECTORIES.map((name) => `:(glob,exclude)**/${name}/**`),
@@ -141,23 +152,31 @@ type CoderLibraryOperationFeedback = {
 
 function normalizeCoderNativeSearchRequestId(value: unknown): string {
   const requestId = typeof value === 'string' ? value.trim() : '';
+
   if (!requestId || requestId.length > 200 || requestId.includes('\0')) {
     throw new Error('原生搜索 requestId 无效');
   }
+
   return requestId;
 }
 
 function normalizeCoderNativeSearchGlobs(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
+
   const result: string[] = [];
+
   for (const item of value) {
     if (result.length >= CODER_NATIVE_SEARCH_MAX_GLOBS) break;
+
     const glob = typeof item === 'string' ? item.trim() : '';
+
     if (!glob || glob.length > CODER_NATIVE_SEARCH_MAX_GLOB_LENGTH || glob.includes('\0')) {
       continue;
     }
+
     if (!result.includes(glob)) result.push(glob);
   }
+
   return result;
 }
 
@@ -167,7 +186,9 @@ function boundedCoderNativeSearchInteger(
   maximum: number,
 ): number {
   const parsed = Number(value);
+
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+
   return Math.min(maximum, Math.max(1, Math.trunc(parsed)));
 }
 
@@ -178,6 +199,7 @@ function boundedCoderNativeSearchInteger(
   templateUrl: './code-editor-frame.component.html',
   styleUrl: './code-editor-frame.component.scss',
 })
+
 export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewInit, OnChanges {
   private readonly coderLayout = inject(CoderEditorLayoutService);
   private readonly simulatorSourceBridge = inject(CoderSimulatorSourceBridgeService);
@@ -185,39 +207,51 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private readonly browserProjectDocument = inject(BrowserProjectDocumentService);
   private browserDeployment: Readonly<CoderBrowserEmbedConfiguration> | null = null;
   private browserDocument: ReturnType<BrowserProjectDocumentService['openDocument']> | null = null;
+
   private browserView: { setVisible(visible: boolean): void; detach(): void } | null = null;
   @ViewChild('browserProjectView') browserProjectView?: ElementRef<HTMLElement>;
+
   private readonly toolI18n = inject(ToolI18nService);
+
   @ViewChild('coderEmbedFrame') coderEmbedFrame?: ElementRef<HTMLIFrameElement>;
   get browserMode(): boolean { return !this.electronService.isElectron; }
-
   @Input({ required: true }) projectPath = '';
   @Input() active = false;
+
   coderFrameProjectPath = '';
 
+  private shortcutSave?: { notice?: ProjectSaveMessage };
+
   ngOnChanges(changes: SimpleChanges): void {
+    if (changes['active'] && !this.active) this.clearShortcutSaveMessage();
+
     if (!this.electronService.isElectron) {
       if (changes['active']) this.browserView?.setVisible(this.active);
+
       return;
     }
+
     if (changes['active'] && this.active) {
       this.aiCoderDiffBridge.setWorkspaceRoot(this.projectPath);
       this.aiCoderDiffBridge.registerEmbed(this.coderEmbedFrame?.nativeElement?.contentWindow ?? null);
+
+      if (this.coderEmbedWorkspaceRoot) void this.promptLoginForAuthRequiredBoard(this.coderEmbedWorkspaceRoot);
+
       requestAnimationFrame(() => this.requestCoderEmbedLayoutRefresh());
     }
   }
 
   private readonly onEmbedLayoutResize = () => this.requestCoderEmbedLayoutRefresh();
-
   private embedHostResizeObserver?: ResizeObserver;
-
   coderEmbedSrc: SafeResourceUrl | null = null;
   coderEmbedError: string | null = null;
+
   coderEmbedLoading = true;
   coderEmbedLoaderVisible = false;
   coderEmbedFrameReady = false;
   private coderWorkbenchReady = false;
   coderEmbedRevealing = false;
+
   coderLoadingStage: CoderLoadingStage = 'project';
   /** 内嵌 iframe 打开的本地工程根路径（Electron postMessage FS 断言用） */
   private coderEmbedWorkspaceRoot: string | null = null;
@@ -232,11 +266,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /** Workbench 当前启动时使用的宿主语言；核心语言包只能在初始化前加载。 */
   private coderEmbedHostLanguage: string | null = null;
   private coderLanguageReloadGeneration = 0;
-
   private readonly coderDevEmbedBase = 'http://127.0.0.1:5174/';
   private coderRuntimeHostInfo: ChildToolHostInfo | null = null;
   private coderRuntimeAcquirePromise: Promise<ChildToolHostInfo> | null = null;
   private coderRuntimePreparationPromise: Promise<ChildToolHostInfo> | null = null;
+
   private coderEditorUpdateState: CoderEditorUpdateState = {
     state: 'current',
     visible: false,
@@ -246,37 +280,45 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     installedVersion: '',
     availableVersion: '',
   };
+
   private unregisterCoderEditorUpdateClient: (() => void) | null = null;
   private coderBootstrapGeneration = 0;
   private dependencySession?: ProjectDependencySession;
   private destroyed = false;
-
   private readonly coderNativeFsBridgeListener = (ev: MessageEvent) => this.onCoderNativeFsMessage(ev);
+
   private readonly coderPersistenceBridge: CodeEditorProPersistenceBridge = {
     saveAll: async () => {
       const result = await this.requestCoderLifecycle('save-all');
+
       return { ok: result.ok, ...(result.message ? { message: result.message } : {}) };
     },
     hasUnsavedChanges: async () => {
       const result = await this.requestCoderLifecycle('status');
+
       if (!result.ok) {
         throw new Error(result.message || '无法检查 aily Coder 未保存状态');
       }
+
       return result.dirtyAfter > 0;
     },
     captureCopy: async () => {
       const result = await this.requestCoderLifecycle('copy-snapshot');
+
       if (!result.ok || !result.snapshotToken || !Array.isArray(result.files)) {
         throw new Error(result.message || 'Coder 编辑器不支持项目快照，请更新编辑器后重试。');
       }
+
       return { token: result.snapshotToken, files: result.files };
     },
     checkCopy: async snapshotToken => {
       const result = await this.requestCoderLifecycle('check-copy-snapshot', 10_000, snapshotToken);
+
       if (!result.ok) throw new Error(result.message || 'Coder 编辑内容已变化，请重新执行另存为。');
     },
     completeCopy: async snapshotToken => {
       const result = await this.requestCoderLifecycle('complete-copy-snapshot', 10_000, snapshotToken);
+
       if (!result.ok) throw new Error(result.message || '副本已保存，原编辑器有新修改，已保留这些修改。');
     },
   };
@@ -299,12 +341,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private coderEmbedFsWatchSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** iframe 发起、Electron ripgrep 主进程仍在执行的搜索。 */
   private readonly coderNativeSearchRequestIds = new Set<string>();
+
   /** 监听 .aily/build 与全局 aily-builder 缓存变更，编译产物增删后同步 hints / hostContext */
   private disposeBuildOutputsWatch?: () => void;
   private disposeGlobalBuildOutputsWatch?: () => void;
   private buildOutputsWatchDebounce?: ReturnType<typeof setTimeout>;
   /** 只允许最近一次异步 host-context 解析结果写入 iframe，避免空旧快照覆盖完整目录。 */
   private coderHostContextGeneration = 0;
+  private boardAuthPromptGeneration?: number;
   private coderInitialContextFrame: Window | null = null;
   private coderInitialContextRoot = '';
 
@@ -332,11 +376,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     private readonly elementRef: ElementRef<HTMLElement>,
     private readonly codeSuggestionHostBridge: CodeSuggestionHostBridgeService,
     private readonly coderRuntime: CoderProjectRuntimeService,
+    private readonly boardAuthPrompt: BoardAuthPromptService,
+    private readonly projectSaveMessages: ProjectSaveMessageService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
       .subscribe(() => {
         const root = this.coderEmbedWorkspaceRoot;
+
         if (root) void this.pushAilyCoderHostContext(root);
       });
   }
@@ -346,53 +393,71 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       window.addEventListener('message', this.coderNativeFsBridgeListener);
       document.addEventListener('visibilitychange', this.onDocumentVisibilityChange);
       this.startBrowserEmbed();
+
       return;
     }
+
     const session = this.coderRuntime.getSession(this.projectPath);
+
     this.projectService = session.project;
     this.npmService = session.injector.get(NpmService);
     this.topBuilderService = session.injector.get(TopBuilderService);
+
     this.proProject.registerPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
+
     this.componentSubscriptions.add(this.projectService.libraryChangesChanged.subscribe(() => {
       const manifestPath = window['path'].join(this.projectPath, 'package.json');
+
       for (const [watchId, root] of this.coderEmbedFsWatchRoots) {
         const relative = window['path'].relative(root, manifestPath);
+
         if (!relative.startsWith('..') && !window['path'].isAbsolute(relative)) {
           this.pushCoderNativeFsWatchEvent(watchId, { eventType: 'change', filename: relative || 'package.json' });
         }
       }
     }));
+
     this.unregisterCoderEditorUpdateClient = this.coderEditorUpdates.registerClient({
       prepareForUpdate: async () => {
         await this.proProject.saveAll(this.projectPath);
       },
       reloadAfterUpdate: () => this.reloadAfterCoderEditorUpdate(),
     });
+
     this.componentSubscriptions.add(
       this.coderEditorUpdates.state$.subscribe((state) => {
         this.coderEditorUpdateState = state;
+
         this.postCoderEditorUpdateState();
       }),
     );
+
     this.componentSubscriptions.add(this.projectService.projectActivation$.subscribe(event => {
       if (event.path === this.projectPath && (event.reason === 'reload' || event.reason === 'chat-tool-reload')) {
         void this.bootstrap(this.projectPath, event.reason === 'chat-tool-reload');
       }
     }));
+
     window.addEventListener('message', this.coderNativeFsBridgeListener);
     document.addEventListener('visibilitychange', this.onDocumentVisibilityChange);
+
     this.coderSystemSuspended = this.electronService.isRendererSuspended;
     this.coderScreenLocked = this.electronService.isRendererScreenLocked;
+
     this.componentSubscriptions.add(
       this.electronService.rendererLifecycle$.subscribe((event) => {
         this.onCoderRendererLifecycle(event);
       }),
     );
+
     try {
       this.ailyOsRevealBc = new BroadcastChannel(AILY_EMBED_OS_REVEAL_CHANNEL);
+
       this.ailyOsRevealBc.addEventListener('message', (ev: MessageEvent) => {
         if (!this.active) return;
+
         const p = ev.data as { absPath?: string };
+
         if (typeof p?.absPath === 'string' && p.absPath) {
           void this.runHostRevealInOs(p.absPath);
         }
@@ -400,30 +465,41 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     } catch {
       /* 浏览器极旧环境无 BroadcastChannel */
     }
+
     try {
       this.ailyOpenLibManagerBc = new BroadcastChannel(AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL);
+
       this.ailyOpenLibManagerBc.addEventListener('message', (ev: MessageEvent) => {
         if (!this.active) return;
+
         const open = (ev.data as { open?: boolean })?.open !== false;
+
         this.syncHostLibraryManager(open);
       });
     } catch {
       /* 浏览器极旧环境无 BroadcastChannel */
     }
+
     try {
       this.ailyOpenBoardSelectorBc = new BroadcastChannel(AILY_EMBED_OPEN_BOARD_SELECTOR_CHANNEL);
+
       this.ailyOpenBoardSelectorBc.addEventListener('message', () => {
         if (!this.active) return;
+
         void this.uiService.openBoardSelector();
       });
     } catch {
       /* 浏览器极旧环境无 BroadcastChannel */
     }
+
     try {
       this.ailyClipboardWriteBc = new BroadcastChannel(AILY_EMBED_CLIPBOARD_WRITE_CHANNEL);
+
       this.ailyClipboardWriteBc.addEventListener('message', (ev: MessageEvent) => {
         if (!this.active) return;
+
         const text = (ev.data as { text?: string })?.text;
+
         if (typeof text === 'string') {
           this.electronService.clipboardWriteText(text);
         }
@@ -431,60 +507,86 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     } catch {
       /* 浏览器极旧环境无 BroadcastChannel */
     }
+
     // 编译完成后重写 hints + 推送 hostCtx，让 Coder 端产物节点立刻拿到真实绝对路径
     this.componentSubscriptions.add(
       this.topBuilderService.buildFinishedSubject.subscribe(({ success }) => {
         if (!success) return;
+
         const root = this.coderEmbedWorkspaceRoot;
+
         if (!root) return;
+
         void this.writeCoderEmbedHints(root);
         void this.pushAilyCoderHostContext(root);
       }),
     );
+
     // 切换主板后 boardDependencies 变化，刷新 Platform Packages 与 Header 开发板名
     this.componentSubscriptions.add(
       this.projectService.boardChangeSubject.subscribe(() => {
         const root = this.coderEmbedWorkspaceRoot;
+
         if (!root) return;
+
         void this.syncBoardConfigForHeader();
         void this.writeCoderEmbedHints(root);
         void this.pushAilyCoderHostContext(root);
       }),
     );
+
     // 子应用语言由主软件统一控制。VS Code 核心语言包必须在 Workbench 初始化前加载，
     // 因此先保存编辑器，再只重启 iframe（Runtime 进程保持不变）。
     this.componentSubscriptions.add(
       this.translate.onLangChange.subscribe(() => {
         const root = this.coderEmbedWorkspaceRoot;
+
         if (!root) return;
+
         const hostLanguage = this.translate.currentLang || this.translate.defaultLang || 'en';
         const nextLanguage = normalizeAilyCoderHostLanguage(hostLanguage);
         const generation = ++this.coderLanguageReloadGeneration;
+
         if (!this.coderEmbedSrc || this.coderEmbedHostLanguage === nextLanguage) {
           void this.pushAilyCoderHostContext(root);
+
           return;
         }
+
         void this.reloadCoderEmbedForLanguage(root, nextLanguage, generation);
       }),
     );
+
     this.componentSubscriptions.add(
       this.configService.libraryListChanged$.subscribe((libraryList) => {
         if (libraryList.length === 0) return;
+
         const root = this.coderEmbedWorkspaceRoot;
+
         if (root) void this.pushAilyCoderHostContext(root);
       }),
     );
+
     // 切换编译后端时只重建依赖上下文，保留正在运行的编辑器及尚未保存的代码。
     let compileSettingsKey = this.configService.getCompileSettingsKey();
+
     this.componentSubscriptions.add(this.configService.configReloaded$.subscribe(() => {
       const nextKey = this.configService.getCompileSettingsKey();
+
       if (nextKey === compileSettingsKey) return;
+
       compileSettingsKey = nextKey;
+
       const root = this.coderEmbedWorkspaceRoot;
+
       if (!root || this.destroyed) return;
+
       const session = this.projectService.getProjectDependencySession(root);
+
       this.dependencySession = session;
+
       if (this.projectService.isCloudBuild()) this.codeSuggestionHostBridge.registerDeclarationRoots([]);
+
       void this.ensureNpmDepsWithRetry(root, session);
       void this.pushAilyCoderHostContext(root, session);
     }));
@@ -503,10 +605,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   ngAfterViewInit(): void {
     if (this.browserMode) this.attachBrowserProjectView();
+
     window.addEventListener('resize', this.onEmbedLayoutResize);
+
     const host = this.elementRef.nativeElement.querySelector<HTMLElement>('.code-editor-pro');
+
     if (host) {
       this.embedHostResizeObserver = new ResizeObserver(() => this.requestCoderEmbedLayoutRefresh());
+
       this.embedHostResizeObserver.observe(host);
     }
   }
@@ -514,25 +620,34 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /** 通知 iframe 内 workbench 按当前 iframe 宽度重排 */
   private requestCoderEmbedLayoutRefresh(): void {
     const win = this.browserMode ? this.browserDocument?.frame.contentWindow : this.coderEmbedFrame?.nativeElement?.contentWindow;
+
     if (!win) {
       return;
     }
+
     win.postMessage({ channel: CODER_HOST_LAYOUT_REFRESH_CHANNEL }, this.browserDeployment?.editorURL
       ? new URL(this.browserDeployment.editorURL).origin : '*');
   }
 
   private startBrowserEmbed(): void {
     this.beginCoderEmbedLoading();
+
     try {
       if (!this.browserConfiguration) throw new Error('Trusted Browser editor deployment is not configured.');
+
       const opened = openCoderBrowserDocument({ documents: this.browserProjectDocument, configuration: this.browserConfiguration });
+
       this.browserDeployment = opened.deployment;
       this.coderFrameProjectPath = 'browser-editor'; // Presentation key, never a project identity.
       this.coderLoadingStage = 'workbench';
       this.browserDocument = opened.host;
+
       const originalDocument = this.browserDocument;
+
       originalDocument.frame.title = 'Aily Coder';
+
       this.attachBrowserProjectView();
+
       void originalDocument.ready.then(() => {
         if (!this.destroyed && this.browserDocument === originalDocument) this.completeCoderEmbedLoading();
       }, error => {
@@ -551,8 +666,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private attachBrowserProjectView(): void {
     const anchor = this.browserProjectView?.nativeElement;
+
     if (this.destroyed || !anchor || !this.browserDocument) return;
+
     this.browserView?.detach();
+
     this.browserView = this.browserDocument.attachView(anchor, this.active);
   }
 
@@ -562,41 +680,63 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private async bootstrap(projectPath: string, historyRestored = false) {
     const generation = ++this.coderBootstrapGeneration;
     let session: ProjectDependencySession;
+
     try {
       session = this.projectService.getProjectDependencySession(projectPath);
     } catch (error) {
       if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
+
       throw error;
     }
+
     this.dependencySession = session;
+
     const isCurrent = () => !this.destroyed && generation === this.coderBootstrapGeneration
       && this.isDependencySessionCurrent(session);
+
     try {
       await this.projectService.runProjectDependencyTask(session, async () => {
         this.beginCoderEmbedLoading();
+
         this.coderEmbedSrc = null;
+
         const pathApi = window['path'] as { resolve?: (p: string) => string };
         const resolved = pathApi.resolve ? pathApi.resolve(projectPath) : projectPath;
+
         this.coderEmbedWorkspaceRoot = resolved;
+
         if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(resolved);
+
         await this.ensureProjectPackageJsonExists(resolved);
+
         if (!isCurrent()) return;
+
         // Package/update/runtime preparation does not read the workspace. Start
         // it while the saved library tree is restored, but mount the iframe only
         // after restoration so its first filesystem reads see the saved state.
         const runtimePreparation = this.electronService.isElectron ? this.prepareCoderRuntime() : undefined;
+
         void runtimePreparation?.catch(() => {}); // initCoderEmbed owns error presentation.
+
         // Reopening (including a renderer refresh / Chat history restore) uses
         // the saved manifest. Reify also repairs an unsaved uninstall on restart.
         const installError = await this.projectService.discardLibraryChanges(resolved, true, historyRestored, true);
+
         if (!isCurrent()) return;
+
         await this.loadProject(resolved, session);
+
         if (!isCurrent()) return;
+
         const dependencies = installError === undefined ? this.ensureNpmDepsWithRetry(resolved, session) : undefined;
+
         if (installError !== undefined) this.showCoderDependencyInstallFailure(resolved, session, installError);
+
         try {
           await this.initCoderEmbed(resolved, false, session, runtimePreparation);
+
           if (!isCurrent()) return;
+
           this.setupBuildOutputsWatch(resolved);
         } finally {
           await dependencies;
@@ -604,15 +744,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       });
     } catch (error: any) {
       if (!isCurrent()) return;
+
       console.error('加载项目失败', error);
       this.detachCoderEmbedFrame();
       this.clearCoderEmbedLoadingTimers();
+
       this.coderEmbedLoading = false;
       this.coderEmbedLoaderVisible = true;
       this.coderEmbedFrameReady = false;
       this.coderEmbedRevealing = false;
       this.coderEmbedSrc = null;
       this.coderEmbedError = error?.message || String(error || '加载项目失败');
+
       this.message.error('加载项目失败，请检查项目文件是否完整');
     } finally {
       this.projectService.finishProjectDependencyPreparation(session);
@@ -621,35 +764,54 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   ngOnDestroy(): void {
     this.destroyed = true;
+
+    this.clearShortcutSaveMessage();
     this.clearCoderEmbedLoadingTimers();
+
     if (this.electronService.isElectron) this.proProject.unregisterPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
+
     this.unregisterCoderEditorUpdateClient?.();
+
     this.unregisterCoderEditorUpdateClient = null;
     this.coderWorkbenchReady = false;
+
     this.embedHostResizeObserver?.disconnect();
+
     this.embedHostResizeObserver = undefined;
+
     window.removeEventListener('resize', this.onEmbedLayoutResize);
     window.removeEventListener('message', this.coderNativeFsBridgeListener);
     document.removeEventListener('visibilitychange', this.onDocumentVisibilityChange);
     this.ailyOsRevealBc?.close();
+
     this.ailyOsRevealBc = undefined;
+
     this.ailyOpenLibManagerBc?.close();
+
     this.ailyOpenLibManagerBc = undefined;
+
     this.ailyOpenBoardSelectorBc?.close();
+
     this.ailyOpenBoardSelectorBc = undefined;
+
     this.ailyClipboardWriteBc?.close();
+
     this.ailyClipboardWriteBc = undefined;
+
     this.componentSubscriptions.unsubscribe();
     this.detachCoderEmbedFrame();
     this.stopBuildOutputsWatch();
     this.codeSuggestionHostBridge.dispose();
+
     if (this.electronService.isElectron && this.active) this.aiCoderDiffBridge.setWorkspaceRoot(null);
+
     this.coderEmbedWorkspaceRoot = null;
+
     if (this.coderRuntimeHostInfo) {
       this.coderRuntimeHostInfo = null;
+
       void this.childToolProcess.release(AILY_CODER_EDITOR_SUBAPP_ID);
     }
-
   }
 
   private requestCoderLifecycle(
@@ -659,6 +821,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   ): Promise<{ ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string;
     snapshotToken?: string; files?: Array<{ path: string; bytes: Uint8Array }> }> {
     const target = this.coderEmbedFrame?.nativeElement?.contentWindow;
+
     if (!target || !this.coderWorkbenchReady) {
       return Promise.resolve({
         ok: false,
@@ -669,18 +832,24 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     }
 
     const requestId = `aily-coder-editor-lifecycle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
     return new Promise(resolve => {
       let settled = false;
+
       const finish = (result: { ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string;
         snapshotToken?: string; files?: Array<{ path: string; bytes: Uint8Array }> }) => {
         if (settled) return;
+
         settled = true;
+
         clearTimeout(timer);
         window.removeEventListener('message', listener);
         resolve(result);
       };
+
       const listener = (event: MessageEvent) => {
         if (event.source !== target) return;
+
         const payload = event.data as {
           channel?: string;
           requestId?: string;
@@ -691,12 +860,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           snapshotToken?: string;
           files?: Array<{ path: string; bytes: Uint8Array }>;
         };
+
         if (
           payload?.channel !== AILY_CODER_EDITOR_HOST_LIFECYCLE_RESPONSE_CHANNEL ||
           payload.requestId !== requestId
         ) {
           return;
         }
+
         finish({
           ok: payload.ok === true,
           dirtyBefore: Number.isFinite(payload.dirtyBefore) ? Number(payload.dirtyBefore) : 0,
@@ -706,6 +877,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           ...(typeof payload.message === 'string' && payload.message ? { message: payload.message } : {}),
         });
       };
+
       const timer = setTimeout(() => finish({
         ok: false,
         dirtyBefore: 0,
@@ -714,6 +886,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       }), timeoutMs);
 
       window.addEventListener('message', listener);
+
       target.postMessage({
         channel: AILY_CODER_EDITOR_HOST_LIFECYCLE_REQUEST_CHANNEL,
         requestId,
@@ -730,14 +903,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (this.electronService.exists(projectPath + '/package.json')) {
       return;
     }
+
     const fileList = this.electronService.readDir(projectPath);
+
     if (this.hasFileWithExtension(fileList, '.ino')) {
       const projectName = projectPath.split(/[/\\]/).filter(Boolean).pop() || '';
+
       const packageData = {
         version: '1.0.0',
         name: projectName,
         platform: 'arduino',
       };
+
       this.electronService.writeFile(projectPath + '/package.json', JSON.stringify(packageData));
     }
   }
@@ -747,18 +924,24 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    */
   async loadProject(projectPath: string, session = this.dependencySession): Promise<void> {
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+
     if (this.active) this.electronService.setTitle(`${this.configService.getApplicationName()} - ${packageJson.name}`);
+
     this.projectService.currentPackageData = packageJson;
+
     this.projectService.addRecentlyProject({
       name: packageJson.name,
       path: projectPath,
       nickname: packageJson.nickname || packageJson.name,
     });
+
     this.projectService.currentPackageData = packageJson;
     this.projectService.currentProjectPath = projectPath;
+
     this.projectService.stateSubject.next('loaded');
     // 依赖已存在时尽早同步，供 Header 串口/开发板菜单使用
     await this.syncBoardConfigForHeader(session);
+    void this.promptLoginForAuthRequiredBoard(projectPath, session);
   }
 
   /** 与 Blockly loadProject 一致：写入 ProjectService.currentBoardConfig */
@@ -766,8 +949,38 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     await this.projectService.syncCurrentBoardConfig(session);
   }
 
+  private async promptLoginForAuthRequiredBoard(projectPath: string, session = this.dependencySession): Promise<void> {
+    const generation = this.coderBootstrapGeneration;
+
+    const isCurrent = () => this.active && this.coderBootstrapGeneration === generation
+      && this.boardAuthPromptGeneration !== generation && this.isCurrentCoderWorkspace(projectPath, session);
+
+    if (!isCurrent()) return;
+
+    try {
+      const boardModule = await this.projectService.getBoardModule();
+
+      if (!boardModule || !isCurrent()) return;
+
+      const boardPackage = await this.projectService.getBoardPackageJson(boardModule);
+
+      if (!isCurrent()) return;
+
+      await this.boardAuthPrompt.promptIfRequired(boardPackage, () => {
+        if (!isCurrent()) return false;
+
+        this.boardAuthPromptGeneration = generation;
+
+        return true;
+      });
+    } catch (error) {
+      if (isCurrent()) console.warn('[CodeEditorPro] Failed to check board authentication requirement:', error);
+    }
+  }
+
   private showCoderDependencyInstallFailure(projectPath: string, session: ProjectDependencySession, detail: string): void {
     this.projectService.setProjectDependencyResult(session, false);
+
     this.coderRuntime.getSession(projectPath).notice.update({
       title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
       text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
@@ -775,6 +988,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       onRetry: () => {
         if (!this.isCurrentCoderWorkspace(projectPath, session)
           || this.projectService.isProjectDependencyPreparationInProgress(projectPath)) return;
+
         void this.retryCoderDependencyInstall(projectPath, session);
       },
     });
@@ -784,17 +998,23 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     try {
       await this.projectService.runProjectDependencyTask(session, async () => {
         const notice = this.coderRuntime.getSession(projectPath).notice;
+
         notice.update({
           title: this.translate.instant('NPM.INSTALLING_TITLE'),
           text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
           state: 'doing', showProgress: false,
         });
+
         const installError = await this.projectService.discardLibraryChanges(projectPath, true, false, true);
+
         if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
         if (installError !== undefined) {
           this.showCoderDependencyInstallFailure(projectPath, session, installError);
+
           return;
         }
+
         notice.clear();
         await this.ensureNpmDepsWithRetry(projectPath, session);
       });
@@ -811,97 +1031,135 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private ensureNpmDepsWithRetry(projectPath: string, session: ProjectDependencySession): Promise<void> {
     const refreshEmbedAfterDeps = async () => {
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
       await this.syncBoardConfigForHeader(session);
+
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
+      void this.promptLoginForAuthRequiredBoard(projectPath, session);
       await this.writeCoderEmbedHints(projectPath, session);
+
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
       await this.pushAilyCoderHostContext(projectPath, session);
     };
 
     const run = async () => {
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
       try {
         await this.npmService.ensureProjectAndBoardDeps(projectPath, {
           onRetryInstall: () => void run(),
           onBoardDepsSettled: refreshEmbedAfterDeps,
+          onRetryLocally: () => {
+            if (this.isCurrentCoderWorkspace(projectPath, session)) return this.topBuilderService.buildCoderLocally(projectPath);
+          },
         }, session);
       } catch (error) {
         if (this.isCurrentCoderWorkspace(projectPath, session)) console.error('install board dependencies error', error);
       }
     };
+
     return run();
   }
-
   private async initCoderEmbed(projectPath: string, resetLoading = true, session = this.dependencySession, runtimePreparation?: Promise<ChildToolHostInfo>) {
     try {
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
       if (resetLoading) {
         this.beginCoderEmbedLoading();
       }
+
       await this.writeCoderEmbedHints(projectPath, session);
+
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
       this.coderLoadingStage = 'dependency';
+
       let base: string;
+
       if (this.electronService.isElectron) {
         base = (await (runtimePreparation ?? this.prepareCoderRuntime())).url;
       } else {
         this.coderLoadingStage = 'runtime';
         base = this.coderDevEmbedBase;
       }
+
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
       const u = new URL(base.endsWith('/') ? base : `${base}/`);
+
       u.searchParams.set('mode', 'full-workbench');
       u.searchParams.set('folder', projectPath);
       u.searchParams.set('theme', this.themeService.theme());
       // Temporary C++ Blockly preview gate. The child Vite watch build also runs with production flags.
       u.searchParams.delete('blocklyPreviewDev');
+
       if (isDevMode()) u.searchParams.set('blocklyPreviewDev', 'true');
+
       const hostLanguage = this.translate.currentLang || this.translate.defaultLang || 'en';
+
       this.coderEmbedHostLanguage = normalizeAilyCoderHostLanguage(hostLanguage);
+
       u.searchParams.set('lang', hostLanguage);
+
       const coderLocale = toAilyCoderWorkbenchLocale(hostLanguage);
+
       if (coderLocale) {
         u.searchParams.set('locale', coderLocale);
       }
+
       if (this.electronService.isElectron) {
         u.searchParams.set('nativeFsBridge', 'true');
         u.searchParams.set('simulatorSourceHostOrigin', window.location.origin);
       }
+
       this.coderLoadingStage = 'workbench';
       this.coderFrameProjectPath = projectPath;
       this.coderEmbedSrc = this.sanitizer.bypassSecurityTrustResourceUrl(u.toString());
       this.coderEmbedError = null;
+
       // iframe (load) 里会 postMessage；此处若 iframe 已缓存瞬时完成，再补一发
       setTimeout(() => void this.pushAilyCoderHostContext(projectPath, session), 0);
     } catch (e: any) {
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+
       console.error(e);
       this.detachCoderEmbedFrame();
       this.clearCoderEmbedLoadingTimers();
+
       this.coderEmbedLoading = false;
       this.coderEmbedLoaderVisible = true;
       this.coderEmbedFrameReady = false;
       this.coderEmbedRevealing = false;
       this.coderEmbedSrc = null;
       this.coderEmbedError = e?.message || String(e);
+
       this.message.error('无法启动内嵌代码编辑器：' + this.coderEmbedError);
     }
   }
 
   private prepareCoderRuntime(): Promise<ChildToolHostInfo> {
     if (this.coderRuntimePreparationPromise) return this.coderRuntimePreparationPromise;
+
     const pending = (async () => {
       await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
+
       if (this.destroyed) throw new Error('Coder editor was closed during package preparation');
+
       await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
+
       if (this.destroyed) throw new Error('Coder editor was closed during update preparation');
       // Keep the project stage while library restoration is still pending.
       if (this.coderLoadingStage === 'dependency') this.coderLoadingStage = 'runtime';
+
       return this.acquireCoderRuntime();
     })().finally(() => {
       if (this.coderRuntimePreparationPromise === pending) this.coderRuntimePreparationPromise = null;
     });
+
     this.coderRuntimePreparationPromise = pending;
+
     return pending;
   }
 
@@ -919,18 +1177,23 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
     if (this.coderWorkbenchReady) {
       const saveResult = await this.requestCoderLifecycle('save-all');
+
       if (
         generation !== this.coderLanguageReloadGeneration
         || !this.isCurrentCoderWorkspace(projectRoot)
       ) {
         return;
       }
+
       if (!saveResult.ok || saveResult.dirtyAfter > 0) {
         console.warn('[CodeEditorPro] language reload skipped because editors could not be saved', saveResult);
+
         const detail = saveResult.message || this.translate.instant('UPDATE_DIALOG.SAVE_FAILED');
+
         this.message.warning(this.translate.instant('LIBRARY_PUBLISH.RELOAD_SAVE_FAILED', {
           error: detail,
         }));
+
         return;
       }
     }
@@ -944,6 +1207,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     ) {
       return;
     }
+
     await this.initCoderEmbed(projectRoot);
   }
 
@@ -951,14 +1215,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (this.coderRuntimeHostInfo) {
       return this.coderRuntimeHostInfo;
     }
+
     if (!this.coderRuntimeAcquirePromise) {
       const pending = this.childToolProcess.acquire(AILY_CODER_EDITOR_SUBAPP_ID)
         .then((hostInfo) => {
           if (this.destroyed) {
             void this.childToolProcess.release(AILY_CODER_EDITOR_SUBAPP_ID);
+
             throw new Error('Coder editor was closed before its Runtime finished starting');
           }
+
           this.coderRuntimeHostInfo = hostInfo;
+
           return hostInfo;
         })
         .finally(() => {
@@ -966,8 +1234,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
             this.coderRuntimeAcquirePromise = null;
           }
         });
+
       this.coderRuntimeAcquirePromise = pending;
     }
+
     return this.coderRuntimeAcquirePromise;
   }
 
@@ -975,41 +1245,59 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    * iframe 每次加载完成后向 aily-coder-editor 同步宿主上下文（构建目录等），避免依赖 ProjectService 竞态。
    */
   onCoderEmbedFrameLoad(): void {
+    this.clearShortcutSaveMessage();
+
     if (!this.electronService.isElectron) return;
+
     this.coderLayout.reset(this.projectPath);
+
     this.coderInitialContextFrame = null;
     this.coderInitialContextRoot = '';
+
     const frame = this.coderEmbedFrame?.nativeElement;
     const root = this.coderEmbedWorkspaceRoot;
     const origin = this.coderRuntimeHostInfo && new URL(this.coderRuntimeHostInfo.url).origin;
+
     if (root && frame?.contentWindow && origin && this.isCurrentCoderWorkspace(root)) {
       this.simulatorSourceBridge.attach(root, frame.contentWindow, origin, true);
     }
+
     this.coderWorkbenchReady = false;
+
     if (this.coderEmbedLoading) {
       this.coderLoadingStage = 'workbench';
     }
+
     if (root) {
       if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(root);
     }
+
     if (this.active) this.aiCoderDiffBridge.registerEmbed(frame?.contentWindow ?? null);
+
     this.codeSuggestionHostBridge.registerFrame(frame?.contentWindow ?? null);
     this.postCoderEditorUpdateState();
+
     if (root) {
       void this.pushAilyCoderHostContext(root);
     }
+
     requestAnimationFrame(() => this.requestCoderEmbedLayoutRefresh());
 
     if (!this.coderEmbedLoading) {
       return;
     }
+
     if (this.coderReadyProtocolSupported) {
       this.armCoderReadyTimeout();
+
       return;
     }
+
     this.clearCoderLegacyReadyTimer();
+
     this.coderLegacyReadyTimer = setTimeout(() => {
       this.coderLegacyReadyTimer = undefined;
+
       if (!this.coderReadyProtocolSupported) {
         this.completeCoderEmbedLoading();
       }
@@ -1017,9 +1305,13 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private beginCoderEmbedLoading(): void {
+    this.clearShortcutSaveMessage();
+
     if (this.electronService.isElectron && this.coderRuntime && this.projectPath) this.coderRuntime.getSession(this.projectPath).editorReady = false;
+
     this.clearCoderEmbedLoadingTimers();
     this.detachCoderEmbedFrame();
+
     this.coderEmbedLoading = true;
     this.coderEmbedLoaderVisible = false;
     this.coderEmbedFrameReady = false;
@@ -1028,8 +1320,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.coderReadyProtocolSupported = false;
     this.coderLoadingStage = 'project';
     this.coderEmbedError = null;
+
     this.coderEmbedLoaderDelayTimer = setTimeout(() => {
       this.coderEmbedLoaderDelayTimer = undefined;
+
       if (this.coderEmbedLoading && !this.coderEmbedError) {
         this.coderEmbedLoaderVisible = true;
       }
@@ -1038,7 +1332,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   retryCoderEmbed(): void {
     if (!this.electronService.isElectron) { void this.retryBrowserEmbed(); return; }
+
     const root = this.coderEmbedWorkspaceRoot;
+
     if (root) {
       void this.initCoderEmbed(root);
     }
@@ -1049,8 +1345,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       // Explicit retry may replace the original document only after its real
       // cleanup succeeds. Visibility/detach never invokes this operation.
       await this.browserProjectDocument.closeDocument();
+
       if (this.destroyed) return;
+
       this.browserDocument = null;
+
       this.startBrowserEmbed();
     } catch (error) {
       if (!this.destroyed) this.coderEmbedError = error instanceof Error ? error.message : String(error);
@@ -1059,7 +1358,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private postCoderEditorUpdateState(): void {
     const target = this.coderEmbedFrame?.nativeElement?.contentWindow;
+
     if (!target) return;
+
     target.postMessage({
       channel: AILY_CODER_EDITOR_UPDATE_STATE_CHANNEL,
       payload: this.coderEditorUpdateState,
@@ -1069,15 +1370,19 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private async updateAndRestartCoderEditor(): Promise<void> {
     // APP_STORE.* 文案随应用商店按需加载，未打开应用商店时需在此补载。
     await this.toolI18n.load('app-store');
+
     if (this.childToolProcess.getRuntimeSnapshot(AILY_CODER_EDITOR_SUBAPP_ID).running) {
       const confirmed = await this.confirmCoderEditorUpdateRestart(
         this.coderEditorUpdateState.state === 'restart-required',
       );
+
       if (!confirmed) return;
     }
+
     try {
       const restartOnly = this.coderEditorUpdateState.state === 'restart-required';
       const updated = await this.coderEditorUpdates.updateAndRestart();
+
       if (updated) {
         this.message.success(this.translate.instant(
           restartOnly ? 'APP_STORE.RESTART_SUCCESS' : 'APP_STORE.UPDATE_SUCCESS',
@@ -1086,12 +1391,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error || 'Unknown error');
+
       this.message.error(detail);
     }
   }
 
   private confirmCoderEditorUpdateRestart(restartFlow: boolean): Promise<boolean> {
     const name = 'aily Coder Editor';
+
     return new Promise((resolve) => {
       this.modal.confirm({
         nzClassName: 'subapp-service-confirm-modal',
@@ -1119,17 +1426,22 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private async reloadAfterCoderEditorUpdate(): Promise<void> {
     const root = this.coderEmbedWorkspaceRoot;
+
     if (!root || this.destroyed) return;
+
     this.beginCoderEmbedLoading();
+
     this.coderEmbedLoaderVisible = true;
     this.coderLoadingStage = 'runtime';
     this.coderRuntimeHostInfo = null;
     this.coderRuntimeAcquirePromise = null;
+
     await this.initCoderEmbed(root, false);
   }
 
   confirmReinstallCoderEmbed(): void {
     if (!this.coderEmbedWorkspaceRoot) return;
+
     this.modal.confirm({
       nzClassName: 'subapp-service-confirm-modal',
       nzTitle: this.translate.instant('CODER_SUBAPP_INSTALL.REINSTALL_TITLE'),
@@ -1144,28 +1456,40 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private async reinstallCoderEmbed(): Promise<void> {
     const root = this.coderEmbedWorkspaceRoot;
+
     if (!root) return;
 
     this.beginCoderEmbedLoading();
+
     this.coderEmbedLoaderVisible = true;
     this.coderLoadingStage = 'dependency';
+
     try {
       const pendingAcquire = this.coderRuntimeAcquirePromise;
+
       await this.childToolProcess.forceStop(AILY_CODER_EDITOR_SUBAPP_ID);
+
       if (pendingAcquire) {
         await pendingAcquire.catch(() => undefined);
       }
+
       this.coderRuntimeHostInfo = null;
       this.coderRuntimeAcquirePromise = null;
+
       if (!this.isCurrentCoderWorkspace(root)) return;
+
       await this.requiredSubapps.reinstall(AILY_CODER_EDITOR_SUBAPP_ID);
+
       if (!this.isCurrentCoderWorkspace(root)) return;
+
       await this.initCoderEmbed(root, false);
     } catch (error: any) {
       if (!this.isCurrentCoderWorkspace(root)) return;
+
       console.error('aily Coder Editor reinstallation failed', error);
       this.detachCoderEmbedFrame();
       this.clearCoderEmbedLoadingTimers();
+
       this.coderEmbedLoading = false;
       this.coderEmbedLoaderVisible = true;
       this.coderEmbedFrameReady = false;
@@ -1177,20 +1501,26 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private completeCoderEmbedLoading(): void {
     if (!this.coderEmbedLoading) return;
+
     this.clearCoderLegacyReadyTimer();
     this.clearCoderReadyTimeoutTimer();
+
     this.coderLoadingStage = 'ready';
     this.coderEmbedFrameReady = true;
 
     if (!this.coderEmbedLoaderVisible) {
       this.clearCoderLoaderDelayTimer();
+
       this.coderEmbedLoading = false;
       this.coderEmbedRevealing = false;
+
       return;
     }
 
     this.coderEmbedRevealing = true;
+
     this.clearCoderEmbedRevealTimer();
+
     this.coderEmbedRevealTimer = setTimeout(() => {
       this.coderEmbedLoading = false;
       this.coderEmbedLoaderVisible = false;
@@ -1201,28 +1531,40 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private armCoderReadyTimeout(): void {
     this.clearCoderReadyTimeoutTimer();
+
     if (this.isCoderReadyTimeoutPaused()) return;
+
     const armedAt = Date.now();
+
     this.coderReadyTimeoutTimer = setTimeout(() => {
       this.coderReadyTimeoutTimer = undefined;
+
       if (!this.coderEmbedLoading || !this.coderReadyProtocolSupported) return;
       if (this.isCoderReadyTimeoutPaused()) return;
+
       // Chromium may deliver an expired timer immediately after a long sleep even
       // when the lifecycle IPC is queued behind it. Give Workbench a fresh active
       // interval instead of turning scheduler suspension into a startup failure.
       if (Date.now() - armedAt > CODER_READY_TIMEOUT_MS + CODER_READY_TIMEOUT_DRIFT_GRACE_MS) {
         this.armCoderReadyTimeout();
+
         return;
       }
+
       const error = this.translate.instant('AILY_CODE_LOADING.TIMEOUT');
+
       this.clearCoderEmbedLoadingTimers();
+
       this.coderEmbedLoading = false;
       this.coderEmbedLoaderVisible = true;
       this.coderEmbedFrameReady = false;
       this.coderEmbedRevealing = false;
+
       this.detachCoderEmbedFrame();
+
       this.coderEmbedSrc = null;
       this.coderEmbedError = error;
+
       this.message.error(error);
     }, CODER_READY_TIMEOUT_MS);
   }
@@ -1232,14 +1574,17 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (event.kind === 'resume') this.coderSystemSuspended = false;
     if (event.kind === 'lock-screen') this.coderScreenLocked = true;
     if (event.kind === 'unlock-screen') this.coderScreenLocked = false;
+
     this.syncCoderReadyTimeoutForLifecycle();
   }
 
   private syncCoderReadyTimeoutForLifecycle(): void {
     if (this.isCoderReadyTimeoutPaused()) {
       this.clearCoderReadyTimeoutTimer();
+
       return;
     }
+
     if (
       this.coderEmbedLoading
       && this.coderReadyProtocolSupported
@@ -1263,6 +1608,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private clearCoderEmbedRevealTimer(): void {
     if (this.coderEmbedRevealTimer) {
       clearTimeout(this.coderEmbedRevealTimer);
+
       this.coderEmbedRevealTimer = undefined;
     }
   }
@@ -1270,6 +1616,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private clearCoderLoaderDelayTimer(): void {
     if (this.coderEmbedLoaderDelayTimer) {
       clearTimeout(this.coderEmbedLoaderDelayTimer);
+
       this.coderEmbedLoaderDelayTimer = undefined;
     }
   }
@@ -1277,6 +1624,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private clearCoderLegacyReadyTimer(): void {
     if (this.coderLegacyReadyTimer) {
       clearTimeout(this.coderLegacyReadyTimer);
+
       this.coderLegacyReadyTimer = undefined;
     }
   }
@@ -1284,6 +1632,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private clearCoderReadyTimeoutTimer(): void {
     if (this.coderReadyTimeoutTimer) {
       clearTimeout(this.coderReadyTimeoutTimer);
+
       this.coderReadyTimeoutTimer = undefined;
     }
   }
@@ -1292,12 +1641,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private async resolveEmbedBuildOutputs(projectRoot: string): Promise<{
     buildPath: string;
     artifacts: BuildArtifactV1[];
+
     mainHexAbs?: string;
     mainHexRelPath?: string;
   }> {
     const primaryBuildPath = await this.projectService.getBuildPath();
     const { buildPath, artifacts } = await resolveActualBuildOutputs(projectRoot, primaryBuildPath);
     const hex = artifacts.find((a) => a.label === 'main.hex');
+
     return {
       buildPath,
       artifacts,
@@ -1313,20 +1664,29 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    */
   private async writeCoderEmbedHints(projectRoot: string, session = this.dependencySession): Promise<void> {
     if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
+
     try {
       const pathApi = window['path'] as { join: (...s: string[]) => string };
       const fsAny = window['fs'] as { mkdirSync?: (p: string, o?: { recursive?: boolean }) => void };
+
       const { buildPath, artifacts, mainHexAbs, mainHexRelPath } =
         await this.resolveEmbedBuildOutputs(projectRoot);
+
       if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
+
       const ailyDir = pathApi.join(projectRoot, '.aily');
+
       if (!this.electronService.exists(ailyDir) && typeof fsAny?.mkdirSync === 'function') {
         fsAny.mkdirSync(ailyDir, { recursive: true });
       }
+
       const hintsPath = pathApi.join(projectRoot, '.aily', 'coder-embed-hints.json');
       const platformPackages = await this.loadPlatformPackagesForEmbed();
+
       if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
+
       const boardProfile = await this.buildBoardProfileForEmbed(projectRoot);
+
       // 无任何真实产物时不写入 buildPath，避免 Coder 侧误展示虚拟节点
       const payload = {
         v: 1,
@@ -1345,7 +1705,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         platformPackages,
         ...(boardProfile ? { boardProfile } : {}),
       };
+
       if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
+
       this.electronService.writeFile(hintsPath, JSON.stringify(payload, null, 2));
     } catch (e) {
       console.warn('[CodeEditorPro] writeCoderEmbedHints', e);
@@ -1358,20 +1720,26 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    */
   private async pushAilyCoderHostContext(projectRoot: string, session = this.dependencySession): Promise<void> {
     if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
+
     const generation = ++this.coderHostContextGeneration;
     const win = this.coderEmbedFrame?.nativeElement?.contentWindow;
+
     if (!win) {
       return;
     }
+
     const hostLanguage = this.translate.currentLang || this.translate.defaultLang || 'en';
     const appDataPath = window['path'].getAppDataPath() as string;
+
     if (
       this.isCurrentCoderWorkspace(projectRoot, session)
+
       && win === this.coderEmbedFrame?.nativeElement?.contentWindow
       && (this.coderInitialContextFrame !== win || this.coderInitialContextRoot !== projectRoot)
     ) {
       this.coderInitialContextFrame = win;
       this.coderInitialContextRoot = projectRoot;
+
       win.postMessage({
         channel: AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL,
         payload: {
@@ -1382,17 +1750,22 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         },
       }, '*');
     }
+
     try {
       const [buildOutputs, platformPackages, boardProfile] = await Promise.all([
         this.resolveEmbedBuildOutputs(projectRoot),
         this.loadPlatformPackagesForEmbed(),
         this.buildBoardProfileForEmbed(projectRoot),
       ]);
+
       if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
+
       if (generation === this.coderHostContextGeneration && this.isCurrentCoderWorkspace(projectRoot) && win === this.coderEmbedFrame?.nativeElement?.contentWindow) {
         this.codeSuggestionHostBridge.registerDeclarationRoots(platformPackages);
       }
+
       const { buildPath, artifacts, mainHexAbs, mainHexRelPath } = buildOutputs;
+
       const payload = {
         v: 1 as const,
         workspaceRoot: projectRoot,
@@ -1417,6 +1790,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         ...(boardProfile ? { boardProfile } : {}),
         meta: { theme: this.themeService.theme(), lang: hostLanguage },
       };
+
       if (
         generation !== this.coderHostContextGeneration
         || !this.isCurrentCoderWorkspace(projectRoot)
@@ -1424,18 +1798,27 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       ) {
         return;
       }
+
       win.postMessage({ channel: AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL, payload }, '*');
+
       if (this.coderWorkbenchReady && this.coderRuntimeHostInfo?.wsUrl) {
         let buildRevision = '';
+
         try {
           const stat = window['fs'].statSync(window['path'].join(projectRoot, '.build', 'build.ninja'));
+
           buildRevision = `${stat.mtime}:${stat.size}`;
         } catch { /* The first build may not exist yet. */ }
+
         const identity = JSON.stringify([this.projectService?.currentBoardConfig, this.projectService?.currentPackageData, platformPackages, buildRevision]);
         let revision = 2166136261;
+
         for (let index = 0; index < identity.length; index++) revision = Math.imul(revision ^ identity.charCodeAt(index), 16777619);
+
         const lspUrl = new URL(this.coderRuntimeHostInfo.wsUrl);
+
         lspUrl.pathname = '/lsp';
+
         lspUrl.searchParams.set('root', projectRoot);
         lspUrl.searchParams.set('configuration', (revision >>> 0).toString(16));
         win.postMessage({ channel: 'aily-coder-editor-language-server', url: lspUrl.toString() }, new URL(this.coderRuntimeHostInfo.url).origin);
@@ -1447,8 +1830,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private isDependencySessionCurrent(session?: ProjectDependencySession): boolean {
     if (!session) return true;
+
     try {
       this.projectService.assertProjectDependencySession(session);
+
       return true;
     } catch {
       return false;
@@ -1467,6 +1852,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     | {
         boardName?: string;
         boardNickname?: string;
+
         frameworkModes: Array<{
           id: string;
           label: string;
@@ -1474,6 +1860,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           selected?: boolean;
         }>;
       }
+
     | undefined
   > {
     try {
@@ -1481,30 +1868,38 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       const boardJson = this.projectService.currentBoardConfig as Record<string, unknown> | null;
       const pkg = this.projectService.currentPackageData;
       const modeList: string[] = [];
+
       if (Array.isArray(boardPkg?.mode) && boardPkg.mode.length > 0) {
         for (const m of boardPkg.mode) {
           const s = String(m ?? '').trim();
+
           if (s) {
             modeList.push(s);
           }
         }
       }
+
       const pkgAny = pkg as { devmode?: string; framework?: string } | undefined;
       let currentFramework = String(pkgAny?.devmode ?? pkgAny?.framework ?? '').trim();
+
       if (!currentFramework && modeList.length > 0) {
         currentFramework = modeList[0];
       }
+
       if (modeList.length === 0 && boardJson?.['type']) {
         modeList.push(String(boardJson['type']));
       }
+
       if (modeList.length === 0) {
         return undefined;
       }
+
       const frameworkModes = modeList.map((id) => ({
         id,
         label: id,
         selected: id === currentFramework,
       }));
+
       return {
         boardName: (boardJson?.['name'] as string) ?? boardPkg?.name,
         boardNickname:
@@ -1515,6 +1910,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       };
     } catch (e) {
       console.warn('[CodeEditorPro] buildBoardProfileForEmbed', e);
+
       return undefined;
     }
   }
@@ -1523,12 +1919,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private async loadPlatformPackagesForEmbed() {
     // 云模式使用已注册的开发板元数据，不向代码编辑器发布本机不存在的 SDK 路径。
     if (this.projectService.isCloudBuild()) return [];
+
     try {
       return await resolvePlatformPackagesForCurrentProject(async () => {
         return this.projectService.getBoardDependencies();
       });
     } catch (e) {
       console.warn('[CodeEditorPro] loadPlatformPackagesForEmbed', e);
+
       return [];
     }
   }
@@ -1548,10 +1946,13 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (typeof handle === 'function') {
       return handle as () => void;
     }
+
     const close = (handle as { close?: () => void } | null)?.close;
+
     if (typeof close === 'function') {
       return () => close.call(handle);
     }
+
     return () => {};
   }
 
@@ -1564,15 +1965,21 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private stopCoderEmbedFsWatcher(watchId: number): void {
     const dispose = this.coderEmbedFsWatchers.get(watchId);
+
     if (!dispose) return;
+
     this.coderEmbedFsWatchers.delete(watchId);
     this.coderEmbedFsWatchRoots.delete(watchId);
+
     const timerPrefix = `${watchId}\0`;
+
     for (const [key, timer] of this.coderEmbedFsWatchSettleTimers) {
       if (!key.startsWith(timerPrefix)) continue;
+
       clearTimeout(timer);
       this.coderEmbedFsWatchSettleTimers.delete(key);
     }
+
     try {
       dispose();
     } catch {
@@ -1584,13 +1991,16 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private detachCoderEmbedFrame(): void {
     if (!this.electronService.isElectron) {
       this.browserView?.detach(); this.browserView = null;
+
       return;
     }
+
     this.coderLayout.reset(this.projectPath);
     this.simulatorSourceBridge.detach(this.projectPath, this.coderEmbedFrame?.nativeElement?.contentWindow);
     this.stopAllCoderEmbedFsWatchers();
     this.stopAllCoderNativeSearches();
     this.codeSuggestionHostBridge.registerFrame(null);
+
     if (this.active) this.aiCoderDiffBridge.registerEmbed(null);
   }
 
@@ -1601,6 +2011,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /** iframe 重载时不保留无消费者的 rg 子进程。 */
   private stopAllCoderNativeSearches(): void {
     const searchApi = this.getCoderNativeSearchApi();
+
     for (const requestId of this.coderNativeSearchRequestIds) {
       try {
         searchApi?.cancelSearch?.(requestId);
@@ -1608,6 +2019,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         /* Electron 正在退出时 IPC 可能已释放。 */
       }
     }
+
     this.coderNativeSearchRequestIds.clear();
   }
 
@@ -1615,11 +2027,16 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private stopBuildOutputsWatch(): void {
     if (this.buildOutputsWatchDebounce != null) {
       clearTimeout(this.buildOutputsWatchDebounce);
+
       this.buildOutputsWatchDebounce = undefined;
     }
+
     this.disposeBuildOutputsWatch?.();
+
     this.disposeBuildOutputsWatch = undefined;
+
     this.disposeGlobalBuildOutputsWatch?.();
+
     this.disposeGlobalBuildOutputsWatch = undefined;
   }
 
@@ -1628,24 +2045,30 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    */
   private setupBuildOutputsWatch(projectRoot: string): void {
     this.stopBuildOutputsWatch();
+
     const pathApi = window['path'] as {
       join: (...s: string[]) => string;
       getAilyBuilderBuildPath?: () => string;
     };
+
     const fsAny = window['fs'] as {
       watch?: (
         path: string,
         cb: (ev: { eventType?: string; filename?: string }) => void,
         options?: { recursive?: boolean },
       ) => () => void;
+
       existsSync?: (p: string) => boolean;
       mkdirSync?: (p: string, o?: { recursive?: boolean }) => void;
     };
+
     if (typeof fsAny?.watch !== 'function') {
       return;
     }
+
     const buildRoot = pathApi.join(projectRoot, '.aily', 'build');
     const globalBuildRoot = pathApi.getAilyBuilderBuildPath?.() ?? '';
+
     if (!fsAny.existsSync?.(buildRoot) && typeof fsAny.mkdirSync === 'function') {
       try {
         fsAny.mkdirSync(buildRoot, { recursive: true });
@@ -1653,22 +2076,28 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         /* 工程根只读等极端情况 */
       }
     }
+
     const scheduleRefresh = (): void => {
       if (this.coderEmbedWorkspaceRoot !== projectRoot) {
         return;
       }
+
       if (this.buildOutputsWatchDebounce != null) {
         clearTimeout(this.buildOutputsWatchDebounce);
       }
+
       this.buildOutputsWatchDebounce = setTimeout(() => {
         this.buildOutputsWatchDebounce = undefined;
+
         if (this.coderEmbedWorkspaceRoot !== projectRoot) {
           return;
         }
+
         void this.writeCoderEmbedHints(projectRoot);
         void this.pushAilyCoderHostContext(projectRoot);
       }, 200);
     };
+
     try {
       this.disposeBuildOutputsWatch = this.coerceFsWatchDispose(
         fsAny.watch(buildRoot, () => scheduleRefresh(), { recursive: true }),
@@ -1676,6 +2105,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     } catch {
       /* watch 不可用时仍依赖 compile 完成后的主动推送 */
     }
+
     if (globalBuildRoot && fsAny.existsSync?.(globalBuildRoot)) {
       try {
         this.disposeGlobalBuildOutputsWatch = this.coerceFsWatchDispose(
@@ -1690,11 +2120,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /** 依赖恢复归档归主进程私有，一次库操作可写入数千文件，不转发给 Coder。 */
   private isCoderDependencyRecoveryPath(watchRoot: string, filename?: string): boolean {
     if (!filename) return false;
+
     const pathApi = window['path'];
+
     const relative = pathApi.relative(
       pathApi.join(this.projectPath, '.aily', 'dependency-recovery'),
       pathApi.resolve(watchRoot, filename),
     );
+
     return relative === '' || (!relative.startsWith('..') && !pathApi.isAbsolute(relative));
   }
 
@@ -1704,9 +2137,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     event: { eventType?: string; filename?: string; error?: string },
   ): void {
     const win = this.coderEmbedFrame?.nativeElement?.contentWindow;
+
     if (!win) {
       return;
     }
+
     try {
       win.postMessage(
         {
@@ -1732,12 +2167,17 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     event: { eventType?: string; filename?: string; error?: string },
   ): void {
     if (!window['platform']?.isWindows || event.eventType?.toLowerCase() !== 'rename') return;
+
     const key = `${watchId}\0${event.filename || ''}`;
     const previous = this.coderEmbedFsWatchSettleTimers.get(key);
+
     if (previous != null) clearTimeout(previous);
+
     this.coderEmbedFsWatchSettleTimers.set(key, setTimeout(() => {
       this.coderEmbedFsWatchSettleTimers.delete(key);
+
       if (!this.coderEmbedFsWatchers.has(watchId)) return;
+
       this.pushCoderNativeFsWatchEvent(watchId, { ...event, eventType: 'change' });
     }, 80));
   }
@@ -1773,17 +2213,23 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       let settled = false;
       let subscription: Subscription | undefined;
       let timeout: ReturnType<typeof setTimeout> | undefined;
+
       const finish = (error?: Error) => {
         if (settled) return;
+
         settled = true;
+
         if (timeout) clearTimeout(timeout);
+
         subscription?.unsubscribe();
+
         if (error) {
           reject(error);
         } else {
           resolve(stdoutChunks.join(''));
         }
       };
+
       const failAndKill = (message: string) => {
         void this.cmdService.kill(streamId).catch(() => false);
         finish(new Error(message));
@@ -1807,35 +2253,50 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         next: (event: CmdOutput) => {
           if (event.type === 'stdout') {
             const chunk = event.data ?? '';
+
             if (stdoutSize + chunk.length > CODER_GIT_MAX_STDOUT_CHARS) {
               failAndKill('Git 命令输出过大，已终止以保护编辑器进程');
+
               return;
             }
+
             stdoutSize += chunk.length;
+
             stdoutChunks.push(chunk);
+
             return;
           }
+
           if (event.type === 'stderr') {
             const chunk = event.data ?? '';
+
             if (stderrSize < CODER_GIT_MAX_STDERR_CHARS) {
               const remaining = CODER_GIT_MAX_STDERR_CHARS - stderrSize;
               const kept = chunk.slice(0, remaining);
+
               stderrSize += kept.length;
+
               stderrChunks.push(kept);
             }
+
             return;
           }
+
           if (event.type === 'error') {
             finish(new Error(event.error || stderrChunks.join('') || 'Git 命令执行失败'));
+
             return;
           }
+
           if (isCmdTerminalOutput(event)) {
             if (stdoutSize === 0 && typeof event.stdout === 'string') {
               stdoutChunks.push(event.stdout);
             }
+
             if (stderrSize === 0 && typeof event.stderr === 'string') {
               stderrChunks.push(event.stderr.slice(0, CODER_GIT_MAX_STDERR_CHARS));
             }
+
             if ((event.code ?? 0) === 0) {
               finish();
             } else {
@@ -1854,6 +2315,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private isGitExecutableMissing(error: unknown): boolean {
     const message = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+
     return message.includes('enoent')
       || message.includes('command not found')
       || message.includes('not recognized')
@@ -1863,6 +2325,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private isNotGitRepository(error: unknown): boolean {
     const message = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+
     return message.includes('not a git repository')
       || message.includes('不是一个 git 仓库')
       || message.includes('不是 git 仓库');
@@ -1873,18 +2336,24 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       join?: (...parts: string[]) => string;
       getUserHome?: () => string;
     };
+
     const fsAny = window['fs'] as { existsSync?: (path: string) => boolean };
+
     if (!pathApi.join || !fsAny.existsSync) return [];
 
     const platform = (window as any).electronAPI?.platform?.type as string | undefined;
     const home = pathApi.getUserHome?.() ?? '';
     const candidates: string[] = [];
+
     if (platform === 'win32') {
       const roots = new Set<string>(['C:\\']);
+
       for (const value of [home, this.coderEmbedWorkspaceRoot ?? '']) {
         const match = value.match(/^[a-zA-Z]:[\\/]/);
+
         if (match) roots.add(`${match[0][0].toUpperCase()}:\\`);
       }
+
       for (const root of roots) {
         candidates.push(
           pathApi.join(root, 'Program Files', 'Git', 'cmd', 'git.exe'),
@@ -1892,12 +2361,14 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           pathApi.join(root, 'Program Files (x86)', 'Git', 'cmd', 'git.exe'),
         );
       }
+
       if (home) {
         candidates.push(pathApi.join(home, 'AppData', 'Local', 'Programs', 'Git', 'cmd', 'git.exe'));
       }
     } else {
       candidates.push('/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/opt/local/bin/git');
     }
+
     return [...new Set(candidates)].filter((candidate) => fsAny.existsSync?.(candidate));
   }
 
@@ -1906,6 +2377,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       return await this.runSingleCoderGitCommand('git', args, cwd);
     } catch (error) {
       if (!this.isGitExecutableMissing(error)) throw error;
+
       for (const executable of this.coderGitExecutableCandidates()) {
         try {
           return await this.runSingleCoderGitCommand(executable, args, cwd);
@@ -1913,6 +2385,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           if (!this.isGitExecutableMissing(fallbackError)) throw fallbackError;
         }
       }
+
       throw error;
     }
   }
@@ -1921,6 +2394,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const normalized = String(value ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
     const pathApi = window['path'] as { isAbsolute?: (path: string) => boolean };
     const segments = normalized.split('/');
+
     if (
       !normalized
       || normalized.includes('\0')
@@ -1932,14 +2406,17 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     ) {
       throw new Error('无效的 Git 工作区相对路径');
     }
+
     return normalized;
   }
 
   private assertCoderGitRevision(value: unknown): string {
     const revision = String(value ?? '').trim();
+
     if (!/^[0-9a-f]{40,64}$/i.test(revision)) {
       throw new Error('无效的 Git 提交版本');
     }
+
     return revision;
   }
 
@@ -1948,10 +2425,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       await this.runCoderGitCommand(['rev-parse', '--show-toplevel'], cwd);
     } catch (error) {
       if (this.isNotGitRepository(error)) return { refs: [] };
+
       throw error;
     }
 
     let headRevision: string;
+
     try {
       headRevision = (
         await this.runCoderGitCommand(['rev-parse', '--verify', 'HEAD'], cwd)
@@ -1970,34 +2449,43 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       ],
       cwd,
     );
+
     const refs: CoderGitHistoryRef[] = rawRefs.split(/\r?\n/).flatMap((line) => {
       if (!line) return [];
+
       const [objectName = '', peeledName = '', id = '', name = ''] = line.split('\0');
       const revision = peeledName || objectName;
+
       if (!id || !name || !/^[0-9a-f]{40,64}$/i.test(revision)) return [];
+
       const category = id.startsWith('refs/heads/')
         ? 'local' as const
         : id.startsWith('refs/remotes/')
           ? 'remote' as const
           : 'tag' as const;
+
       return [{ id, name, revision, category }];
     });
 
     const branchName = (
       await this.runCoderGitCommand(['branch', '--show-current'], cwd)
     ).trim();
+
     const branchRef = refs.find(
       (ref) => ref.id === `refs/heads/${branchName}` && ref.category === 'local',
     );
+
     const current: CoderGitHistoryRef = branchRef ?? {
       id: 'HEAD',
       name: branchName || 'HEAD',
       revision: headRevision,
       category: branchName ? 'local' as const : 'head' as const,
     };
+
     if (!branchRef) refs.unshift(current);
 
     let upstreamName = '';
+
     try {
       upstreamName = (
         await this.runCoderGitCommand(
@@ -2008,7 +2496,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     } catch {
       /* 当前分支没有 upstream。 */
     }
+
     const remote = refs.find((ref) => ref.id === `refs/remotes/${upstreamName}`);
+
     return {
       current,
       ...(remote?.category === 'remote' ? { remote } : {}),
@@ -2024,50 +2514,67 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const pathApi = window['path'] as {
       resolve?: (p: string) => string;
       join: (...s: string[]) => string;
+
       sep?: string;
+
       getAilyBuilderBuildPath?: () => string;
     };
+
     const sep = pathApi.sep ?? '/';
     const normalized = pathApi.resolve ? pathApi.resolve(absPath) : absPath;
+
     try {
       return this.assertPathInsideCoderEmbedRoot(normalized);
     } catch {
       /* 继续尝试构建产物目录 */
     }
+
     try {
       const root = this.coderEmbedWorkspaceRoot;
       const primaryBuild = await this.projectService.getBuildPath();
       // primaryBuild 命中：与 dev-tool openCompileFolder 同源
       const bpNorm = pathApi.resolve ? pathApi.resolve(primaryBuild) : primaryBuild;
+
       if (normalized.startsWith(bpNorm + sep) || normalized === bpNorm) {
         return normalized;
       }
+
       // 编译产物路径命中：覆盖 aily-builder 把产物落到全局缓存目录
       if (root) {
         const { buildPath, artifacts } = await resolveActualBuildOutputs(root, primaryBuild);
+
         for (const art of artifacts) {
           const artNorm = pathApi.resolve ? pathApi.resolve(art.abs) : art.abs;
+
           if (artNorm === normalized) {
             return normalized;
           }
         }
+
         const realBuildNorm = pathApi.resolve ? pathApi.resolve(buildPath) : buildPath;
+
         if (normalized.startsWith(realBuildNorm + sep) || normalized === realBuildNorm) {
           return normalized;
         }
       }
+
       // 兜底：aily-builder 全局根下任何路径都放行（节点 absolutePath 由 IDE 自身写入，可信）
       const globalRoot = pathApi.getAilyBuilderBuildPath?.();
+
       if (globalRoot) {
         const globalNorm = pathApi.resolve ? pathApi.resolve(globalRoot) : globalRoot;
+
         if (normalized === globalNorm || normalized.startsWith(globalNorm + sep)) {
           return normalized;
         }
       }
+
       // Platform Packages：全局 appdata/aily-project 下的 sdk、tools、compiler 目录
       const appDataRoot = window['path'].getAppDataPath?.() as string | undefined;
+
       if (appDataRoot) {
         const appDataNorm = pathApi.resolve ? pathApi.resolve(appDataRoot) : appDataRoot;
+
         if (normalized === appDataNorm || normalized.startsWith(appDataNorm + sep)) {
           return normalized;
         }
@@ -2075,6 +2582,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     } catch {
       /* ignore */
     }
+
     return null;
   }
 
@@ -2084,40 +2592,54 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    */
   private async runHostRevealInOs(absPathRaw: string): Promise<void> {
     const resolved = await this.resolvePathForRevealInOs(absPathRaw);
+
     if (resolved == null) {
       this.message.warning('无法在访达中显示：路径不在允许的工程或构建目录内');
+
       return;
     }
+
     const fsApi = window['fs'] as {
       existsSync?: (p: string) => boolean;
       isDirectory?: (p: string) => boolean;
     } | undefined;
+
     const pathApi = window['path'] as { dirname?: (p: string) => string } | undefined;
+
     const electronShell = (
       window as unknown as {
         electronAPI?: { shell?: { showItemInFolder?: (p: string) => void } };
       }
     ).electronAPI?.shell;
+
     const otherApi = (window as unknown as {
       other?: { openByExplorer?: (p: string) => void };
     }).other;
+
     try {
       if (fsApi?.existsSync?.(resolved)) {
         // 平台包等为目录：用资源管理器/Finder 打开文件夹；文件则高亮选中（同 main.hex）
         if (fsApi.isDirectory?.(resolved)) {
           otherApi?.openByExplorer?.(resolved);
+
           return;
         }
+
         electronShell?.showItemInFolder?.(resolved);
+
         return;
       }
+
       // 文件不存在：尝试打开父目录，至少把用户带到「应该所在」的位置
       const parent = pathApi?.dirname?.(resolved);
+
       if (parent && fsApi?.existsSync?.(parent)) {
         otherApi?.openByExplorer?.(parent);
         this.message.info('目标文件尚未生成，已打开所在目录');
+
         return;
       }
+
       this.message.warning('文件与所在目录均不存在，无法定位');
     } catch (e) {
       console.warn('[CodeEditorPro] showItemInFolder', e);
@@ -2128,23 +2650,30 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /** 将Coder iframe 请求的绝对路径规范到当前工程目录内 */
   private assertPathInsideCoderEmbedRoot(candidatePath: string): string {
     const root = this.coderEmbedWorkspaceRoot;
+
     if (!root?.trim()) {
       throw new Error('未初始化工程路径');
     }
+
     const pathApi = window['path'] as {
       resolve?: (p: string) => string;
       relative?: (from: string, to: string) => string;
       isAbsolute?: (p: string) => boolean;
     };
+
     const full = pathApi.resolve ? pathApi.resolve(candidatePath) : candidatePath;
     const roots = [root];
+
     const inside = roots.some(folder => {
       const resolvedRoot = pathApi.resolve ? pathApi.resolve(folder) : folder;
       const rel = pathApi.relative?.(resolvedRoot, full);
+
       return rel !== undefined && (rel === '' ||
         (rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\') && !(pathApi.isAbsolute?.(rel) ?? true)));
     });
+
     if (!inside) throw new Error('路径不在当前工程目录内');
+
     return full;
   }
 
@@ -2154,20 +2683,27 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private assertPathAllowedForCoderNativeFsStat(candidatePath: string): string {
     const pathApi = window['path'] as {
       resolve?: (p: string) => string;
+
       sep?: string;
+
       getAppDataPath?: () => string;
       getAilyBuilderBuildPath?: () => string;
     };
+
     const sep = pathApi.sep ?? '/';
     const normalized = pathApi.resolve ? pathApi.resolve(candidatePath) : candidatePath;
+
     try {
       return this.assertPathInsideCoderEmbedRoot(normalized);
     } catch {
       /* 继续校验全局目录 */
     }
+
     const globalBuildRoot = pathApi.getAilyBuilderBuildPath?.();
+
     if (globalBuildRoot) {
       const globalNorm = pathApi.resolve ? pathApi.resolve(globalBuildRoot) : globalBuildRoot;
+
       if (
         normalized === globalNorm ||
         normalized.startsWith(globalNorm + sep) ||
@@ -2176,9 +2712,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         return normalized;
       }
     }
+
     const appDataRoot = pathApi.getAppDataPath?.();
+
     if (appDataRoot) {
       const appDataNorm = pathApi.resolve ? pathApi.resolve(appDataRoot) : appDataRoot;
+
       if (
         normalized === appDataNorm ||
         normalized.startsWith(appDataNorm + sep) ||
@@ -2187,6 +2726,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         return normalized;
       }
     }
+
     throw new Error('路径不在允许的工程、编译缓存或平台包目录内');
   }
 
@@ -2197,19 +2737,26 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const pathApi = window['path'] as {
       resolve?: (p: string) => string;
       normalize?: (p: string) => string;
+
       sep?: string;
+
       getAppDataPath?: () => string;
     };
+
     const sep = pathApi.sep ?? '/';
     const normalized = pathApi.resolve ? pathApi.resolve(candidatePath) : candidatePath;
+
     try {
       return this.assertPathInsideCoderEmbedRoot(normalized);
     } catch {
       /* 继续校验全局平台包目录 */
     }
+
     const appDataRoot = pathApi.getAppDataPath?.();
+
     if (appDataRoot) {
       const appDataNorm = pathApi.resolve ? pathApi.resolve(appDataRoot) : appDataRoot;
+
       if (
         normalized === appDataNorm ||
         normalized.startsWith(appDataNorm + sep) ||
@@ -2218,6 +2765,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         return normalized;
       }
     }
+
     throw new Error('路径不在允许的工程或平台包目录内');
   }
 
@@ -2232,13 +2780,17 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   private handleCoderLibraryOperationFeedback(payload: CoderLibraryOperationFeedback): void {
     const state = payload.state;
+
     if (state !== 'loading' && state !== 'success' && state !== 'error') return;
 
     const action = payload.action;
+
     if (action !== 'install' && action !== 'uninstall') return;
+
     const libraryName = String(payload.libraryName ?? '').trim().slice(0, 240);
     const command = String(payload.command ?? '').trim().slice(0, 16_000);
     const rawError = String(payload.error ?? '').trim().slice(0, 2_000);
+
     if (!libraryName || !command || !this.projectPath || (state === 'error' && !rawError)) return;
 
     if (state === 'loading') {
@@ -2247,10 +2799,13 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         detail: command,
         state: 'info',
       });
+
       const operation = action === 'install'
         ? this.translate.instant('LIB_MANAGER.INSTALLING')
         : this.translate.instant('LIB_MANAGER.UNINSTALLING');
+
       this.message.loading(`${libraryName} ${operation}...`);
+
       return;
     }
 
@@ -2258,7 +2813,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       const operation = action === 'install'
         ? this.translate.instant('LIB_MANAGER.INSTALLED')
         : this.translate.instant('LIB_MANAGER.UNINSTALLED');
+
       this.message.success(`${libraryName} ${operation}`);
+
       return;
     }
 
@@ -2267,43 +2824,93 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       detail: `${command}\n${rawError}`,
       state: 'error',
     });
+
     const readableError = rawError.length > 240 ? `${rawError.slice(0, 240)}...` : rawError;
+
     const operation = action === 'install'
       ? this.translate.instant('LIB_MANAGER.INSTALL_FAILED')
       : this.translate.instant('NPM.UNINSTALL_FAILED_TITLE');
+
     this.message.error(`${libraryName} ${operation}: ${readableError}`);
+  }
+
+  private clearShortcutSaveMessage(): void {
+    if (this.shortcutSave?.notice) this.projectSaveMessages.clear(this.shortcutSave.notice);
+
+    this.shortcutSave = undefined;
+  }
+
+  private async saveFromEditorShortcut(source: MessageEventSource | null): Promise<void> {
+    const project = this.projectPath, root = this.coderFrameProjectPath;
+    const session = this.dependencySession;
+
+    const current = () => this.coderEmbedFrameReady && this.projectPath === project
+      && source === this.coderEmbedFrame?.nativeElement?.contentWindow
+      && session === this.dependencySession && this.isCurrentCoderWorkspace(root, session);
+
+    if (!source || !project || !root || root !== (window['path']?.resolve?.(project) ?? project) || !current()) return;
+
+    this.clearShortcutSaveMessage();
+
+    const save = this.shortcutSave = { notice: this.active ? this.projectSaveMessages.saving(project) : undefined };
+    let failure: string | undefined;
+
+    try { await this.proProject.saveAll(project); }
+
+    catch (error) { failure = error instanceof Error ? error.message : String(error); }
+
+    if (this.shortcutSave !== save) return;
+    if (!current() || (save.notice && !this.active)) { this.clearShortcutSaveMessage(); return; }
+
+    if (failure !== undefined) {
+      if (!save.notice || this.projectSaveMessages.clear(save.notice)) this.message.error(failure);
+
+      this.shortcutSave = undefined;
+    } else if (save.notice) {
+      save.notice = this.projectSaveMessages.saved(project, save.notice);
+    }
   }
 
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
     if (!this.electronService.isElectron) {
       if (!this.browserDeployment || ev.source !== this.browserDocument?.frame.contentWindow
         || ev.origin !== new URL(this.browserDeployment.editorURL).origin) return;
+
       if (ev.data?.channel === AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL
         && ev.data.version === AILY_CODER_EDITOR_READY_PROTOCOL_VERSION) this.armCoderReadyTimeout();
+
       if (ev.data?.channel === AILY_CODER_EDITOR_READY_CHANNEL
         && ev.data.version === AILY_CODER_EDITOR_READY_PROTOCOL_VERSION) {
         this.coderWorkbenchReady = true;
+
         this.completeCoderEmbedLoading();
       }
+
       return;
     }
+
     if (this.simulatorSourceBridge.receive(this.projectPath, ev)) return;
+
     if (ev.data?.channel === 'aily-coder-editor-project-save') {
-      if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
-      try { await this.proProject.saveAll(this.projectPath); }
-      catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); }
+      await this.saveFromEditorShortcut(ev.source);
+
       return;
     }
+
     if (ev.data?.channel === CODER_SIDEBAR_STATE_CHANNEL) {
       const frame = this.coderEmbedFrame?.nativeElement?.contentWindow;
+
       if (frame && ev.source === frame && typeof ev.data.visible === 'boolean') {
         this.coderLayout.updateSidebar(this.projectPath, frame, ev.data.visible);
       }
+
       return;
     }
+
     if (this.codeSuggestionHostBridge.handleMessage(ev)) {
       return;
     }
+
     const msg = ev.data as {
       channel?: string;
       version?: number;
@@ -2312,47 +2919,61 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       payload?: Record<string, unknown>;
       absPath?: string;
     };
+
     if (
       msg?.channel === AILY_CODER_EDITOR_UPDATE_STATE_REQUEST_CHANNEL
       || msg?.channel === AILY_CODER_EDITOR_UPDATE_REQUEST_CHANNEL
     ) {
       if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
+
       if (msg.channel === AILY_CODER_EDITOR_UPDATE_STATE_REQUEST_CHANNEL) {
         this.postCoderEditorUpdateState();
       } else {
         void this.updateAndRestartCoderEditor();
       }
+
       return;
     }
+
     if (msg?.channel === AILY_CODER_EDITOR_LIBRARY_OPERATION_FEEDBACK_CHANNEL) {
       if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
+
       this.handleCoderLibraryOperationFeedback(msg as CoderLibraryOperationFeedback);
+
       return;
     }
+
     if (msg?.channel === AILY_CODER_EDITOR_HOST_CONTEXT_REQUEST_CHANNEL) {
       const frameWindow = this.coderEmbedFrame?.nativeElement?.contentWindow;
       const root = this.coderEmbedWorkspaceRoot;
+
       if (frameWindow && root && ev.source === frameWindow) {
         void this.pushAilyCoderHostContext(root);
       }
+
       return;
     }
+
     if (
       msg?.channel === AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL
       || msg?.channel === AILY_CODER_EDITOR_READY_CHANNEL
     ) {
       const frameWindow = this.coderEmbedFrame?.nativeElement?.contentWindow;
+
       if (
         !frameWindow
         || ev.source !== frameWindow
       ) {
         return;
       }
+
       if (msg.channel === AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL) {
         if (msg.version !== AILY_CODER_EDITOR_READY_PROTOCOL_VERSION) return;
         if (!this.coderEmbedLoading) return;
+
         this.coderReadyProtocolSupported = true;
         this.coderLoadingStage = 'workbench';
+
         this.clearCoderLegacyReadyTimer();
         this.armCoderReadyTimeout();
       } else if (
@@ -2361,48 +2982,67 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       ) {
         this.coderReadyProtocolSupported = true;
         this.coderWorkbenchReady = true;
+
         this.coderRuntime.getSession(this.projectPath).editorReady = true;
+
         if (this.coderEmbedLoading) this.completeCoderEmbedLoading();
+
         // iframe load / host theme events can race with a language-triggered navigation.
         // Replay the latest snapshot only after the new Workbench has installed its
         // host-context listener so a simultaneous theme change cannot be lost.
         const root = this.coderEmbedWorkspaceRoot;
         const origin = this.coderRuntimeHostInfo && new URL(this.coderRuntimeHostInfo.url).origin;
+
         if (origin && ev.origin === origin && root && this.isCurrentCoderWorkspace(root)) {
           this.simulatorSourceBridge.attach(root, frameWindow, origin);
         }
+
         if (root) void this.pushAilyCoderHostContext(root);
       }
+
       return;
     }
+
     // 内嵌编辑器：在访达 / 资源管理器中高亮文件（工程根内或当前 getBuildPath 产物目录）
     if (msg?.channel === AILY_CODER_EDITOR_REVEAL_IN_OS_CHANNEL) {
       void this.runHostRevealInOs(String(msg.absPath ?? ''));
+
       return;
     }
+
     if (msg?.channel === AILY_CODER_EDITOR_OPEN_LIBRARY_MANAGER_CHANNEL) {
       const open =
         (msg as { open?: boolean }).open !== false;
+
       this.syncHostLibraryManager(open);
+
       return;
     }
+
     if (msg?.channel === AILY_CODER_EDITOR_OPEN_BOARD_SELECTOR_CHANNEL) {
       void this.uiService.openBoardSelector();
+
       return;
     }
+
     if (msg?.channel === AILY_CODER_EDITOR_CLIPBOARD_WRITE_CHANNEL) {
       const text = (msg as { text?: string }).text;
+
       if (typeof text === 'string') {
         this.electronService.clipboardWriteText(text);
       }
+
       return;
     }
+
     if (msg?.channel !== 'aily-coder-editor-native-fs' || typeof msg.id !== 'number' || !msg.op) {
       return;
     }
+
     if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) {
       return;
     }
+
     const replyErr = (e: unknown) =>
       this.replyCoderNativeFs(
         ev.source as Window | undefined | null,
@@ -2414,47 +3054,64 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     try {
       const payload = msg.payload ?? {};
       const fsAny = window['fs'] as any;
+
       if (!window['path']?.['resolve'] || !fsAny?.['existsSync']) {
         replyErr(new Error('文件系统不可用（非 Electron 环境？）'));
+
         return;
       }
+
       switch (msg.op) {
         case 'nativeSearchCapabilities': {
           const searchApi = this.getCoderNativeSearchApi();
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {
             protocolVersion: AILY_CODER_EDITOR_NATIVE_SEARCH_PROTOCOL_VERSION,
             textSearch: typeof searchApi?.searchText === 'function',
             cancellation: typeof searchApi?.cancelSearch === 'function',
           });
+
           break;
         }
+
         case 'nativeSearchCancel': {
           const requestId = normalizeCoderNativeSearchRequestId(payload['requestId']);
+
           this.getCoderNativeSearchApi()?.cancelSearch?.(requestId);
           this.coderNativeSearchRequestIds.delete(requestId);
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
+
           break;
         }
+
         case 'nativeSearchText': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(
             String(payload['workspaceRoot']),
           );
+
           const requestId = normalizeCoderNativeSearchRequestId(payload['requestId']);
           const pattern = typeof payload['pattern'] === 'string' ? payload['pattern'] : '';
+
           if (
             !pattern
             || pattern.length > CODER_NATIVE_SEARCH_MAX_PATTERN_LENGTH
             || pattern.includes('\0')
           ) {
             replyErr(new Error('原生搜索 pattern 为空、过长或包含非法字符'));
+
             return;
           }
+
           const searchApi = this.getCoderNativeSearchApi();
+
           if (typeof searchApi?.searchText !== 'function') {
             replyErr(new Error('当前 Electron 宿主不支持原生文本搜索'));
+
             return;
           }
+
           this.coderNativeSearchRequestIds.add(requestId);
+
           try {
             const result = await searchApi.searchText({
               requestId,
@@ -2485,28 +3142,35 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                 CODER_NATIVE_SEARCH_MAX_FILE_SIZE,
               ),
             });
+
             this.replyCoderNativeFs(ev.source as Window, msg.id!, result);
           } finally {
             this.coderNativeSearchRequestIds.delete(requestId);
           }
+
           break;
         }
+
         case 'nativeFsStat': {
           const abs = this.assertPathAllowedForCoderNativeFsStat(String(payload['path']));
+
           if (!fsAny['existsSync'](abs)) {
             this.replyCoderNativeFs(ev.source as Window, msg.id!, {
               exists: false,
               size: 0,
               mtimeMs: 0,
             });
+
             return;
           }
+
           const st = fsAny['statSync'](abs) as {
             size: number;
             mtime: string;
             _isDirectory?: boolean;
             _isFile?: boolean;
           };
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {
             exists: true,
             _isDirectory: st._isDirectory,
@@ -2514,71 +3178,103 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
             size: st.size,
             mtimeMs: Date.parse(st.mtime),
           });
+
           break;
         }
+
         case 'nativeFsReaddir': {
           const abs = this.assertPathInsideCoderEmbedRoot(String(payload['path']));
+
           const list = fsAny['readDirSync'](abs) as Array<{
             name: string;
             _isDirectory: boolean;
             _isFile: boolean;
           }>;
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, list);
+
           break;
         }
+
         case 'nativeFsReadBinary': {
           const abs = this.assertPathAllowedForCoderNativeFsRead(String(payload['path']));
           // The installed-library explorer consumes the effective dependency
           // graph. The real file remains the saved baseline until manual save.
           const isManifest = abs === window['path'].join(this.projectPath, 'package.json');
+
           const base64 = isManifest && this.projectService.hasCachedLibraryChanges(this.projectPath)
             ? btoa(Array.from(new TextEncoder().encode(this.projectService.getEffectivePackageText(this.projectPath)), byte => String.fromCharCode(byte)).join(''))
             : fsAny['readFileAsBase64'](abs) as string;
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { base64 });
+
           break;
         }
+
         case 'nativeFsWriteBinary': {
           const abs = this.assertPathInsideCoderEmbedRoot(String(payload['path']));
+          const expectedManifest = payload['expectedManifestBase64'];
+
+          if (typeof expectedManifest === 'string' && fsAny['readFileAsBase64'](abs) !== expectedManifest) {
+            throw new Error('package.json 的磁盘内容已变化，请先保存或放弃相关更改，再更新编译入口。');
+          }
+
           fsAny['writeBase64File'](abs, String(payload['base64'] ?? ''));
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
+
           break;
         }
+
         case 'nativeFsMkdir': {
           const abs = this.assertPathInsideCoderEmbedRoot(String(payload['path']));
+
           fsAny['mkdirSync'](abs);
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
+
           break;
         }
+
         case 'nativeFsDelete': {
           const abs = this.assertPathInsideCoderEmbedRoot(String(payload['path']));
           const recursive = !!payload['recursive'];
+
           if (fsAny['isDirectory'](abs)) {
             if (recursive) {
               fsAny['rmdirSync'](abs);
             } else {
               const entries = fsAny['readDirSync'](abs) as unknown[];
+
               if (entries?.length > 0) {
                 replyErr(new Error('目录非空'));
+
                 return;
               }
+
               fsAny['rmdirSync'](abs);
             }
           } else {
             fsAny['unlinkSync'](abs);
           }
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
+
           break;
         }
+
         case 'nativeFsRename': {
           const from = this.assertPathInsideCoderEmbedRoot(String(payload['oldPath']));
           const to = this.assertPathInsideCoderEmbedRoot(String(payload['newPath']));
           const overwrite = !!payload['overwrite'];
+
           if (fsAny['existsSync'](to)) {
             if (!overwrite) {
               replyErr(new Error('目标已存在'));
+
               return;
             }
+
             const dir = fsAny['isDirectory'](to);
+
             if (typeof fsAny['rmSync'] === 'function') {
               fsAny['rmSync'](to, { recursive: true, force: true });
             } else if (dir) {
@@ -2587,13 +3283,17 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
               fsAny['unlinkSync'](to);
             }
           }
+
           fsAny['renameSync'](from, to);
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
+
           break;
         }
+
         case 'nativeFsWatchStart': {
           const abs = this.assertPathInsideCoderEmbedRoot(String(payload['path']));
           const recursive = !!payload['recursive'];
+
           const fsWatch = fsAny['watch'] as
             | ((
                 path: string,
@@ -2604,13 +3304,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                 options?: { recursive?: boolean },
               ) => () => void)
             | undefined;
+
           if (typeof fsWatch !== 'function') {
             replyErr(new Error('fs.watch 不可用'));
+
             return;
           }
+
           const watchId = ++this.coderEmbedFsWatchSeq;
+
           try {
             let watcherFailed = false;
+
             const rawDispose = fsWatch(
               abs,
               (eventTypeOrEvent, filenameArg) => {
@@ -2620,38 +3325,51 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                       eventType: String(eventTypeOrEvent ?? ''),
                       filename: filenameArg ?? undefined,
                     };
+
                 if (this.isCoderDependencyRecoveryPath(abs, event.filename)) return;
+
                 this.pushCoderNativeFsWatchEvent(watchId, event);
                 this.scheduleSettledCoderNativeFsWatchEvent(watchId, event);
+
                 if (event.eventType === 'error') {
                   watcherFailed = true;
+
                   this.stopCoderEmbedFsWatcher(watchId);
                 }
               },
               { recursive },
             );
+
             const dispose = this.coerceFsWatchDispose(rawDispose);
+
             if (watcherFailed) {
               dispose();
             } else {
               this.coderEmbedFsWatchers.set(watchId, dispose);
               this.coderEmbedFsWatchRoots.set(watchId, abs);
             }
+
             this.replyCoderNativeFs(ev.source as Window, msg.id!, { watchId });
           } catch (e: unknown) {
             replyErr(e);
           }
+
           break;
         }
+
         case 'nativeFsWatchStop': {
           const watchId = Number(payload['watchId']);
+
           this.stopCoderEmbedFsWatcher(watchId);
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
+
           break;
         }
+
         case 'nativeGitStatus': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           let status: string;
+
           try {
             status = await this.runCoderGitCommand(
               [
@@ -2671,53 +3389,72 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
             );
           } catch (error) {
             if (!this.isNotGitRepository(error)) throw error;
+
             this.replyCoderNativeFs(ev.source as Window, msg.id!, {
               initialized: false,
               status: '',
             });
+
             break;
           }
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {
             initialized: true,
             status,
           });
+
           break;
         }
+
         case 'nativeGitInit': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           const summary = await this.runCoderGitCommand(['init'], workspaceRoot);
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { summary: summary.trim() });
+
           break;
         }
+
         case 'nativeGitHistoryRefs': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           const result = await this.readCoderGitHistoryRefs(workspaceRoot);
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, result);
+
           break;
         }
+
         case 'nativeGitHistoryItems': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           const inputRevisions = Array.isArray(payload['revisions']) ? payload['revisions'] : [];
           const revisions = [...new Set(inputRevisions.map((value) => this.assertCoderGitRevision(value)))];
+
           if (revisions.length > 32) {
             replyErr(new Error('Git Graph 一次最多查询 32 个引用'));
+
             return;
           }
+
           if (revisions.length === 0) {
             try {
               revisions.push((await this.runCoderGitCommand(['rev-parse', '--verify', 'HEAD'], workspaceRoot)).trim());
             } catch {
               this.replyCoderNativeFs(ev.source as Window, msg.id!, { history: '' });
+
               break;
             }
           }
+
           const skip = Math.max(0, Math.min(1000000, Math.trunc(Number(payload['skip']) || 0)));
           const limit = Math.max(1, Math.min(1000, Math.trunc(Number(payload['limit']) || 50)));
           const filterText = String(payload['filterText'] ?? '').trim();
+
           if (filterText.length > 500 || filterText.includes('\0')) {
             replyErr(new Error('Git Graph 过滤文本无效'));
+
             return;
           }
+
           const history = await this.runCoderGitCommand(
             [
               'log',
@@ -2733,15 +3470,20 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
             ],
             workspaceRoot,
           );
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { history });
+
           break;
         }
+
         case 'nativeGitHistoryItemChanges': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           const historyItemId = this.assertCoderGitRevision(payload['historyItemId']);
+
           const historyItemParentId = payload['historyItemParentId'] == null
             ? undefined
             : this.assertCoderGitRevision(payload['historyItemParentId']);
+
           const args = historyItemParentId
             ? [
                 'diff',
@@ -2765,20 +3507,29 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                 '--',
                 ...CODER_GIT_PATHSPECS,
               ];
+
           const changes = await this.runCoderGitCommand(args, workspaceRoot);
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { changes });
+
           break;
         }
+
         case 'nativeGitHistoryMergeBase': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
+
           const revisions = Array.isArray(payload['revisions'])
             ? payload['revisions'].map((value) => this.assertCoderGitRevision(value))
             : [];
+
           if (revisions.length < 2 || revisions.length > 32) {
             replyErr(new Error('Git Graph 共同祖先参数无效'));
+
             return;
           }
+
           let revision: string | undefined;
+
           try {
             revision = (
               await this.runCoderGitCommand(['merge-base', '--octopus', ...revisions], workspaceRoot)
@@ -2786,60 +3537,82 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           } catch {
             revision = undefined;
           }
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { revision });
+
           break;
         }
+
         case 'nativeGitShowRevisionFile': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           const revision = this.assertCoderGitRevision(payload['revision']);
           const relativePath = this.assertCoderGitRelativePath(payload['relativePath']);
+
           const prefix = (
             await this.runCoderGitCommand(['rev-parse', '--show-prefix'], workspaceRoot)
           ).trim().replace(/\\/g, '/');
+
           const content = await this.runCoderGitCommand(
             ['show', `${revision}:${prefix}${relativePath}`],
             workspaceRoot,
           );
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { content });
+
           break;
         }
+
         case 'nativeGitShowHead': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           const relativePath = this.assertCoderGitRelativePath(payload['relativePath']);
+
           const prefix = (
             await this.runCoderGitCommand(['rev-parse', '--show-prefix'], workspaceRoot)
           ).trim().replace(/\\/g, '/');
+
           const content = await this.runCoderGitCommand(
             ['show', `HEAD:${prefix}${relativePath}`],
             workspaceRoot,
           );
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { content });
+
           break;
         }
+
         case 'nativeGitCommit': {
           const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
           const message = String(payload['message'] ?? '').trim();
+
           if (!message || message.length > 10000 || message.includes('\0')) {
             replyErr(new Error('提交消息为空或过长'));
+
             return;
           }
+
           try {
             await this.runCoderGitCommand(['rev-parse', '--show-toplevel'], workspaceRoot);
           } catch (error) {
             if (!this.isNotGitRepository(error)) throw error;
+
             await this.runCoderGitCommand(['init'], workspaceRoot);
           }
+
           await this.runCoderGitCommand(
             ['add', '-A', '--', ...CODER_GIT_PATHSPECS],
             workspaceRoot,
           );
+
           const summary = await this.runCoderGitCommand(
             ['commit', '-m', message, '--', ...CODER_GIT_PATHSPECS],
             workspaceRoot,
           );
+
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { summary: summary.trim() });
+
           break;
         }
+
         default:
           replyErr(new Error(`未知 nativeFs op: ${msg.op}`));
       }

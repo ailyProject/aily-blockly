@@ -22,7 +22,8 @@ import {
 
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
-import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
+import { canRetryCloudBuildLocally, confirmCoderCloudPreflightFailure, isCoderCloudPreflightFailure, isUnsupportedCloudBuild } from '../../../utils/cloud-build-progress.utils';
+import { getCloudEditorDependencies, type CloudBoardProfile } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 import { findCompilerIntegrityProblem } from '../../../utils/compiler-integrity.utils';
 import { readyVersionedPlatformResource, versionedPlatformResource } from '../../../utils/versioned-platform-resource.utils';
@@ -674,7 +675,8 @@ export class NpmService {
   }
 
   /** 编译入口刷新支持状态；运行中由云切到本地时补齐正常本地依赖链。 */
-  async prepareCompileBackend(projectPath: string, isCancelled: () => boolean = () => false): Promise<void> {
+  async prepareCompileBackend(projectPath: string, isCancelled: () => boolean = () => false,
+    recheckFailedCoderPreflight = false): Promise<void> {
     if (this.configService.getCompileBackend() !== 'cloud') return;
     const session = this.prjService.getProjectDependencySession(projectPath);
     const project = this.getDependencyProject(session);
@@ -687,15 +689,28 @@ export class NpmService {
     guard();
     if (!boardModule) return;
     const wasCloud = project.isCloudBuild();
+    const recheck = recheckFailedCoderPreflight && this.prjService.hasCoderCloudPreflightFailure(projectPath);
     let backend: 'cloud' | 'local';
     try {
       backend = await project.resolveCompileBackend(session, true);
+      guard();
+      // The project-open failure grants a fresh lookup, not a fallback for an old target.
+      if (recheck && backend === 'cloud') await project.getCloudBoardProfile({ refresh: true }, session);
     } catch (error) {
       // A late unsupported reply must not replace the user's cancellation.
       guard();
+      if (recheck && this.prjService.hasCoderCloudPreflightFailure(projectPath)) {
+        throw confirmCoderCloudPreflightFailure(error);
+      }
       throw error;
     }
     guard();
+    if (recheck && backend === 'cloud') {
+      // Lookup recovery only reopens the admission gate after normal dependencies are ready.
+      const ready = await this.ensureProjectAndBoardDeps(projectPath, undefined, session);
+      guard();
+      if (!ready) throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+    }
     if (wasCloud && backend === 'local') {
       await this.installBoardDeps(session);
       if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
@@ -768,7 +783,7 @@ export class NpmService {
   }
 
   /** Coder execution preflight: completed preparation plus the current files on disk. */
-  async assertCoderDependenciesReady(projectPath: string): Promise<void> {
+  async assertCoderDependenciesReady(projectPath: string, purpose: 'build' | 'cloud-build' | 'firmware-upload' = 'build'): Promise<void> {
     if (!this.configService.isCoderProduct() || !this.prjService.isAilyCodeProject(projectPath)) return;
     const session = this.prjService.getProjectDependencySession(projectPath);
     const blocked = () => this.prjService.getProjectDependencyBlockMessage(projectPath);
@@ -777,8 +792,9 @@ export class NpmService {
     if (initialBlock) throw reject(initialBlock);
 
     try {
-      // An idle/unknown session is not evidence that SDK and source preparation succeeded.
-      if (this.prjService.getProjectDependencyStatus(projectPath) !== 'ready'
+      // Changing compile settings creates an idle session. Upload may verify a prior
+      // firmware against disk; a new compile still requires full dependency preparation.
+      if ((purpose !== 'firmware-upload' && this.prjService.getProjectDependencyStatus(projectPath) !== 'ready')
         || !await this.installedOk(projectPath)) {
         throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
       }
@@ -789,11 +805,16 @@ export class NpmService {
       if (boardModule) {
         const boardPackage = await project.getBoardPackageJson();
         this.assertDependencySession(session);
-        if (this.isCloudBuild(projectPath)) {
+        const cloud = this.isCloudBuild(projectPath);
+        if (cloud && purpose !== 'firmware-upload') {
           await project.getCloudBoardProfile({}, session);
           this.assertDependencySession(session);
         }
-        const missing = await this.getMissingBoardDependencies(boardPackage, projectPath);
+        // Cached cloud firmware carries its own signed uploader inventory and needs no local compiler.
+        const cloudPackages = cloud || (purpose === 'firmware-upload'
+          && await window['cloudBuild']?.hasArtifact?.({ projectPath }) === true);
+        this.assertDependencySession(session);
+        const missing = await this.getMissingBoardDependencies(boardPackage, projectPath, cloudPackages);
         if (missing.length) {
           throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
             name: missing.join(', '),
@@ -808,6 +829,8 @@ export class NpmService {
       // A new install may have started during the async reads. Preserve its state and notice.
       const latestBlock = blocked();
       if (latestBlock) throw reject(latestBlock);
+      // The active compile owns the cloud failure and its local retry action.
+      if (purpose === 'cloud-build' && this.isCloudBuild(projectPath) && canRetryCloudBuildLocally(error)) throw error;
       this.prjService.setProjectDependencyResult(session, false);
       const message = this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
       this.application.updateNotice({
@@ -830,7 +853,8 @@ export class NpmService {
   /** Blockly / Aily Code 共用：等待工程 npm 和主板平台依赖全部完成。 */
   async ensureProjectAndBoardDeps(
     projectPath: string,
-    options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void | Promise<void> },
+    options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void | Promise<void>;
+      onRetryLocally?: () => void | Promise<unknown> },
     session = this.prjService.getProjectDependencySession(projectPath),
   ): Promise<boolean> {
     const cloudInventory: { value?: CloudDependencyInventory } = {};
@@ -869,6 +893,7 @@ export class NpmService {
     };
     const promise = this.prjService.runProjectDependencyTask(session, async () => {
       let ready = false;
+      let cloudPreflightFailed = false;
       try {
         // One owner reports completion; npm success alone does not unlock builds.
         if (!await this.ensureProjectDependenciesInstalled(projectPath, {
@@ -905,15 +930,29 @@ export class NpmService {
         return true;
       } catch (error) {
         this.assertDependencySession(session);
+        const retryLocally = options?.onRetryLocally;
+        const cloud = this.isCloudBuild(projectPath);
+        const unsupported = cloud && isUnsupportedCloudBuild(error);
+        const offerLocal = retryLocally && cloud && canRetryCloudBuildLocally(error);
+        cloudPreflightFailed = cloud && this.configService.isCoderProduct()
+          && this.isAilyCodeProjectRoot(projectPath) && isCoderCloudPreflightFailure(error);
+        const detail = this.getNpmErrorMessage(error);
         this.application.updateNotice({
-          title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
-          text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
-          detail: this.getNpmErrorMessage(error),
+          title: this.translate.instant(offerLocal || unsupported ? 'BLOCKLY_EDITOR.BUILD.FAILED_TITLE' : 'NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+          text: unsupported ? this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE')
+            : offerLocal ? detail : this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+          detail,
           state: 'error', onRetry: onRetryInstall,
+          ...(offerLocal ? {
+            onRetryLocally: () => {
+              if (!pending.has(session) && this.isDependencySessionCurrent(session)
+                && this.prjService.getProjectDependencyStatus(projectPath) === 'error') return retryLocally?.();
+            },
+          } : {}),
         });
         return false;
       } finally {
-        if (this.isDependencySessionCurrent(session)) this.prjService.setProjectDependencyResult(session, ready);
+        if (this.isDependencySessionCurrent(session)) this.prjService.setProjectDependencyResult(session, ready, cloudPreflightFailed);
       }
     });
     pending.set(session, promise);
@@ -926,7 +965,7 @@ export class NpmService {
 
   async installBoardDeps(
     session = this.prjService.getProjectDependencySession(),
-    options: { showSuccessNotice?: boolean; prepareCloudSources?: boolean } = {},
+    options: { showSuccessNotice?: boolean; prepareCloudSources?: boolean; openedCloudProfile?: CloudBoardProfile } = {},
   ) {
     this.assertDependencySession(session);
     if (this.boardDepsInstallPromise?.session === session) {
@@ -940,13 +979,15 @@ export class NpmService {
         const project = this.getDependencyProject(session);
         const boardPackageJson = await project.getBoardPackageJson() || {};
         this.assertDependencySession(session);
-        if (this.configService.getCompileBackend() === 'cloud') {
+        if (!options.openedCloudProfile && this.configService.getCompileBackend() === 'cloud') {
           await project.resolveCompileBackend(session);
           this.assertDependencySession(session);
         }
         if (this.isCloudBuild(session.projectPath)) {
-          await project.getCloudBoardProfile({}, session);
-          this.assertDependencySession(session);
+          if (!options.openedCloudProfile) {
+            await project.getCloudBoardProfile({}, session);
+            this.assertDependencySession(session);
+          }
           // 云编译仅保留编辑器资源和库源码，SDK/编译器由云端提供；烧录工具仍按需在本地准备。
           await this.installBoardDependencies(boardPackageJson, false, false, session, false);
           this.assertDependencySession(session);
@@ -1525,8 +1566,7 @@ export class NpmService {
     return missing;
   }
 
-  getMissingBoardDependencies(packageJson: any, projectPath?: string): Promise<string[]> {
-    const cloudMode = this.isCloudBuild(projectPath);
+  getMissingBoardDependencies(packageJson: any, projectPath?: string, cloudMode = this.isCloudBuild(projectPath)): Promise<string[]> {
     const dependencies = cloudMode ? getCloudEditorDependencies(packageJson) : packageJson?.boardDependencies || {};
     return this.getUnreadyBoardPlatformDeps(dependencies, !cloudMode);
   }
@@ -1955,7 +1995,7 @@ export class NpmService {
     await this.installPackage(tool, this.translate.instant('NPM.TYPE_TOOL'), tool?.version);
   }
 
-  /** Prepare only the exact uploader package, outside the shared AppData npm graph. */
+  /** Prepare the exact tool requested by cloud compilation or upload, outside the shared AppData npm graph. */
   async installCloudUploadTool(tool: { name: string; version: string }, session?: ProjectDependencySession): Promise<void> {
     this.assertDependencySession(session);
     if (!tool || !/^@aily-project\/tool-[A-Za-z0-9_.-]+$/.test(tool.name || '')
@@ -1968,13 +2008,15 @@ export class NpmService {
   /** Keep editor dependency declarations intact without reifying the AppData root graph. */
   private async installIsolatedCloudPackage(tool: { name: string; version: string }, session?: ProjectDependencySession, registry = ''): Promise<void> {
     this.assertDependencySession(session);
-    if (window['platform']?.type !== 'win32') throw new Error('Cloud package installation requires Windows.');
     if (!tool || !this.isValidNpmPackageName(tool.name)
         || typeof tool.version !== 'string' || !tool.version.trim()
         || /["%\x00\r\n]/.test(tool.version)) throw new Error('Invalid cloud dependency declaration.');
     const appDataPath = window['path'].getAppDataPath();
     if (typeof appDataPath !== 'string' || !appDataPath || /["\x00\r\n]/.test(appDataPath)) throw new Error('Invalid cloud uploader package path.');
-    const packagePath = `${appDataPath}/node_modules/${tool.name}/package.json`;
+    const windows = window['platform']?.type === 'win32';
+    const prefix = windows ? appDataPath : `${appDataPath}/.aily-cloud-tools`;
+    const packageBase = windows ? prefix : `${prefix}/lib`;
+    const packagePath = `${packageBase}/node_modules/${tool.name}/package.json`;
     let rebuild = false;
     if (window['path'].isExists(packagePath)) {
       try {
@@ -1983,9 +2025,9 @@ export class NpmService {
       } catch { /* Reinstall a missing or unreadable wrapper using its declaration. */ }
     }
     const operation = rebuild ? 'rebuild' : 'install';
-    // Windows global prefix still uses AppData/node_modules. Its npm graph does
-    // not reify SDK/compiler dependencies declared by AppData/package.json.
-    const cmd = appendScopedNpmRegistry(`npm ${operation} "${tool.name}@${tool.version}" --global --prefix "${appDataPath}" --foreground-scripts`, registry);
+    // The global graph keeps cloud tool installation separate from any SDK or
+    // compiler in the local project or AppData dependency graph.
+    const cmd = appendScopedNpmRegistry(`npm ${operation} "${tool.name}@${tool.version}" --global --prefix "${prefix}" --foreground-scripts`, registry);
     try {
       this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALLING_TITLE'),

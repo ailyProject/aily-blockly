@@ -19,6 +19,7 @@ describe('exact host journal reopen provenance', () => {
     service.loadedBlocklyProjectPath = source;
     service.projectLifecycle = new ProjectLifecycleGate();
     service.projectOpenTask = null;
+    service.projectNavigationIntentRevision = 0;
     service.coderOperations = new Map();
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.coderProjectsSubject = new BehaviorSubject([]);
@@ -66,6 +67,33 @@ describe('exact host journal reopen provenance', () => {
     expect(service.router.navigate.calls.allArgs().map((args: any[]) => args[0][0])).toEqual(['/main/guide', '/main/blockly-editor']);
     expect(service.save).not.toHaveBeenCalled(); expect(service.discardLibraryChanges).not.toHaveBeenCalled();
     expect(service.stopProjectCommands).not.toHaveBeenCalled(); expect(service.isProjectTransitionInProgress(source)).toBeFalse();
+  });
+
+  it('backfills the cloud ignore file only after successful load of the original locked directory', async () => {
+    const previous = { fs: window['fs'], path: window['path'], lock: window['projectLock'] };
+    const attachment = { version: 1, root: source, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
+    const ignorePath = source + '/.ailyignore';
+    let content: string | undefined;
+    const write = jasmine.createSpy('write cloud ignore').and.callFake((_path, bytes) => {
+      expect(service.getBlocklyProjectLoadStatus(source).ready).toBeTrue();
+      content = bytes;
+    });
+    window['path'] = { join: (...parts: string[]) => parts.join('/') };
+    window['fs'] = { existsSync: (path: string) => path === ignorePath && content !== undefined,
+      lstatSync: () => ({ _isFile: true }), writeFileSync: write, captureProjectAttachment: () => attachment };
+    window['projectLock'] = { tryAcquire: async () => ({ ok: true, attachment, alreadyHeld: true }) };
+    service.electronService.isElectron = true;
+    try {
+      expect(await service.reopenRecoveredBlocklyProject(source, () => {})).toEqual({ project: source, activated: true });
+      expect(write).toHaveBeenCalledOnceWith(ignorePath, 'build/\n', { flag: 'wx' });
+
+      content = '# 我的规则\r\n/tmp/\r\n';
+      expect(await service.reopenRecoveredBlocklyProject(source, () => {})).toEqual({ project: source, activated: true });
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(content).toBe('# 我的规则\r\n/tmp/\r\n');
+    } finally {
+      window['fs'] = previous.fs; window['path'] = previous.path; window['projectLock'] = previous.lock;
+    }
   });
 
   for (const dirty of [{ dirty: true, busy: false }, { dirty: false, busy: true }, {}, null]) {
@@ -118,17 +146,29 @@ describe('exact host journal reopen provenance', () => {
     expect(service.isProjectTransitionInProgress(source)).toBeFalse(); expect(service.stopProjectCommands).not.toHaveBeenCalled();
   });
 
-  it('keeps reopen and read-only inspect free of self-owned writer masks without exempting recovery writes or another writer', async () => {
+  it('rechecks the exact recovery owner after preflight and before retiring the editor', async () => {
+    let current = true;
+    application.settleEnvironmentBeforeOpen = async () => { current = false; };
+    const guard = () => { if (!current) throw new Error('original recovery stopped'); };
+    await expectAsync(service.reopenRecoveredBlocklyProject(source, guard)).toBeRejectedWithError('original recovery stopped');
+    expect(service.router.navigate).not.toHaveBeenCalled();
+    expect(service.getBlocklyProjectLoadStatus(source).ready).toBeTrue();
+    expect(service.isProjectTransitionInProgress(source)).toBeFalse();
+  });
+
+  it('keeps project recovery, Stop, and inspect free of self-owned masks while observing another writer', async () => {
     const registry = new AiOperationRegistryService();
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     bridge.projectService = service; bridge.aiOperations = registry; bridge.mutationSequence = 0;
     bridge.executeOperation = jasmine.createSpy('dispatch').and.callFake(async () => ({ blocked: registry.hasBlocking(source) }));
-    const params = { version: 2, requestId: 'journal-reopen-test', action: 'reopen', generation: 'g1', token: 'host-owned' };
+    const params = { version: 2, requestId: 'journal-reopen-test', action: 'recover_project' };
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source, params })).blocked).toBeFalse();
+    expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,
+      params: { ...params, action: 'cancel_project' } })).blocked).toBeFalse();
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,
       params: { version: 2, requestId: 'journal-inspect-test', action: 'inspect' } })).blocked).toBeFalse();
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,
-      params: { ...params, action: 'repair' } })).blocked).toBeTrue();
+      params: { ...params, action: 'history_publish' } })).blocked).toBeTrue();
     registry.setActive('foreign writer', true, { projectPath: source, blocksProjectLifecycle: true });
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source, params })).blocked).toBeTrue();
     expect((await bridge.executeAdmittedOperation({ operation: 'abs_recovery', path: source,

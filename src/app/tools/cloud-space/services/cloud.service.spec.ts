@@ -1,5 +1,6 @@
 import { firstValueFrom, of } from 'rxjs';
 import { CloudService } from './cloud.service';
+import { SKIP_CONNECTIVITY_RETRY } from '../../../interceptors/retry.interceptor';
 
 describe('CloudService Coder category isolation', () => {
   let service: CloudService;
@@ -78,10 +79,12 @@ describe('CloudService Coder category isolation', () => {
   it('sends the Coder upload category as a multipart field alongside projectData and pid', () => {
     const projectData = { name: 'demo', type: 'coder', entry: 'src/main.cpp' };
     service.syncProject({ pid: 'cloud-id', projectData, category: 'coder' });
-    const [url, body] = http.post.calls.mostRecent().args;
+    const [url, body, options] = http.post.calls.mostRecent().args;
     expect(url).toMatch(/\/cloud\/sync$/);
     expect(body.get('category')).toBe('coder');
     expect(body.get('pid')).toBe('cloud-id');
+    expect(body.has('expectedArchiveRevision')).toBeFalse();
+    expect(options.context).toBeUndefined();
     expect(JSON.parse(body.get('projectData'))).toEqual(projectData);
     expect(Object.keys(projectData)).toEqual(['name', 'type', 'entry']);
   });
@@ -91,6 +94,18 @@ describe('CloudService Coder category isolation', () => {
     const body: FormData = http.post.calls.mostRecent().args[1];
     expect(body.get('category')).toBe('blockly');
     expect(JSON.parse(body.get('projectData') as string)).toEqual({ name: 'blockly' });
+  });
+
+  it('sends the confirmed archive revision only on a requested overwrite', () => {
+    const archiveSha256 = 'a'.repeat(64);
+    const archiveRevision = 'b'.repeat(64);
+    service.syncProject({ pid: 'cloud-id', requestId: 'sync-request-id', projectData: { name: 'demo' },
+      expectedArchiveSha256: archiveSha256, expectedArchiveRevision: archiveRevision });
+    const body: FormData = http.post.calls.mostRecent().args[1];
+    expect(body.get('requestId')).toBe('sync-request-id');
+    expect(body.get('expectedArchiveSha256')).toBe(archiveSha256);
+    expect(body.get('expectedArchiveRevision')).toBe(archiveRevision);
+    expect(http.post.calls.mostRecent().args[2].context.get(SKIP_CONNECTIVITY_RETRY)).toBeTrue();
   });
 
   it('retains binary archive content in the Coder multipart upload', () => {
@@ -147,7 +162,9 @@ describe('CloudService downloaded ABI-only archives', () => {
   afterEach(() => Object.assign(window, previous));
 
   it('preserves a legacy map before returning the downloaded project to either cloud import caller', async () => {
-    expect(await firstValueFrom(service.openProjectArchive('cloud-id'))).toBe(extracted);
+    expect(await firstValueFrom(service.openProjectArchive('cloud-id'))).toEqual({
+      path: extracted, archiveSha256: jasmine.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(service.downloadProject).toHaveBeenCalledOnceWith('cloud-id');
     expect(files.get(extracted + '/project.abi')).toBe(abi);
     expect(files.has(extracted + '/project.abs.map.json')).toBeFalse();
@@ -157,7 +174,9 @@ describe('CloudService downloaded ABI-only archives', () => {
 
   it('returns a current ABI-only cloud package without creating recovery files', async () => {
     includeMap = false;
-    expect(await firstValueFrom(service.openProjectArchive('new-cloud-id'))).toBe(extracted);
+    expect(await firstValueFrom(service.openProjectArchive('new-cloud-id'))).toEqual({
+      path: extracted, archiveSha256: jasmine.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(files.get(extracted + '/project.abi')).toBe(abi);
     expect([...directories].some(name => name.includes('.cloud-import-backup'))).toBeFalse();
   });

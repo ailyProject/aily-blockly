@@ -1,16 +1,18 @@
 const assert = require('node:assert/strict');
+
 const {
   createHash,
   generateKeyPairSync,
   sign,
 } = require('node:crypto');
+
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-
 const { createSubappManager } = require('./subapp-manager');
-const { portableSubappTarball } = require('./tests/npm-tarball-fixture');
+const { portableSubappTarball } = require('../tests/electron/fixtures/npm-tarball-fixture');
+
 const {
   SUBAPP_RELEASE_SIGNATURE_CONTEXT,
   normalizeSubappReleaseTrustPolicies,
@@ -33,6 +35,7 @@ test('leaves unsigned development entries compatible when no trust policy applie
 test('verifies the generic signed Subapp entry against exact downloaded bytes', async (t) => {
   const fixture = createSignedFixture(t);
   const policies = normalizeSubappReleaseTrustPolicies([fixture.policy]);
+
   const result = await verifyDownloadedSubappDistribution({
     entry: fixture.entry,
     indexUrl: INDEX_URL,
@@ -51,9 +54,12 @@ test('verifies the generic signed Subapp entry against exact downloaded bytes', 
 test('manager verifies signed bytes before extraction and never falls back on tampering', async (t) => {
   const fixture = createSignedFixture(t);
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-signed-install-'));
+
   t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
   let npmCalls = 0;
   let tamperDownload = true;
+
   const manager = createSubappManager({
     rootDir,
     updateRootDir: path.join(rootDir, 'updates'),
@@ -66,10 +72,12 @@ test('manager verifies signed bytes before extraction and never falls back on ta
     }),
     downloadFile: async (_url, destination) => {
       fs.copyFileSync(fixture.tarballPath, destination);
+
       if (tamperDownload) fs.appendFileSync(destination, 'tampered');
     },
     runNpm: async () => {
       npmCalls += 1;
+
       throw new Error('Portable signed package must not invoke npm');
     },
   });
@@ -78,16 +86,20 @@ test('manager verifies signed bytes before extraction and never falls back on ta
     manager.install({ id: 'aily-simulator', locale: 'en' }),
     (error) => error?.code === 'SUBAPP_RELEASE_TRUST_FAILED',
   );
+
   assert.equal(npmCalls, 0, 'tampered download must not reach npm fallback');
 
   tamperDownload = false;
+
   const installed = await manager.install({ id: 'aily-simulator', locale: 'en' });
+
   assert.equal(npmCalls, 0);
   assert.equal(installed.apps[0].installedVersion, '0.1.0');
 });
 
 test('manager rejects stripped or untrusted signed distribution metadata before npm', async (t) => {
   const fixture = createSignedFixture(t);
+
   for (const testCase of [
     {
       name: 'stripped distribution',
@@ -102,11 +114,16 @@ test('manager rejects stripped or untrusted signed distribution metadata before 
   ]) {
     await t.test(testCase.name, async (nested) => {
       const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-signed-strip-'));
+
       nested.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
       const entry = JSON.parse(JSON.stringify(testCase.entry));
+
       if (entry.distribution === undefined) delete entry.distribution;
+
       let npmCalls = 0;
       let downloads = 0;
+
       const manager = createSubappManager({
         rootDir,
         updateRootDir: path.join(rootDir, 'updates'),
@@ -120,13 +137,16 @@ test('manager rejects stripped or untrusted signed distribution metadata before 
         downloadFile: async () => { downloads += 1; },
         runNpm: async () => {
           npmCalls += 1;
+
           return { code: 0, stdout: '', stderr: '' };
         },
       });
+
       await assert.rejects(
         manager.install({ id: 'aily-simulator', locale: 'en' }),
         (error) => error?.code === 'SUBAPP_RELEASE_TRUST_FAILED',
       );
+
       assert.equal(downloads, 0);
       assert.equal(npmCalls, 0);
     });
@@ -137,12 +157,15 @@ test('platform-specific trust policies coexist and reject signatures for another
   const windows = createSignedFixture(t, 'win32-x64');
   const mac = createSignedFixture(t, 'darwin-arm64');
   const policies = normalizeSubappReleaseTrustPolicies([windows.policy, mac.policy]);
+
   assert.equal(policies.length, 2);
 
   for (const [fixture, platform, arch] of [[windows, 'win32', 'x64'], [mac, 'darwin', 'arm64']]) {
     const verified = await verifyDownloadedSubappDistribution({ entry: fixture.entry, indexUrl: INDEX_URL,
       policies, tarballPath: fixture.tarballPath, platform, arch });
+
     assert.equal(verified.verified, true);
+
     assert.equal(requiresTrustedSubappDistribution({ ...fixture.entry, distribution: undefined },
       INDEX_URL, policies, { platform, arch }), true);
   }
@@ -150,22 +173,29 @@ test('platform-specific trust policies coexist and reject signatures for another
   await assert.rejects(verifyDownloadedSubappDistribution({ entry: windows.entry, indexUrl: INDEX_URL,
     policies, tarballPath: windows.tarballPath, platform: 'darwin', arch: 'arm64' }),
   error => error.code === 'SUBAPP_RELEASE_TRUST_FAILED');
+
   assert.throws(() => normalizeSubappReleaseTrustPolicies([mac.policy, mac.policy]),
     error => error.code === 'SUBAPP_RELEASE_TRUST_FAILED');
 });
 
 function createSignedFixture(t, platform = 'win32-x64') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-release-fixture-'));
+
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
   const tarballPath = path.join(root, 'aily-simulator-0.1.0.tgz');
+
   fs.writeFileSync(tarballPath, portableSubappTarball({
     packageName: '@aily-project/aily-simulator', version: '0.1.0', id: 'aily-simulator',
   }));
+
   const tarballIntegrity = `sha512-${createHash('sha512')
     .update(fs.readFileSync(tarballPath))
     .digest('base64')}`;
+
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const tarballUrl = `${REGISTRY_ORIGIN}/@aily-project/aily-simulator/-/aily-simulator-0.1.0.tgz`;
+
   const statement = {
     schemaVersion: 1,
     kind: 'aily-subapp-release-statement',
@@ -182,8 +212,10 @@ function createSignedFixture(t, platform = 'win32-x64') {
       entitlementConfigSha256: '0'.repeat(64),
     },
   };
+
   const payloadBase64Url = Buffer.from(JSON.stringify(statement), 'utf8')
     .toString('base64url');
+
   const signature = {
     schemaVersion: 1,
     kind: 'aily-subapp-release-signature',
@@ -196,6 +228,7 @@ function createSignedFixture(t, platform = 'win32-x64') {
       privateKey,
     ).toString('base64url'),
   };
+
   const distribution = validateSubappDistribution({
     schemaVersion: 1,
     channel: 'stable',
@@ -204,6 +237,7 @@ function createSignedFixture(t, platform = 'win32-x64') {
     tarballIntegrity,
     releaseSignature: signature,
   });
+
   return {
     tarballPath,
     tarballIntegrity,

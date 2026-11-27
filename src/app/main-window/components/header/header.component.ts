@@ -7,10 +7,12 @@ import { ChangeDetectorRef, Component, ElementRef, isDevMode, NgZone, OnDestroy,
 import { HEADER_BTNS, HEADER_BTNS_LINUX, HEADER_MENU, IMenuItem } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FormsModule } from '@angular/forms';
+
 import { ProjectService, RECENT_PROJECTS_STORAGE_LIMIT, isProjectSaveConflict,
   type ProjectConflictChoice } from '@domain/project/public-api';
 import { UiService, UpdateService } from '@core/app-shell/public-api';
 import { BuilderService, ProbeRsService } from '@domain/build/public-api';
+
 import {
   UploaderService,
   PortItem,
@@ -20,13 +22,14 @@ import {
   hasLinkUploadParam,
   selectSerialPort,
 } from '@domain/device/public-api';
+
 import { MenuComponent } from '../../../components/menu/menu.component';
 import { ActBtnComponent } from '../act-btn/act-btn.component';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
-import { Router } from '@angular/router';
+import { NavigationEnd, Router } from '@angular/router';
 import { isCmdTerminalOutput, ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { AuthService } from '@core/auth/public-api';
@@ -35,6 +38,7 @@ import { AppStoreService } from '../../../tools/app-store/app-store.service';
 import { RequiredSubappService } from '@integration/subapps/public-api';
 import { Subscription, merge } from 'rxjs';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
+
 import {
   UiAutomationRegistryService,
   MainUiAutomationService,
@@ -43,22 +47,54 @@ import {
   type UiAutomationMenuListOptions,
   mainMenuAutomationRejection,
 } from '@integration/automation/public-api';
+
 import {
-  persistBoardConfigSelection,
   shouldRunBoardConfigSelectionEffects,
 } from './board-config-selection';
+
 import {
+  SerialOperationQueue,
   type LinuxBoardConnector,
   normalizeProjectMode,
   resolveLinuxBoardExecutionRoute,
 } from '@shared/public-api';
+
 import {
   LinuxBoardConnectorService,
   type LinuxBoardConnectorState,
   type LinuxBoardSshSettings,
 } from '@integration/device/public-api';
+
 import { ConnectorSettingDialogComponent } from '../connector-setting-dialog/connector-setting-dialog.component';
 import { ProjectAutoSave, type AutoSaveState } from './project-auto-save';
+
+interface BoardMenuChoice {
+  item: IMenuItem;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+interface PortMenuContent {
+  project: string;
+
+  board: ProjectService['currentBoardConfig'];
+
+  boardModule?: string;
+  settings: string;
+  connectors: string;
+
+  currentProject: () => boolean;
+  serial?: IMenuItem[];
+  ota?: IMenuItem[];
+  boardOptions?: IMenuItem[];
+  optionsSnapshot?: readonly IMenuItem[];
+
+  awaitingSavedOptions?: boolean;
+  optionsRequest?: Promise<IMenuItem[]>;
+
+  publish?: () => void;
+
+  choices?: Map<string, BoardMenuChoice>;
+}
 
 interface NetworkOtaTarget {
   id: string;
@@ -84,6 +120,7 @@ interface NetworkOtaTarget {
   templateUrl: './header.component.html',
   styleUrl: './header.component.scss',
 })
+
 export class HeaderComponent implements OnInit, OnDestroy {
   private readonly coderLayout = inject(CoderEditorLayoutService);
 
@@ -121,6 +158,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   isMacFullScreen = false;
+
   private unsubscribeFullScreenChanged?: () => void;
   private unsubscribeMaximizeChanged?: () => void;
   private unsubscribeWindowStateChanged?: () => void;
@@ -135,15 +173,19 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private networkOtaScanCancelled = false;
   private networkOtaScanStreamId: string | null = null;
   private unsaveDialogOpen = false; // 标记未保存对话框是否已打开
-  private selectDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private boardChoiceQueue?: SerialOperationQueue;
+  private applyingBoardChoice?: PortMenuContent;
+  private boardSettingsProgressId?: string;
+  private boardSettingsResultId?: string;
   private openingPartitionManager = false;
   private destroyed = false;
   private partitionInstallSubscription?: Subscription;
   private partitionInstallMessageId?: string;
+
   private unregisterHeaderMenuAutomation: (() => void) | null = null;
   private connectorStateSubscription?: Subscription;
-
   connectorState: LinuxBoardConnectorState;
+
   connectorStopBtn: IMenuItem = {
     name: 'MENU.STOP',
     action: 'connector-stop',
@@ -159,12 +201,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   get projectTitle(): string {
     const applicationName = this.configService.getApplicationName();
+
     return this.projectService.currentProjectPath
       ? this.projectData.nickname || this.projectData.name || applicationName
       : applicationName;
   }
 
   hasUnsavedProjectChanges = false;
+
   autoSaveState: AutoSaveState = '';
   autoSaveError = '';
   private autoSave?: ProjectAutoSave;
@@ -192,12 +236,15 @@ export class HeaderComponent implements OnInit, OnDestroy {
       busy: busy => this.ngZone.run(() => {
         if (busy) this.uiService.updateFooterState({ owner: 'project-auto-save', state: 'doing',
           text: this.translate.instant('PROJECT.AUTO_SAVE_SAVING') });
+
         else if (!['saved', 'error'].includes(this.autoSaveState))
           this.uiService.updateFooterState({ owner: 'project-auto-save', state: '', text: '' });
       }),
       state: (state, error) => this.ngZone.run(() => {
         this.autoSaveState = state; this.autoSaveError = error || ''; this.cd.markForCheck();
+
         if (!state) this.uiService.updateFooterState({ owner: 'project-auto-save', state: '', text: '' });
+
         if (state === 'saved' || state === 'error') {
           this.uiService.updateFooterState({ owner: 'project-auto-save', state: state === 'saved' ? 'done' : 'error',
             text: this.translate.instant(state === 'saved' ? 'PROJECT.AUTO_SAVE_SAVED' : 'PROJECT.AUTO_SAVE_ERROR'),
@@ -205,52 +252,83 @@ export class HeaderComponent implements OnInit, OnDestroy {
         }
       }),
     });
+
     this.unsavedSubscriptions.add(this.blocklyService.projectDirtyState.activity.subscribe(() => this.autoSave?.edited()));
+
     this.unsavedSubscriptions.add(this.projectService.libraryChangesChanged.subscribe(() => {
       // Saving dependencies also broadcasts clean status. That acknowledgement
       // must not obsolete the in-flight save or start another idle save.
       if (this.projectService.hasCachedLibraryChanges()) this.autoSave?.edited();
     }));
+
     let enabled = this.configService.data?.blockly?.autoSave === true;
+
     this.unsavedSubscriptions.add(this.configService.configReloaded$.subscribe(() => {
       const next = this.configService.data?.blockly?.autoSave === true;
+
       if (next === enabled) return;
+
       enabled = next;
+
       this.autoSave?.cancel();
+
       if (next && (this.blocklyService.projectDirtyState.changed.value || this.projectService.hasCachedLibraryChanges())) {
         this.autoSave?.edited();
       }
     }));
+
     this.unsavedSubscriptions.add(this.projectService.currentProjectPath$.subscribe(() => {
+      this.clearBoardSettingsMessage();
+
+      if (this.showPortList) this.closePortList();
+
       this.autoSave?.cancel();
       this.setProjectUnsaved(false);
+      this.syncCoderUnsavedPoll();
       this.scheduleUnsavedCheck();
     }));
+
     this.unsavedSubscriptions.add(this.projectService.stateSubject.subscribe(state => {
       if (state === 'default' || state === 'loading' || state === 'closing') this.setProjectUnsaved(false);
+
       this.scheduleUnsavedCheck();
     }));
+
     this.unsavedSubscriptions.add(merge(
       this.projectService.libraryChangesChanged,
       this.blocklyService.projectDirtyState.changed,
-      this.router.events,
     ).subscribe(() => this.scheduleUnsavedCheck()));
-    // The embedded Coder exposes a cheap dirty-editor count through its existing
-    // bridge. Blockly is event-driven; never serialize an idle canvas on a timer.
-    this.ngZone.runOutsideAngular(() => {
-      this.coderUnsavedPoll = setInterval(() => {
-        if (this.showCoderSidebarToggle
-          && !this.unsavedCheckRunning) this.scheduleUnsavedCheck();
-      }, 1000);
-    });
+
+    this.unsavedSubscriptions.add(this.router.events.subscribe(event => {
+      if (event instanceof NavigationEnd) this.syncCoderUnsavedPoll();
+
+      this.scheduleUnsavedCheck();
+    }));
+  }
+
+  private syncCoderUnsavedPoll(): void {
+    if (!this.showCoderSidebarToggle) {
+      clearInterval(this.coderUnsavedPoll);
+
+      this.coderUnsavedPoll = undefined;
+    } else if (this.coderUnsavedPoll === undefined) {
+      this.ngZone.runOutsideAngular(() => {
+        this.coderUnsavedPoll = setInterval(() => {
+          if (!this.unsavedCheckRunning) this.scheduleUnsavedCheck();
+        }, 1000);
+      });
+    }
   }
 
   private scheduleUnsavedCheck(): void {
     this.unsavedCheckRevision++;
+
     clearTimeout(this.unsavedCheckTimer);
+
     this.ngZone.runOutsideAngular(() => {
       this.unsavedCheckTimer = setTimeout(() => {
         this.unsavedCheckTimer = undefined;
+
         void this.refreshProjectUnsavedState();
       }, 200);
     });
@@ -258,25 +336,34 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private setProjectUnsaved(value: boolean): void {
     if (this.destroyed || value === this.hasUnsavedProjectChanges) return;
+
     this.ngZone.run(() => {
       this.hasUnsavedProjectChanges = value;
+
       this.cd.markForCheck();
     });
   }
 
   private async refreshProjectUnsavedState(): Promise<void> {
     if (this.destroyed || this.unsavedCheckRunning) return;
+
     const path = this.projectService.currentProjectPath;
+
     if (!path || ['default', 'loading', 'closing'].includes(this.projectService.stateSubject.value)) {
       this.setProjectUnsaved(false);
+
       return;
     }
+
     const revision = this.unsavedCheckRevision;
+
     this.unsavedCheckRunning = true;
+
     try {
       const dirty = this.showCoderSidebarToggle
         ? !await this.coderPersistence.hasSavedProject(path, true)
         : this.projectService.hasCachedLibraryChanges(path) || this.blocklyService.projectDirtyState.changed.value;
+
       if (revision === this.unsavedCheckRevision && path === this.projectService.currentProjectPath) {
         this.setProjectUnsaved(dirty);
       }
@@ -285,6 +372,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       // previous marker until the next content/lifecycle event gives a valid reply.
     } finally {
       this.unsavedCheckRunning = false;
+
       if (!this.destroyed && revision !== this.unsavedCheckRevision && !this.unsavedCheckTimer) {
         this.scheduleUnsavedCheck();
       }
@@ -292,8 +380,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   @ViewChild('projectTitleInput') projectTitleInput?: ElementRef<HTMLInputElement>;
+
   isEditingProjectTitle = false;
   isSavingProjectTitle = false;
+
   private editingProjectPath = '';
 
   get canEditProjectTitle(): boolean {
@@ -305,8 +395,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     this.editingProjectPath = this.projectService.currentProjectPath;
     this.isEditingProjectTitle = true;
+
     this.cd.detectChanges();
+
     const input = this.projectTitleInput?.nativeElement;
+
     if (input) {
       input.focus({ preventScroll: true });
       input.setSelectionRange(input.value.length, input.value.length);
@@ -315,6 +408,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   onProjectTitleKeydown(event: KeyboardEvent): void {
     event.stopPropagation();
+
     if (event.isComposing || event.keyCode === 229) return;
 
     if (event.key === 'Enter') {
@@ -322,12 +416,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
       void this.saveProjectTitle((event.target as HTMLInputElement).value);
     } else if (event.key === 'Escape' && !this.isSavingProjectTitle) {
       event.preventDefault();
+
       this.isEditingProjectTitle = false;
     }
   }
 
   private readonly onProjectTitleOutsidePointerDown = (event: PointerEvent): void => {
     const input = this.projectTitleInput?.nativeElement;
+
     if (this.isEditingProjectTitle && input && event.target !== input) {
       this.ngZone.run(() => void this.saveProjectTitle(input.value));
     }
@@ -338,16 +434,20 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     const nickname = value.trim();
     const projectPath = this.editingProjectPath;
+
     if (!projectPath || projectPath !== this.projectService.currentProjectPath
       || !nickname || nickname === this.projectTitle) {
       this.isEditingProjectTitle = false;
+
       return;
     }
 
     this.isSavingProjectTitle = true;
+
     try {
       // 只提交昵称，让服务合并当前项目配置；库变更未保存时一并保留在内存。
       await this.projectService.setPackageJson({ nickname });
+
       if (projectPath === this.projectService.currentProjectPath) {
         this.projectService.addRecentlyProject({
           name: this.projectData.name,
@@ -355,12 +455,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
           nickname,
         });
       }
+
       this.isEditingProjectTitle = false;
     } catch (error) {
       console.error('保存项目名称失败:', error);
       this.message.error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_SAVE_FAILED'));
     } finally {
       this.isSavingProjectTitle = false;
+
       this.cd.markForCheck();
     }
   }
@@ -381,17 +483,23 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private loadHeaderButtons(): void {
     const template = this.isPythonProject ? HEADER_BTNS_LINUX : HEADER_BTNS;
     const path = this.projectService.currentProjectPath;
+
     if (this.projectService.getProjectMode(path) === 'coder') {
       if (!this.coderHeaderButtons.has(path)) this.coderHeaderButtons.set(path, template.map(item => ({ ...item })));
+
       this.headerBtns = this.coderHeaderButtons.get(path)!;
+
       this.syncCoderActionStates();
     } else this.headerBtns = template;
+
     this.initShortcutMap();
   }
 
   private syncCoderActionStates(): void {
     if (this.projectService.getProjectMode(this.projectService.currentProjectPath) !== 'coder') return;
+
     const state = this.coderRuntime.getState(this.projectService.currentProjectPath);
+
     for (const item of this.headerBtns) {
       if (item.action === 'compile') item.state = this.projectService.getCoderOperation(this.projectService.currentProjectPath)?.kind === 'build' ? 'doing' : state.build;
       if (item.action === 'play' || item.action === 'upload') item.state = state.upload;
@@ -423,10 +531,12 @@ export class HeaderComponent implements OnInit, OnDestroy {
     ) {
       return this.connectorState.endpointLabel;
     }
+
     if (this.serialService.currentPortInfo?.type === 'ble'
       || this.serialService.currentPortInfo?.type === 'network-ota') {
       return this.serialService.currentPortInfo?.text || this.serialService.currentPort;
     }
+
     return this.serialService.currentPort;
   }
 
@@ -477,8 +587,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.ngZone.runOutsideAngular(() => {
       document.addEventListener('pointerdown', this.onProjectTitleOutsidePointerDown, true);
     });
+
     this.watchProjectUnsavedState();
     this.loadHeaderButtons();
+
     if (this.configService.isCoderProduct()) {
       this.dependencySubscription = this.projectService.projectDependencyChanges.subscribe(() => {
         this.cd.markForCheck();
@@ -491,22 +603,34 @@ export class HeaderComponent implements OnInit, OnDestroy {
     });
 
     this.refreshHeaderApps();
+
     this.appStoreSubscription = this.appStoreService.layout$.subscribe(() => {
       this.refreshHeaderApps();
       setTimeout(() => this.cd.detectChanges(), 0);
     });
+
     this.boardChangeSubscription = this.projectService.boardChangeSubject.subscribe(() => {
       void this.resetDebuggerSelectionAfterBoardChange();
     });
+
+    this.boardChangeSubscription.add(merge(this.projectService.boardConfigUpdatedSubject,
+      this.projectService.cloudBoardHydratedSubject, this.configService.configReloaded$).subscribe(() => {
+      if (this.showPortList && !this.portMenuMatchesContext(this.portMenuContent)) void this.getDevicePortList();
+    }));
+
     this.connectorStateSubscription = this.linuxBoardConnector.state$.subscribe(state => {
       const wasRunning = this.connectorState.running;
+
       this.connectorState = state;
+
       const playButton = this.headerBtns.find(button => button.action === 'play');
+
       if (playButton && state.running && playButton.state !== 'stopping') {
         playButton.state = 'running';
       } else if (playButton && !state.running && (wasRunning || playButton.state === 'stopping')) {
         playButton.state = 'default';
       }
+
       this.cd.markForCheck();
     });
   }
@@ -526,15 +650,19 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
       this.unsubscribeWindowStateChanged = window['iWindow'].onStateChanged?.((state) => {
         if (this.destroyed) return;
+
         this.ngZone.run(() => {
           this._isWindowFullScreen = state.canRestore;
           this.isMacFullScreen = state.fullScreen;
+
           this.cd.detectChanges();
         });
       });
+
       // 监听窗口全屏状态变化
       this.unsubscribeFullScreenChanged = this.electronService.onWindowFullScreenChanged((isFullScreen: boolean) => {
         this.isMacFullScreen = isFullScreen;
+
         // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
         setTimeout(() => {
           this.cd.detectChanges();
@@ -544,6 +672,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       // 监听窗口最大化状态变化（用于更新图标）
       this.unsubscribeMaximizeChanged = this.electronService.onWindowMaximizeChanged((isMaximized: boolean) => {
         this._isWindowFullScreen = this.electronService.isWindowFullScreen();
+
         // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
         setTimeout(() => {
           this.cd.detectChanges();
@@ -556,9 +685,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
 
     this.coderRuntime.states$.subscribe(() => { this.syncCoderActionStates(); this.cd.markForCheck(); });
+
     this.projectService.stateSubject.subscribe((state) => {
       if (state == 'loaded' || state == 'saved') {
         this.loadHeaderButtons();
+
         // 将headerMenu中有disabled的按钮置为可用
         this.headerMenu.forEach((menu) => {
           if (menu.disabled) {
@@ -580,6 +711,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
           }
         });
       }
+
       // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
       setTimeout(() => {
         this.cd.detectChanges();
@@ -590,11 +722,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     this.authService.showUser.subscribe(state => {
       this.showUser = state;
+
       // 使用 setTimeout 将变更检测推迟到下一个变更检测周期
       setTimeout(() => {
         this.cd.markForCheck();
       }, 0);
     })
+
     this.checkAndSetDefaultPort();
   }
 
@@ -602,15 +736,18 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private async checkAndSetDefaultPort() {
     try {
       const ports = await this.serialService.getSerialPorts();
+
       if (ports && ports.length === 1 && !this.currentPort) {
         // 只有一个串口且当前没有选择串口时，设为默认
         this.currentPort = ports[0].name;
+
         this.serialService.currentPortInfo = {
           name: ports[0].name,
           text: ports[0].text,
           type: ports[0].type,
           icon: ports[0].icon,
         };
+
         // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
         setTimeout(() => {
           this.cd.detectChanges();
@@ -622,6 +759,17 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   private async resetDebuggerSelectionAfterBoardChange(): Promise<void> {
+    // The configuration publisher also raises boardChange after a menu choice.
+    if (this.applyingBoardChoice && this.portMenuMatchesContext(this.applyingBoardChoice)) return;
+
+    this.clearBoardSettingsMessage();
+
+    if (this.portMenuContent) {
+      this.portMenuContent.optionsRequest = undefined;
+      this.portMenuContent.optionsSnapshot = undefined;
+      this.portMenuContent.boardOptions = undefined;
+    }
+
     // Invalidate an in-flight probe scan and never carry probe cache across boards.
     this.portListGeneration += 1;
     this.cachedDebuggerItems = [];
@@ -632,11 +780,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
       try {
         const ports = await this.serialService.getSerialPorts();
+
         const selection = selectSerialPort(ports, {
           boardConfig: this.projectService.currentBoardConfig,
         });
+
         if (selection.selected?.name) {
           this.serialService.currentPort = selection.selected.name;
+
           this.serialService.currentPortInfo = {
             ...selection.selected,
             type: selection.selected.type || 'serial',
@@ -650,13 +801,17 @@ export class HeaderComponent implements OnInit, OnDestroy {
     if (this.showPortList) {
       await this.getDevicePortList();
     }
+
     this.cd.detectChanges();
   }
 
   showMenu = false;
+
   openMenu(event?: MouseEvent) {
     event?.stopPropagation();
+
     this.showMenu = !this.showMenu;
+
     // 展开主菜单时刷新「最近的项目」二级列表（来自配置中的 recentlyProjects）
     if (this.showMenu) {
       this.closePortList();
@@ -667,11 +822,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
   /** 同步左上角菜单中「最近的项目」子项 */
   private refreshHeaderRecentProjectsMenu(): void {
     const entry = this.headerMenu.find((m) => m.action === 'recent-projects-root');
+
     if (!entry) {
       return;
     }
+
     const recent = (this.projectService.recentlyProjects || [])
       .slice(0, RECENT_PROJECTS_STORAGE_LIMIT);
+
     entry.children =
       recent.length > 0
         ? recent.map((p: { name?: string; nickname?: string; path: string }) => ({
@@ -691,22 +849,28 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private createHeaderMenuAutomationSnapshot(options: UiAutomationMenuListOptions = {}): {
     items: UiAutomationMenuItem[];
+
     sourceById: Map<string, IMenuItem>;
   } {
     this.refreshHeaderRecentProjectsMenu();
+
     const sourceById = new Map<string, IMenuItem>();
 
     const serialize = (items: readonly IMenuItem[], parentId: string): UiAutomationMenuItem[] => {
       const output: UiAutomationMenuItem[] = [];
+
       items.forEach((item, index) => {
         if (item.sep) return;
+
         const visible = !!item.children?.length || item.action === 'recent-projects-root' || this.showInRouter(item);
+
         if (!visible && options.includeHidden !== true) return;
 
         const identity = this.headerMenuAutomationIdentity(item, index);
         const id = parentId ? `${parentId}/${identity}` : identity;
         const children = item.children?.length ? serialize(item.children, id) : [];
         const rejection = mainMenuAutomationRejection(item.action, id);
+
         const entry: UiAutomationMenuItem = {
           id,
           label: this.translate.instant(item.name || item.action || id),
@@ -725,9 +889,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
             .includes(item.action || ''),
           ...(children.length ? { children } : {}),
         };
+
         sourceById.set(id, item);
         output.push(entry);
       });
+
       return output;
     };
 
@@ -740,19 +906,25 @@ export class HeaderComponent implements OnInit, OnDestroy {
   ): Promise<UiAutomationCommandResult> {
     const snapshot = this.createHeaderMenuAutomationSnapshot({ includeHidden: true });
     const item = snapshot.sourceById.get(String(itemId || '').trim());
+
     if (!item) {
       return { ok: false, message: `未找到菜单项: ${itemId}；请重新调用 main_menu_list 获取当前 ID。` };
     }
+
     if (!this.showInRouter(item) && !item.children?.length && item.action !== 'recent-projects-root') {
       return { ok: false, message: `菜单项在当前界面不可用: ${itemId}` };
     }
+
     if (item.disabled) {
       return { ok: false, message: `菜单项当前已禁用: ${itemId}` };
     }
+
     if (item.children?.length || item.action === 'recent-projects-root') {
       return { ok: false, message: `菜单项 ${itemId} 是分组，请选择其 children 中的具体 itemId。` };
     }
+
     const policyRejection = mainMenuAutomationRejection(item.action, itemId);
+
     if (policyRejection) {
       return policyRejection;
     }
@@ -761,11 +933,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
       await this.onHeaderMenuSubItemClick(item);
     } else {
       const outcome = (await this.process(item, null, 'ai')) || undefined;
+
       if (item.action === 'project-save') return {
         ok: outcome?.success === true, operation: 'main_menu_execute', itemId, action: item.action,
         ...(outcome || {}), message: outcome?.success === true ? '项目已保存。' : outcome?.error || '编辑器未确认保存成功。',
       };
     }
+
     return {
       ok: true,
       operation: 'main_menu_execute',
@@ -777,9 +951,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private headerMenuAutomationIdentity(item: IMenuItem, index: number): string {
     const action = String(item.action || item.key || item.name || `item-${index}`).trim();
+
     const contextualValue = item.action === 'recent-project-open' && typeof item.data?.path === 'string'
       ? `:${encodeURIComponent(item.data.path)}`
       : '';
+
     return `${encodeURIComponent(action)}${contextualValue}~${index}`;
   }
 
@@ -788,17 +964,22 @@ export class HeaderComponent implements OnInit, OnDestroy {
     if (subItem.disabled || subItem.action === 'noop') {
       return;
     }
+
     if (subItem.action === 'recent-project-open') {
       const path = subItem.data?.path as string | undefined;
+
       if (!path) {
         return;
       }
+
       if (this.isLoaded()) {
         const canContinue = await this.checkUnsavedChanges('open');
+
         if (!canContinue) {
           return;
         }
       }
+
       await this.projectService.projectOpen(path);
       this.closeMenu();
     }
@@ -812,62 +993,43 @@ export class HeaderComponent implements OnInit, OnDestroy {
   configList: PortItem[] = []
   boardKeywords = [];
   private cachedDebuggerItems: IMenuItem[] = [];
-  private portListGeneration = 0; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
+  private portListGeneration = 0;
+  private portDeviceRequest?: object;
+  private portMenuContent?: PortMenuContent;
 
-  /**
-   * 异步检测调试探针，完成后更新缓存并重建端口列表
-   */
-  private detectProbes(generation: number, portList: IMenuItem[], skipDetect: boolean) {
+  private detectProbes(isCurrent: () => boolean, publish: () => void): void {
+    void this.probeRsService.listProbes().then(result => {
+      if (!isCurrent()) return;
 
-    // console.log('detectProbes');
+      this.cachedDebuggerItems = (result.success ? result.probes || [] : []).map(probe => ({
+        name: probe.type || probe.name || 'Unknown', text: probe.shortSerial || '',
+        type: 'debugger', icon: 'fa-brands fa-usb', extra: { vidPid: probe.vidPid, serial: probe.serial },
+      }));
 
-    if (!skipDetect) {
-      if (this.cachedDebuggerItems.length > 0) {
-        portList.push(...this.cachedDebuggerItems);
-      }
-      this.probeRsService.listProbes().then(result => {
-        if (generation !== this.portListGeneration) return;
-        const newDebuggerItems: IMenuItem[] = [];
-        if (result.success && result.probes && result.probes.length > 0) {
-          newDebuggerItems.push({ sep: true });
-          for (const probe of result.probes) {
-            console.log('Detected probe:', probe);
-            const typeName = probe.type || probe.name || 'Unknown';
-            newDebuggerItems.push({
-              name: typeName,
-              text: probe.shortSerial || '',
-              type: 'debugger',
-              icon: 'fa-brands fa-usb',
-              extra: { vidPid: probe.vidPid, serial: probe.serial },
-            });
-          }
-        }
-        if (JSON.stringify(newDebuggerItems) !== JSON.stringify(this.cachedDebuggerItems)) {
-          this.cachedDebuggerItems = newDebuggerItems;
-          this.getDevicePortList(true);
-        }
-      }).catch(e => {
-        console.warn('调试探针检测失败:', e);
-      });
-    } else if (this.cachedDebuggerItems.length > 0) {
-      portList.push(...this.cachedDebuggerItems);
-    }
+      publish();
+    }).catch(error => console.warn('调试探针检测失败:', error));
   }
+
   openPortList(event?: MouseEvent) {
     if (event) {
       // A cached menu can mount before this click bubbles to document. Keep the
       // opening click out of the menu's outside-click listener and toggle here.
       event.stopPropagation();
+
       if (this.showPortList) {
         this.closePortList();
+
         return;
       }
+
       this.calculatePortListPosition(event);
     } else {
       // 快捷键触发时，查找上传按钮元素获取位置
       const uploadBtn = document.querySelector('[data-action="upload"]') as HTMLElement;
+
       if (uploadBtn) {
         const rect = uploadBtn.getBoundingClientRect();
+
         this.portListPosition = {
           x: rect.left + 2,
           y: 40
@@ -877,26 +1039,37 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.portListPosition = { x: 40, y: 40 };
       }
     }
+
     // Aily Code 在 npm 主板包就绪前可能尚无 currentBoardConfig
     const boardLabel = this.currentBoard ?? '';
     const boardname = boardLabel.replace(' 2560', ' ').replace(' R3', '');
+
     this.boardKeywords = boardname ? [boardname] : [];
+
     // 如果已有缓存列表，先展示旧数据，再后台刷新
     this.closeMenu();
+
     this.showPortList = true;
+
     this.getDevicePortList();
   }
 
   closePortList() {
+    ++this.portListGeneration;
+
     if (this.uploaderBleService.isScanning() || this.uploaderBleService.hasActiveRequest()) {
       this.uploaderBleService.cancelScan();
     }
+
     if (this.networkOtaScanInProgress && this.networkOtaScanStreamId) {
       this.networkOtaScanCancelled = true;
+
       this.cmdService.kill(this.networkOtaScanStreamId);
+
       this.networkOtaScanStreamId = null;
       this.networkOtaScanInProgress = false;
     }
+
     this.showPortList = false;
     // this.cd.detectChanges();
   }
@@ -904,12 +1077,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
   async selectPort(item) {
     if (item.action) {
       await this.process(item);
+
       return
     }
 
     if (item.type === 'ble') {
       try {
         const device = await this.uploaderBleService.selectDevice(item.extra?.deviceId || item.name);
+
         item = {
           ...item,
           name: device.id,
@@ -922,17 +1097,22 @@ export class HeaderComponent implements OnInit, OnDestroy {
         };
       } catch (error) {
         this.message.error(error?.message || '选择 BLE 设备失败');
+
         return;
       }
     }
 
     if (item.type === 'network-ota') {
       const target = this.normalizeNetworkOtaTarget(item.extra?.target);
+
       if (!target) {
         this.message.error(this.translate.instant('NETWORK_OTA.INVALID_HOST'));
+
         return;
       }
+
       this.selectNetworkOtaTarget(target);
+
       return;
     }
 
@@ -941,7 +1121,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
       if (this.supportsLinuxBoardConnector('serial') && (!item.type || item.type === 'serial')) {
         await this.linuxBoardConnector.selectSerialPort(item.name);
       }
+
       this.serialService.currentPort = item.name;
+
       this.serialService.currentPortInfo = {
         name: item.name,
         text: item.text,
@@ -955,198 +1137,230 @@ export class HeaderComponent implements OnInit, OnDestroy {
       this.message.error(error instanceof Error
         ? error.message
         : String(error || this.translate.instant('AILY_CONNECTOR.UNKNOWN_ERROR')));
+
       return;
     }
+
     this.closePortList();
   }
 
-  async getDevicePortList(skipDetect = false) {
-    const generation = ++this.portListGeneration;
-    const projectPath = this.projectService.currentProjectPath;
-    // Linux 菜单严格按 board.json.connector 组合；没有 Linux 执行路由时走后面的 Arduino 端口菜单。
-    const supportsSsh = this.supportsLinuxBoardConnector('ssh');
-    const supportsSerial = this.supportsLinuxBoardConnector('serial');
-    // 纯 SSH 板不枚举本地串口。
-    if (supportsSsh && !supportsSerial) {
-      this.configList = [
-        {
-          name: 'SSH_CONNECTION_DIALOG.TITLE',
-          text: this.connectorState.selectedTransport === 'ssh'
-            ? this.connectorState.endpointLabel
-            : '',
-          icon: 'fa-light fa-network-wired',
-          action: 'connector-settings',
-          current: this.connectorState.selectedTransport === 'ssh',
-        },
-        { sep: true },
-        {
-          name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-          icon: 'fa-light fa-layer-group',
-          action: 'board-select',
-        },
-      ];
-      setTimeout(() => this.cd.detectChanges(), 0);
-      return;
-    }
-    let portList0: IMenuItem[];
-    try {
-      portList0 = await this.serialService.getSerialPorts();
-    } catch (error) {
-      if (!this.isLinuxBoardProject) throw error;
-      console.warn('Linux board serial enumeration failed:', error);
-      portList0 = [];
-    }
-    let hasSelectablePort = portList0.length > 0;
+  private portMenuMatchesContext(content?: PortMenuContent): boolean {
+    if (!content || !content.currentProject() || content.project !== this.projectService.currentProjectPath
+      || content.settings !== this.configService.getCompileSettingsKey()
+      || content.connectors !== this.linuxBoardConnectors.join(',')) return false;
 
-    // 纯串口 Linux 板沿用系统串口枚举，但选择结果交给 Linux connector 执行。
-    if (supportsSerial && !supportsSsh) {
-      const serialPorts: IMenuItem[] = hasSelectablePort
-        ? portList0.map(item => ({
-          ...item,
-          current: this.connectorState.selectedTransport === 'serial'
-            && item.name === this.serialService.currentPort,
-        }))
-        : [{
-          name: 'AILY_CONNECTOR.DEVICE_NOT_FOUND',
-          text: '',
-          type: 'serial',
-          icon: 'fa-light fa-triangle-exclamation',
-          disabled: true,
-        }];
-      this.configList = [
-        ...serialPorts,
-        { sep: true },
-        {
-          name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-          icon: 'fa-light fa-layer-group',
-          action: 'board-select',
-        },
-      ];
-      setTimeout(() => this.cd.detectChanges(), 0);
-      return;
-    }
+    const board = this.projectService.currentBoardConfig;
 
-    // 同时支持 SSH/串口的 Linux 板并列展示两种方式，由用户明确选择。
-    if (this.isLinuxBoardProject) {
-      const serialPorts: IMenuItem[] = hasSelectablePort
-        ? portList0.map(item => ({
-          ...item,
-          current: this.connectorState.selectedTransport === 'serial'
-            && item.name === this.serialService.currentPort,
-        }))
-        : [{
-          name: 'AILY_CONNECTOR.DEVICE_NOT_FOUND',
-          text: '',
-          type: 'serial',
-          icon: 'fa-light fa-triangle-exclamation',
-          disabled: true,
-        }];
-      this.configList = [
-        ...serialPorts,
-        { sep: true },
-        {
-          name: 'SSH_CONNECTION_DIALOG.TITLE',
-          text: this.connectorState.selectedTransport === 'ssh'
-            ? this.connectorState.endpointLabel
-            : '',
-          icon: 'fa-light fa-network-wired',
-          action: 'connector-settings',
-          current: this.connectorState.selectedTransport === 'ssh',
-        },
-        { sep: true },
-        {
-          name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-          icon: 'fa-light fa-layer-group',
-          action: 'board-select',
-        },
-      ];
-      setTimeout(() => this.cd.detectChanges(), 0);
-      return;
-    }
+    if (content.board === board) return true;
 
-    // 未命中 Linux 路由，以下保持 Arduino 的串口、BLE、OTA 与调试器逻辑不变。
-    let core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase();
-    const canShowBleOtaPorts = await this.canShowBleOtaPorts(core);
-    const canShowNetworkOtaPorts = await this.canShowNetworkOtaPorts(core);
+    // Saving a choice projects new pins/CDC onto a fresh runtime object. Only
+    // adopt it for the active write to this exact installed board and route.
+    if (this.applyingBoardChoice !== content || this.projectService.isBoardSwitchInProgress
+      || !content.boardModule || this.projectService.getRuntimeBoardModule() !== content.boardModule
+      || content.board?.type !== board?.type || content.board?.version !== board?.version
+      || hasLinkUploadParam(content.board) !== hasLinkUploadParam(board)) return false;
 
-    if (canShowBleOtaPorts) {
-      const bleItems = this.uploaderBleService.getPortMenuItems(this.serialService.currentPort);
-      //console.log('[BLE:header] getDevicePortList BLE items', bleItems.length, bleItems);
-      if (bleItems.length > 0) {
-        if (portList0.length > 0) {
-          portList0.push({ sep: true });
-        }
-        portList0 = portList0.concat(bleItems);
-        hasSelectablePort = true;
-      }
-    }
+    content.board = board;
 
-    if (canShowNetworkOtaPorts) {
-      const networkOtaItems = await this.getNetworkOtaPortMenuItems(this.serialService.currentPort);
-      if (networkOtaItems.length > 0) {
-        if (portList0.length > 0) {
-          portList0.push({ sep: true });
-        }
-        portList0 = portList0.concat(networkOtaItems);
-        hasSelectablePort = true;
-      }
-    }
+    return true;
+  }
 
-    if (!hasSelectablePort) {
-      portList0 = [
-        {
-          name: 'Device not found',
-          text: '',
-          type: 'serial',
-          icon: 'fa-light fa-triangle-exclamation',
-          disabled: true,
-        }
-      ];
-    }
+  private discardBoardMenuSnapshot(content: PortMenuContent): void {
+    content.optionsSnapshot = undefined;
 
-    // 加载当前开发板包声明的可选配置菜单。
-    if (hasLinkUploadParam(this.projectService.currentBoardConfig)) {
-      this.detectProbes(generation, portList0, skipDetect);
-    } else {
+    // Keep confirmed unavailable feedback and pending selections in place.
+    // A fresh lookup decides which of these rows may accept input again.
+    const keepRows = content.boardOptions?.[0]?.type === 'board-config-unavailable'
+      || content.choices?.size || this.applyingBoardChoice === content || content.awaitingSavedOptions;
+
+    content.boardOptions = keepRows
+      ? content.boardOptions?.map(row => row.disabled || row.sep ? row : { ...row, disabled: true })
+      : undefined;
+  }
+
+  async getDevicePortList(devicesOnly = false): Promise<void> {
+    const board = this.projectService.currentBoardConfig;
+    const connectors = this.linuxBoardConnectors;
+
+    if (!this.portMenuMatchesContext(this.portMenuContent)) {
+      devicesOnly = false;
       this.cachedDebuggerItems = [];
+
+      this.portMenuContent = { project: this.projectService.currentProjectPath, board,
+        boardModule: this.projectService.getRuntimeBoardModule(),
+        settings: this.configService.getCompileSettingsKey(), connectors: connectors.join(','),
+        currentProject: this.projectService.captureCurrentProjectGuard() };
     }
 
-    const boardConfigMenu = await this.projectService.getBoardConfigMenu();
-    if (boardConfigMenu.length > 0) {
-      portList0 = portList0.concat(boardConfigMenu);
+    if (!devicesOnly) ++this.portListGeneration;
+
+    const generation = this.portListGeneration;
+    const deviceRequest = this.portDeviceRequest = {};
+    const content = this.portMenuContent!;
+
+    // A queued selection already has an optimistic check on its verified row.
+    if (!devicesOnly && (!content.optionsSnapshot || !this.projectService.isBoardConfigMenuSnapshotCurrent(content.optionsSnapshot))) {
+      this.discardBoardMenuSnapshot(content);
     }
 
-    // Add the board switch entry after optional package-provided menu items.
-    portList0.push({ sep: true });
-    portList0.push({
-      name: this.translate.instant('BOARD_SELECTOR.TITLE'),
-      icon: 'fa-light fa-layer-group',
-      action: 'board-select',
-      // children: boardList
-    })
-    if (generation !== this.portListGeneration || projectPath !== this.projectService.currentProjectPath) return;
-    this.configList = portList0;
-    // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
-    setTimeout(() => {
-      this.cd.detectChanges();
-    }, 0);
+    const isCurrent = () => !this.destroyed && generation === this.portListGeneration && this.portMenuMatchesContext(content);
+    const supportsSsh = connectors.includes('ssh');
+    const supportsSerial = connectors.includes('serial');
+    const linux = supportsSsh || supportsSerial;
+    const boardSelector = { name: this.translate.instant('BOARD_SELECTOR.TITLE'),
+      icon: 'fa-light fa-layer-group', action: 'board-select' };
+
+    const publish = () => {
+      if (!isCurrent()) return;
+
+      const devices = [...(content.serial ?? [])];
+
+      if (content.ota?.length) {
+        if (devices.length) devices.push({ sep: true });
+
+        devices.push(...content.ota);
+      }
+
+      if (!devices.length && content.serial && (linux || content.ota)) {
+        devices.push({ name: linux ? 'AILY_CONNECTOR.DEVICE_NOT_FOUND' : 'Device not found',
+          text: '', type: 'serial', icon: 'fa-light fa-triangle-exclamation', disabled: true });
+      }
+
+      if (supportsSsh) {
+        if (devices.length) devices.push({ sep: true });
+
+        devices.push({ name: 'SSH_CONNECTION_DIALOG.TITLE',
+          text: this.connectorState.selectedTransport === 'ssh' ? this.connectorState.endpointLabel : '',
+          icon: 'fa-light fa-network-wired', action: 'connector-settings',
+          current: this.connectorState.selectedTransport === 'ssh' });
+      }
+
+      if (this.cachedDebuggerItems.length) {
+        if (devices.length) devices.push({ sep: true });
+
+        devices.push(...this.cachedDebuggerItems);
+      }
+
+      if (!linux) devices.push(...(content.boardOptions ?? []));
+      if (devices.length) devices.push({ sep: true });
+
+      this.configList = [...devices, boardSelector];
+
+      this.cd.markForCheck();
+    };
+
+    // The board selector is actionable immediately. Only reuse rows belonging
+    // to this project, board and backend while their independent sources refresh.
+    content.publish = publish;
+
+    publish();
+
+    if (supportsSsh && !supportsSerial) return;
+
+    const ports = this.serialService.getSerialPorts().catch(error => {
+      console.warn('获取串口列表失败:', error);
+
+      return [];
+    }).then(items => {
+      if (!isCurrent() || this.portDeviceRequest !== deviceRequest) return;
+
+      content.serial = linux ? items.map(item => ({ ...item, current:
+        this.connectorState.selectedTransport === 'serial' && item.name === this.serialService.currentPort })) : items;
+
+      publish();
+    });
+
+    if (linux) return ports;
+    if (!devicesOnly && hasLinkUploadParam(board)) this.detectProbes(isCurrent, publish);
+
+    const ota = this.getOtaPortMenuItems().catch(error => {
+      console.warn('获取 OTA 端口菜单失败:', error);
+
+      return [];
+    }).then(items => {
+      if (!isCurrent() || this.portDeviceRequest !== deviceRequest) return;
+
+      content.ota = items;
+
+      publish();
+    });
+
+    if (devicesOnly) {
+      await Promise.all([ports, ota]);
+
+      return;
+    }
+
+    await Promise.all([ports, ota, this.refreshPortBoardOptions(content)]);
+  }
+
+  private async refreshPortBoardOptions(content: PortMenuContent): Promise<void> {
+    const generation = this.portListGeneration;
+
+    const request = content.optionsRequest = this.projectService.getBoardConfigMenu().catch(error => {
+      console.warn('读取主板选项失败:', error);
+
+      return [] as IMenuItem[];
+    });
+
+    const rows = await request;
+
+    if (request !== content.optionsRequest) return;
+
+    content.optionsRequest = undefined;
+
+    if (this.destroyed || (generation !== this.portListGeneration && this.showPortList)
+      || content !== this.portMenuContent || !this.portMenuMatchesContext(content)) return;
+
+    content.awaitingSavedOptions = false;
+    content.optionsSnapshot = this.projectService.isBoardConfigMenuSnapshotCurrent(rows) ? rows : undefined;
+
+    const previous = content.boardOptions;
+
+    content.boardOptions = rows.map(row => {
+      if (!row.key || row.disabled) return row;
+
+      const pending = content.choices?.get(row.key)?.item;
+
+      const choice = pending && row.children?.find(child => !child.disabled && child.key === pending.key
+        && child.data === pending.data);
+
+      if (choice) row.children!.forEach(child => child.check = child === choice);
+
+      // An open flyout belongs to its parent object. Keep a unique live row,
+      // replacing all its fields (including removed permissions and old children).
+      const matches = previous?.filter(item => item.key === row.key);
+
+      if (matches?.length !== 1 || matches[0].disabled || rows.filter(item => item.key === row.key).length !== 1) return row;
+
+      const parent = matches[0];
+
+      for (const key of Object.keys(parent) as (keyof IMenuItem)[]) {
+        if (!(key in row)) delete parent[key];
+      }
+
+      return Object.assign(parent, row);
+    });
+
+    content.publish?.();
+  }
+
+  private async getOtaPortMenuItems(): Promise<IMenuItem[]> {
+    const { ble, network } = await this.getOtaCapabilities();
+    const bleItems = ble ? this.uploaderBleService.getPortMenuItems(this.serialService.currentPort) : [];
+    const networkItems = network ? await this.getNetworkOtaPortMenuItems(this.serialService.currentPort) : [];
+
+    return [...bleItems, ...(bleItems.length && networkItems.length ? [{ sep: true }] : []), ...networkItems];
   }
 
   private isEsp32Core(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): boolean {
     return core === 'esp32' || core.startsWith('esp32:');
   }
 
-  private async canShowBleOtaPorts(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): Promise<boolean> {
-    return this.isEsp32Core(core) && await this.hasProjectDependency('@aily-project/lib-bleota');
-  }
-
-  private async canShowNetworkOtaPorts(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): Promise<boolean> {
-    return this.isEsp32Core(core) && await this.hasProjectDependency('@aily-project/lib-wifiota');
-  }
-
   private async getNetworkOtaPortMenuItems(currentPort?: string): Promise<IMenuItem[]> {
     const savedTargets = await this.getNetworkOtaTargets();
     const targets = this.mergeNetworkOtaTargets(savedTargets, this.networkOtaDiscoveredTargets);
+
     const items: IMenuItem[] = [{
       name: this.translate.instant(this.networkOtaScanInProgress ? 'NETWORK_OTA.SEARCHING_DEVICE' : 'NETWORK_OTA.SEARCH_DEVICE'),
       action: 'network-ota-scan',
@@ -1175,9 +1389,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     for (const targetGroup of targetGroups) {
       for (const target of targetGroup || []) {
         const normalized = this.normalizeNetworkOtaTarget(target);
+
         if (!normalized) continue;
 
         const key = `${normalized.host}:${normalized.port}:${normalized.uploadPath}`;
+
         if (!targetMap.has(key)) {
           targetMap.set(key, normalized);
         }
@@ -1191,6 +1407,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     try {
       const packageJson = await this.projectService.getPackageJson();
       const targets = packageJson?.projectConfig?.networkOtaTargets;
+
       if (!Array.isArray(targets)) return [];
 
       return targets
@@ -1198,6 +1415,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         .filter((target: NetworkOtaTarget | null): target is NetworkOtaTarget => !!target);
     } catch (error) {
       console.warn('读取 WiFi OTA 目标失败:', error);
+
       return [];
     }
   }
@@ -1206,9 +1424,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const host = (target?.host || '').toString().trim();
     const port = Number(target?.port || 65280);
     const uploadPath = (target?.uploadPath || '/sketch').toString().trim();
+
     if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
 
     const normalizedUploadPath = uploadPath.startsWith('/') ? uploadPath : `/${uploadPath}`;
+
     return {
       id: target?.id || `network-ota:${host}:${port}:${normalizedUploadPath}`,
       name: (target?.name || '').toString().trim(),
@@ -1224,6 +1444,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private selectNetworkOtaTarget(target: NetworkOtaTarget): void {
     this.serialService.currentPort = target.id;
+
     this.serialService.currentPortInfo = {
       name: target.id,
       text: target.name || `${target.host}:${target.port}`,
@@ -1231,12 +1452,18 @@ export class HeaderComponent implements OnInit, OnDestroy {
       icon: 'fa-light fa-wifi',
       extra: { target },
     };
+
     this.closePortList();
   }
 
-  private async hasProjectDependency(dependencyName: string): Promise<boolean> {
+  private async getOtaCapabilities(): Promise<{ ble: boolean; network: boolean }> {
+    const core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase();
+
+    if (!this.isEsp32Core(core)) return { ble: false, network: false };
+
     try {
       const packageJson = await this.projectService.getPackageJson();
+
       const dependencies = {
         ...(packageJson?.dependencies || {}),
         ...(packageJson?.devDependencies || {}),
@@ -1244,10 +1471,12 @@ export class HeaderComponent implements OnInit, OnDestroy {
         ...(packageJson?.peerDependencies || {}),
       };
 
-      return Object.prototype.hasOwnProperty.call(dependencies, dependencyName);
+      return { ble: Object.hasOwn(dependencies, '@aily-project/lib-bleota'),
+        network: Object.hasOwn(dependencies, '@aily-project/lib-wifiota') };
     } catch (error) {
       console.warn('读取项目依赖失败:', error);
-      return false;
+
+      return { ble: false, network: false };
     }
   }
 
@@ -1261,25 +1490,20 @@ export class HeaderComponent implements OnInit, OnDestroy {
     } else if (btn.data && btn.data.data) {
       return this.uiService.isToolOpen(btn.data.data);
     }
+
     return false;
   }
 
   onMenuClick(item) {
     if (item.disabled) return;
+
     this.process(item, null, 'manual');
     this.closeMenu();
   }
 
-  async selectFolder() {
-    const folderPath = await window['ipcRenderer'].invoke('select-folder', {
-      path: this.projectData.path,
-    });
-    // console.log('选中的文件夹路径：', folderPath);
-    return folderPath;
-  }
-
   async selectSaveAsFolder() {
     const sourcePath = this.projectService.currentProjectPath;
+
     if (this.projectService.getProjectMode(sourcePath) === 'coder') {
       return window['ipcRenderer'].invoke('select-folder-saveAs', {
         path: window['path'].dirname(sourcePath),
@@ -1287,33 +1511,39 @@ export class HeaderComponent implements OnInit, OnDestroy {
         returnEmptyOnCancel: true,
       });
     }
+
     const folderPath = await window['ipcRenderer'].invoke('select-folder-saveAs', {
       path: this.projectData.path,
       suggestedName: this.projectData.name + '_new',
       returnEmptyOnCancel: true,
     });
+
     // console.log('选中的文件夹路径：', folderPath);
     return folderPath;
   }
 
-  async openProject() {
-    const path = await this.selectFolder();
-    if (path) {
-      await this.projectService.projectOpen(path);
-    }
+  async openProject(asCopy = false) {
+    return this.projectService.selectAndOpenProject({
+      defaultPath: this.projectData.path,
+      beforeOpen: async () => !this.isLoaded() || this.checkUnsavedChanges('open'),
+      asCopy,
+    });
   }
 
   private coderProjectsAdding = false;
 
   private async addCoderProjects(): Promise<void> {
     if (this.coderProjectsAdding || this.projectService.getProjectMode(this.projectService.currentProjectPath) !== 'coder') return;
+
     this.coderProjectsAdding = true;
+
     try {
       const selection = await window['ipcRenderer'].invoke('dialog-select-files', {
         title: this.translate.instant('MENU.PROJECT_ADD'),
         defaultPath: window['path'].dirname(this.projectService.currentProjectPath),
         properties: ['openDirectory', 'multiSelections'],
       });
+
       for (const path of selection?.filePaths || []) await this.projectService.addCoderProject(path);
     } catch (error) {
       this.message.error(error instanceof Error ? error.message : String(error));
@@ -1331,38 +1561,61 @@ export class HeaderComponent implements OnInit, OnDestroy {
   /** The UI chooses a conflict strategy; ordinary Agent saves never open a modal. */
   private async saveProjectFromUi(path = this.projectService.currentProjectPath): Promise<boolean> {
     if (this.projectSavingFromUi || this.projectSavingAs || this.projectConflictResolving || this.unsaveDialogOpen) return false;
+
     const unchanged = this.projectService.captureCurrentProjectGuard();
+
     this.projectSavingFromUi = true;
+
     try {
       if (this.projectService.hasBlocklyRuntimeRecovery?.(path)
         && !await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false;
+
       // Observe the original save task until it settles. A feedback deadline
       // cannot prove that persistence failed or release this UI submission.
       const saved = await this.projectService.save(path);
+
+      if (saved?.code === 'PROJECT_VIEW_ATTACHMENT_CHANGED' && this.projectService.currentProjectPath === path) {
+        this.message.error(saved.error);
+
+        return false;
+      }
+
       if (!unchanged()) return false;
+
       // The editable document is committed. Its derived outputs are queued
       // until the active build releases ownership; this is not a failed save.
       if (saved?.success === true || (saved?.projectSaved === true && saved?.code === 'BUILD_WORKSPACE_BUSY')) {
         if (this.autoSaveState === 'error') {
           this.autoSaveState = 'saved'; this.autoSaveError = ''; this.cd.markForCheck();
         }
+
         return true;
       }
+
       const resolved = await this.resolveSaveConflictFromUi(path, saved);
+
       if (resolved !== undefined) return resolved && unchanged();
+
       if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
         return await this.saveRestoredBlocklyProjectFromUi(path, unchanged);
       }
+
       this.message.error(saved?.error || '编辑器未确认保存成功');
+
       return false;
     } catch (error) {
       if (!unchanged()) return false;
+
       const resolved = await this.resolveSaveConflictFromUi(path, error);
+
       if (resolved !== undefined) return resolved && unchanged();
+
       if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
         return await this.saveRestoredBlocklyProjectFromUi(path, unchanged);
       }
+
       this.message.error(error instanceof Error ? error.message : String(error));
+
       return false;
     } finally { this.projectSavingFromUi = false; }
   }
@@ -1370,15 +1623,21 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private async restoreBlocklyRuntimeFromUi(path: string, unchanged: () => boolean): Promise<boolean> {
     if (!unchanged()) return false;
     if (!this.projectService.hasBlocklyRuntimeRecovery?.(path)) return true;
+
     let restored;
+
     try { restored = await this.projectService.recoverBlocklyRuntimeInPlace(path); }
+
     catch (error) {
       if (unchanged()) this.message.error(error instanceof Error ? error.message : String(error));
+
       return false;
     }
+
     if (!unchanged()) return false;
     if (restored.ready) return true;
     if (!restored.cancelled) this.message.error(restored.message || '工程尚未恢复，完整内容已保留。');
+
     return false;
   }
 
@@ -1386,26 +1645,36 @@ export class HeaderComponent implements OnInit, OnDestroy {
    * observed by their original receipt and never enter this branch. */
   private async saveRestoredBlocklyProjectFromUi(path: string, unchanged: () => boolean): Promise<boolean> {
     if (!await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false;
+
     const saved = await this.projectService.save(path);
+
     if (!unchanged()) return false;
     if (saved?.success || saved?.projectSaved) return true;
+
     this.message.error(saved?.error || '工程已恢复，但保存尚未完成。');
+
     return false;
   }
 
   private async resolveSaveConflictFromUi(path: string, failure: unknown): Promise<boolean | undefined> {
     if (!isProjectSaveConflict(failure) || this.projectService.getProjectMode(path) !== 'blockly') return undefined;
     if (this.projectConflictResolving || this.unsaveDialogOpen) return false;
+
     const unchanged = this.projectService.captureCurrentProjectGuard();
     let ownsOpenDialog = false;
+
     this.projectConflictResolving = true;
+
     try {
       const offer = await this.projectService.inspectSaveConflict(path);
+
       if (!unchanged()) return false;
       if (!offer) throw new Error('当前项目未提供安全的保存冲突处理，请保留当前视图和原项目。');
+
       const choice = await this.ngZone.run(() => new Promise<ProjectConflictChoice | undefined>(resolve => {
         this.unsaveDialogOpen = true;
         ownsOpenDialog = true;
+
         const modal = this.modal.create({
           nzTitle: null, nzFooter: null, nzClosable: false, nzMaskClosable: false,
           nzBodyStyle: { padding: '0' }, nzWidth: 'min(560px, calc(100vw - 32px))',
@@ -1421,43 +1690,62 @@ export class HeaderComponent implements OnInit, OnDestroy {
             ],
           },
         });
+
         modal.afterClose.subscribe(result => {
           this.unsaveDialogOpen = false;
           ownsOpenDialog = false;
+
           resolve(result?.result === 'keep_view' || result?.result === 'replace_view' ? result.result : undefined);
         });
       }));
+
       if (!choice || !unchanged()) return false;
+
       const resolved = await this.projectService.resolveSaveConflict(path, choice, offer.token);
+
       if (!unchanged() || resolved.projectSaved !== true || resolved.partial) return false;
+
       this.message.success?.(choice === 'keep_view' ? '已保留当前视图并保存。' : '已使用最新版本刷新并保存。');
+
       return true;
     } catch (error) {
       if (unchanged()) this.message.error(error instanceof Error ? error.message : String(error));
+
       return false;
     } finally {
       if (ownsOpenDialog) this.unsaveDialogOpen = false;
+
       this.projectConflictResolving = false;
     }
   }
 
   private async saveProjectAs(): Promise<void> {
     if (this.projectSavingAs) return;
+
     const blocked = this.projectService.getSaveAsBlockMessage();
+
     if (blocked) { this.message.warning(blocked); return; }
+
     this.projectSavingAs = true;
+
     try {
       const unchanged = this.projectService.captureCurrentProjectGuard();
       const path = await this.selectSaveAsFolder();
+
       if (!path) return;
+
       const blocked = this.projectService.getSaveAsBlockMessage();
+
       if (blocked) { this.message.warning(blocked); return; }
+
       if (!unchanged()) {
         throw new Error('当前项目已切换，请重新执行另存为');
       }
+
       await this.projectService.saveAs(path);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+
       this.message.error(`另存为失败：${detail}`);
     } finally {
       this.projectSavingAs = false;
@@ -1467,97 +1755,135 @@ export class HeaderComponent implements OnInit, OnDestroy {
   dependencyBlockMessage(item: IMenuItem): string | undefined {
     if (!['compile', 'play', 'upload'].includes(item.action)) return undefined;
     if (!this.configService.isCoderProduct()) return undefined;
+
     // A running program must remain stoppable while dependencies are repaired.
     if (['play', 'upload'].includes(item.action) && (this.connectorState.running || item.state === 'running')) return undefined;
+
     return this.projectService.getProjectDependencyBlockMessage();
   }
 
   async process(item: IMenuItem, event = null, source: 'manual' | 'ai' | 'system' = 'system') {
     const stopping = ['play', 'upload'].includes(item.action) && (this.connectorState.running || item.state === 'running');
+
     if (this.configService.isCoderProduct() && ['compile', 'play', 'upload'].includes(item.action)
       && item.state !== 'doing' && !stopping && !await this.projectService.ensureCoderBoardSelected()) return;
+
     const dependencyBlock = this.dependencyBlockMessage(item);
+
     if (dependencyBlock) {
       this.message.info(dependencyBlock);
+
       return;
     }
+
     switch (item.action) {
       case 'project-new':
         if (this.isLoaded()) { // 只在已加载项目时检查
           const canContinue = await this.checkUnsavedChanges('new');
+
           if (!canContinue) return;
         }
+
         this.uiService.openWindow(item.data);
+
         break;
       case 'project-open':
-        if (this.isLoaded()) { // 只在已加载项目时检查
-          const canContinue = await this.checkUnsavedChanges('open');
-          if (!canContinue) return;
-        }
-        this.openProject();
+        await this.openProject();
+
+        break;
+      case 'project-open-as-copy':
+        if (source === 'manual') await this.openProject(true);
+
         break;
       case 'project-add':
         await this.addCoderProjects();
+
         break;
       case 'project-save':
         if (source === 'ai' || this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return this.projectService.save();
         else await this.saveProjectFromUi();
+
         break;
       case 'project-save-as':
         await this.saveProjectAs();
+
+        break;
+      case 'project-settings':
+        if (this.projectService.currentProjectPath) this.uiService.openProjectSettings();
+
         break;
       case 'workspace-export-image':
         await this.exportWorkspaceImage();
+
         break;
       case 'project-close':
         if (this.isLoaded()) { // 只在已加载项目时检查
           const canContinue = await this.checkUnsavedChanges('close');
+
           if (!canContinue) return;
         }
+
         await this.projectService.close();
+
         break;
       case 'project-open-by-explorer':
         window['other'].openByExplorer(this.projectService.currentProjectPath);
+
         break;
       case 'tool-open':
         this.uiService.turnTool(item.data);
+
         break;
       case 'ble-scan':
         this.startBleScan();
+
         break;
       case 'network-ota-scan':
         this.startNetworkOtaMdnsSearch();
+
         break;
+
       // case 'terminal':
       //   this.uiService.turnTerminal(item.data);
       //   break;
       case 'compile':
         if (item.state === 'doing') return;
+
         if (this.projectService.isProjectOpening
           && this.projectService.getProjectMode(this.projectService.currentProjectPath) !== 'coder') {
           this.message.info(this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'));
+
           return;
         }
+
         item.state = 'doing';
+
         this.builderService.build(undefined, { source }).then(result => {
           item.state = result.state || 'done';
         }).catch(err => {
           // console.log("编译未完成: ", JSON.stringify(err));
           item.state = this.resolveActionErrorState(err, ['buildResult']);
         })
+
         break;
       case 'play':
         if (this.connectorState.running || item.state === 'running') {
           this.stopLinuxBoardProject(item);
+
           break;
         }
+
         if (this.uploaderService.requiresLocalPort() && !this.serialService.currentPort) {
           this.message.warning(this.translate.instant('SERIAL.SELECT_PORT_FIRST'));
           this.openPortList(event);
+
           return;
         }
+
         if (item.state === 'doing') return;
+
         item.state = 'doing';
+
         this.uploaderService.upload().then(result => {
           item.state = this.connectorState.running
             ? 'running'
@@ -1565,41 +1891,56 @@ export class HeaderComponent implements OnInit, OnDestroy {
         }).catch(err => {
           item.state = this.resolveActionErrorState(err, ['result']);
         });
+
         break;
       case 'upload':
         if (this.isLinuxBoardProject && this.connectorState.running) {
           this.stopLinuxBoardProject(item);
+
           break;
         }
+
         // Arduino 和 Linux-serial 需要本地端口；Linux-SSH 由连接器设置提供目标。
         if (this.uploaderService.requiresLocalPort() && !this.serialService.currentPort) {
           this.message.warning(this.translate.instant('SERIAL.SELECT_PORT_FIRST'));
           this.openPortList(event);
+
           return;
         }
+
         if (item.state === 'doing') return;
+
         item.state = 'doing';
-        this.uploaderService.upload().then(result => {
+
+        const upload = source === 'manual' ? this.uploaderService.uploadManual() : this.uploaderService.upload();
+
+        upload.then(result => {
           item.state = result.state || 'done';
         }).catch(err => {
           // console.log("上传未完成: ", JSON.stringify(err));
           item.state = this.resolveActionErrorState(err, ['result']);
         });
+
         break;
       case 'connector-stop':
         // 停止操作仅属于 Linux/Python 远端运行，不进入 Arduino 上传流程。
         this.stopLinuxBoardProject(item);
+
         break;
       case 'connector-settings':
         // 只有声明 SSH 能力的 Linux 板开放连接设置。
         if (!this.supportsLinuxBoardConnector('ssh')) return;
+
         this.openConnectorSettingDialog();
+
         break;
       case 'settings-open':
         this.uiService.openWindow(item.data);
+
         break;
       case 'check-update':
         this.updateService.clearSkipVersions();
+
         if (!this.updateSubscription) {
           this.updateSubscription = this.updateService.updateStatus.subscribe((status) => {
             // console.log('更新状态:', status);
@@ -1608,13 +1949,17 @@ export class HeaderComponent implements OnInit, OnDestroy {
             }
           });
         }
+
         this.updateService.checkForUpdates(true);
+
         break;
       case 'browser-open':
         this.electronService.openUrl(item.data.url);
+
         break;
       case 'app-exit':
         await this.close();
+
         break;
       case 'example-open':
         if (this.isLoaded()) { // 只在已加载项目时检查
@@ -1622,15 +1967,19 @@ export class HeaderComponent implements OnInit, OnDestroy {
         } else {
           this.router.navigate(['/main/playground']);
         }
+
         break;
       case 'board-select':
         this.openBoardSelectorDialog();
+
         break;
       case 'feedback':
         this.uiService.openFeedback();
+
         break;
       default:
         console.log('未处理的操作:', item.action);
+
         break;
     }
   }
@@ -1641,10 +1990,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
 
     this.workspaceImageExporting = true;
+
     try {
       const workspaceSvg = await this.blocklyService.createWorkspaceImageExportSvg();
+
       if (!workspaceSvg) {
         this.message.warning(this.translate.instant('MENU.IMAGE_EXPORT_EMPTY'));
+
         return;
       }
 
@@ -1656,6 +2008,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
           { name: '所有文件', extensions: ['*'] },
         ],
       });
+
       if (!filePath) {
         return;
       }
@@ -1674,6 +2027,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const projectName = String(this.projectData.name || 'blockly-workspace')
       .replace(/[\\/:*?"<>|]/g, '_')
       .trim();
+
     return `${projectName || 'blockly-workspace'}.svg`;
   }
 
@@ -1687,7 +2041,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private stopLinuxBoardProject(button: IMenuItem): void {
     if (button.state === 'doing' || button.state === 'stopping') return;
+
     button.state = 'stopping';
+
     this.uploaderService.stopPythonProject().then(() => {
       button.state = this.connectorState.running ? 'running' : 'default';
     }).catch(err => {
@@ -1699,12 +2055,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private resolveActionErrorState(err: any, nestedKeys: string[] = []): RunState['state'] {
     const directState = err?.state;
+
     if (this.isFailureRunState(directState)) {
       return directState;
     }
 
     for (const key of nestedKeys) {
       const nestedState = err?.[key]?.state;
+
       if (this.isFailureRunState(nestedState)) {
         return nestedState;
       }
@@ -1724,15 +2082,22 @@ export class HeaderComponent implements OnInit, OnDestroy {
   async maximize() {
     try {
       const result = await window['iWindow'].toggleMaximize();
+
       if (this.destroyed) return;
       if (result.state) this._isWindowFullScreen = result.state.canRestore;
       if (!result.success) console.error('Window state change failed:', result.error);
+
       this.cd.detectChanges();
     } catch (error) { console.error('Window state change failed:', error); }
   }
 
   ngOnDestroy() {
     this.destroyed = true;
+
+    this.clearBoardSettingsMessage();
+
+    for (const choice of this.portMenuContent?.choices?.values() ?? []) clearTimeout(choice.timer);
+
     this.unsubscribeWindowStateChanged?.();
     this.unsavedSubscriptions?.unsubscribe();
     this.autoSave?.dispose();
@@ -1741,32 +2106,43 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.clearPartitionInstallNotice();
     document.removeEventListener('pointerdown', this.onProjectTitleOutsidePointerDown, true);
     this.unregisterHeaderMenuAutomation?.();
+
     this.unregisterHeaderMenuAutomation = null;
+
     this.appStoreSubscription?.unsubscribe();
     this.boardChangeSubscription?.unsubscribe();
     this.dependencySubscription?.unsubscribe();
     this.connectorStateSubscription?.unsubscribe();
+
     if (this.bleDevicesSubscription) {
       this.bleDevicesSubscription.unsubscribe();
     }
+
     if (this.blePortListRefreshTimer) {
       clearTimeout(this.blePortListRefreshTimer);
+
       this.blePortListRefreshTimer = null;
     }
+
     if (this.networkOtaScanStreamId) {
       this.networkOtaScanCancelled = true;
+
       this.cmdService.kill(this.networkOtaScanStreamId);
+
       this.networkOtaScanStreamId = null;
     }
+
     if (this.electronService.isElectron) {
       // 取消窗口全屏状态变化监听
       if (this.unsubscribeFullScreenChanged) {
         this.unsubscribeFullScreenChanged();
       }
+
       // 取消窗口最大化状态变化监听
       if (this.unsubscribeMaximizeChanged) {
         this.unsubscribeMaximizeChanged();
       }
+
       // 取消 Mac 平台关闭请求监听
       if (this.unsubscribeCloseRequest) {
         this.unsubscribeCloseRequest();
@@ -1781,39 +2157,48 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private async confirmWindowClose(request: { requestId?: string }): Promise<void> {
     if (typeof request?.requestId !== 'string' || !request.requestId) return;
+
     let allowed = false;
+
     try {
       if (await this.uiService.closePartitionManagerBeforeQuit()) {
         allowed = await this.checkUnsavedChanges('close', { quitting: true });
       }
     }
+
     catch (error) { this.message.error(`无法确认保存状态：${error instanceof Error ? error.message : String(error)}`); }
     finally { window['iWindow'].confirmClose(request.requestId, allowed); }
   }
 
   // 快捷键功能，监听键盘事件,执行对应的操作
   private shortcutMap: Map<string, IMenuItem> = new Map();
+
   private initShortcutMap(): void {
     this.shortcutMap.clear();
+
     // 处理 HEADER_MENU 的快捷键
     for (const item of HEADER_MENU) {
       if (item.text) {
         // 将快捷键文本转换成标准格式(如: "ctrl+s")
         const shortcutKey = this.normalizeShortcutKey(item.text);
+
         if (shortcutKey) {
           this.shortcutMap.set(shortcutKey, item);
         }
       }
     }
+
     // 处理当前项目对应的 Header 按钮快捷键（编译、上传等）
     for (const item of this.headerBtns) {
       if (item.text) {
         const shortcutKey = this.normalizeShortcutKey(item.text);
+
         if (shortcutKey) {
           this.shortcutMap.set(shortcutKey, item);
         }
       }
     }
+
     // console.log('已初始化快捷键映射:', Array.from(this.shortcutMap.keys()));
   }
 
@@ -1832,6 +2217,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         if (b === 'ctrl') return 1;
         if (a === 'shift') return -1;
         if (b === 'shift') return 1;
+
         return a.localeCompare(b);
       })
       .join('+');
@@ -1847,6 +2233,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     // 添加主键，忽略修饰键本身
     const key = event.key.toLowerCase();
+
     if (!['control', 'shift', 'alt', 'meta'].includes(key)) {
       parts.push(key);
     }
@@ -1858,22 +2245,28 @@ export class HeaderComponent implements OnInit, OnDestroy {
   */
   listenShortcutKeys() {
     this.initShortcutMap();
+
     window.addEventListener('keydown', (event: KeyboardEvent) => {
       // 处理窗口缩放快捷键（Mac 上 Command 与 Ctrl 等效）
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
         if (event.key === '-' || event.key === '_') {
           event.preventDefault();
           this.zoomOut();
+
           return;
         }
+
         if (event.key === '=' || event.key === '+') {
           event.preventDefault();
           this.zoomIn();
+
           return;
         }
+
         if (event.key === '0') {
           event.preventDefault();
           this.resetZoom();
+
           return;
         }
       }
@@ -1904,16 +2297,19 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   zoomIn() {
     this.currentZoomLevel = Math.min(this.currentZoomLevel + 0.5, 3);
+
     this.setZoomLevel(this.currentZoomLevel);
   }
 
   zoomOut() {
     this.currentZoomLevel = Math.max(this.currentZoomLevel - 0.5, -3);
+
     this.setZoomLevel(this.currentZoomLevel);
   }
 
   resetZoom() {
     this.currentZoomLevel = 0;
+
     this.setZoomLevel(this.currentZoomLevel);
   }
 
@@ -1926,6 +2322,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       const zoomFactor = Math.pow(1.2, level);
       document.body.style.transform = `scale(${zoomFactor})`;
       document.body.style.transformOrigin = 'top left';
+
       if (zoomFactor !== 1) {
         document.body.style.width = `${100 / zoomFactor}%`;
         document.body.style.height = `${100 / zoomFactor}%`;
@@ -1938,17 +2335,22 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   async checkUnsavedChanges(action: 'close' | 'open' | 'new', { quitting = false }: { quitting?: boolean } = {}): Promise<boolean> {
     const path = this.projectService.currentProjectPath;
+
     // Coder activation retains each iframe, including its unsaved editor buffers.
     if (action !== 'close' && this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return true;
     if (this.projectSavingFromUi || this.projectSavingAs || this.projectConflictResolving) return false;
-    const unchanged = this.projectService.captureCurrentProjectGuard();
+
+    const unchanged = this.projectService.captureCurrentProjectGuard(false);
     let checkError: string | undefined;
     let runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
+
     if (runtimeRecovery) {
       try { if (!await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false; }
       catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); return false; }
+
       runtimeRecovery = false;
     }
+
     // 检查项目是否有未保存的更改
     try {
       if (!runtimeRecovery && !await this.projectService.hasUnsavedChanges()) return unchanged();
@@ -1956,21 +2358,28 @@ export class HeaderComponent implements OnInit, OnDestroy {
       if (isProjectSaveConflict(error) && this.projectService.getProjectMode(path) === 'blockly') {
         return (await this.resolveSaveConflictFromUi(path, error)) === true && unchanged();
       }
+
       checkError = (error instanceof Error ? error.message : String(error)) || '编辑器未返回有效保存状态。';
       runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
+
       if (runtimeRecovery) {
         try {
           if (!await this.restoreBlocklyRuntimeFromUi(path, unchanged)) return false;
           if (!await this.projectService.hasUnsavedChanges()) return unchanged();
+
           checkError = undefined;
         } catch (recoveryError) {
           this.message.error(recoveryError instanceof Error ? recoveryError.message : String(recoveryError));
+
           return false;
         }
+
         runtimeRecovery = false;
       }
+
       if (action !== 'close' && !runtimeRecovery && checkError) {
         this.message.error(`无法确认保存状态：${checkError}`);
+
         return false;
       }
     }
@@ -2014,37 +2423,47 @@ export class HeaderComponent implements OnInit, OnDestroy {
         if (!result || !unchanged()) {
           // 用户直接关闭对话框，视为取消操作
           resolve(false);
+
           return;
         }
+
         switch (result.result) {
           case 'save':
             if (checkError) { resolve(false); return; }
+
             // 保存项目并继续
             try {
               if (this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') await this.coderPersistence.saveAllOpenProjects();
               else {
                 resolve(await this.saveProjectFromUi(path) && unchanged());
+
                 return;
               }
+
               resolve(unchanged());
             } catch (error) {
               this.message.error(error instanceof Error ? error.message : String(error));
               resolve(false);
             }
+
             break;
           case 'continue':
             // The picker, project lock or child-window close can still cancel
             // navigation. Only the lifecycle owner may discard dependencies,
             // after the departing Blockly editor has been disposed.
             if (!quitting) { resolve(unchanged()); return; }
+
             try {
               await this.projectService.acknowledgeBlocklyRecoveryDiscard?.(path);
+
               if (!unchanged()) { resolve(false); return; }
             } catch (error) {
               this.message.error(error instanceof Error ? error.message : String(error));
               resolve(false);
+
               return;
             }
+
             try {
               await this.projectService.discardLibraryChangesBeforeQuit();
               resolve(unchanged());
@@ -2054,11 +2473,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
               console.warn('退出时未能恢复全部库依赖：', error);
               resolve(unchanged());
             }
+
             break;
           case 'cancel':
           default:
             // 取消操作
             resolve(false);
+
             break;
         }
       });
@@ -2095,6 +2516,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
 
     const currentCore = this.getCurrentBoardCore();
+
     return app.core.some(core => this.matchesAppCore(core, currentCore));
   }
 
@@ -2104,6 +2526,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private matchesAppCore(appCore: string, currentCore: string) {
     const normalizedAppCore = appCore.toLowerCase();
+
     return currentCore === normalizedAppCore || currentCore.split(':').includes(normalizedAppCore);
   }
 
@@ -2117,27 +2540,33 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   private async startBleScan() {
-    if (!await this.canShowBleOtaPorts()) {
+    if (!(await this.getOtaCapabilities()).ble) {
       if (this.showPortList) {
         this.getDevicePortList(true);
       }
+
       return;
     }
 
     //console.log('[BLE:header] start scan clicked');
     this.getDevicePortList(true);
+
     this.uploaderBleService.beginScan().then((device: BleOtaDeviceItem) => {
       //console.log('[BLE:header] scan selected device', device);
       this.selectBleDevice(device);
+
       if (this.showPortList) {
         this.getDevicePortList(true);
       }
     }).catch(error => {
       const message = error?.message || String(error || '');
+
       console.warn('[BLE:header] scan failed', error);
+
       if (message && !/cancel|cancelled|no device selected|user cancelled/i.test(message)) {
         this.message.warning(message);
       }
+
       if (this.showPortList) {
         this.getDevicePortList(true);
       }
@@ -2149,6 +2578,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     this.blePortListRefreshTimer = setTimeout(() => {
       this.blePortListRefreshTimer = null;
+
       if (this.showPortList) {
         //console.log('[BLE:header] refresh port list after BLE state change');
         this.getDevicePortList(true);
@@ -2158,6 +2588,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private selectBleDevice(device: BleOtaDeviceItem) {
     this.serialService.currentPort = device.id;
+
     this.serialService.currentPortInfo = {
       name: device.id,
       text: device.name,
@@ -2165,18 +2596,21 @@ export class HeaderComponent implements OnInit, OnDestroy {
       icon: 'fa-brands fa-bluetooth-b',
       extra: { deviceId: device.id },
     };
+
     this.closePortList();
   }
 
   private async startNetworkOtaMdnsSearch() {
     if (this.networkOtaScanInProgress) return;
-    if (!await this.canShowNetworkOtaPorts()) {
+
+    if (!(await this.getOtaCapabilities()).network) {
       return;
     }
 
     this.networkOtaScanInProgress = true;
     this.networkOtaScanCancelled = false;
     this.networkOtaDiscoveredTargets = [];
+
     if (this.showPortList) {
       this.getDevicePortList(true);
     }
@@ -2192,6 +2626,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.cmdService.run(searchCmd, null, false, true).subscribe({
           next: (output: CmdOutput) => {
             this.networkOtaScanStreamId = output.streamId;
+
             if (output.data) {
               outputText += output.data;
             }
@@ -2199,11 +2634,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
             if (output.type === 'error') {
               errorText = output.error || this.translate.instant('NETWORK_OTA.SEARCH_FAILED');
               exitCode = 1;
+
               return;
             }
 
             if (isCmdTerminalOutput(output)) {
               exitCode = output.code ?? (output.signal ? 1 : 0);
+
               if (exitCode !== 0 && !errorText) {
                 errorText = output.stderr || output.stdout || this.translate.instant('NETWORK_OTA.SEARCH_FAILED');
               }
@@ -2223,6 +2660,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       }
 
       const discoveredTargets = this.parseNetworkOtaMdnsResult(outputText);
+
       this.networkOtaDiscoveredTargets = discoveredTargets;
 
       if (discoveredTargets.length > 0) {
@@ -2237,6 +2675,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     } finally {
       this.networkOtaScanInProgress = false;
       this.networkOtaScanStreamId = null;
+
       if (this.showPortList) {
         this.getDevicePortList(true);
       }
@@ -2256,10 +2695,12 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     const rawJson = resultLine.slice('[network-ota-mdns:result]'.length).trim();
     let targets: any[] = [];
+
     try {
       targets = JSON.parse(rawJson);
     } catch (error) {
       console.warn('Parse WiFi OTA mDNS result failed:', error);
+
       return [];
     }
 
@@ -2279,100 +2720,229 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private clearPartitionInstallNotice(): void {
     this.partitionInstallSubscription?.unsubscribe();
+
     this.partitionInstallSubscription = undefined;
+
     if (this.partitionInstallMessageId) {
       this.message.remove(this.partitionInstallMessageId);
+
       this.partitionInstallMessageId = undefined;
     }
   }
 
   private async openPartitionManager(): Promise<void> {
     const projectPath = this.projectService.currentProjectPath;
+
     if (!projectPath || this.openingPartitionManager || this.destroyed) return;
+
     this.openingPartitionManager = true;
+
     this.closePortList();
+
     try {
       this.partitionInstallSubscription = this.requiredSubapps.observe('ffs-manager-child').subscribe(state => {
         if (!state.installing || this.partitionInstallMessageId) return;
+
         this.partitionInstallMessageId = this.message.loading(
           '正在安装 ESP32 分区管理器…',
           { nzDuration: 0 },
         ).messageId;
       });
+
       await this.requiredSubapps.ensureInstalled('ffs-manager-child');
+
       // Installation can finish after the user has left the original project/window.
       if (this.destroyed || this.projectService.currentProjectPath !== projectPath) return;
+
       const opened = await this.mainUiAutomation.openChildApp({ toolId: 'ffs-manager-child', mode: 'embedded' });
+
       if (opened['ok'] !== true) {
         throw new Error(String(opened['message'] || '子应用入口不可用'));
       }
     } catch (error) {
       if (!this.destroyed && this.projectService.currentProjectPath === projectPath) {
         const detail = error instanceof Error ? error.message : String(error);
+
         this.message.error(`无法打开 ESP32 分区管理器：${detail}。请再次点击“自定义分区”重试。`, { nzDuration: 6000 });
       }
     } finally {
       this.clearPartitionInstallNotice();
+
       this.openingPartitionManager = false;
     }
   }
 
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
-    if (subItem.disabled) return;
-    const projectPath = this.projectService.currentProjectPath;
-    const boardConfig = this.projectService.currentBoardConfig;
-    // console.log('选择子菜单项:', subItem);
-    if (this.selectDebounceTimer !== null) {
-      clearTimeout(this.selectDebounceTimer);
-    }
+    const content = this.portMenuContent;
+
+    if (!content || this.projectService.isBoardSwitchInProgress || !this.portMenuMatchesContext(content) || subItem.disabled) return;
+
+    const parent = content.boardOptions?.find(row => !row.disabled && row.children?.includes(subItem));
+
+    if (!parent) return;
+
+    const key = parent.key || subItem.key;
+
+    if (!key) return;
+
+    this.clearBoardSettingsResult();
+
+    const choices = content.choices ??= new Map();
+
+    clearTimeout(choices.get(key)?.timer);
+
+    const choice: BoardMenuChoice = { item: subItem };
+
+    choices.set(key, choice);
 
     if (this.isCustomPartitionSubItem(subItem)) {
-      this.selectDebounceTimer = null;
-      if (!subItem.disabled) await this.openPartitionManager();
+      const selected = await this.resolvePortBoardChoice(content, parent, subItem);
+
+      if (choices.get(key) !== choice) return;
+
+      choices.delete(key);
+
+      if (selected && this.boardChoiceIsCurrent(content)) {
+        // Opening the manager doesn't persist the radio check made by the view.
+        content.optionsSnapshot = undefined;
+
+        await this.openPartitionManager();
+      }
+
       return;
     }
 
-    this.selectDebounceTimer = setTimeout(async () => {
-      this.selectDebounceTimer = null;
-      if (this.destroyed || projectPath !== this.projectService.currentProjectPath
-        || boardConfig !== this.projectService.currentBoardConfig) return;
-      try {
-        const coder = this.projectService.isAilyCodeProject(projectPath);
+    choice.timer = setTimeout(() => {
+      const queue = this.boardChoiceQueue ??= new SerialOperationQueue();
 
-        const configChanged = coder
-          ? await this.coderBoardConfig.select(projectPath, subItem)
-          : (await this.projectService.applyBoardConfiguration(subItem)).changed;
-        const shouldRunEffects = shouldRunBoardConfigSelectionEffects(
-          configChanged,
-          subItem,
-        );
-        if (!shouldRunEffects) {
-          return;
-        }
+      void queue.run(async () => {
+        try {
+          if (choices.get(key) !== choice) return;
 
-        if (subItem.extra?.selectAction === 'flash-softdevice') {
-          if (projectPath !== this.projectService.currentProjectPath) return;
-          if (!this.serialService.currentPort) {
-            const messageKey = subItem.extra?.selectPortMessage;
-            this.message.warning(messageKey ? this.translate.instant(messageKey) : 'Please select a port first');
-            return;
+          const selected = await this.resolvePortBoardChoice(content, parent, subItem);
+
+          if (!selected || choices.get(key) !== choice || !this.boardChoiceIsCurrent(content)) return;
+
+          this.applyingBoardChoice = content;
+
+          await this.applyPortBoardChoice(content, selected);
+        } catch (error) {
+          if (this.boardChoiceIsCurrent(content)) {
+            this.clearBoardSettingsResult();
+            this.message.error(error instanceof Error ? error.message : String(error));
           }
-          await this.uploaderService.flashSoftdevice(subItem.data, this.serialService.currentPort);
-          if (coder && configChanged) await this.coderRuntime.build(projectPath, { preprocessOnly: true });
-        }
+        } finally {
+          if (choices.get(key) === choice) choices.delete(key);
 
-        if (configChanged && !coder) {
-          this.builderService.triggerPreprocess('config-changed');
+          if (this.applyingBoardChoice === content) {
+            // Re-read dependent options before dispatching the next choice, even
+            // after a failure. Pending choices retain their optimistic check.
+            const refresh = !this.destroyed && content === this.portMenuContent && this.portMenuMatchesContext(content);
+
+            this.applyingBoardChoice = undefined;
+
+            if (refresh) {
+              content.optionsSnapshot = undefined;
+              content.awaitingSavedOptions = true;
+
+              await this.refreshPortBoardOptions(content);
+            }
+          }
         }
-      } catch (error) {
-        this.message.error(error instanceof Error ? error.message : String(error));
-      } finally {
-        if (!this.destroyed && this.showPortList && projectPath === this.projectService.currentProjectPath) {
-          await this.getDevicePortList(true).catch(error => console.warn('刷新主板配置菜单失败:', error));
+      });
+    }, 500);
+  }
+
+  private boardChoiceIsCurrent(content: PortMenuContent): boolean {
+    return !this.destroyed && !this.projectService.isBoardSwitchInProgress
+      && this.portMenuContent === content && this.portMenuMatchesContext(content);
+  }
+
+  private async resolvePortBoardChoice(content: PortMenuContent, parent: IMenuItem, subItem: IMenuItem): Promise<IMenuItem | undefined> {
+    if (!this.boardChoiceIsCurrent(content)) return;
+
+    if (content.optionsSnapshot && !this.projectService.isBoardConfigMenuSnapshotCurrent(content.optionsSnapshot)) {
+      this.discardBoardMenuSnapshot(content);
+      content.publish?.();
+
+      if (!content.optionsRequest) void this.refreshPortBoardOptions(content);
+    }
+
+    // A displayed snapshot is usable immediately, but an in-flight lookup may
+    // forbid this particular choice. Use the latest row and its current effects.
+    while (this.boardChoiceIsCurrent(content) && content.optionsRequest) await content.optionsRequest;
+
+    if (!this.boardChoiceIsCurrent(content)) return;
+
+    const row = content.boardOptions?.find(item => !item.disabled && (item === parent || !!parent.key && item.key === parent.key));
+
+    return row?.children?.find(child => !child.disabled && child.key === subItem.key && child.data === subItem.data);
+  }
+
+  private clearBoardSettingsMessage(): void {
+    this.clearBoardSettingsProgress();
+    this.clearBoardSettingsResult();
+  }
+
+  private clearBoardSettingsResult(): void {
+    if (this.boardSettingsResultId) this.message.remove(this.boardSettingsResultId);
+
+    this.boardSettingsResultId = undefined;
+  }
+
+  private clearBoardSettingsProgress(): void {
+    if (this.boardSettingsProgressId) this.message.remove(this.boardSettingsProgressId);
+
+    this.boardSettingsProgressId = undefined;
+  }
+
+  private async applyPortBoardChoice(content: PortMenuContent, selected: IMenuItem): Promise<void> {
+    const projectPath = content.project;
+    const coder = this.projectService.isAilyCodeProject(projectPath);
+
+    this.clearBoardSettingsResult();
+
+    const progress = this.message.loading(
+      this.translate.instant('PROJECT.APPLYING_BOARD_SETTINGS'), { nzDuration: 0 },
+    );
+
+    this.boardSettingsProgressId = progress.messageId;
+    let changed = false;
+
+    try {
+      changed = coder ? await this.coderBoardConfig.select(projectPath, selected)
+        : (await this.projectService.applyBoardConfiguration(selected)).changed;
+    } finally {
+      if (this.boardSettingsProgressId === progress.messageId) {
+        this.clearBoardSettingsProgress();
+
+        if (changed && this.boardChoiceIsCurrent(content)) {
+          this.boardSettingsResultId = this.message.success(
+            this.translate.instant('PROJECT.BOARD_SETTINGS_APPLIED'), { nzDuration: 4000, nzAnimate: false },
+          ).messageId;
         }
       }
-    }, 500);
+    }
+
+    if (!this.boardChoiceIsCurrent(content) || !shouldRunBoardConfigSelectionEffects(changed, selected)) return;
+
+    if (selected.extra?.selectAction === 'flash-softdevice') {
+      if (!this.serialService.currentPort) {
+        const messageKey = selected.extra?.selectPortMessage;
+
+        this.message.warning(messageKey ? this.translate.instant(messageKey) : 'Please select a port first');
+
+        return;
+      }
+
+      await this.uploaderService.flashSoftdevice(selected.data, this.serialService.currentPort);
+
+      if (!this.boardChoiceIsCurrent(content)) return;
+      if (coder && changed) await this.coderRuntime.build(projectPath, { preprocessOnly: true });
+    }
+
+    if (changed && !coder) this.builderService.triggerPreprocess('config-changed');
   }
 
   showUser = false;
@@ -2381,11 +2951,12 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.showUser = false;
   }
 
-
   portListPosition = { x: 40, y: 40 };
+
   calculatePortListPosition(event: MouseEvent) {
     const target = event.target as HTMLElement;
     const rect = target.getBoundingClientRect();
+
     // 计算端口列表的位置，使其显示在点击元素的下方
     this.portListPosition = {
       x: rect.left + 2,
@@ -2413,7 +2984,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   openConnectorSettingDialog(settings?: Partial<LinuxBoardSshSettings>): void {
     if (!this.supportsLinuxBoardConnector('ssh')) return;
+
     this.closePortList();
+
     this.modal.create({
       nzTitle: null,
       nzFooter: null,
@@ -2430,10 +3003,12 @@ export class HeaderComponent implements OnInit, OnDestroy {
     if (button.action === 'play' && this.connectorState.running) {
       return this.translate.instant('MENU.STOP');
     }
+
     // Python/Linux 的构建产物是源码，因此将 Arduino 的“编译”按钮文案改为“生成”。
     if (this.isLinuxBoardProject && button.action === 'compile') {
       return '生成';
     }
+
     return this.translate.instant(button.name || '');
   }
 

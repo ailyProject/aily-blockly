@@ -21,6 +21,7 @@ export class NotificationComponent {
   isClosable = true;
 
   willClose = false;
+  animateEntrance = true;
 
   progressValue = 0; // 显示的当前进度值
   targetProgress = 0; // 目标进度值
@@ -48,6 +49,8 @@ export class NotificationComponent {
   private showNotice(data: NoticeOptions): void {
     if (this.closeTimer) clearTimeout(this.closeTimer);
     this.closeTimer = undefined;
+    if (!this.data || this.willClose) this.animateEntrance = true;
+    if (data?.preparationId) this.animateEntrance = false;
     this.willClose = false;
 
     const closable = data ? (data.closable ?? data.state !== 'doing') : true;

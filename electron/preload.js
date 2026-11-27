@@ -5,7 +5,7 @@ const { SerialPort } = require("serialport");
 const { createThrottledSerialPort, createRawSerialPort, listPorts } = require("./serial");
 const { exec } = require("child_process");
 const { createHash, randomUUID } = require("crypto");
-const { existsSync, statSync, createReadStream } = require("fs");
+const { existsSync, statSync, createReadStream, realpathSync } = require("fs");
 const { createInterface } = require("readline");
 const { isAbsolute } = require("path");
 const { tmpdir } = require("os");
@@ -13,13 +13,15 @@ const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { createNotificationApi } = require('./notification-preload');
+const { SDK_TOOLCHAIN_UNSUPPORTED } = require('./cloud-build/ci-resource-contract');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
-const { storageExecutor } = require('./project-file-lock-owner');
+const { rootAttachment, storageExecutor } = require('./project-file-lock-owner');
 const { selectProjectWorkspaceModeBridge } = require('./project-workspace-mode');
-const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
+const { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, canReuseCoderUpload, inspectBlocklyCompileProof, GENERATED_SOURCE_ARCHIVE_VERSION,
-    prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
+    prepareBuildExecution, requiresIsolatedBuildRecovery, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildExecutionInWorker, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution,
+    sharedBuildExecutionVersion, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 const saveIdentities = require('./project-save-identities').createProjectSaveIdentities(process.env.AILY_APPDATA_PATH);
 
@@ -78,7 +80,12 @@ async function invokeCloudBuild(payload) {
       name: 'CloudBuildError',
       message: envelope?.error?.message || 'Cloud build failed.',
       code: envelope?.error?.code || 'CLOUD_BUILD_ERROR',
+      ...(Number.isInteger(envelope?.error?.httpStatus) ? { httpStatus: envelope.error.httpStatus } : {}),
+      ...(envelope?.error?.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}),
+      ...(envelope?.error?.remoteCleanupConfirmed === false ? { remoteCleanupConfirmed: false } : {}),
       ...(envelope?.error?.sourceReason ? { sourceReason: envelope.error.sourceReason } : {}),
+      ...(envelope?.error?.code === 'CI_RESOURCE_UNSUPPORTED' && envelope.error.ciResourceReason === SDK_TOOLCHAIN_UNSUPPORTED
+        ? { ciResourceReason: SDK_TOOLCHAIN_UNSUPPORTED } : {}),
       ...(envelope?.error?.buildSnapshot ? { buildSnapshot: envelope.error.buildSnapshot } : {}),
       ...(typeof envelope?.error?.logComplete === 'boolean' ? { logComplete: envelope.error.logComplete } : {}),
     };
@@ -474,12 +481,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
     tryAcquire: (projectPath, options) =>
       ipcRenderer.invoke("project-lock-try", {
         projectPath,
-        force: options && options.force,
+        provisional: options?.provisional === true,
+        auxiliary: options?.auxiliary === true,
       }),
-    release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
-    recordActive: (projectPath) => ipcRenderer.invoke('project-navigation-active', projectPath),
-    clearActive: (projectPath) => ipcRenderer.invoke('project-navigation-clear', projectPath),
-    focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
+    release: (projectPath, viewToken) => ipcRenderer.invoke("project-lock-release", { projectPath, viewToken }),
+    navigate: (action, reservation, options) => ipcRenderer.invoke('project-view-navigation', {
+      ...reservation, action, pendingOnly: options?.pendingOnly,
+    }),
+    checkStartupRestore: (projectPath, ticket) => ipcRenderer.invoke('project-navigation-startup-check', projectPath, ticket),
+    cancelStartupRestore: () => ipcRenderer.send('project-navigation-startup-cancel'),
+    recordActive: (projectPath, startupTicket) => ipcRenderer.invoke('project-navigation-active', projectPath, startupTicket),
+    recordCreatedActive: (proof) => ipcRenderer.invoke('project-navigation-created-active', proof),
+    recordNavigation: (proof) => ipcRenderer.invoke('project-navigation-record-original', proof),
+    canReopenNavigation: (proof, project) => ipcRenderer.invoke('project-navigation-can-reopen', { proof, project }),
+    closedNavigationSession: () => ipcRenderer.invoke('project-navigation-closed-session'),
+    clearActive: (projectPath, options) => ipcRenderer.invoke('project-navigation-clear', projectPath, options),
+    focusProcess: (projectPath, viewToken) => ipcRenderer.invoke("project-lock-focus", { projectPath, viewToken }),
   },
   subWindow: (() => {
     // 立即监听 window-init-data，缓存数据，避免 Angular 组件注册监听前数据丢失
@@ -584,6 +601,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     diagnostics: () => ipcRenderer.invoke('subapp-manager-diagnostics'),
     prepareLaunch: (options) => ipcRenderer.invoke("subapp-manager-prepare-launch", options),
     finishLaunch: (token) => ipcRenderer.invoke("subapp-manager-finish-launch", token),
+    verifyBlocklyChat: (options) => ipcRenderer.invoke("subapp-manager-verify-blockly-chat", options),
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
     install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
     reinstall: (options) => ipcRenderer.invoke("subapp-manager-reinstall", options),
@@ -621,9 +639,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     canReuseCoderUpload,
     inspectBlocklyCompileProof,
     isolatedBuildExecutionVersion: ISOLATED_BUILD_EXECUTION_VERSION,
+    ...(sharedBuildExecutionVersion === 1 ? {
+      sharedBuildExecutionVersion,
+      clearSharedBuildCache: (projectPath, options) => ipcRenderer.invoke('clear-shared-blockly-build', projectPath, options),
+      readSharedBuildFirmware: (execution, filename) => new Uint8Array(
+        require(require('./child-script-path').childScriptPath('shared-build-firmware.js')).readSharedBuildFirmware(execution, filename)),
+    } : {}),
     prepareBuildExecution,
+    requiresIsolatedBuildRecovery,
     abandonPreparedPreprocess,
     resolveBuildExecution,
+    resolveBuildExecutionInWorker,
     resolveBuildProjectPath,
     inspectBuildExecution,
     cancelBuildExecution,
@@ -642,6 +668,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     completeCIToolPreparation: options => invokeCloudBuild({ ...options, action: 'completeCIToolPreparation' }),
     run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
     cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
+    hasArtifact: options => invokeCloudBuild({ ...options, action: 'hasArtifact' }),
+    hasUploadCandidate: options => invokeCloudBuild({ ...options, action: 'hasUploadCandidate' }),
     artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
     artifactUploadInfo: options => invokeCloudBuild({ ...options, action: 'artifactUploadInfo' }),
     prepareArtifactUpload: options => invokeCloudBuild({ ...options, action: 'prepareArtifactUpload' }),
@@ -681,6 +709,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   uploader: {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
+    manualReceipt: (input) => ipcRenderer.invoke('project-manual-upload-receipt', input),
   },
   fs: {
     projectRecoveryReceipts: recoveryReceipts,
@@ -696,6 +725,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
     nativeSaveReceiptVersion: 2,
     projectProgramPublicationVersion: 1,
+    captureProjectAttachment: (projectPath) => rootAttachment(realpathSync.native(projectPath)),
     openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
     selectProjectWorkspaceMode: (projectPath, input, assertCurrent) => selectProjectWorkspaceModeBridge(projectPath, input, assertCurrent),
     projectCopySourceVersion: 1,
@@ -740,6 +770,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
     copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
     copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
+    copyCoderTemplateDirectory: (src, dest) => copyCoderTemplateDirectory(src, dest),
     copyRecoveryProjectDirectory: (src, dest) => copyRecoveryProjectDirectory(src, dest),
     importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
     blocklyCoderConversionVersion: 2,

@@ -111,15 +111,20 @@ async function fingerprintNodeGroups(groups: readonly (readonly AbsSyntaxEntry[]
   const waves: Work[][] = [], trees: Work[][] = [];
   // Capture traversal/dependencies synchronously. Children and next links must
   // finish before their parent; unrelated subtrees do not need serial awaits.
-  for (const entries of groups.map(entries => [...entries])) {
-    const paths = new Map<string, Work>(), tree: Work[] = [];
+  for (const entries of groups) {
+    const byNode = new Map<AbsSyntaxNode, Work>(), tree: Work[] = [];
     for (let index = entries.length - 1; index >= 0; index--) {
-      const entry = entries[index], { path, node } = entry;
-      const inputs: Work['inputs'] = Object.keys(node.inputs).sort().map(name => [name, paths.get(absInputPath(path, name))]);
-      const next = paths.get(`${path}/next`);
+      const entry = entries[index], node = entry.node;
+      // The parsed tree already owns its edges. Hashing the full parent path
+      // again for every dependency is costly on long statement chains.
+      const inputs: Work['inputs'] = Object.keys(node.inputs).sort().map(name => {
+        const child = node.inputs[name];
+        return [name, child ? byNode.get(child) : undefined];
+      });
+      const next = node.next && byNode.get(node.next);
       const level = 1 + inputs.reduce((depth, [, child]) => Math.max(depth, child?.level ?? -1), next?.level ?? -1);
       const work: Work = { entry, inputs, next, level };
-      paths.set(path, work); tree.push(work); (waves[level] ??= []).push(work);
+      byNode.set(node, work); tree.push(work); (waves[level] ??= []).push(work);
     }
     trees.push(tree);
   }
@@ -151,7 +156,8 @@ async function fingerprintNodeGroups(groups: readonly (readonly AbsSyntaxEntry[]
 
 /** Resource preparation and full-project page composition belong to the caller. */
 export async function createAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjectionContext): Promise<AbsProjection> {
-  return buildAbsProjection(workspace, context, ABS_PROJECTION_VERSION);
+  const functions = Object.values(context.contracts?.procedures ?? {}).some(contract => contract.family === 'custom-functions-v1');
+  return buildAbsProjection(workspace, context, functions ? ABS_PROJECTION_VERSION : 'abs-v2.preview.8');
 }
 
 /** Verify an immutable complete snapshot using its original state encoding.
@@ -159,8 +165,8 @@ export async function createAbsProjection(workspace: AbsAbiWorkspace, context: A
 export function reconstructAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjectionContext, source: string): Promise<AbsProjection> {
   const state = splitAbsState(source).state;
   const version = state === null ? undefined : JSON.parse(state).version;
-  if (![1, 2].includes(version)) throw new AbsSyncError('ABS_STATE_INVALID', 'Unsupported complete snapshot encoding.');
-  return buildAbsProjection(workspace, context, version === 1 ? 'abs-v2.preview.7' : ABS_PROJECTION_VERSION);
+  if (![1, 2, 3].includes(version)) throw new AbsSyncError('ABS_STATE_INVALID', 'Unsupported complete snapshot encoding.');
+  return buildAbsProjection(workspace, context, version === 1 ? 'abs-v2.preview.7' : version === 2 ? 'abs-v2.preview.8' : ABS_PROJECTION_VERSION);
 }
 
 /** Historical rendering is available for verification only, never as an export API. */
@@ -183,9 +189,9 @@ async function buildAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjec
     if (group) group.push(reference); else procedureReferences.set(reference.blockId, [reference]);
   }
   const previous = projectionVersion === 'abs-v2.preview.3';
-  const completeState = [ABS_PROJECTION_VERSION, 'abs-v2.preview.7'].includes(projectionVersion);
+  const completeState = [ABS_PROJECTION_VERSION, 'abs-v2.preview.8', 'abs-v2.preview.7'].includes(projectionVersion);
   const { abs: program, blockAtPath, symbolAtPath } = renderAbs(snapshot, contracts, symbols, projectionVersion);
-  const abs = completeState ? await encodeAbsState(program, document, blockAtPath, contracts, snapshot, projectionVersion === 'abs-v2.preview.7') : program;
+  const abs = completeState ? await encodeAbsState(program, document, blockAtPath, contracts, snapshot, projectionVersion === 'abs-v2.preview.7' ? 1 : projectionVersion === 'abs-v2.preview.8' ? 2 : 3) : program;
   const entries = indexAbsSyntax(parseAbsSyntax(abs, previous ? {} : absSyntaxOptions(snapshot, contracts)));
   const fingerprints = await fingerprintAbsNodes(entries);
   const [baseAbiHash, pageAbiHash, baseAbsHash, contractsHash] = await Promise.all([
@@ -213,16 +219,20 @@ async function buildAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjec
   };
 }
 
+export function supportsAbsProjectionForEditing(version: string): boolean {
+  return [ABS_PROJECTION_VERSION, 'abs-v2.preview.8', 'abs-v2.preview.7'].includes(version);
+}
+
 /** A sidecar is only an index. Recompute its associations from the retained host snapshot. */
 export function assertCurrentAbsProjection(baseline: AbsProjection): void {
-  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.7'].includes(baseline.map.projectionVersion)) {
+  if (!supportsAbsProjectionForEditing(baseline.map.projectionVersion)) {
     throw new AbsSyncError('ABS_PROJECTION_UPGRADE_REQUIRED', 'Inspect and explicitly re-export this previous projection; never apply it with new syntax offsets.');
   }
 }
 
 export async function validateAbsProjection(baseline: AbsProjection, allowPreviousForRecovery = false): Promise<void> {
   const version = baseline.map.projectionVersion;
-  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.3', 'abs-v2.preview.4', 'abs-v2.preview.5', 'abs-v2.preview.6', 'abs-v2.preview.7'].includes(version)) {
+  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.8', 'abs-v2.preview.3', 'abs-v2.preview.4', 'abs-v2.preview.5', 'abs-v2.preview.6', 'abs-v2.preview.7'].includes(version)) {
     throw new AbsSyncError('ABS_PROJECTION_UNSUPPORTED', 'Unsupported immutable projection version.');
   }
   if (!allowPreviousForRecovery) assertCurrentAbsProjection(baseline);

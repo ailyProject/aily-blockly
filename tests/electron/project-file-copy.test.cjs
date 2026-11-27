@@ -4,7 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { test, after } = require('node:test');
-const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
+const { copyProjectDirectory, copyCoderTemplateDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
 const roots = [];
 const directory = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-project-copy-')); roots.push(root); return root; };
 
@@ -73,15 +73,18 @@ after(() => { for (const root of roots) {
 test('project copies exclude writer/lifecycle transient files and preserve recovery/resource data', () => {
   const source = directory(); const target = directory();
   const id = '12345678-1234-1234-1234-123456789abc';
-  const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
+  const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', '.aily/project-view.guard',
+    `.aily/.project-open.lock.${id}.tmp`, `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
     `.project.abs.map.json.${id}.tmp`, `.project-data-backup.${id}.tmp`, `.abs-sync-${id}.tmp`,
     `.aily/abs-sync/.abs-sync-${id}.tmp`, `.aily/abs-sync/baselines/.abs-sync-${id}.tmp`,
-    '.aily/build-executions/run/project/node_modules/dependency.c'];
+    `.aily/.project-files.write.lock.${id}.tmp`, '.aily/build-executions/run/project/node_modules/dependency.c',
+    '.aily/cloud-build/.build/cloud/job/firmware.bin'];
   const included = ['project.abi', 'project.abs', 'project.abs.map.json', 'project.abi.pre-project-data.bak', 'user.tmp',
     '.aily/abs-sync/recovery.json', '.aily/abs-sync/prepared.json', '.aily/abs-sync/baselines/g1.json',
     '.aily/abs-sync/user.tmp', `nested/.abs-sync-${id}.tmp`, '.aily/project-data-backups/original.abi', 'assets/project-data/ab/resource.bin',
     'src/user.lock', 'nested/.aily/project-files.write.lock', 'nested/.aily/project-open.lock',
-    'nested/.aily/build-executions/data.txt', `.project.abi.${'a'.repeat(36)}.tmp`];
+    'nested/.aily/build-executions/data.txt', `.project.abi.${'a'.repeat(36)}.tmp`,
+    `.aily/.project-files.write.lock.${'a'.repeat(36)}.tmp`, `nested/.aily/.project-files.write.lock.${id}.tmp`];
   for (const file of [...excluded, ...included]) {
     const full = path.join(source, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
   }
@@ -103,6 +106,218 @@ test('save-as copies exclude root runtime directories without filtering nested p
     assert.equal(fs.readFileSync(path.join(source, file), 'utf8'), file);
   }
   for (const file of included) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
+});
+
+test('Coder template copies preserve the project skeleton and leave entry selection to the creator', () => {
+  const source = directory(); const target = directory();
+  const included = ['sketch/src/main.ino', 'sketch/src/helper.h', 'sketch/libraries/Extra/library.properties', 'assets/greeting.txt', 'README.md'];
+  const excluded = ['package.json', 'project.aci', '.build/firmware.bin', '.aily/project-open.lock'];
+  for (const file of [...included, ...excluded]) {
+    const full = path.join(source, file);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, file);
+  }
+
+  copyCoderTemplateDirectory(source, target);
+
+  for (const file of included) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
+  for (const file of excluded) assert.equal(fs.existsSync(path.join(target, file)), false);
+});
+
+for (const method of ['save-as', 'folder-import', 'wrapped-archive-import']) {
+  test(`Coder ${method} retains the old History and mode in an inactive archive`, () => {
+    const origin = directory(), parent = directory(), target = path.join(parent, 'independent copy');
+    const source = method === 'wrapped-archive-import' ? path.join(origin, 'project-wrapper') : origin;
+    const inherited = {
+      '.workspace-history/workspace.json': '{"executionMigration":{"phase":"prepared"}}\n',
+      '.workspace-history/overlays/turn.json': 'copied writer',
+      '.workspace-history/objects/source.bin': Buffer.from([0, 13, 255, 64]),
+      ...(method === 'wrapped-archive-import' ? {} : { '.aily/workspace-mode.json': '{"version":1,"mode":"project-v1"}\n' }),
+    };
+    const ordinary = {
+      'package.json': method === 'folder-import' ? '{"name":"legacy"}' : '{"type":"coder"}',
+      'project.aci': '',
+      'sketch/src/main.cpp': 'int value = 1;\n',
+      '.aily/history-recovery/older/.workspace-history/workspace.json': 'older archive',
+      '.aily/coder-embed-hints.json': '{}',
+    };
+    for (const [name, bytes] of Object.entries({ ...inherited, ...ordinary })) {
+      fs.mkdirSync(path.dirname(path.join(source, name)), { recursive: true });
+      fs.writeFileSync(path.join(source, name), bytes);
+    }
+    if (method === 'save-as') {
+      fs.mkdirSync(target);
+      copyProjectDirectory(source, target);
+    } else assert.equal(importProjectDirectory(origin, target, method === 'wrapped-archive-import'), target);
+
+    const recovery = path.join(target, '.aily/history-recovery');
+    const archives = fs.readdirSync(recovery).filter(name => name !== 'older');
+    assert.equal(archives.length, 1);
+    for (const [name, bytes] of Object.entries(inherited)) {
+      const archivedName = name.startsWith('.aily/') ? path.basename(name) : name;
+      assert.equal(fs.existsSync(path.join(target, name)), false, name);
+      const expected = Buffer.from(bytes);
+      assert.deepEqual(fs.readFileSync(path.join(recovery, archives[0], archivedName)), expected);
+      assert.deepEqual(fs.readFileSync(path.join(source, name)), expected);
+    }
+    for (const [name, text] of Object.entries(ordinary)) {
+      assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), text);
+    }
+  });
+}
+
+test('a clean Coder cloud import opens without synthesizing archived History', () => {
+  const source = directory(), parent = directory(), target = path.join(parent, 'clean import');
+  fs.writeFileSync(path.join(source, 'package.json'), '{"type":"coder"}');
+  fs.writeFileSync(path.join(source, 'project.aci'), '');
+  fs.mkdirSync(path.join(source, 'sketch/src'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'sketch/src/main.cpp'), 'int value = 1;');
+  importProjectDirectory(source, target, true);
+  assert.equal(fs.existsSync(path.join(target, '.workspace-history')), false);
+  assert.equal(fs.existsSync(path.join(target, '.aily')), false);
+  assert.equal(fs.readFileSync(path.join(target, 'sketch/src/main.cpp'), 'utf8'), 'int value = 1;');
+});
+
+for (const wrapped of [false, true]) {
+  test(`Blockly ${wrapped ? 'wrapped cloud archive' : 'local directory'} import preserves drafts and drops source write authority`, () => {
+    const origin = directory(), parent = directory(), target = path.join(parent, 'independent copy');
+    const source = wrapped ? path.join(origin, 'project-wrapper') : origin;
+    const inherited = {
+      '.workspace-history/workspace.json': '{"executionMigration":{"phase":"prepared"}}\n',
+      '.workspace-history/native-history/overlays/turn.json': 'copied active writer',
+      '.aily/workspace-mode.json': '{"version":1,"mode":"project-v1"}\n',
+      '.aily/abs-sync/committed.json': 'old accepted generation',
+      '.aily/abs-sync/prepared.json': 'interrupted accepted generation',
+      '.aily/abs-sync/operation.json': 'old native operation',
+      'project.abs.map.json': 'old scope and identity map',
+      'project.abs': Buffer.from([0x23, 0x20, 0x0d, 0x0a, 0xff, 0x0a]),
+    };
+    const ordinary = {
+      'package.json': '{"name":"old-blockly"}',
+      'project.abi': '{"blocks":{"blocks":[]}}',
+      '.aily/history-recovery/older/project.abs': 'older archive',
+      '.aily/project-data-backups/old.abi': 'existing recovery resource',
+      'assets/project-data/ff/resource.bin': 'referenced project data',
+    };
+    for (const [name, contents] of Object.entries({ ...inherited, ...ordinary })) {
+      const file = path.join(source, name);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, contents);
+    }
+    importProjectDirectory(origin, target, wrapped);
+    const recovery = path.join(target, '.aily/history-recovery');
+    const [archive] = fs.readdirSync(recovery).filter(name => name.startsWith('copy-'));
+    assert.ok(archive);
+    for (const [name, contents] of Object.entries(inherited)) {
+      assert.ok(!fs.existsSync(path.join(target, name)), name);
+      const archivedName = name.startsWith('.aily/') ? name.slice('.aily/'.length) : name;
+      const expected = Buffer.from(contents);
+      assert.deepEqual(fs.readFileSync(path.join(recovery, archive, archivedName)), expected);
+      assert.deepEqual(fs.readFileSync(path.join(source, name)), expected);
+    }
+    for (const [name, contents] of Object.entries(ordinary)) {
+      assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), contents);
+      assert.equal(fs.readFileSync(path.join(source, name), 'utf8'), contents);
+    }
+  });
+}
+
+test('an ABS-only Blockly import preserves its public source despite a leftover Coder launcher', () => {
+  const source = directory(), parent = directory(), target = path.join(parent, 'blockly import');
+  fs.writeFileSync(path.join(source, 'package.json'), '{"name":"blockly"}');
+  fs.writeFileSync(path.join(source, 'project.abs'), '\n# @project-state:{}\n');
+  fs.writeFileSync(path.join(source, 'project.aci'), 'old launcher');
+  fs.mkdirSync(path.join(source, '.workspace-history'));
+  fs.writeFileSync(path.join(source, '.workspace-history/workspace.json'), 'old Blockly state');
+  importProjectDirectory(source, target, true);
+  const recovery = path.join(target, '.aily/history-recovery');
+  const [archive] = fs.readdirSync(recovery);
+  assert.ok(!fs.existsSync(path.join(target, '.workspace-history')));
+  assert.equal(fs.readFileSync(path.join(target, 'project.abs'), 'utf8'), '\n# @project-state:{}\n');
+  assert.equal(fs.readFileSync(path.join(recovery, archive, '.workspace-history/workspace.json'), 'utf8'), 'old Blockly state');
+  assert.equal(fs.readFileSync(path.join(source, '.workspace-history/workspace.json'), 'utf8'), 'old Blockly state');
+});
+
+test('Blockly imports with complete ABS retain a damaged ABI and map outside active recovery paths', () => {
+  const source = directory(), parent = directory(), target = path.join(parent, 'blockly import');
+  const projectAbs = '# ABS Schema: 2\n# @project-state:{"version":1}\n';
+  for (const [name, contents] of Object.entries({
+    'package.json': '{"name":"blockly"}', 'project.abs': projectAbs,
+    'project.abi': 'damaged ABI', 'project.abs.map.json': 'old map',
+    '.workspace-history/native-history.selected': '1\n',
+  })) {
+    const file = path.join(source, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, contents);
+  }
+  importProjectDirectory(source, target);
+  const recovery = path.join(target, '.aily/history-recovery');
+  const [archive] = fs.readdirSync(recovery);
+  assert.equal(fs.readFileSync(path.join(target, 'project.abs'), 'utf8'), projectAbs);
+  for (const [name, contents] of Object.entries({ 'project.abi': 'damaged ABI', 'project.abs.map.json': 'old map' })) {
+    assert.equal(fs.existsSync(path.join(target, name)), false);
+    assert.equal(fs.readFileSync(path.join(recovery, archive, name), 'utf8'), contents);
+    assert.equal(fs.readFileSync(path.join(source, name), 'utf8'), contents);
+  }
+});
+
+test('Blockly imports with no inherited History retain their existing ABS source and do not invent archives', () => {
+  const source = directory(), parent = directory(), target = path.join(parent, 'ordinary import');
+  for (const [name, contents] of Object.entries({
+    'package.json': '{"name":"blockly"}',
+    'project.abi': '{"blocks":{}}',
+    'project.abs': 'ordinary source',
+    'project.abs.map.json': 'ordinary map',
+  })) fs.writeFileSync(path.join(source, name), contents);
+  importProjectDirectory(source, target);
+  assert.equal(fs.existsSync(path.join(target, '.aily')), false);
+  assert.equal(fs.readFileSync(path.join(target, 'project.abs'), 'utf8'), 'ordinary source');
+  assert.equal(fs.readFileSync(path.join(target, 'project.abs.map.json'), 'utf8'), 'ordinary map');
+});
+
+test('read-only Blockly archive metadata can become writable in the fresh copy', { skip: process.platform === 'win32' }, () => {
+  const source = directory(), parent = directory(), target = path.join(parent, 'fresh target');
+  const legacy = path.join(source, '.aily/history-recovery');
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.mkdirSync(path.join(source, '.workspace-history'));
+  fs.writeFileSync(path.join(source, 'package.json'), '{}');
+  fs.writeFileSync(path.join(source, 'project.abi'), '{"blocks":{}}');
+  fs.writeFileSync(path.join(source, '.workspace-history/workspace.json'), 'old history');
+  fs.chmodSync(legacy, 0o555);
+  fs.chmodSync(path.dirname(legacy), 0o555);
+  try {
+    importProjectDirectory(source, target, true);
+    const fresh = path.join(target, '.aily/history-recovery');
+    const [archive] = fs.readdirSync(fresh);
+    assert.equal(fs.readFileSync(path.join(fresh, archive, '.workspace-history/workspace.json'), 'utf8'), 'old history');
+    for (const name of ['.aily', '.aily/history-recovery']) {
+      assert.equal(fs.lstatSync(path.join(source, name)).mode & 0o777, 0o555);
+      assert.equal(fs.lstatSync(path.join(target, name)).mode & 0o777, 0o755);
+    }
+  } finally {
+    fs.chmodSync(path.dirname(legacy), 0o755);
+    fs.chmodSync(legacy, 0o755);
+  }
+});
+
+test('Coder import rejects a linked History root without touching its target', () => {
+  const source = directory(), parent = directory(), external = directory();
+  fs.writeFileSync(path.join(source, 'package.json'), '{"type":"coder"}');
+  fs.writeFileSync(path.join(external, 'workspace.json'), 'untouched');
+  fs.symlinkSync(external, path.join(source, '.workspace-history'), process.platform === 'win32' ? 'junction' : 'dir');
+  const target = path.join(parent, 'copy');
+  assert.throws(() => importProjectDirectory(source, target), /History metadata.*symbolic link/);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.readFileSync(path.join(external, 'workspace.json'), 'utf8'), 'untouched');
+});
+
+test('Coder template copies reject linked directories before following them for entry creation', () => {
+  const source = directory(); const target = directory(); const external = directory();
+  fs.writeFileSync(path.join(external, 'original.ino'), 'external source');
+  fs.symlinkSync(external, path.join(source, 'sketch'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => copyCoderTemplateDirectory(source, target), /symbolic links/);
+  assert.deepEqual(fs.readdirSync(target), []);
+  assert.equal(fs.readFileSync(path.join(external, 'original.ino'), 'utf8'), 'external source');
 });
 
 test('save-as skips history junctions when Electron cannot create symbolic links', t => {
@@ -186,6 +401,17 @@ test('imports reject collisions, ambiguous archives, missing packages and descen
   const missing = path.join(parent, 'missing');
   assert.throws(() => importProjectDirectory(archive, missing, true)); assert.equal(fs.existsSync(missing), false);
   assert.throws(() => importProjectDirectory(archive, missing)); assert.equal(fs.existsSync(missing), false);
+});
+
+test('failed copies remove only the fresh import directory', () => {
+  const source = directory(); const parent = directory(); const target = path.join(parent, 'target');
+  const other = path.join(parent, 'other'); fs.mkdirSync(other); fs.writeFileSync(path.join(other, 'keep'), 'keep');
+  fs.writeFileSync(path.join(source, 'package.json'), '{}');
+  fs.symlinkSync(other, path.join(source, '.aily'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => importProjectDirectory(source, target), /metadata/);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.readFileSync(path.join(other, 'keep'), 'utf8'), 'keep');
+  assert.equal(fs.lstatSync(path.join(source, '.aily')).isSymbolicLink(), true);
 });
 
 test('imports create missing parents only after validating the source and resolved destination', () => {

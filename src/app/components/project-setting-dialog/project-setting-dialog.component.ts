@@ -7,11 +7,15 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { BaseDialogComponent, DialogButton } from '../base-dialog/base-dialog.component';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import { publishProjectText } from '@core/platform/public-api';
 import {
+  AILY_CLOUD_IGNORE_FILE,
   isValidProjectPackageName,
   normalizeProjectPackageName,
   ProjectService,
 } from '@domain/project/public-api';
+
+const LEGACY_CLOUD_IGNORE_COMMENT = /^# 云同步忽略规则，语法与 \.gitignore 相同。(?:\r?\n|$)/;
 
 interface ProjectSettings {
   name: string;
@@ -51,6 +55,11 @@ export class ProjectSettingDialogComponent {
 
   // 提交状态
   isSubmitting: boolean = false;
+  syncRules = '';
+  syncRulesReady = false;
+  private originalSyncRules: string | null = null;
+  private settingsProject?: { path: string; assertCurrent(): void };
+  private destroyed = false;
 
   // 配置对话框按钮
   get buttons(): DialogButton[] {
@@ -63,7 +72,8 @@ export class ProjectSettingDialogComponent {
       {
         text: 'PROJECT_SETTING_DIALOG.SAVE',
         type: 'primary',
-        action: 'save'
+        action: 'save',
+        disabled: !this.settingsProject || this.isSubmitting,
       }
     ];
   }
@@ -78,10 +88,26 @@ export class ProjectSettingDialogComponent {
     await this.loadProjectSettings();
   }
 
+  ngOnDestroy(): void {
+    this.destroyed = true;
+  }
+
   // 加载项目设置
   async loadProjectSettings(): Promise<void> {
     try {
-      const packageJson = await this.projectService.getPackageJson();
+      const path = this.projectService.currentProjectPath;
+      if (!path) return;
+      const fs = window['fs'];
+      const guard = this.projectService.captureCurrentProjectGuard();
+      const attachment = () => JSON.stringify(fs.captureProjectAttachment(path));
+      const originalAttachment = attachment();
+      const assertCurrent = () => {
+        if (this.destroyed || !guard() || this.projectService.currentProjectPath !== path || attachment() !== originalAttachment) {
+          throw new Error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_PROJECT_CHANGED'));
+        }
+      };
+      const packageJson = await this.projectService.getPackageJson(path);
+      assertCurrent();
       
       if (packageJson) {
         // 保留所有原始属性,只更新我们需要编辑的字段
@@ -99,10 +125,23 @@ export class ProjectSettingDialogComponent {
             : originalName || packageName,
           doc_url: packageJson.doc_url || '',
         };
+        this.settingsProject = { path, assertCurrent };
+        try {
+          const rulesFile = window['path'].join(path, AILY_CLOUD_IGNORE_FILE);
+          if (fs.existsSync(rulesFile)) {
+            if (!fs.lstatSync(rulesFile)._isFile) throw new Error(`${AILY_CLOUD_IGNORE_FILE} must be a regular file`);
+            this.originalSyncRules = fs.readFileSync(rulesFile, 'utf8');
+          }
+          this.syncRules = (this.originalSyncRules ?? '').replace(LEGACY_CLOUD_IGNORE_COMMENT, '');
+          this.syncRulesReady = true;
+        } catch (error) {
+          console.error('读取同步规则失败:', error);
+          this.message.error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_SYNC_RULES_LOAD'));
+        }
       }
     } catch (error) {
       console.error('加载项目设置失败:', error);
-      this.message.error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_LOAD_FAILED'));
+      if (!this.destroyed) this.message.error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_LOAD_FAILED'));
     }
   }
 
@@ -120,6 +159,8 @@ export class ProjectSettingDialogComponent {
 
   // 保存设置
   async saveSettings(): Promise<void> {
+    const project = this.settingsProject;
+    if (!project || this.isSubmitting) return;
     // 包名只允许小写；保存前统一规范化，也兼容历史项目中的大写包名。
     this.projectSettings.name = normalizeProjectPackageName(this.projectSettings.name);
 
@@ -162,14 +203,26 @@ export class ProjectSettingDialogComponent {
       }
     }
 
-    console.log(this.projectSettings);
-    
-
     this.isSubmitting = true;
+    let rulesSaved = false;
 
     try {
-      // 先读取完整的 package.json
-      const packageJson = await this.projectService.getPackageJson();
+      project.assertCurrent();
+      const packageJson = await this.projectService.getPackageJson(project.path);
+      project.assertCurrent();
+      const draft = this.syncRules;
+      if (this.syncRulesReady && draft !== (this.originalSyncRules ?? '')) {
+        try {
+          await publishProjectText(project.path, AILY_CLOUD_IGNORE_FILE, draft, this.originalSyncRules, project.assertCurrent);
+          this.originalSyncRules = draft;
+          rulesSaved = true;
+        } catch (error) {
+          console.error('保存同步规则失败:', error);
+          if (!this.destroyed) this.message.error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_SYNC_RULES_SAVE'));
+          return;
+        }
+      }
+      project.assertCurrent();
       
       // 用 projectSettings 中的值覆盖相同的字段
       const updatedPackageJson = {
@@ -179,23 +232,24 @@ export class ProjectSettingDialogComponent {
       
       // 保存更新后的完整配置
       await this.projectService.setPackageJson(updatedPackageJson);
+      project.assertCurrent();
 
       // 同步「最近打开」列表中的项目名称 / 昵称（关闭项目后主界面立即显示）
-      const openPath = this.projectService.currentProjectPath;
-      if (openPath) {
-        const pkgName = this.projectSettings.name.trim();
-        this.projectService.addRecentlyProject({
-          name: pkgName,
-          path: openPath,
-          nickname: this.projectSettings.nickname || pkgName,
-        });
-      }
+      const pkgName = this.projectSettings.name.trim();
+      this.projectService.addRecentlyProject({
+        name: pkgName,
+        path: project.path,
+        nickname: this.projectSettings.nickname || pkgName,
+      });
       
       this.message.success(this.translate.instant('PROJECT_SETTING_DIALOG.SUCCESS_SAVE'));
       this.modal.close({ result: 'success', data: this.projectSettings });
     } catch (error) {
       console.error('保存项目设置失败:', error);
-      this.message.error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_SAVE_FAILED'));
+      if (!this.destroyed) {
+        this.message.error(rulesSaved ? this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_SETTINGS_AFTER_RULES')
+          : this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_SAVE_FAILED'));
+      }
     } finally {
       this.isSubmitting = false;
     }

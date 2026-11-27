@@ -45,6 +45,7 @@ function fixture(t, failure) {
   f.window.path = pathApi; f.window.fs = fsApi;
   const Project = sourceClass(`${domain}/project.service.ts`, 'ProjectService', {
     window: f.window, ...packageNames,
+    ...readPureModule(`${domain}/aily-cloud-ignore-file.ts`, { window: f.window }),
     AILY_NPM_SCOPE: '@aily-project', AILY_LINUX_NPM_SCOPE: '@aily-project-linux',
     ...readPureModule(`${domain}/blockly-project-template.ts`),
     ...readPureModule(`${domain}/coder/coder-project-template.ts`),

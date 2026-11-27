@@ -109,7 +109,7 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: switch cloud/lo
       expect(aiResult).toMatchObject({ ok: true });
       await assertRestored();
 
-      // The upload operation must keep the task-local backend until the device boundary.
+      // First upload the unchanged local result, then exercise switching during a required rebuild.
       await win.evaluate(({ mode, project }) => {
         const w = window as any, header = w.ng.getComponent(document.querySelector('app-header'));
         const facade = mode === 'coder'
@@ -119,19 +119,36 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: switch cloud/lo
         uploader.serialService.currentPort = 'TEST-NO-DEVICE';
         uploader.serialService.currentPortInfo = { type: 'serial' };
         uploader.workflowService.startUpload = () => {
-          w.__switchEvidence.uploads.push({ cloud: header.projectService.isCloudBuild(), passed: uploader._builderService.passed });
+          w.__switchEvidence.uploads.push({ cloud: uploader.projectService.isCloudBuild(), passed: uploader._builderService.passed });
           return false;
         };
-        w.__uploadResult = undefined;
-        uploader.upload().then((result: any) => { w.__uploadResult = result; }, (error: any) => { w.__uploadResult = error; });
+        w.__startSwitchUpload = () => {
+          w.__uploadResult = undefined;
+          uploader.upload().then((result: any) => { w.__uploadResult = result; }, (error: any) => { w.__uploadResult = error; });
+        };
+        if (mode === 'blockly') {
+          const ws = w.blocklyWorkspace;
+          ws.zoomCenter(1);
+          ws.scroll(ws.scrollX - 40, ws.scrollY - 30);
+        }
+        w.__startSwitchUpload();
       }, { mode, project });
+      await expect.poll(() => win.evaluate(() => !!(window as any).__uploadResult)).toBe(true);
+      expect(await win.evaluate(() => {
+        const { uploads, requests } = (window as any).__switchEvidence;
+        return { uploads: uploads.map((item: any) => item.cloud), requests: requests.length };
+      })).toEqual({ uploads: [false], requests: 2 });
+      const sources = mode === 'coder' ? path.join(project, 'sketch', 'src') : path.join(project, 'src');
+      await mkdir(sources, { recursive: true });
+      await writeFile(path.join(sources, 'switch_probe_changed.h'), '#define SWITCH_PROBE_CHANGED 1\n');
+      await win.evaluate(() => (window as any).__startSwitchUpload());
       await expect(switchButton).toBeVisible({ timeout: 60_000 });
       await switchButton.click();
       await expect(cloudButton).toBeVisible({ timeout: 120_000 });
       await cloudButton.click();
-      await expect.poll(() => win.evaluate(() => (window as any).__switchEvidence.uploads.length), { timeout: 240_000 }).toBe(1);
+      await expect.poll(() => win.evaluate(() => (window as any).__switchEvidence.uploads.length), { timeout: 240_000 }).toBe(2);
       await expect.poll(() => win.evaluate(() => !!(window as any).__uploadResult)).toBe(true);
-      expect(await win.evaluate(() => (window as any).__switchEvidence.uploads[0].cloud)).toBe(true);
+      expect(await win.evaluate(() => (window as any).__switchEvidence.uploads[1].cloud)).toBe(true);
       await assertRestored(true);
       const evidence = await win.evaluate(() => (window as any).__switchEvidence);
       expect(evidence.requests).toHaveLength(4);

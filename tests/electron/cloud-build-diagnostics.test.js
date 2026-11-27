@@ -6,6 +6,8 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { CloudBuildBroker } = require('../../electron/cloud-build/broker');
+const { registerCloudBuildHandlers } = require('../../electron/cloud-build/ipc');
+const { SDK_PACKAGE, TOOL_PACKAGE, SDK_TOOLCHAIN_UNSUPPORTED } = require('../../electron/cloud-build/ci-resource-contract');
 const protocol = require('../../electron/cloud-build/protocol');
 
 function fixture(t, respond, options = {}) {
@@ -36,10 +38,71 @@ function fixture(t, respond, options = {}) {
   const run = (requestId = 'test', input = config) => broker.run(sender, { requestId, profileDigest: profile.profileDigest,
     settings: { gatewayUrl: 'http://localhost:4318' },
     config: input }, event => events.push(event));
-  return { run, events, broker, sender, config };
+  return { run, events, broker, sender, config, boardPackage, board, profile, boardRoot };
 }
 
-const failed = { status: 'failed', lastSeq: 2, error: { code: 'COMPILE_ERROR', message: 'Compiler exited with code 1' } };
+const failed = { jobId: 'job', status: 'failed', lastSeq: 2, error: { code: 'COMPILE_ERROR', message: 'Compiler exited with code 1' } };
+
+test('CI1306 preparation reports a precise SDK or citool mismatch before any cloud submission', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-ci-support-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const boardModule = '@aily-project/board-easyvoice_1306_dev';
+  const boardRoot = path.join(root, 'node_modules', boardModule);
+  fs.mkdirSync(boardRoot, { recursive: true });
+  fs.writeFileSync(path.join(boardRoot, 'board.json'), '{}');
+  const handlers = new Map(), frame = {};
+  const sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
+  const controller = registerCloudBuildHandlers({
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+    getRegion: () => 'cn', buildFlavor: 'cn', backend: 'cloud', getOwner: () => ({ generation: 1 }),
+    getRuntimeRoot: () => path.join(root, 'app', 'runtime'),
+    getGatewaySettings: () => assert.fail('Resource preflight must not reach the cloud gateway.'),
+    getAuth: () => assert.fail('Resource preflight must not query credentials.'),
+  });
+  t.after(() => controller.shutdown());
+  const invoke = code => handlers.get('cloud-build')({ sender, senderFrame: frame }, {
+    action: 'preparationRequirements', compileAction: 'compile', requestId: 'ci-preflight',
+    config: { currentProjectPath: root, boardModule, code },
+  });
+  const voiceCode = '#include <ChipIntelliASR.h>\n#define COMMAND1 1\nvoid setup() {}\nvoid loop() {}';
+  for (const [sdk, tool] of [['1.0.18', '1.2.2'], ['1.0.17', '1.2.1'], ['1.0.17', '1.2.2']]) {
+    fs.writeFileSync(path.join(boardRoot, 'package.json'), JSON.stringify({
+      name: boardModule, version: sdk, boardDependencies: { [SDK_PACKAGE]: sdk, [TOOL_PACKAGE]: tool },
+    }));
+    const result = await invoke(voiceCode);
+    if (sdk === '1.0.17' && tool === '1.2.2') {
+      assert.equal(result.ok, true);
+      assert.equal(result.result[0].name, TOOL_PACKAGE);
+    } else {
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, 'CI_RESOURCE_UNSUPPORTED');
+      assert.equal(result.error.ciResourceReason, SDK_TOOLCHAIN_UNSUPPORTED);
+      assert.equal(result.error.remoteCleanupConfirmed, undefined);
+    }
+    assert.deepEqual(await invoke('void setup() {}\nvoid loop() {}'), { ok: true, result: [] });
+  }
+});
+
+test('mismatched linked CI resources stay unmarked even after the remote job has stopped', async t => {
+  const f = fixture(t, async endpoint => {
+    if (endpoint.includes('/logs?')) return { logs: [] };
+    return { ...failed, lastSeq: 0, error: { code: 'CI_RESOURCES_REQUIRED', message: 'Linked number playback requires CI resources' } };
+  });
+  f.boardPackage.boardDependencies = { [SDK_PACKAGE]: '1.0.17', [TOOL_PACKAGE]: '1.2.2' };
+  fs.writeFileSync(path.join(f.boardRoot, 'package.json'), JSON.stringify(f.boardPackage));
+  f.profile.boardDigest = protocol.boardDigest(f.boardPackage, f.board);
+  f.profile.capabilities.ciPreparedResourcesV1 = true;
+  f.broker.getAppDataPath = () => f.config.currentProjectPath;
+  f.broker.ensureCITool = async () => {};
+  await assert.rejects(f.run(), error => {
+    assert.equal(error.code, 'CI_RESOURCE_UNSUPPORTED');
+    assert.match(error.message, /linked CI resource request does not match/);
+    assert.equal(error.ciResourceReason, undefined);
+    assert.equal(error.remoteCleanupConfirmed, undefined);
+    return true;
+  });
+  assert.equal(f.broker.requests.size, 0);
+});
 
 test('terminal failure drains delayed and paged logs before releasing the task', async t => {
   let calls = 0;
@@ -64,6 +127,50 @@ test('log transport failure keeps the original compiler failure and does not ret
   });
   await assert.rejects(f.run(), { code: 'COMPILE_ERROR', message: failed.error.message, logComplete: false });
   assert.ok(calls <= 2);
+});
+
+for (const status of ['cancelled', 'cancelling']) {
+  test(`an ambiguous cloud submission only permits fallback after a terminal cancel response: ${status}`, async t => {
+    const f = fixture(t, async () => {});
+    let submissions = 0;
+    f.broker.request = async (_settings, endpoint) => {
+      if (endpoint.endsWith('/cancel')) return { jobId: 'job', status };
+      assert.equal(endpoint, '/api/v1/build/jobs');
+      if (++submissions === 1) throw Object.assign(protocol.error('gateway_closing', 'Gateway unavailable'), { httpStatus: 503 });
+      return { jobId: 'job' };
+    };
+    await assert.rejects(f.run(), error => {
+      assert.equal(error.code, 'gateway_closing');
+      assert.equal(error.httpStatus, 503);
+      assert.equal(error.remoteCleanupConfirmed, status === 'cancelling' ? false : undefined);
+      return true;
+    });
+    assert.equal(submissions, 2);
+    assert.equal(f.broker.requests.size, 0);
+  });
+}
+
+for (const jobId of ['job', 'other-job']) {
+  test(`a terminal worker failure must belong to the submitted job: ${jobId}`, async t => {
+    const error = { code: 'node_restarted', message: 'Compiler node restarted' };
+    const f = fixture(t, async endpoint => endpoint.includes('/logs?') ? { logs: [] }
+      : { jobId, status: 'failed', lastSeq: 0, error });
+    await assert.rejects(f.run(), failure => {
+      assert.equal(failure.code, error.code);
+      assert.equal(failure.remoteCleanupConfirmed, jobId === 'job' ? undefined : false);
+      return true;
+    });
+  });
+}
+
+test('preserves a confirmed server response through retrying status polling', async t => {
+  const f = fixture(t, async () => {}, { deadlineMs: 50 });
+  f.broker.request = async (_settings, endpoint) => {
+    if (endpoint === '/api/v1/build/jobs') return { jobId: 'job' };
+    if (endpoint.endsWith('/cancel')) return { jobId: 'job', status: 'cancelled' };
+    throw Object.assign(protocol.error('GATEWAY_HTTP_ERROR', 'Gateway unavailable'), { httpStatus: 502 });
+  };
+  await assert.rejects(f.run(), { code: 'GATEWAY_HTTP_ERROR', httpStatus: 502 });
 });
 
 test('cancellation interrupts a terminal log drain and releases request ownership', async t => {

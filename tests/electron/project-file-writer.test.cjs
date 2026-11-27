@@ -89,6 +89,25 @@ test('publishes exact UTF-8 bytes, BOM and CRLF and cleans temporary files', asy
   assert.equal(read(root), content); assertClean(root);
 });
 
+test('publishes and clears cloud ignore rules independently of a pending ABS generation', async () => {
+  const root = project();
+  const absSync = path.join(root, '.aily', 'abs-sync');
+
+  fs.mkdirSync(absSync, { recursive: true });
+  fs.writeFileSync(path.join(absSync, 'prepared.json'), 'pending');
+
+  const rules = '# 云同步规则\r\nbuild/\r\n';
+  const file = path.join(root, '.ailyignore');
+
+  assert.equal((await replaceProjectText(request(root, rules, null, '.ailyignore'), guard)).status, 'COMMITTED');
+  assert.equal(fs.readFileSync(file, 'utf8'), rules);
+  assert.equal((await replaceProjectText(request(root, 'stale', null, '.ailyignore'), guard)).status, 'CONFLICT');
+  assert.equal((await replaceProjectText(request(root, '', rules, '.ailyignore'), guard)).status, 'COMMITTED');
+  assert.equal(fs.readFileSync(file, 'utf8'), '');
+  assert.equal(fs.readFileSync(path.join(absSync, 'prepared.json'), 'utf8'), 'pending');
+  assertClean(root);
+});
+
 test('legacy shadow migration retains a backup when no ABS identity binding exists', async () => {
   const root = project(); initialize(root);
   const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard);
@@ -197,8 +216,11 @@ test('independent processes follow the same project lock and CAS', async () => {
 test('Scene head publication uses the existing project lock and exact bytes, not an in-process Scene queue', async () => {
   const root = project(); const name = '.aily/simulator/scene-network-v2.json';
   const target = path.join(root, name); const before = '{"head":"original"}\n';
+
   assert.equal((await replaceProjectText(request(root, before, null, name), guard)).status, 'COMMITTED');
+
   const results = await Promise.all(Array.from({ length: 8 }, (_, i) => replaceProjectText(request(root, `head-${i}`, before, name), guard)));
+
   assert.equal(results.filter(r => r.status === 'COMMITTED').length, 1);
   assert.equal(results.filter(r => r.status === 'CONFLICT').length, 7);
   assert.match(fs.readFileSync(target, 'utf8'), /^head-[0-7]$/);
@@ -208,27 +230,35 @@ test('Scene head publication uses the existing project lock and exact bytes, not
 
 test('Scene head final CAS retains an external update made after temporary preparation', async () => {
   const root = project(); const name = '.aily/simulator/scene-network-v2.json'; const target = path.join(root, name);
+
   fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, 'before');
+
   const files = { ...fs, writeFileSync(fd, ...args) { fs.writeFileSync(fd, ...args); if (typeof fd === 'number') fs.writeFileSync(target, 'external'); } };
+
   assert.equal((await replaceProjectText(request(root, 'after', 'before', name), guard, { files })).status, 'CONFLICT');
   assert.equal(fs.readFileSync(target, 'utf8'), 'external'); assertClean(root);
 });
 
 test('Scene head refuses linked parents, non-allowlisted paths and an abandoned shared lock', async () => {
   const root = project(); const outside = project(); const name = '.aily/simulator/scene-network-v2.json';
+
   fs.mkdirSync(path.join(root, '.aily'));
   fs.symlinkSync(outside, path.join(root, '.aily/simulator'), 'junction');
   assert.equal((await replaceProjectText(request(root, 'after', null, name), guard)).code, 'PROJECT_FILE_UNSAFE_PATH');
   assert.deepEqual(fs.readdirSync(outside), []);
   fs.unlinkSync(path.join(root, '.aily/simulator')); fs.mkdirSync(path.join(root, '.aily/simulator'));
+
   const lock = path.join(root, '.aily/project-files.write.lock'); fs.writeFileSync(lock, 'unknown owner');
+
   assert.equal((await replaceProjectText(request(root, 'after', null, name), guard, { timeoutMs: 0 })).code, 'PROJECT_FILE_BUSY');
   assert.equal(fs.readFileSync(lock, 'utf8'), 'unknown owner');
   assert.equal(fs.existsSync(path.join(root, name)), false);
+
   for (const fileName of ['.aily/simulator/../outside.json', '.aily/scene-network-v2.json', '.aily/simulator/other.json']) {
     assert.equal((await replaceProjectText(request(root, 'after', null, fileName), guard)).code, 'PROJECT_FILE_INVALID');
   }
 });
+
 test('never steals a lock, and a stale context aborts while waiting', async () => {
   const root = project(); initialize(root); fs.mkdirSync(path.join(root, '.aily'));
   const lock = path.join(root, '.aily', 'project-files.write.lock'); fs.writeFileSync(lock, 'unknown owner');
@@ -310,7 +340,20 @@ test('refuses hard-linked targets and linked internal storage directories', asyn
 
 test('reports cleanup warnings without misreporting committed bytes as a failed save', async () => {
   const root = project(); initialize(root);
-  const files = { ...fs, closeSync(fd) { fs.closeSync(fd); throw new Error('close callback failed'); } };
+  let ownerDescriptor;
+
+  const files = { ...fs, openSync(file, ...args) {
+    const descriptor = fs.openSync(file, ...args);
+
+    if (args[0] === 'wx') ownerDescriptor = descriptor;
+
+    return descriptor;
+  }, closeSync(descriptor) {
+    fs.closeSync(descriptor);
+
+    if (descriptor === ownerDescriptor) throw new Error('close callback failed');
+  } };
+
   const result = await replaceProjectText(request(root, 'after'), guard, { files });
 
   assert.equal(result.status, 'COMMITTED'); assert.deepEqual(result.warnings, ['close callback failed']);
@@ -352,7 +395,7 @@ test('detects replacement of the project directory and does not clean a new dire
 });
 
 const migrationRequest = (root, after = 'after', before = 'before') => ({ ...request(root, after, before), backup: 'project-data' });
-const backupPath = (root, original = 'before') => path.join(root, '.aily', 'project-data-backups', hash(original).slice(7) + '.abi');
+const backupPath = (root, original = 'before') => path.join(fs.realpathSync(root), '.aily', 'project-data-backups', hash(original).slice(7) + '.abi');
 
 test('migration preserves the exact original before publishing and reuses only identical backups', async () => {
   const root = project(); const original = '\ufeff旧数据 😀\r\n'; initialize(root, original);
@@ -388,7 +431,11 @@ test('backup conflicts, unsafe links and failures stop ABI publication', async (
       fs.rmdirSync(path.dirname(backupPath(root))); fs.symlinkSync(project(), path.dirname(backupPath(root)), 'junction');
     }
 
-    if (kind === 'link-failure') files = { ...fs, linkSync() { throw new Error('backup failed'); } };
+    if (kind === 'link-failure') files = { ...fs, linkSync(source, destination) {
+      if (destination === backupPath(root)) throw new Error('backup failed');
+
+      fs.linkSync(source, destination);
+    } };
 
     const result = await replaceProjectText(migrationRequest(root), guard, { files });
 
@@ -398,7 +445,13 @@ test('backup conflicts, unsafe links and failures stop ABI publication', async (
 
 test('late external edits are retained and never become the wrong backup', async () => {
   const root = project(); initialize(root);
-  const files = { ...fs, linkSync(...args) { fs.linkSync(...args); initialize(root, 'external'); } };
+
+  const files = { ...fs, linkSync(source, destination) {
+    fs.linkSync(source, destination);
+
+    if (destination === backupPath(root)) initialize(root, 'external');
+  } };
+
   const result = await replaceProjectText(migrationRequest(root), guard, { files });
 
   assert.equal(result.status, 'NOT_COMMITTED'); assert.equal(result.code, 'PROJECT_FILE_CONFLICT');

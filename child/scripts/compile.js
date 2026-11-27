@@ -11,9 +11,12 @@ const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource, confirmPreparedBuildSource } = require('./build-source-capture');
 const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
-const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
+const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, materializeEspSrModel } = require('./blockly-upload-state');
 const { captureCoderUploadInputs, publishCoderUploadState, invalidateCoderUploadState } = require('./coder-upload-state');
-const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
+
+const { recordFor, startBuildExecution, finishBuildExecution, validateSharedBuildLaunch,
+    confirmSharedBuildInputs, assertSharedBuildSupervisor, settleUnstartedSharedBuild, retainSharedBuildSource } = require('./build-execution-workspace');
+
 const { captureBlocklyCompileSource } = require('./compile-source');
 
 // 简单的日志工具
@@ -123,6 +126,12 @@ async function main() {
 
     try {
         config = readBuildRequest(configPath);
+
+        if (config.execution?.layout === 'shared') {
+            config = validateSharedBuildLaunch(configPath, config.currentProjectPath, 'compile');
+
+            assertSharedBuildSupervisor(config);
+        }
     } catch (error) {
         logger.error('Failed to read config file:', error);
         process.exit(1);
@@ -155,6 +164,7 @@ async function main() {
         if (isAilyCode) invalidateCoderUploadState(currentProjectPath);
 
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
         invalidateBuildDelivery(currentProjectPath);
 
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
@@ -241,12 +251,16 @@ async function main() {
         await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
         workspace.assertOwned();
         confirmBuildSource(config);
+        confirmSharedBuildInputs(config);
 
         const preparedSnapshot = confirmPreparedBuildSource(config);
 
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config, 'before-target-compile');
 
         const materializedSource = !isAilyCode ? captureBlocklyCompileSource(config, compileSourcePath) : undefined;
+
+        if (materializedSource) retainSharedBuildSource(config, materializedSource);
+
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
         const uploadInputs = isAilyCode ? captureCoderUploadInputs(config) : captureBlocklyUploadInputs(config);
         // 3. 读取板子信息获取boardType
@@ -417,6 +431,7 @@ async function main() {
         const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
+            confirmSharedBuildInputs(config);
             confirmPreparedBuildSource(config, preparedSnapshot);
             simulationTransport?.assertCurrent();
 
@@ -437,6 +452,8 @@ async function main() {
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
+                confirmSharedBuildInputs(config);
+                materializeEspSrModel(preprocessCachePath, buildPath, { shared: config.execution?.layout === 'shared' });
                 confirmPreparedBuildSource(config, preparedSnapshot);
 
                 if (simulationTransport) await simulationTransport.confirm();
@@ -496,6 +513,10 @@ async function main() {
         writeProjectInputDifference(error);
         logger.error(`[ERROR] ${error.message}`);
 
+        if (!workspace && config.execution?.layout === 'shared') {
+            settleUnstartedSharedBuild(currentProjectPath, config.execution, error);
+        }
+
         process.exitCode = 1;
     } finally {
         // Only the acquiring host releases, after preprocess/compiler close and
@@ -508,7 +529,7 @@ async function main() {
             throw error;
         }
 
-        finishBuildExecution(config, !!workspace && process.exitCode !== 1);
+        if (workspace || config.execution?.layout !== 'shared') finishBuildExecution(config, !!workspace && process.exitCode !== 1);
     }
 }
 

@@ -433,7 +433,7 @@ for (const phase of ['before-target-compile', 'before-delivery']) test(`normal c
         } },
         './builder-capabilities': { readBuilderCapabilities: () => ({ artifact: true, inputs: true, workspace: true }) },
         './library-source-evidence': { readLibraryProjections: () => undefined },
-        './blockly-upload-state': { captureBlocklyUploadInputs: () => ({}), publishBlocklyUploadState() {}, invalidateBlocklyUploadState() {} },
+        './blockly-upload-state': { captureBlocklyUploadInputs: () => ({}), publishBlocklyUploadState() {}, invalidateBlocklyUploadState() {}, materializeEspSrModel() {} },
         './builder-archive-recovery': { ...require('./builder-archive-recovery'), async compileWithArchiveRecovery(command, args) {
             assert.equal(command, 'aily-builder');
             f.emit(); f.put('src/helper.h', 'changed');

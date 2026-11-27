@@ -24,9 +24,10 @@ import {
 } from '@shared/public-api';
 
 export type FirmwareUploadOptions =
-  | { preparedFirmware: BuildInput; reuseCloudFirmware?: never; expectedArtifactId?: never }
-  | { preparedFirmware?: never; reuseCloudFirmware: true; expectedArtifactId?: never }
-  | { preparedFirmware?: never; reuseCloudFirmware?: never; expectedArtifactId: string };
+  | { preparedFirmware: BuildInput; reuseCloudFirmware?: never; reuseExistingFirmware?: never; expectedArtifactId?: never }
+  | { preparedFirmware?: never; reuseCloudFirmware: true; reuseExistingFirmware?: never; expectedArtifactId?: never }
+  | { preparedFirmware?: never; reuseCloudFirmware?: never; reuseExistingFirmware: true; expectedArtifactId?: never }
+  | { preparedFirmware?: never; reuseCloudFirmware?: never; reuseExistingFirmware?: never; expectedArtifactId: string };
 
 @Injectable({
   providedIn: 'root'
@@ -209,7 +210,50 @@ export class UploaderService {
     }
   }
 
-  async upload(projectPath = this.projectService.currentProjectPath, port?: string, target?: FirmwareUploadOptions | string) {
+  async uploadManual() {
+    const project = this.projectService.currentProjectPath;
+    const port = this.serialService.currentPort;
+    const selected = this.serialService.currentPortInfo;
+    const record = window['uploader']?.manualReceipt;
+
+    if (!record || !project || !port || this.projectService.isAilyCodeProject(project) || this.isPythonProject()) {
+      return this.upload();
+    }
+
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+
+    const device = {
+      name: port, type: selected?.type, serialNumber: selected?.serialNumber,
+      vendorId: selected?.vendorId, productId: selected?.productId, pnpId: selected?.pnpId,
+    };
+
+    const request = await record({ action: 'begin', project, device }).catch(() => null);
+
+    const finish = (result: Record<string, unknown>) => request
+      ? record({ action: 'finish', project, request, result }).catch(() => undefined)
+      : undefined;
+
+    const current = () => {
+      const active = this.serialService.currentPortInfo;
+
+      return projectCurrent() && this.serialService.currentPort === port && active?.serialNumber === device.serialNumber
+        && active?.vendorId === device.vendorId && active?.productId === device.productId && active?.pnpId === device.pnpId;
+    };
+
+    try {
+      const result = await this.upload(project, port, undefined, current);
+
+      await finish(result);
+
+      return result;
+    } catch (error: any) {
+      await finish({ state: error?.state ?? 'error', notStarted: error?.uploadStarted === false });
+
+      throw error;
+    }
+  }
+  async upload(projectPath = this.projectService.currentProjectPath, port?: string, target?: FirmwareUploadOptions | string,
+    manualTargetCurrent?: () => boolean) {
     if (this.configService.isCoderProduct() && !await this.projectService.ensureCoderBoardSelected(projectPath)) {
       return { state: 'warn', text: CODER_BOARD_REQUIRED_MESSAGE, buildOutcome: 'not-started' };
     }
@@ -223,8 +267,11 @@ export class UploaderService {
     const projectCurrent = firmware ? this.projectService.captureCurrentProjectGuard() : undefined;
 
     const assertUploadCurrent = () => {
+      if (manualTargetCurrent && !manualTargetCurrent()) {
+        throw Object.assign(new Error(this.translate.instant('SERIAL.SELECT_PORT_FIRST')), { uploadStarted: false });
+      }
+
       if (firmware && (this.projectService.isAilyCodeProject(projectPath) || this.isPythonProject()
-        || this.projectService.isCloudBuild() !== Boolean(firmware.reuseCloudFirmware)
         || !projectCurrent?.() || this.projectService.currentProjectPath !== projectPath
         || this.serialService.currentPort !== port)) {
         throw Object.assign(new Error('Prepared firmware upload no longer owns the requested project and port.'),
@@ -235,7 +282,7 @@ export class UploaderService {
     assertUploadCurrent();
 
     if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.upload(projectPath, port);
-    if (this.configService.isCoderProduct()) await this.npmService.assertCoderDependenciesReady(projectPath);
+    if (this.configService.isCoderProduct()) await this.npmService.assertCoderDependenciesReady(projectPath, 'firmware-upload');
 
     assertUploadCurrent();
 
@@ -271,13 +318,17 @@ export class UploaderService {
     let uploadOutcome = 'failed';
     let resourceRecovery: UploadRecoveryPolicy | undefined;
 
+    // Coder has already presented its project-scoped notice before board and port selection.
+    const preparation = this.projectService.isCoderProjectContext ? undefined : this.application.beginUploadPreparation(
+      this.translate.instant('BLOCKLY_EDITOR.UPLOAD.UPLOADING_TITLE'),
+      this.translate.instant('BLOCKLY_EDITOR.UPLOAD.PREPARING_DATA'),
+    );
+
     try {
-      await this.sendSerialResourceUploadSignal(
-        'serial-monitor:disconnect',
-        uploadPort,
-        uploadPortType,
-        { operationId },
-      );
+      await Promise.all([
+        preparation?.painted,
+        this.sendSerialResourceUploadSignal('serial-monitor:disconnect', uploadPort, uploadPortType, { operationId }),
+      ]);
 
       const hasBlocklyUploader = this.application.hasActionListener('uploader-upload-begin');
       const isAilyCodeProject = this.projectService.isAilyCodeProject();
@@ -347,6 +398,8 @@ export class UploaderService {
 
       throw error;
     } finally {
+      preparation?.close();
+
       await this.sendSerialResourceUploadSignal(
         'serial-monitor:connect',
         uploadPort,

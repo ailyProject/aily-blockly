@@ -149,13 +149,22 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captur
             const owner = ownerFor(sender);
             const root = fs.realpathSync(options.buildWorkspace), requestPath = options.buildDeliveryRequest;
 
+            const exactLegacyRequest = /^compile-request-[a-f0-9-]{36}\.json$/.test(path.basename(requestPath))
+                && key(fs.realpathSync(path.dirname(requestPath))) === key(path.join(root, '.temp'));
+
+            const exactSharedRequest = path.basename(requestPath) === 'config.json'
+                && /^[a-f0-9-]{36}$/.test(path.basename(path.dirname(requestPath)))
+                && [path.join(root, '.build', 'requests'), path.join(root, '.aily', 'build-executions')]
+                    .some(parent => key(path.dirname(path.dirname(requestPath))) === key(parent));
+
             if (options.shellProfile !== false || options.args?.length !== 2 || options.args[1] !== requestPath
                 || !['node', process.execPath].includes(options.command)
                 || key(fs.realpathSync(options.args[0])) !== key(fs.realpathSync(path.join(childRoot, 'scripts/compile.js')))
-                || !/^compile-request-[a-f0-9-]{36}\.json$/.test(path.basename(requestPath))
-                || key(fs.realpathSync(path.dirname(requestPath))) !== key(path.join(root, '.temp'))) throw fault('Not a supervised host compile request.');
+                || (!exactLegacyRequest && !exactSharedRequest)) throw fault('Not a supervised host compile request.');
 
-            const config = readJson(requestPath, 160 * 1024 * 1024).value;
+            const config = exactSharedRequest
+                ? require(path.join(childRoot, 'scripts/build-execution-workspace.js')).validateSharedBuildLaunch(requestPath, root, 'compile')
+                : readJson(requestPath, 160 * 1024 * 1024).value;
 
             if (config.simulationTransportProfile !== undefined && config.simulationTransportProfile !== PROFILE) throw fault('Unsupported compilation profile request.');
 

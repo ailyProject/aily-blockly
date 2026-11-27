@@ -24,7 +24,7 @@ function fixture(t, type = 'blockly') {
 
 function resolutionCommit(f, options = {}) {
     const hash = value => `sha256:${createHash('sha256').update(value).digest('hex')}`;
-    const generation = 'resolved-source', scope = { projectKey: f.root, pageId: 'main' };
+    const generation = 'resolved-source', scope = { projectKey: fs.realpathSync(f.root), pageId: 'main' };
     const token = `sha256:${'a'.repeat(64)}`, abi = '{"external":"retained raw ABI"}\r\n';
     const archive = { schemaVersion: 1, generation, authority: 'workspace', repairToken: token, scope,
         disk: { abi }, resolution: { token, choice: 'keep_view', inputAbiHash: hash(abi), ...options.resolution } };

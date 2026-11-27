@@ -8,6 +8,7 @@ import {
   EventEmitter,
   HostListener,
   Input,
+  NgZone,
   Output,
   ViewChild,
   QueryList,
@@ -51,6 +52,10 @@ export class MenuComponent implements AfterViewChecked {
     const menuStructureChanged = nextSignature !== this.menuListSignature;
 
     this._menuList = nextMenuList;
+    if (this.activeSubmenuItem && (!nextMenuList.includes(this.activeSubmenuItem)
+      || this.activeSubmenuItem.disabled || !this.hasSubmenuContent(this.activeSubmenuItem))) {
+      this.clearSubmenu();
+    }
     this.menuListSignature = nextSignature;
     this.initializeSectionState();
 
@@ -109,6 +114,7 @@ export class MenuComponent implements AfterViewChecked {
   private pendingMenuGeometryCorrection = false;
   private menuGeometryCorrectionTimeout: ReturnType<typeof setTimeout> | null = null;
   private iframeFocusTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pointerFrame: HTMLIFrameElement | null = null;
 
   // 添加子菜单显示状态管理
   activeSubmenuItem: IMenuItem | null = null;
@@ -130,6 +136,7 @@ export class MenuComponent implements AfterViewChecked {
     private router: Router,
     private platformService: PlatformService,
     private changeDetector: ChangeDetectorRef,
+    private zone: NgZone,
   ) {
     // The renderer can retain removed rows until the end of a render pass.
     // Measure only after that cleanup, especially when a long list becomes short.
@@ -201,6 +208,9 @@ export class MenuComponent implements AfterViewChecked {
   }
 
   getSubmenuSimpleItemTitle(subItem: IMenuItem | null | undefined): string {
+    const tooltip = this.getTooltipTitle(subItem?.tooltip);
+    if (tooltip) return tooltip;
+
     const text = typeof subItem?.text === 'string' ? subItem.text.trim() : '';
     if (text) {
       return text;
@@ -330,6 +340,10 @@ export class MenuComponent implements AfterViewChecked {
     document.addEventListener('click', this.handleDocumentClick);
     document.addEventListener('contextmenu', this.handleDocumentClick);
     window.addEventListener('blur', this.handleWindowBlur);
+    this.zone.runOutsideAngular(() => {
+      document.addEventListener('pointerover', this.handleFramePointer, true);
+      document.addEventListener('keydown', this.handleFrameTab, true);
+    });
     this.pendingGlobalFilterFocus = this.focusGlobalFilterOnOpen && !!this.globalFilterPlaceholder;
 
     // Defer the first geometry correction until after the initial change-detection
@@ -358,6 +372,8 @@ export class MenuComponent implements AfterViewChecked {
     document.removeEventListener('click', this.handleDocumentClick);
     document.removeEventListener('contextmenu', this.handleDocumentClick);
     window.removeEventListener('blur', this.handleWindowBlur);
+    document.removeEventListener('pointerover', this.handleFramePointer, true);
+    document.removeEventListener('keydown', this.handleFrameTab, true);
     if (this.iframeFocusTimeout !== null) {
       clearTimeout(this.iframeFocusTimeout);
       this.iframeFocusTimeout = null;
@@ -411,19 +427,37 @@ export class MenuComponent implements AfterViewChecked {
     }
   };
 
+  private handleFramePointer = (event: PointerEvent) => {
+    const frame = event.target;
+    this.pointerFrame = frame instanceof HTMLIFrameElement && !this.hostRef.nativeElement.contains(frame) ? frame : null;
+    // Chromium cannot report clicks inside a cross-origin frame that already
+    // has focus. Let the next real click focus it again at its native caret.
+    if (this.pointerFrame && document.activeElement === this.pointerFrame) {
+      this.pointerFrame.blur();
+    }
+  };
+
+  private handleFrameTab = (event: KeyboardEvent) => {
+    if (event.key === 'Tab') this.checkFrameFocus(true);
+  };
+
   private handleWindowBlur = () => {
+    if (this.pointerFrame && this.iframeFocusTimeout === null) this.checkFrameFocus(false);
+  };
+
+  private checkFrameFocus(tabNavigation: boolean): void {
     if (this.iframeFocusTimeout !== null) clearTimeout(this.iframeFocusTimeout);
-    // Clicks in embedded editors never bubble to the host document. Chromium
-    // updates activeElement after blur, so check the focus target next turn.
-    // Observing focus leaves the original editor click and caret action intact.
+    // Chromium updates activeElement after the original click or Tab. Focus
+    // alone may come from a background Chat/editor initialization.
     this.iframeFocusTimeout = setTimeout(() => {
       this.iframeFocusTimeout = null;
       const target = document.activeElement;
-      if (target?.tagName === 'IFRAME' && !this.hostRef.nativeElement.contains(target)) {
-        this.closeMenu();
+      if (target instanceof HTMLIFrameElement && !this.hostRef.nativeElement.contains(target)
+          && (tabNavigation || target === this.pointerFrame)) {
+        this.zone.run(() => this.closeMenu());
       }
     });
-  };
+  }
 
   closeMenu() {
     this.clearSubmenu();
@@ -764,6 +798,7 @@ export class MenuComponent implements AfterViewChecked {
       if (this.pendingViewportAdjustment) {
         this.adjustMenuPositionWithinViewport();
       }
+      if (this.activeSubmenuItem) this.onViewportResize();
     });
   }
 
@@ -1100,10 +1135,8 @@ export class MenuComponent implements AfterViewChecked {
   }
 
   subItemClick(event, subItem) {
-    if (subItem.disabled) {
-      return;
-    }
     const parent = this.activeSubmenuItem;
+    if (!parent || parent.disabled || subItem.disabled || !this.getSubmenuChildren(parent).includes(subItem)) return;
     // 串口/开发板子菜单保留单选勾选；最近项目等列表不切换勾选状态
     if (parent?.children && !parent.submenuNoRadio) {
       parent.children.forEach(item => {

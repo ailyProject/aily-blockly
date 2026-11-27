@@ -7,7 +7,7 @@ const { MAX_PROJECT_FILE_BYTES: MAX_BYTES, projectFileHash: hash, projectFileFau
 
 const SCENE_FILE = '.aily/simulator/scene-network-v2.json';
 const DEMONSTRATION_FILE = /^\.aily\/simulator\/demonstrations\/[A-Za-z0-9][A-Za-z0-9_-]*\/demo_script\.json$/;
-const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json', SCENE_FILE]);
+const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json', '.ailyignore', SCENE_FILE]);
 const PROJECT_FILE_PUBLICATION_VERSION = 2;
 const PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION = 1;
 
@@ -147,11 +147,12 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
     try {
       // No awaits from the guard through the final byte check and rename.
       guard();
+
       lock.assertOwned();
 
       checkParents();
-      assertNoPendingAbsGeneration(access);
 
+      if (fileName !== '.ailyignore') assertNoPendingAbsGeneration(access);
       if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
 
       const previous = read();

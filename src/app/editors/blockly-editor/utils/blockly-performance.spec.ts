@@ -2,10 +2,50 @@ import * as Blockly from 'blockly';
 import {
   WorkspaceCodeChangeTracker,
   isBlocklyWorkspaceInteracting,
+  loadBlocklyWorkspace,
 } from './blockly-performance';
 import { installBlocklyVariableComparator } from './blockly-variable-order';
 import { ArduinoGenerator } from '../components/blockly/generators/arduino/arduino';
 import { findOversizedInlineValues, ProjectDataStore, type ProjectDataFileSystem } from '@domain/project/public-api';
+
+describe('Blockly workspace initial render', () => {
+  it('renders earlier parameter blocks when a later native extension requests an immediate render', () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const workspace = Blockly.inject(host, { renderer: 'zelos', sounds: false });
+    Blockly.Blocks['render_batch_parent'] = { init() {
+      this.appendValueInput('PARAM');
+      this.setNextStatement(true);
+    } };
+    Blockly.Blocks['render_batch_text'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldTextInput(''), 'TEXT');
+      this.setOutput(true);
+    } };
+    Blockly.Blocks['render_batch_extension'] = { init() {
+      this.setPreviousStatement(true);
+      this.render();
+    } };
+    try {
+      workspace.setViewportRendering(true);
+      loadBlocklyWorkspace(workspace, { blocks: { languageVersion: 0, blocks: [{
+        type: 'render_batch_parent', id: 'parent',
+        inputs: { PARAM: { block: { type: 'render_batch_text', id: 'param', fields: { TEXT: 'editable Wi-Fi name' } } } },
+        next: { block: { type: 'render_batch_extension', id: 'extension' } },
+      }] } });
+      const parameter = workspace.getBlockById('param')!;
+      expect(workspace.getBlockById('parent')?.getInputTargetBlock('PARAM')).toBe(parameter);
+      expect(parameter.getFieldValue('TEXT')).toBe('editable Wi-Fi name');
+      expect(parameter.width).toBeGreaterThan(0);
+      expect(parameter.pathObject.svgPath.getAttribute('d')).toBeTruthy();
+    } finally {
+      workspace.dispose();
+      host.remove();
+      delete Blockly.Blocks['render_batch_parent'];
+      delete Blockly.Blocks['render_batch_text'];
+      delete Blockly.Blocks['render_batch_extension'];
+    }
+  });
+});
 
 describe('large Blockly workspaces', () => {
   let workspace: Blockly.Workspace;

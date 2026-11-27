@@ -327,3 +327,47 @@ describe('ConfigService ZIP download sources', () => {
     expectOrder([domestic, r2, 'http://localhost:4874']);
   });
 });
+
+describe('ConfigService project compile backend startup', () => {
+  it('waits for remembered cloud credentials before a project captures its dependency settings', async () => {
+    let releaseAuth!: () => void;
+    let started!: () => void;
+    const authStarted = new Promise<void>(resolve => { started = resolve; });
+    const auth = {
+      isLoggedIn$: EMPTY,
+      canUseCloudCompilation: false,
+      getAuthInitializationState: () => 'checking',
+      initializeAuth: jasmine.createSpy().and.callFake(() => {
+        started();
+        return new Promise<void>(resolve => { releaseAuth = resolve; });
+      }),
+    };
+    const service = new ConfigService({} as any, {} as any, auth as any);
+    spyOn(service, 'init').and.callFake(async () => {
+      service.data = { compile: { backend: 'cloud' }, region: 'cn', build_flavor: 'cn' };
+    });
+    const ready = service.initializeProjectCompileBackend();
+    await authStarted;
+    expect(auth.initializeAuth).toHaveBeenCalledOnceWith('identity');
+    expect(service.getCompileBackend()).toBe('local');
+    auth.canUseCloudCompilation = true;
+    releaseAuth();
+    await ready;
+    expect(service.getCompileBackend()).toBe('cloud');
+  });
+
+  it('allows local projects to load independently of startup authentication', async () => {
+    const auth = {
+      isLoggedIn$: EMPTY,
+      canUseCloudCompilation: false,
+      getAuthInitializationState: () => 'checking',
+      initializeAuth: jasmine.createSpy(),
+    };
+    const service = new ConfigService({} as any, {} as any, auth as any);
+    spyOn(service, 'init').and.callFake(async () => {
+      service.data = { compile: { backend: 'local' }, region: 'cn', build_flavor: 'cn' };
+    });
+    await service.initializeProjectCompileBackend();
+    expect(auth.initializeAuth).not.toHaveBeenCalled();
+  });
+});

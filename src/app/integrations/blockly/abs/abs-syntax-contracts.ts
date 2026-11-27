@@ -3,6 +3,14 @@ import type { AbsArgumentDefinition, AbsSyntaxOptions } from './abs-syntax';
 import { indexAbsAbi } from './abs-abi-index';
 import { canonicalJsonStringify } from '@domain/project/project-data/project-data-codec.registry';
 
+// The editable signature has no authority over a function or parameter model ID.
+export function readableExtraState(block: { id: string; extraState?: unknown }, contracts: AbsProjectionContracts) {
+  const extra = block.extraState;
+  if (contracts.procedures?.[block.id]?.family !== 'custom-functions-v1' || !extra || typeof extra !== 'object') return extra;
+  const { funcVarId, paramVarIds, nextParamVarSeq, ...signature } = extra as Record<string, unknown>;
+  return signature;
+}
+
 /** A type may use positional syntax only when all captured instances agree.
  * Never borrow one dynamic instance's order/options for a different shape.
  */
@@ -22,6 +30,8 @@ export function absSyntaxOptions(
   const commonCache = new Map<string, unknown>();
   const ordersCache = new Map<string, readonly AbsArgumentDefinition[] | undefined>();
   const states = new Map([...blocks].map(([id, block]) => [id, canonicalJsonStringify(block.extraState ?? null)]));
+  const signatures = new Map([...blocks].filter(([id]) => contracts.procedures?.[id]?.family === 'custom-functions-v1')
+    .map(([id, block]) => [id, canonicalJsonStringify(readableExtraState(block, contracts))]));
   const common = <T>(type: string, key: string, value: (id: string) => T | undefined, otherwise: () => T | undefined): T | undefined => {
     const cacheKey = JSON.stringify([type, key]);
     if (!commonCache.has(cacheKey)) {
@@ -55,7 +65,7 @@ export function absSyntaxOptions(
         Object.hasOwn(fields ?? {}, name) ? [name, fields![name]] : [name]) ?? null]);
       if (ordersCache.has(cacheKey)) return ordersCache.get(cacheKey);
       const remember = (order: readonly AbsArgumentDefinition[] | undefined) => { ordersCache.set(cacheKey, order); return order; };
-      const ids = instances.get(type)?.filter(id => states.get(id) === state
+      const ids = instances.get(type)?.filter(id => (states.get(id) === state || signatures.get(id) === state)
         && (!selectors || selectors.every(name => !Object.hasOwn(fields ?? {}, name)
           || canonicalJsonStringify(blocks.get(id)?.fields?.[name]) === canonicalJsonStringify(fields![name]))));
       if (!ids?.length) return fallback.argumentOrder?.(type, extraState, fields);

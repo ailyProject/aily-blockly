@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { childScriptPath } = require('./child-script-path');
 const instanceId = randomUUID();
 let ownIdentity;
@@ -8,6 +8,55 @@ const fault = (code, message) => Object.assign(new Error(message), { code });
 const positivePid = value => Number.isSafeInteger(value) && value > 0;
 const same = (a, b) => a?.version === b?.version && a?.root === b?.root
   && ['dev', 'ino', 'birthtimeNs'].every(key => a?.identity?.[key] === b?.identity?.[key]);
+const markerToken = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const stagingProtocol = 'exclusive-link-v1';
+const stagingName = (directory, token) => path.join(directory, `.project-files.write.lock.${token}.tmp`);
+const plainMarker = stat => stat?.isFile() && !stat.isSymbolicLink() && stat.size <= 16384n;
+const sameMarker = (stat, original) => plainMarker(stat) && stat.dev === original.dev && stat.ino === original.ino
+  && stat.birthtimeNs === original.birthtimeNs;
+const changedMarker = () => fault('PROJECT_FILE_LOCK_CHANGED', 'Project lock ownership changed; retained the marker.');
+const busyMarker = () => fault('PROJECT_FILE_BUSY', 'Project writer lock is busy or its previous owner cannot be verified.');
+
+function markerStatAt(files, filename) {
+  try { return files.lstatSync(filename, { bigint: true }); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
+
+function assertMarkerBytes(files, filename, original, links, bytes) {
+  const stat = markerStatAt(files, filename);
+  if (!sameMarker(stat, original) || stat.nlink !== links || !files.readFileSync(filename).equals(bytes)) throw changedMarker();
+  return stat;
+}
+
+function readRetainedMarker(files, marker, stat) {
+  const bytes = files.readFileSync(marker);
+  let owner;
+  try { owner = JSON.parse(bytes.toString('utf8')); } catch { /* Retain unverified bytes. */ }
+  // An interrupted publication leaves only this one additional name for the
+  // inode. Any other hard-link arrangement cannot prove marker ownership.
+  let staged;
+  if (stat.nlink === 2n) {
+    if (owner?.version !== 2 || owner.publication !== stagingProtocol || typeof owner.token !== 'string'
+      || !markerToken.test(owner.token)) throw changedMarker();
+    staged = stagingName(path.dirname(marker), owner.token);
+    assertMarkerBytes(files, staged, stat, 2n, bytes);
+  }
+  return { bytes, owner, staged };
+}
+
+function removeRetainedMarker(files, marker, stat, { bytes, staged }, assertScope, archive) {
+  assertScope();
+  assertMarkerBytes(files, marker, stat, stat.nlink, bytes);
+  if (staged) {
+    assertMarkerBytes(files, staged, stat, 2n, bytes);
+    files.unlinkSync(staged);
+    assertMarkerBytes(files, marker, stat, 1n, bytes);
+  }
+  // Preserve the exact foreign record when the elected target guard authorizes
+  // a copied-lock retirement. Neither form touches any publication journal.
+  if (archive) files.renameSync(marker, archive);
+  else files.unlinkSync(marker);
+}
 
 function rootAttachment(root, files = fs) {
   const stat = files.lstatSync(root, { bigint: true });
@@ -82,7 +131,96 @@ function observeStorageExecutor(original, observer = storageExecutor()) {
   return current === original.processIdentity ? result('active', 'process-matched') : result('exited', 'process-reused');
 }
 
-/** The permanent native anchor serializes recovery, while the legacy wx marker
+function tryArchiveEmptyMarker(access, directory, marker, stat, assertScope) {
+  if (process.platform !== 'win32' || !access.attachment) return 'protected';
+  const { files } = access;
+  const parent = rootAttachment(directory, files);
+  if (!parent || parent.identity.dev !== access.attachment.identity.dev || typeof stat.birthtimeNs !== 'bigint')
+    throw changedMarker();
+  assertScope();
+  const current = markerStatAt(files, marker);
+  if (!current) return 'absent';
+  if (!sameMarker(current, stat) || current.nlink !== 1n || current.size !== 0n || current.birthtimeNs !== stat.birthtimeNs)
+    throw changedMarker();
+  const retire = require('./owned-process').runtime()?.binding.archiveEmptyProjectLock;
+  if (typeof retire !== 'function') return 'protected';
+  const { dev, ino, birthtimeNs } = parent.identity;
+  const result = retire(directory, randomUUID(), BigInt(dev), BigInt(ino), BigInt(birthtimeNs) / 100n,
+    current.ino, current.birthtimeNs / 100n);
+  if (result === 0) return 'archived';
+  if (result === 2) return 'absent'; // The older writer removed its own marker.
+  if (result === 5 || result === 32 || result === 33 || result === 50) return 'protected'; // Denied, in use, or unsupported filesystem.
+  throw changedMarker();
+}
+
+/** Warm-session recovery touches only the exact legacy marker, not any request,
+ * generation or publication. A busy native guard is never waited on here. */
+function retireEmptyProjectFileLock(access, guard, { attachment, marker: expected } = {}) {
+  const { root, files, checkRoot, checkDirectory } = access;
+  const directory = path.join(root, '.aily'), marker = path.join(directory, 'project-files.write.lock');
+  guard(); checkRoot();
+  if (!access.attachment || !same(attachment, access.attachment) || !expected || Object.keys(expected).length !== 2
+    || !['ino', 'birthtimeNs'].every(key => typeof expected[key] === 'string' && /^\d{1,25}$/.test(expected[key]))) throw changedMarker();
+  if (!markerStatAt(files, directory)) return false;
+  checkDirectory(directory);
+  const stat = markerStatAt(files, marker);
+  if (!stat || stat.size !== 0n) return false;
+  if (!plainMarker(stat) || stat.nlink !== 1n
+    || String(stat.ino) !== expected.ino || String(stat.birthtimeNs) !== expected.birthtimeNs) throw changedMarker();
+  const guardFile = path.join(directory, 'project-files.guard');
+  const native = require(childScriptPath('native-file-lock.js')).tryAcquireFileLock(guardFile);
+  if (!native) throw busyMarker();
+  try {
+    const outcome = tryArchiveEmptyMarker(access, directory, marker, stat, () => {
+      guard(); checkRoot(); checkDirectory(directory); native.assertHeld();
+    });
+    if (outcome === 'protected') throw busyMarker();
+    return outcome === 'archived';
+  } finally { native.close(); }
+}
+
+/** An already observed complete Lex marker may be removed before a new write.
+ * Recheck only that marker under the common guard, without publishing anything. */
+function retireProjectFileLock(access, guard, { attachment, marker: expected } = {}) {
+  const { root, files, checkRoot, checkDirectory } = access;
+  const directory = path.join(root, '.aily'), marker = path.join(directory, 'project-files.write.lock');
+  guard(); checkRoot();
+  if (!access.attachment || !same(attachment, access.attachment)) throw changedMarker();
+  const expectedFields = { token: markerToken, sha256: /^sha256:[a-f0-9]{64}$/, ino: /^\d{1,25}$/, birthtimeNs: /^\d{1,25}$/ };
+  if (!expected || Object.keys(expected).length !== Object.keys(expectedFields).length
+    || !Object.entries(expectedFields).every(([key, format]) => typeof expected[key] === 'string' && format.test(expected[key])))
+    throw changedMarker();
+  if (!markerStatAt(files, directory)) return false;
+  checkDirectory(directory);
+  const native = require(childScriptPath('native-file-lock.js')).tryAcquireFileLock(path.join(directory, 'project-files.guard'));
+  if (!native) throw busyMarker();
+  try {
+    const assertScope = () => { guard(); checkRoot(); checkDirectory(directory); native.assertHeld(); };
+    assertScope();
+    const parent = rootAttachment(directory, files);
+    if (!parent || parent.identity.dev !== attachment.identity.dev) throw changedMarker();
+    const stat = markerStatAt(files, marker);
+    if (!stat) return false;
+    if (!plainMarker(stat) || stat.size === 0n || (stat.nlink !== 1n && stat.nlink !== 2n)
+      || !(String(stat.dev) === parent.identity.dev || process.platform === 'win32' && stat.dev === 0n)
+      || String(stat.ino) !== expected.ino || String(stat.birthtimeNs) !== expected.birthtimeNs) throw changedMarker();
+    const observed = readRetainedMarker(files, marker, stat);
+    const { owner, bytes } = observed;
+    const { isSystemBootId } = require(childScriptPath('system-boot-id.js'));
+    if (owner?.version !== 2 || owner.producer !== 'lex' || owner.publication !== stagingProtocol
+      || !positivePid(owner.pid) || typeof owner.instanceId !== 'string' || !markerToken.test(owner.instanceId)
+      || !(owner.processIdentity === null || typeof owner.processIdentity === 'string'
+        && /^(win32|linux):\d+$/.test(owner.processIdentity) && owner.processIdentity.startsWith(process.platform + ':'))
+      || !(owner.bootId === null || isSystemBootId(owner.bootId) && owner.bootId.startsWith(process.platform + ':'))
+      || owner.attachment !== undefined || owner.token !== expected.token || !same(owner.workspace?.attachment, attachment)
+      || 'sha256:' + createHash('sha256').update(bytes).digest('hex') !== expected.sha256) throw changedMarker();
+    if (!ownerIsDead(owner, storageExecutor())) throw busyMarker();
+    removeRetainedMarker(files, marker, stat, observed, assertScope);
+    return true;
+  } finally { native.close(); }
+}
+
+/** The permanent native anchor serializes recovery, while the canonical marker
  * remains the common exclusion point for old and new writers. No timeout/PID
  * alone authorizes deleting the marker; an exact dead owner is checked while
  * the native anchor and physical project identity are held. */
@@ -92,24 +230,47 @@ async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) 
   guard(); checkRoot();
   try { files.mkdirSync(directory); } catch (error) { if (error.code !== 'EEXIST') throw error; }
   checkDirectory(directory);
-  const executor = storageExecutor(), attachment = access.attachment;
-  const owner = JSON.stringify({ version: 2, pid: process.pid, token: randomUUID(),
+  const executor = storageExecutor(), attachment = access.attachment, token = randomUUID();
+  const staged = stagingName(directory, token);
+  const owner = Buffer.from(JSON.stringify({ version: 2, pid: process.pid, token, publication: stagingProtocol,
     processIdentity: executor.processIdentity, bootId: executor.bootId, instanceId: executor.instanceId,
-    ...(attachment ? { attachment } : {}) });
+    ...(attachment ? { attachment } : {}) }));
   const deadline = Date.now() + timeoutMs;
-  let native, descriptor, markerStat;
-  const busy = () => fault('PROJECT_FILE_BUSY', 'Project writer lock is busy or its previous owner cannot be verified.');
+  let native, descriptor, preparedStat, markerStat;
   const wait = async () => {
-    if (Date.now() >= deadline) throw busy();
+    if (Date.now() >= deadline) throw busyMarker();
     await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
   };
-  const assertMarker = (checkContext = true) => {
+  const assertScope = (checkContext = true) => {
     if (checkContext) guard();
     checkRoot(); checkDirectory(directory); native.assertHeld();
-    const stat = files.lstatSync(marker);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !markerStat
-      || stat.dev !== markerStat.dev || stat.ino !== markerStat.ino || files.readFileSync(marker, 'utf8') !== owner)
-      throw fault('PROJECT_FILE_LOCK_CHANGED', 'Project lock ownership changed; retained the marker.');
+  };
+  const assertMarker = (checkContext = true) => {
+    assertScope(checkContext);
+    assertMarkerBytes(files, marker, markerStat, 1n, owner);
+  };
+  const publish = () => {
+    if (!preparedStat) {
+      descriptor = files.openSync(staged, 'wx', 0o600);
+      const opened = files.fstatSync(descriptor, { bigint: true });
+      const stat = markerStatAt(files, staged);
+      if (!plainMarker(stat) || !opened.isFile() || stat.ino !== opened.ino || stat.nlink !== 1n
+        || (stat.dev !== 0n && stat.dev !== opened.dev)) throw changedMarker();
+      preparedStat = stat;
+      files.writeFileSync(descriptor, owner);
+      files.fsyncSync(descriptor);
+    }
+    assertScope();
+    assertMarkerBytes(files, staged, preparedStat, 1n, owner);
+    // Link creation publishes only the fully written inode and is exclusive
+    // even against legacy writers that do not hold the native guard.
+    try { files.linkSync(staged, marker); }
+    catch (error) { if (error.code === 'EEXIST') return; throw error; }
+    markerStat = assertMarkerBytes(files, marker, preparedStat, 2n, owner);
+    assertMarkerBytes(files, staged, preparedStat, 2n, owner);
+    files.unlinkSync(staged);
+    preparedStat = undefined;
+    assertMarker();
   };
   try {
     const { tryAcquireFileLock } = require(childScriptPath('native-file-lock.js'));
@@ -118,16 +279,18 @@ async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) 
       native = tryAcquireFileLock(path.join(directory, 'project-files.guard'));
       if (!native) await wait();
     }
-    while (descriptor === undefined) {
-      guard(); checkRoot(); checkDirectory(directory); native.assertHeld();
-      try { descriptor = files.openSync(marker, 'wx', 0o600); }
-      catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        const stat = files.lstatSync(marker);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 16384)
-          throw fault('PROJECT_FILE_LOCK_CHANGED', 'Unsafe project lock marker was retained.');
-        const bytes = files.readFileSync(marker);
-        let previous; try { previous = JSON.parse(bytes.toString('utf8')); } catch { /* Retain unverified bytes. */ }
+    while (!markerStat) {
+      assertScope();
+      const stat = markerStatAt(files, marker);
+      if (!stat) publish();
+      else {
+        if (!plainMarker(stat) || (stat.nlink !== 1n && stat.nlink !== 2n)) throw changedMarker();
+        if (stat.size === 0n && stat.nlink === 1n) {
+          if (tryArchiveEmptyMarker(access, directory, marker, stat, assertScope) === 'protected') await wait();
+          continue;
+        }
+        const observed = readRetainedMarker(files, marker, stat);
+        const previous = observed.owner;
         const foreign = previous?.attachment && (!attachment || !same(previous.attachment, attachment));
         let archive;
         if (foreign) {
@@ -140,22 +303,10 @@ async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) 
             throw fault('PROJECT_FILE_LOCK_CHANGED', 'The retained lock belongs to an unverified original attachment or writer.');
           archive = copiedRecovery.archive();
         }
-        if (ownerIsDead(previous, executor)) {
-          guard(); checkRoot(); checkDirectory(directory); native.assertHeld();
-          const current = files.lstatSync(marker);
-          if (current.dev !== stat.dev || current.ino !== stat.ino || !files.readFileSync(marker).equals(bytes))
-            throw fault('PROJECT_FILE_LOCK_CHANGED', 'The observed lock changed before recovery.');
-          // Preserve the exact foreign record. Only this target's elected
-          // guard can retire its copied marker; the original path is untouched.
-          if (archive) files.renameSync(marker, archive);
-          else files.unlinkSync(marker);
-        } else await wait();
+        if (ownerIsDead(previous, executor)) removeRetainedMarker(files, marker, stat, observed, assertScope, archive);
+        else await wait();
       }
     }
-    markerStat = files.lstatSync(marker);
-    files.writeFileSync(descriptor, owner, 'utf8');
-    files.fsyncSync(descriptor);
-    assertMarker();
     let released = false;
     return {
       assertOwned: () => assertMarker(),
@@ -170,12 +321,26 @@ async function acquirePublicationLock(access, guard, timeoutMs, copiedRecovery) 
       },
     };
   } catch (error) {
+    try {
+      if (markerStat) {
+        assertScope(false);
+        const links = preparedStat ? 2n : 1n;
+        assertMarkerBytes(files, marker, markerStat, links, owner);
+        if (preparedStat) assertMarkerBytes(files, staged, preparedStat, links, owner);
+        files.unlinkSync(marker);
+      }
+      if (preparedStat) {
+        assertScope(false);
+        const stat = markerStatAt(files, staged);
+        if (sameMarker(stat, preparedStat) && stat.nlink === 1n) files.unlinkSync(staged);
+      }
+    } catch { /* Preserve unknown marker. */ }
     if (descriptor !== undefined) {
-      try { if (markerStat) { assertMarker(false); files.unlinkSync(marker); } } catch { /* Preserve unknown marker. */ }
       try { files.closeSync(descriptor); } catch { /* Original error wins. */ }
     }
     native?.close(); throw error;
   }
 }
 
-module.exports = { rootAttachment, storageExecutor, acquirePublicationLock, ownerIsDead, observeStorageExecutor };
+module.exports = { rootAttachment, storageExecutor, acquirePublicationLock, ownerIsDead, observeStorageExecutor,
+  retireEmptyProjectFileLock, retireProjectFileLock };

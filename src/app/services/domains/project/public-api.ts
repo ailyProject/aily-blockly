@@ -1,4 +1,5 @@
 export * from './coder/coder-board-resolution';
+export { BoardAuthPromptService } from './board-auth-prompt.service';
 export { coderSourceDirectory, CODER_BOARD_REQUIRED_MESSAGE } from './coder/arduino-sketch';
 export * from './coder/coder-project-create-operation';
 export * from './coder/coder-project-template';
@@ -21,6 +22,7 @@ export * from './operations/project-creation-workflow';
 export * from './project-root-path';
 export * from './project-view-ownership';
 export * from './project-package-name';
+export { AILY_CLOUD_IGNORE_FILE } from './aily-cloud-ignore-file';
 export * from './project-save-outcome';
 export * from './project-save-receipts';
 export * from './project-conflict';

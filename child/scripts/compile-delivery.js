@@ -9,6 +9,7 @@ const { confirmBuildSource, confirmPreparedBuildSource, sourceManifest } = requi
 const { readBuildInputRecordBinding } = require('./build-input-record');
 const { readBuildInputContextBinding } = require('./build-input-context');
 const { isProjectCoordinationFile } = require('./project-coordination-files');
+const { blocklyProjectBuildInputs } = require('./blockly-project-build-inputs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(`PROJECT_INPUTS_CHANGED: ${message}`); };
 const state = stat => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
@@ -51,6 +52,10 @@ function invalidateBuildDelivery(root) {
 function captureProjectSources(config) {
     const root = fs.realpathSync(config.currentProjectPath);
     const coder = project.isAilyCodeProjectRoot(root);
+
+    const sharedInputs = config.execution?.layout === 'shared'
+        ? new Set(['package.json', ...blocklyProjectBuildInputs(root)]) : null;
+
     const records = [], states = [];
     let bytes = 0;
     // Product-owned logs and history objects change while Agent/build work runs;
@@ -58,7 +63,8 @@ function captureProjectSources(config) {
     // remain guarded, including arbitrary root headers and Coder local libraries.
     // The permanent native lock anchor is coordination, not source. Reading it
     // through a second Windows handle conflicts with our own held byte lock.
-    const excluded = relative => relative === '.aily/build-workspace.guard'
+    const excluded = relative => (sharedInputs && relative && !sharedInputs.has(relative.split('/')[0]))
+        || relative === '.aily/build-workspace.guard'
         || ['.git', '.temp', '.build', '.log', '.workspace-history', 'node_modules', '.aily/build'].some(name => relative === name || relative.startsWith(name + '/'))
         // The Coder host rewrites this exact derived output/SDK-view hint when
         // the editor refreshes. Firmware compilation reads package/board/source

@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const isWindowsSharingError = error => process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(error.code);
 
 /** Keep the previous file visible while Windows readers briefly hold it open. */
 function renameForAtomicReplace(source, target, assertOwned = () => {}) {
@@ -11,8 +12,7 @@ function renameForAtomicReplace(source, target, assertOwned = () => {}) {
         catch (error) {
             // The renderer also imports the receipt reader. Chromium may
             // disable shared memory there, while the managed build Node can wait.
-            if (process.platform !== 'win32' || attempt >= 4
-                || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code)
+            if (!isWindowsSharingError(error) || attempt >= 4
                 || typeof SharedArrayBuffer !== 'function') throw error;
             waitBuffer ??= new Int32Array(new SharedArrayBuffer(4));
             Atomics.wait(waitBuffer, 0, 0, 20 * (2 ** attempt));
@@ -20,4 +20,15 @@ function renameForAtomicReplace(source, target, assertOwned = () => {}) {
     }
 }
 
-module.exports = { renameForAtomicReplace };
+/** A stopped build's historical files can outlive the one admission that retired them. */
+function retryDeferredWindowsFile(attempt, delay = 250) {
+    if (delay > 16000) return;
+    setTimeout(() => {
+        try { if (attempt() === false) retryDeferredWindowsFile(attempt, delay * 2); }
+        catch (error) {
+            if (isWindowsSharingError(error)) retryDeferredWindowsFile(attempt, delay * 2);
+        }
+    }, delay).unref();
+}
+
+module.exports = { renameForAtomicReplace, isWindowsSharingError, retryDeferredWindowsFile };

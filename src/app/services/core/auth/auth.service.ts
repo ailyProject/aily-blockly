@@ -1,7 +1,7 @@
 import { Injectable, inject, ApplicationRef } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { BehaviorSubject, Observable, ReplaySubject, Subject, TimeoutError, throwError, from, firstValueFrom } from 'rxjs';
-import { catchError, map, switchMap, timeout } from 'rxjs/operators';
+import { catchError, first, map, switchMap, timeout } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
 import { ElectronService } from '@core/platform/public-api';
 import { createApiError, extractApiErrorDetails } from '../../../utils/api-error.utils';
@@ -13,6 +13,7 @@ import type {
 } from './models/auth-snapshot';
 import { isDetachedAilyChatRenderer } from './policies/detached-aily-chat-auth';
 import { normalizeCreditLedgerSnapshot } from './models/auth-credit-snapshot';
+import { HostCredentialOperationError, invokeHostCredential } from './bridges/host-credential-ipc';
 
 export interface CommonResponse {
   status: number;
@@ -166,6 +167,7 @@ export class AuthService {
   private readonly authRequestTimeoutMs = 12000;
   private readonly authQuotaRequestTimeoutMs = 8000;
   private authInitializationPromise: Promise<void> | null = null;
+  private authInitializationCredentialFailure?: HostCredentialOperationError;
   private readonly authInitializationStateSubject = new BehaviorSubject<AuthInitializationState>('idle');
   readonly authInitializationState$ = this.authInitializationStateSubject.asObservable();
 
@@ -250,7 +252,7 @@ export class AuthService {
   /**
    * 初始化认证状态 - 需要在ElectronService初始化后调用
    */
-  initializeAuth(): Promise<void> {
+  initializeAuth(waitFor: 'snapshot' | 'identity' = 'snapshot'): Promise<void> {
     if (isDetachedAilyChatRenderer()) {
       if (this.authInitializationStateSubject.value === 'idle') {
         this.authInitializationStateSubject.next('unavailable');
@@ -258,23 +260,28 @@ export class AuthService {
       return Promise.resolve();
     }
 
-    if (this.authInitializationPromise) {
-      return this.authInitializationPromise;
+    if (!this.authInitializationPromise) {
+      const operation = this.performAuthInitialization();
+      this.authInitializationPromise = operation;
+      const clearOperation = () => {
+        if (this.authInitializationPromise === operation) this.authInitializationPromise = null;
+      };
+      void operation.then(clearOperation, clearOperation);
     }
-
-    const operation = this.performAuthInitialization();
-    this.authInitializationPromise = operation;
-    const clearOperation = () => {
-      if (this.authInitializationPromise === operation) {
-        this.authInitializationPromise = null;
-      }
-    };
-    void operation.then(clearOperation, clearOperation);
-    return operation;
+    if (waitFor === 'identity') {
+      return firstValueFrom(this.authInitializationState$.pipe(
+        first(state => state !== 'idle' && state !== 'checking'), map(() => undefined),
+      ));
+    }
+    return this.authInitializationPromise;
   }
 
   getAuthInitializationState(): AuthInitializationState {
     return this.authInitializationStateSubject.value;
+  }
+
+  getAuthInitializationCredentialFailure(): HostCredentialOperationError | undefined {
+    return this.authInitializationCredentialFailure;
   }
 
   /** Apply the main renderer's token-free state inside a detached Aily Chat shell. */
@@ -295,29 +302,30 @@ export class AuthService {
   }
 
   private async performAuthInitialization(): Promise<void> {
+    this.authInitializationCredentialFailure = undefined;
     this.authInitializationStateSubject.next('checking');
-    try {
-      const token = await this.getToken2();
-      if (!token) {
-        this.isLoggedInSubject.next(false);
-        this.authInitializationStateSubject.next('signed_out');
-        return;
+    while (this.getAuthInitializationState() === 'checking') {
+      const generation = this.authCredentialGeneration;
+      const current = () => this.getAuthInitializationState() === 'checking' && generation === this.authCredentialGeneration;
+      try {
+        const token = await this.getToken2();
+        const userInfo = token ? await this.getVerifiedProfile(token) : null;
+        if (!current()) continue;
+        if (userInfo) this.setCurrentUserInfo(userInfo);
+        this.isLoggedInSubject.next(!!userInfo);
+        this.authInitializationStateSubject.next(userInfo ? 'authenticated' : 'signed_out');
+        if (userInfo) await this.hydrateUserCredits(token!, userInfo, true);
+      } catch (error) {
+        if (!current()) continue;
+        if (error instanceof HostCredentialOperationError) this.authInitializationCredentialFailure = error;
+        if (isAuthCredentialError(error)) {
+          this.isLoggedInSubject.next(false);
+          this.authInitializationStateSubject.next('signed_out');
+        } else {
+          // Offline credentials stay available to local features.
+          this.authInitializationStateSubject.next('unavailable');
+        }
       }
-
-      const userInfo = await this.getMe(token);
-      const authenticated = !!userInfo;
-      this.isLoggedInSubject.next(authenticated);
-      this.authInitializationStateSubject.next(authenticated ? 'authenticated' : 'signed_out');
-    } catch (error) {
-      if (isAuthCredentialError(error)) {
-        this.isLoggedInSubject.next(false);
-        this.authInitializationStateSubject.next('signed_out');
-        return;
-      }
-
-      // Network and timeout failures do not invalidate locally stored
-      // credentials. Remote capability owns the unavailable/offline surface.
-      this.authInitializationStateSubject.next('unavailable');
     }
   }
 
@@ -453,6 +461,11 @@ export class AuthService {
    * 获取当前登录用户信息
    */
   private async getMe(token: string): Promise<AuthUserInfo | null> {
+    const userInfo = await this.getVerifiedProfile(token);
+    return userInfo && this.hydrateUserCredits(token, userInfo);
+  }
+
+  private async getVerifiedProfile(token: string): Promise<AuthUserInfo | null> {
     const response = await firstValueFrom(this.http.get<CommonResponse>(API.me, {
       headers: { Authorization: `Bearer ${token}` },
     }).pipe(timeout(this.authRequestTimeoutMs)));
@@ -461,21 +474,27 @@ export class AuthService {
       throw createApiError(response, '获取用户信息失败');
     }
 
-    const userData = this.mergeCurrentGithubInfo(response.data);
+    return this.mergeCurrentGithubInfo(response.data);
+  }
+
+  private async hydrateUserCredits(token: string, userData: AuthUserInfo, identityPublished = false): Promise<AuthUserInfo | null> {
     this.clearPendingAuthQuotaInfoSnapshotRetry();
+    const generation = this.authCredentialGeneration;
+    let snapshot: AuthQuotaInfoSnapshot | null = null;
+    let retry = false;
     try {
-      const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
-      if (this.authSessionInvalidating) return null;
-      this.setCurrentUserInfo(userData, quotaInfoSnapshot);
+      snapshot = await this.getAuthQuotaInfoSnapshot(token);
     } catch (quotaError) {
       if (this.authSessionInvalidating) return null;
       console.warn('Credit 额度快照刷新失败，保留同账号已确认的额度:', quotaError);
-      this.setCurrentUserInfo(userData, null);
-      if (isRetryableCreditRequestError(quotaError)
-        && !this.authQuotaInfoSnapshotOverride?.creditSnapshot) {
-        this.scheduleAuthQuotaInfoSnapshotRetry(token, userData);
-      }
+      retry = isRetryableCreditRequestError(quotaError);
     }
+    // The initial profile is already visible. A late balance belongs only to
+    // that exact published profile and credential generation.
+    if (this.authSessionInvalidating || identityPublished && (this.currentUser !== userData
+      || this.authCredentialGeneration !== generation)) return null;
+    this.setCurrentUserInfo(userData, snapshot);
+    if (retry && !this.authQuotaInfoSnapshotOverride?.creditSnapshot) this.scheduleAuthQuotaInfoSnapshotRetry(token, userData);
     return userData;
   }
 
@@ -708,10 +727,10 @@ export class AuthService {
     if (!token.trim()) throw new Error('Access token cannot be empty');
     const previousAccessToken = await this.getToken2();
     if (this.authBridge) {
-      const saved = await this.authBridge.write(
+      const saved = await invokeHostCredential<boolean>(() => this.authBridge.write(
         { access_token: token, refresh_token: refreshToken },
         expectedRefreshToken,
-      );
+      ));
       if (!saved) return false;
     } else {
       if (expectedRefreshToken !== undefined && await this.getRefreshToken() !== expectedRefreshToken) return false;
@@ -725,21 +744,25 @@ export class AuthService {
 
   private async getRefreshToken(): Promise<string | null> {
     if (isDetachedAilyChatRenderer()) return null;
-    if (this.authBridge) return (await this.authBridge.read()).refresh_token || null;
+    if (this.authBridge) return (await this.readHostCredentials()).refresh_token || null;
     return localStorage.getItem(this.REFRESH_TOKEN_KEY);
   }
 
   async getToken2(): Promise<string | null> {
     if (isDetachedAilyChatRenderer()) return null;
-    if (this.authBridge) return (await this.authBridge.read()).access_token || null;
+    if (this.authBridge) return (await this.readHostCredentials()).access_token || null;
     return localStorage.getItem('aily_auth_token');
+  }
+
+  private readHostCredentials(): Promise<{ access_token?: string; refresh_token?: string }> {
+    return invokeHostCredential(() => this.authBridge.read());
   }
 
   /** Clear the shared credentials only if an optional rejected token still matches. */
   async clearAuthDataFile(throwOnError = false, expectedAccessToken?: string | null): Promise<boolean> {
     if (isDetachedAilyChatRenderer()) return true;
     try {
-      if (this.authBridge) return await this.authBridge.clear(expectedAccessToken) !== false;
+      if (this.authBridge) return await invokeHostCredential<boolean>(() => this.authBridge.clear(expectedAccessToken)) !== false;
       else {
         if (expectedAccessToken !== undefined) {
           const currentToken = await this.getToken2();
@@ -851,12 +874,9 @@ export class AuthService {
     return this.authSnapshotSubject.value;
   }
 
-  /** 云编译只对当前已登录的 Pro 账号开放，不能依赖磁盘中保留的编译偏好。 */
+  /** 云编译要求当前登录会话有效。 */
   get canUseCloudCompilation(): boolean {
-    if (!this.isAuthenticated || this.authSessionInvalidating) return false;
-    const snapshot = this.getAuthSnapshot();
-    const plan = snapshot?.quotaInfoSnapshot?.creditSnapshot?.subscription_plan ?? snapshot?.plan;
-    return /^pro(?:$|[_+ -])/i.test(plan?.trim() ?? '');
+    return this.isAuthenticated && !this.authSessionInvalidating;
   }
 
   async refreshAuthToken(): Promise<boolean> {
@@ -896,7 +916,8 @@ export class AuthService {
       // Another instance may have signed in or rotated credentials while this request ran.
       return saved || !!(await this.getToken2());
     } catch (error) {
-      console.warn('刷新 token 失败:', error);
+      if (error instanceof HostCredentialOperationError) throw error;
+      console.warn('[AUTH_REFRESH_REQUEST_FAILED]', error instanceof HttpErrorResponse ? error.status : undefined);
       if (await this.getRefreshToken() !== refreshToken) return !!(await this.getToken2());
       return false;
     }

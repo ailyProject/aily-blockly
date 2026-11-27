@@ -9,7 +9,7 @@ const { normalizeExtractedSourceDirectory, processLibrariesParallel } = require(
 const outputRoot = process.env.AILY_PREPROCESS_ARCHIVE_TEST_ROOT
     ? path.resolve(process.env.AILY_PREPROCESS_ARCHIVE_TEST_ROOT)
     : path.resolve(__dirname, 'test-results/serial-dropdown-analysis-20261028/archive-tests');
-const za7Path = path.resolve(__dirname, '../child/7za.exe');
+const za7Path = path.resolve(process.env.AILY_PREPROCESS_ARCHIVE_TEST_EXTRACTOR ?? path.join(__dirname, '../child/7za.exe'));
 const supported = process.platform === 'win32' && fs.existsSync(za7Path);
 
 // Keep failure injection local to this module instance; production filesystem
@@ -58,8 +58,8 @@ function fixture(t, { junction = false, nested = false } = {}) {
     const libraries = path.join(root, 'project/.temp/libraries');
     return {
         root, packageName, logicalPackage, physicalPackage, archive, archiveBytes, libraries,
-        run: (preprocess = { processLibrariesParallel }) => preprocess.processLibrariesParallel(
-            [packageName], libraries, path.join(root, 'project'), za7Path, false, {}
+        run: (preprocess = { processLibrariesParallel }, shared = false) => preprocess.processLibrariesParallel(
+            [packageName], libraries, path.join(root, 'project'), za7Path, false, {}, undefined, shared
         ),
     };
 }
@@ -76,6 +76,26 @@ for (const junction of [false, true]) {
         });
     }
 }
+
+test('shared build extracts linked packages into project cache, not into author inputs', { skip: !supported }, async t => {
+    const f = fixture(t, { junction: true });
+    assert.deepEqual(await f.run(undefined, true), ['lib-archive-fixture']);
+    assert.equal(fs.existsSync(path.join(f.physicalPackage, 'src')), false);
+    assert.deepEqual(fs.readFileSync(f.archive), f.archiveBytes);
+    const archives = path.join(path.dirname(f.libraries), 'library-archives');
+    const [cacheId] = fs.readdirSync(archives);
+    assert.match(cacheId, /^[a-f0-9]{20}$/);
+    const cached = path.join(archives, cacheId, 'src/ArchiveFixture.h');
+    const materialized = path.join(f.libraries, 'lib-archive-fixture/ArchiveFixture.h');
+    fs.writeFileSync(materialized, 'temporary change');
+    assert.equal(fs.readFileSync(cached, 'utf8'), '#pragma once\n');
+    fs.writeFileSync(cached, 'invalid archive extraction cache');
+    assert.deepEqual(await f.run(undefined, true), ['lib-archive-fixture']);
+    assert.equal(fs.readFileSync(cached, 'utf8'), '#pragma once\n');
+    assert.equal(fs.readFileSync(materialized, 'utf8'), '#pragma once\n');
+    assert.deepEqual(fs.readdirSync(archives), [cacheId]);
+    assertNoExtractionResidue(f);
+});
 
 test('archive failure leaves the original inputs intact and does not publish partial source', { skip: !supported }, async t => {
     const f = fixture(t, { junction: true });

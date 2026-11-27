@@ -23,10 +23,11 @@ import { persistBuildResult } from './build-result-snapshot';
 import { capturedBuildInput, type BuildInput } from './build-input';
 import { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogReference } from './project-build-log';
 import { buildCancelledResult } from './build-cancellation';
-import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
+import { writeBuildRequest, buildSourceStale, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
 import { createSimulatorSceneGpioBuildMetadata } from '../../../integrations/simulator/simulator-scene-gpio-build-metadata';
-import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import type { CloudBoardProfile } from '../../../utils/cloud-build-settings.utils';
+import { canRetryCloudBuildLocally, isUnsupportedCloudBuild, runCloudBuildWithProgress, cloudBuildProgressPresentation, type BuildLocalFallbackControl, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 
@@ -60,11 +61,12 @@ export interface DiskCompileOptions {
   signal?: AbortSignal;
   graphSemanticRevision?: string;
   sceneDocument?: SceneEditorDocumentV2;
+  localFallback?: BuildLocalFallbackControl;
 }
 
 interface DiskCompileResult {
   success: boolean;
-  result: BuildActionState & { fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildOutcome?: string; buildInput?: BuildInput };
+  result: BuildActionState & { fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildOutcome?: string; buildInput?: BuildInput; code?: string };
 }
 
 interface DiskCompileProgressState {
@@ -85,6 +87,7 @@ interface OneShotCommandResult {
 interface DiskCompileContext {
   cloud: boolean;
 
+  assertCloudFailureSource?: () => Promise<void>;
   retryLocally?: () => void;
 
   settingsKey?: string;
@@ -197,6 +200,10 @@ export class CompileService {
     return this.compileAttemptWithBackend(options);
   }
 
+  runLocalCompileFromDisk(projectPath: string): Promise<DiskCompileResult> {
+    return this.compileAttemptWithBackend({ projectPath }, true);
+  }
+
   private async compileAttemptWithBackend(options: DiskCompileOptions, retryLocally = false): Promise<DiskCompileResult> {
     options = { ...options, requestId: options.requestId ?? crypto.randomUUID() };
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
@@ -262,7 +269,7 @@ export class CompileService {
         && this.configService.getCompileSettingsKey() === context.settingsKey,
       canStart: () => ['IDLE', 'ERROR'].includes(this.application.currentProcessState),
       retry: async () => {
-        const outcome = await this.compileAttemptWithBackend({ ...options, projectPath: root, requestId: undefined }, true);
+        const outcome = await this.compileAttemptWithBackend({ ...options, projectPath: root, requestId: undefined, localFallback: undefined }, true);
 
         if (!options.preprocessOnly) persistBuildResult(root, outcome.success, outcome.result, undefined, undefined, 'manual');
 
@@ -302,16 +309,52 @@ export class CompileService {
 
       context.backendOperation = this.projectService.beginBuildBackendOperation(root);
 
-      if (retryLocally) {
-        context.backendOperation.useLocal();
+      const fallback = options.localFallback?.local;
 
-        context.cloud = false;
+      if (fallback) {
+        if (!context.cloud || context.backendOperation.isNested || options.preprocessOnly || options.graphSemanticRevision || options.recordProjectDelivery) {
+          throw Object.assign(new Error('The local fallback no longer belongs to an active cloud compile.'),
+            { code: 'BUILD_FALLBACK_UNAVAILABLE', buildOutcome: 'not-started' });
+        }
 
-        await this.npmService.prepareLocalCompileBackend(root, () => this.cancelled, () => this.cancel());
+        await fallback.assertCurrent();
+        capture.append(`AI requested local compilation after cloud build ${fallback.fromRequestId}.\n`);
+        await this.switchCloudCompileToLocal(root, context);
+        await fallback.assertCurrent();
+      } else if (retryLocally) {
+        await this.switchCloudCompileToLocal(root, context);
       }
 
-      if (this.configService.getCompileBackend() === 'cloud') {
-        await this.npmService.prepareCompileBackend(root, () => this.cancelled);
+      if (context.cloud && !context.backendOperation.isNested && !options.preprocessOnly && !options.graphSemanticRevision
+        && !options.recordProjectDelivery && options.localFallback?.recordCloudFailure) {
+        try {
+          const boardModule = await this.resolveBoardModule(root);
+
+          if (!boardModule) throw new Error('The Coder board is unavailable.');
+
+          const boardFiles = ['package.json', 'board.json'].map(name =>
+            this.electronService.pathJoin(root, 'node_modules', boardModule, name));
+
+          const assertBoard = captureBuildRequestGuard(() => boardFiles.map(file => window['fs'].readFileSync(file, 'utf8')));
+          const codeHash = await this.coderBuildInfo.calculateCodeHash(root);
+
+          context.assertCloudFailureSource = async () => {
+            const current = () => projectCurrent() && this.configService.getCompileBackend() === 'cloud'
+              && context.settingsKey === this.configService.getCompileSettingsKey();
+
+            if (!current()) throw buildSourceStale('project', 'The project or compile settings changed after the cloud failure.');
+
+            if (await this.coderBuildInfo.calculateCodeHash(root) !== codeHash || !current()) {
+              throw buildSourceStale('inputs', 'The Coder source changed after the cloud failure.');
+            }
+
+            assertBoard();
+          };
+        } catch { /* Failure to capture an exact source only withholds the fallback offer. */ }
+      }
+
+      if (!fallback && !retryLocally && this.configService.getCompileBackend() === 'cloud') {
+        await this.npmService.prepareCompileBackend(root, () => this.cancelled, !!context.assertCloudFailureSource);
 
         if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
 
@@ -329,7 +372,7 @@ export class CompileService {
         return { success: false, result: { state: 'error', text: 'PROTOCOL_UNSUPPORTED: Cloud compilation does not support simulator or delivery builds.' } };
       }
 
-      if (context.cloud || retryLocally) {
+      if (context.cloud || retryLocally || fallback) {
         const blocked = await this.checkCompileDependencies(root, context.cloud);
 
         if (blocked) return blocked;
@@ -338,7 +381,11 @@ export class CompileService {
       // Keep the root captured at submission, even if the UI switches projects.
       return await this.runCompile(root, options, context, { projectPath, projectSessionId });
     } catch (error: any) {
-      const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
+      const unsupported = !this.cancelled && context.cloud && isUnsupportedCloudBuild(error);
+      const detail = error?.fullStdErr || error?.message || String(error);
+
+      const text = this.cancelled ? this.t('CANCELLED_TITLE') : unsupported
+        ? this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE') : error?.message || String(error);
 
       if (this.cancelled && !options.preprocessOnly) {
         await Promise.all([this.stopPending, this.localSwitchPending]);
@@ -348,9 +395,15 @@ export class CompileService {
       this.application.finishBuild(false, text);
 
       if (this.cancelled) this.updateCancelledNotice(text);
-      else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
+      else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail, context.cloud ? context.retryLocally : undefined);
+
+      if (!this.cancelled && context.cloud && context.assertCloudFailureSource) {
+        options.localFallback?.recordCloudFailure?.(error, context.assertCloudFailureSource);
+      }
 
       return { success: false, result: this.cancelled ? buildCancelledResult(text) : { state: 'error', text,
+        ...(unsupported ? { fullStdErr: detail } : {}),
+        ...(typeof error?.code === 'string' ? { code: error.code } : {}),
         ...(error?.buildOutcome ? { buildOutcome: error.buildOutcome } : {}) } };
     } finally {
       options.signal?.removeEventListener('abort', cancelOriginal);
@@ -371,6 +424,23 @@ export class CompileService {
     } finally { if (this.activeBuildLog === capture) this.activeBuildLog = undefined; }
   }
 
+  private async switchCloudCompileToLocal(root: string, context: DiskCompileContext): Promise<void> {
+    if (this.cancelled) throw new Error('Build cancelled.');
+
+    if (root !== this.projectService.currentProjectPath || context.settingsKey !== this.configService.getCompileSettingsKey()) {
+      throw new Error('BUILD_SOURCE_STALE: Cloud build settings or the active project changed; build again.');
+    }
+
+    context.backendOperation!.useLocal();
+
+    context.cloud = false;
+
+    this.application.updateNotice({ title: this.t('PREPARING_TITLE'),
+      text: this.translate.instant('CLOUD_BUILD.PREPARING_LOCAL'), state: 'doing', progress: 0,
+      setTimeout: 0, stop: () => this.cancel() });
+    await this.npmService.prepareLocalCompileBackend(root, () => this.cancelled, () => this.cancel());
+  }
+
   private async checkCompileDependencies(root: string, cloud = false) {
     const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
 
@@ -384,9 +454,11 @@ export class CompileService {
       if (!cloud) await this.npmService.ensureLocalCompilerDependencies(root);
 
       if (this.configService.isCoderProduct()) {
-        await this.npmService.assertCoderDependenciesReady(root);
+        await this.npmService.assertCoderDependenciesReady(root, cloud ? 'cloud-build' : 'build');
       }
     } catch (error) {
+      if (cloud && canRetryCloudBuildLocally(error)) throw error;
+
       const text = error instanceof Error ? error.message : String(error);
 
       this.message.warning(text);
@@ -401,6 +473,10 @@ export class CompileService {
   ): Promise<DiskCompileResult> {
     const packagePath = this.electronService.pathJoin(root, 'package.json');
     const isAilyCodeProject = this.projectService.isAilyCodeProject(root);
+
+    const bufferIsSaved = isAilyCodeProject && !options.preprocessOnly
+      ? this.application.captureCoderBuildBuffer?.(root) : undefined;
+
     const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
 
     if (source.success === false) {
@@ -414,9 +490,15 @@ export class CompileService {
     let compiledHash: string | undefined;
     let buildStatus: 'success' | 'failed' = 'failed';
     let finishReason: string | undefined;
-    const cloudOrigin = context.cloud;
+    const cloudOrigin = context.cloud || options.localFallback?.local !== undefined;
 
     try {
+      const assertBufferCurrent = async () => {
+        if (bufferIsSaved && !await bufferIsSaved().catch(() => false) && !this.cancelled) {
+          throw buildSourceStale('inputs', 'The Coder editor changed during compilation or could not be checked. Save and build again.');
+        }
+      };
+
       const assertCloudContext = () => {
         if (!cloudOrigin) return;
 
@@ -453,25 +535,24 @@ export class CompileService {
       }
 
       const boardName = boardModule.replace('@aily-project/board-', '').replace('@aily-project/coder-', '');
-      let cloudProfile: Awaited<ReturnType<ProjectService['getCloudBoardProfile']>> | undefined;
+      const action = options.preprocessOnly ? 'analysis' : 'compile';
+      let cloudProfile: CloudBoardProfile | undefined;
 
       // 云模式按目标能力准备源码和元数据，不检查或安装本机编译器路径。
       if (context.cloud) {
         await this.npmService.ensureCloudLibrarySources(root);
         assertManifest(); assertCloudContext();
 
-        cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true });
+        cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true, compileAction: action });
 
         assertManifest(); assertCloudContext();
 
-        if (cloudProfile.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
+        if (context.cloud && cloudProfile?.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
 
-        const action = options.preprocessOnly ? 'analysis' : 'compile';
+        if (context.cloud && cloudProfile?.capabilities?.[action] !== true) {
+          if (options.preprocessOnly) throw new Error('当前云编译节点不支持预处理/代码分析，请选择支持 analysis 的节点。');
 
-        if (cloudProfile['capabilities']?.[action] !== true) {
-          throw new Error(options.preprocessOnly
-            ? '当前云编译节点不支持预处理/代码分析，请选择支持 analysis 的节点。'
-            : '当前云编译节点不支持 compile。');
+          throw Object.assign(new Error('This cloud target does not support compilation.'), { code: 'CLOUD_COMPILE_UNSUPPORTED' });
         }
       }
 
@@ -527,7 +608,7 @@ export class CompileService {
 
       if (this.cancelled) throw new Error('Build cancelled before launch.');
 
-      let allowCloudSwitch = cloudOrigin;
+      let allowCloudSwitch = context.cloud;
 
       const localSwitch = {
         boardName,
@@ -546,23 +627,18 @@ export class CompileService {
             let result: any;
 
             try {
+              await assertBufferCurrent();
+              assertCloudContext(); assertManifest();
+
+              if (this.cancelled) throw new Error('Build cancelled before launch.');
+
               result = await this.runCloudCompile(root, { ...buildConfig, sourceCapture }, context.settings!,
-                cloudProfile!.profileDigest, options.preprocessOnly ? 'analysis' : 'compile', boardName, context.settingsKey);
+                cloudProfile!, action, boardName, context.settingsKey);
             } catch (error) {
               if (error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
 
               assertCloudContext(); assertManifest();
-
-              if (this.cancelled) throw new Error('Build cancelled.');
-
-              context.backendOperation!.useLocal();
-
-              context.cloud = false;
-
-              this.application.updateNotice({ title: this.t('PREPARING_TITLE'),
-                text: this.translate.instant('CLOUD_BUILD.PREPARING_LOCAL'), state: 'doing', progress: 0,
-                setTimeout: 0, stop: () => this.cancel() });
-              await this.npmService.prepareLocalCompileBackend(root, () => this.cancelled, () => this.cancel());
+              await this.switchCloudCompileToLocal(root, context);
               assertCloudContext(); assertManifest();
 
               ailyBuilderPath = window['path'].getAilyBuilderPath();
@@ -574,6 +650,7 @@ export class CompileService {
             }
 
             if (result) {
+              await assertBufferCurrent();
               assertCloudContext(); assertManifest();
 
               if (this.cancelled) throw new Error('Cloud build cancelled.');
@@ -618,6 +695,8 @@ export class CompileService {
             write: (filename, text) => window['fs'].writeFileSync(filename, text),
           });
 
+          await options.localFallback?.local?.assertCurrent();
+          await assertBufferCurrent();
           assertManifest();
           assertCloudContext();
 
@@ -708,6 +787,8 @@ export class CompileService {
 
           const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
 
+          if (!this.cancelled) await assertBufferCurrent();
+
           if (this.cancelled) {
             finishReason = 'Cancelled';
 
@@ -721,6 +802,13 @@ export class CompileService {
 
           if (cmp.exitCode !== 0) {
             const detail = cmp.combined || cmp.stderr + cmp.stdout;
+
+            if (isAilyCodeProject && /\bBUILD_SOURCE_STALE:/.test(detail)) {
+              throw Object.assign(buildSourceStale('inputs', 'The Coder build inputs changed. Save and build again.'), {
+                fullStdErr: detail, buildOutputAlreadyLogged: true,
+              });
+            }
+
             finishReason = 'Compile failed';
 
             const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
@@ -766,24 +854,30 @@ export class CompileService {
           assertCloudContext(); assertManifest();
 
           if (context.cloud) {
-            cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true });
+            cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true, compileAction: action });
 
             assertCloudContext(); assertManifest();
 
-            if (cloudProfile.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
+            if (cloudProfile?.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
 
-            if (cloudProfile.capabilities?.[options.preprocessOnly ? 'analysis' : 'compile'] !== true) {
-              throw new Error('This cloud target does not support the requested build action.');
+            if (cloudProfile?.capabilities?.[action] !== true) {
+              if (options.preprocessOnly) throw new Error('This cloud target does not support the requested build action.');
+
+              throw Object.assign(new Error('This cloud target does not support compilation.'), { code: 'CLOUD_COMPILE_UNSUPPORTED' });
             }
           } else {
-            context.backendOperation!.useLocal();
+            if (!context.backendOperation!.local) context.backendOperation!.useLocal();
 
             allowCloudSwitch = false;
           }
         }
       }
     } catch (e: any) {
-      const msg = e?.message || String(e);
+      const rawMessage = e?.message || String(e);
+      const stale = isAilyCodeProject && e?.code === 'BUILD_SOURCE_STALE';
+
+      const msg = stale ? this.t('SOURCE_STALE.inputs') : context.cloud && isUnsupportedCloudBuild(e)
+        ? this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE') : rawMessage;
 
       buildStatus = 'failed';
       finishReason = this.cancelled ? 'Cancelled' : msg;
@@ -799,11 +893,14 @@ export class CompileService {
 
       this.message.error(msg);
 
-      const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : msg;
+      const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : rawMessage;
 
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud && !stale ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
 
-      return { success: false, result: { state: 'error', text: msg, fullStdErr: detail } };
+      if (context.cloud && context.assertCloudFailureSource) options.localFallback?.recordCloudFailure?.(e, context.assertCloudFailureSource);
+
+      return { success: false, result: { state: 'error', text: msg, fullStdErr: detail,
+        ...(typeof e?.code === 'string' ? { code: e.code } : {}), ...(e?.buildOutcome ? { buildOutcome: e.buildOutcome } : {}) } };
     } finally {
       // Cancellation resolves the UI command promptly, but metadata is another
       // workspace writer: wait for supervised process-tree cleanup first.
@@ -879,7 +976,7 @@ export class CompileService {
     const settingsKey = this.configService.getCompileSettingsKey();
 
     const isCurrent = () => !isCancelled() && projectCurrent() && this.projectService.currentProjectPath === root
-      && this.configService.getCompileSettingsKey() === settingsKey && !this.projectService.isCloudBuild(root);
+      && this.configService.getCompileSettingsKey() === settingsKey;
 
     try {
       if (!verify || !isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
@@ -896,23 +993,16 @@ export class CompileService {
 
   /** 调用方先保存编辑器，主进程再核对整个项目和库内容；一致时直接复用已校验的云产物。 */
   async canReuseCloudBuildForUpload(root: string, isCancelled: () => boolean = () => false): Promise<boolean> {
-    if (!this.projectService.isCloudBuild(root) || !window['cloudBuild']?.reusable) return false;
+    if (!window['cloudBuild']?.reusable) return false;
 
     const settingsKey = this.configService.getCompileSettingsKey();
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
 
-    const isCurrent = () => !isCancelled() && this.projectService.currentProjectPath === root
-      && this.configService.getCompileSettingsKey() === settingsKey && this.projectService.isCloudBuild(root);
+    const isCurrent = () => !isCancelled() && projectCurrent() && this.projectService.currentProjectPath === root
+      && this.configService.getCompileSettingsKey() === settingsKey;
 
     try {
       if (!isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
-
-      await this.npmService.assertCoderDependenciesReady(root);
-
-      if (!isCurrent()) return false;
-
-      await this.npmService.ensureCloudLibrarySources(root);
-
-      if (!isCurrent()) return false;
 
       const manifestPath = this.electronService.pathJoin(root, 'package.json');
 
@@ -934,7 +1024,7 @@ export class CompileService {
       const sourceCapture = captureBuildSource(config);
       // 复用已经签名且输入完全一致的产物无需重新调度目标；节点忙闲和离线不影响本地烧录。
       // 主进程仍校验原任务的完整输入、签名及逐文件哈希，新编译才刷新并锁定精确目标。
-      const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+      const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture }, forUpload: true });
 
       assertManifest();
 
@@ -945,7 +1035,7 @@ export class CompileService {
   /** Coder 与 Blockly 共用进度合并工具，状态立即刷新、日志批量显示，完成仍以主进程结果为准。 */
   private async runCloudCompile(
     root: string, config: unknown, settings: NonNullable<DiskCompileContext['settings']>,
-    profileDigest: string, action: 'compile' | 'analysis', boardName: string, settingsKey?: string,
+    profile: CloudBoardProfile, action: 'compile' | 'analysis', boardName: string, settingsKey?: string,
   ): Promise<any> {
     const requestLog = this.activeBuildLog;
     const gateway = window['cloudBuild'];
@@ -964,7 +1054,8 @@ export class CompileService {
     try {
       const dependencySession = this.projectService.getProjectDependencySession(root);
 
-      return await runCloudBuildWithProgress({ requestId, config, settings, profileDigest, action }, gateway, {
+      return await runCloudBuildWithProgress({ requestId, config, settings, action,
+        profileDigest: profile.profileDigest, catalogTicket: profile.catalogTicket }, gateway, {
         prepareTool: tool => this.npmService.installCloudUploadTool(tool, dependencySession),
         localSwitch: request => {
           switchToLocal = request;

@@ -10,9 +10,12 @@ describe('board configuration menu SDK readiness', () => {
   beforeEach(() => {
     oldPath = window['path']; oldFs = window['fs']; oldEnv = window['env'];
     existingPaths = new Set([sdkPath, boardsPath]);
+
     window['path'] = { getAppDataPath: () => '/app', join: (...parts: string[]) => parts.join('/'),
       isExists: (path: string) => existingPaths.has(path) };
+
     window['env'] = { get: async () => '/app/sdk' };
+
     window['fs'] = {
       existsSync: (path: string) => existingPaths.has(path),
       readFileSync: jasmine.createSpy('read boards.txt').and.returnValue([
@@ -23,6 +26,7 @@ describe('board configuration menu SDK readiness', () => {
         'esp32s3.menu.CDCOnBoot.cdc.build.cdc_on_boot=1',
       ].join('\n')),
     };
+
     errorLog = spyOn(console, 'error');
     warningLog = spyOn(console, 'warn');
   });
@@ -33,12 +37,14 @@ describe('board configuration menu SDK readiness', () => {
 
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);
+
     // 原型夹具也需提供工程和后端身份，保留菜单异步过程中的上下文变更校验。
     service.currentProjectPathSubject = { value: '/project' };
     service.configService = { data: { compile: { backend: 'local' } }, getCompileSettingsKey: () => 'local' };
     const manifest: any = { projectConfig: { CDCOnBoot: 'cdc' } };
     service.isAilyCodeProject = () => false;
     service.currentBoardConfig = { type: 'esp32:esp32:esp32s3' };
+
     service.currentBoardMenuConfig = [
       { name: 'USB CDC On Boot', key: 'CDCOnBoot', children: [], extra: { selectFirstByDefault: true } },
       {
@@ -46,15 +52,19 @@ describe('board configuration menu SDK readiness', () => {
         children: [{ name: 'Default variant', data: 'default', extra: { build: { variant: 'esp32s3' } } }],
       },
     ];
+
     service.currentBoardPinConfig = { board: 'saved-board', variant: 'saved-variant', variant_h: null };
     service.electronService = { pathJoin: (...parts: string[]) => parts.join('/') };
     service.translate = { instant: () => 'SDK is not ready' };
     service.getPackageJson = jasmine.createSpy('get package').and.resolveTo(manifest);
+
     service.getBoardDependencies = jasmine.createSpy('get dependencies').and.resolveTo({
       '@aily-project/sdk-esp32': '3.3.10',
     });
+
     service.setPackageJson = jasmine.createSpy('set package').and.resolveTo();
     service.syncBoardPinConfig = jasmine.createSpy('sync pins').and.resolveTo();
+
     return { service, manifest };
   }
 
@@ -62,11 +72,15 @@ describe('board configuration menu SDK readiness', () => {
     expect(menu).toContain(jasmine.objectContaining({
       name: 'PROJECT.SDK_CONFIG_NOT_READY', tooltip: 'SDK is not ready', disabled: true,
     }));
+
     expect(menu.find(item => item.name === 'PROJECT.SDK_CONFIG_NOT_READY').key).toBeFalsy();
+
     expect(menu.find(item => item.key === 'CDCOnBoot')).toEqual(jasmine.objectContaining({
       disabled: true, tooltip: 'SDK is not ready', children: [],
     }));
+
     const staticMenu = menu.find(item => item.key === 'Variant');
+
     expect(staticMenu.disabled).toBeFalsy();
     expect(staticMenu.children[0].data).toBe('default');
     expect(manifest).toEqual({ projectConfig: { CDCOnBoot: 'cdc' } });
@@ -77,29 +91,34 @@ describe('board configuration menu SDK readiness', () => {
 
   it('keeps available static options and saved CDC selection until the SDK is ready on a later open', async () => {
     const { service, manifest } = fixture();
-    existingPaths.clear();
 
+    existingPaths.clear();
     expectUnavailableMenu(await service.getBoardConfigMenu(), service, manifest);
     expectUnavailableMenu(await service.getBoardConfigMenu(), service, manifest);
     expect(errorLog).not.toHaveBeenCalled();
     expect(warningLog).toHaveBeenCalled();
     expect(window['fs'].readFileSync).not.toHaveBeenCalled();
-
     existingPaths.add(sdkPath); existingPaths.add(boardsPath);
+
     const readyMenu = await service.getBoardConfigMenu();
+
     expect(readyMenu.some((item: any) => item.name === 'PROJECT.SDK_CONFIG_NOT_READY')).toBeFalse();
+
     const cdc = readyMenu.find((item: any) => item.key === 'CDCOnBoot');
+
     expect(cdc.disabled).toBeFalsy();
+
     expect(cdc.children.map((child: any) => [child.data, child.check])).toEqual([
       ['default', false], ['cdc', true],
     ]);
+
     expect(errorLog).not.toHaveBeenCalled();
   });
 
   it('does not persist menu defaults when the SDK directory exists but boards.txt is missing', async () => {
     const { service, manifest } = fixture();
-    existingPaths.delete(boardsPath);
 
+    existingPaths.delete(boardsPath);
     expectUnavailableMenu(await service.getBoardConfigMenu(), service, manifest);
     expect(errorLog).not.toHaveBeenCalled();
     expect(window['fs'].readFileSync).not.toHaveBeenCalled();
@@ -110,33 +129,39 @@ describe('board configuration menu SDK readiness', () => {
     existingPaths = new Set(['/app/sdk/esp32@3.3.10', '/app/sdk/esp32@3.3.10/boards.txt', '/app/sdk/esp32_3.3.9']);
 
     const menu = await service.getBoardConfigMenu();
+
     expect(menu.find((item: any) => item.key === 'CDCOnBoot').disabled).toBeFalsy();
     expect(window['fs'].readFileSync).toHaveBeenCalledWith('/app/sdk/esp32@3.3.10/boards.txt', 'utf8');
   });
 
   it('reads ready SDK options and keeps normal default persistence and pin synchronization', async () => {
     const { service, manifest } = fixture();
-
-    const menu = await service.getBoardConfigMenu();
+    const menu = await service.getBoardConfigMenu({ persistDefaults: true });
 
     expect(window['fs'].readFileSync).toHaveBeenCalledOnceWith(boardsPath, 'utf8');
+
     expect(menu.find((item: any) => item.key === 'CDCOnBoot').children).toContain(jasmine.objectContaining({
       name: 'Enabled', data: 'cdc', check: true,
     }));
+
     expect(manifest.projectConfig).toEqual({ CDCOnBoot: 'cdc', Variant: 'default' });
     expect(service.setPackageJson).toHaveBeenCalledOnceWith(manifest);
+
     expect(service.syncBoardPinConfig).toHaveBeenCalledOnceWith(jasmine.objectContaining({
       key: 'Variant', data: 'default',
     }));
+
     expect(errorLog).not.toHaveBeenCalled();
   });
 
   it('preserves static-board defaults without showing an SDK warning when no SDK is declared', async () => {
     const { service, manifest } = fixture();
+
     service.getBoardDependencies.and.resolveTo({});
+
     service.currentBoardMenuConfig = service.currentBoardMenuConfig.filter((item: any) => item.key === 'Variant');
 
-    const menu = await service.getBoardConfigMenu();
+    const menu = await service.getBoardConfigMenu({ persistDefaults: true });
 
     expect(menu.length).toBe(1);
     expect(menu[0].disabled).toBeFalsy();
@@ -151,22 +176,27 @@ describe('board configuration menu SDK readiness', () => {
   it('retains the original read error for diagnosis without writing fallback configuration', async () => {
     const { service, manifest } = fixture();
     const readError = new Error('EACCES: permission denied reading boards.txt');
-    window['fs'].readFileSync.and.throwError(readError);
 
+    window['fs'].readFileSync.and.throwError(readError);
     expectUnavailableMenu(await service.getBoardConfigMenu(), service, manifest);
 
     const diagnostics = [...warningLog.calls.allArgs(), ...errorLog.calls.allArgs()];
+
     expect(diagnostics.some(args => args.includes(readError))).toBeTrue();
   });
 
   it('offers same-MCU SDK variants without changing the saved selection or crossing FQBNs', async () => {
     const { service, manifest } = fixture();
+
     service.currentBoardConfig = { type: 'STMicroelectronics:stm32:GenF4' };
+
     service.currentBoardMenuConfig = [{
       name: 'STM32.BOARD', key: 'pnum', children: [],
       extra: { optionNameIncludes: 'F407VG', selectFirstByDefault: true, syncPinConfig: true },
     }];
+
     service.getBoardDependencies.and.resolveTo({ '@aily-project/sdk-stm32': '3.0.0' });
+
     window['fs'].readFileSync.and.returnValue([
       'GenF4.name=Generic STM32F4 series',
       'GenF4.menu.pnum.BLACK_F407VG=Black F407VG',
@@ -174,6 +204,7 @@ describe('board configuration menu SDK readiness', () => {
       'GenF4.menu.pnum.BLACK_F407VG.build.variant_h=variant_BLACK_F407VX.h',
       'GenF4.menu.pnum.DIYMORE_F407VGT=DIYMORE STM32F407VGT',
       'GenF4.menu.pnum.DIYMORE_F407VGT.build.variant=STM32F4xx/F407V(E-G)T_F417V(E-G)T',
+      'GenF4.menu.pnum.DIYMORE_F407VGT.build.board=DIYMORE_F407VGT',
       'GenF4.menu.pnum.DIYMORE_F407VGT.build.variant_h=variant_{build.board}.h',
       'GenF4.menu.pnum.GENERIC_F407VGTX=Generic F407VGTx',
       'GenF4.menu.pnum.GENERIC_F407VGTX.build.variant=STM32F4xx/F407V(E-G)T_F417V(E-G)T',
@@ -181,26 +212,34 @@ describe('board configuration menu SDK readiness', () => {
       'Disco.name=Discovery',
       'Disco.menu.pnum.DISCO_F407VG=STM32F4DISCOVERY',
     ].join('\n'));
+
     existingPaths.add('/app/sdk/stm32_3.0.0');
     existingPaths.add('/app/sdk/stm32_3.0.0/boards.txt');
 
     const variantsAndHeaders = [
       ['BLACK_F407VG', 'variant_BLACK_F407VX.h'],
-      ['DIYMORE_F407VGT', 'variant_{build.board}.h'],
-      ['GENERIC_F407VGTX', null],
+      ['DIYMORE_F407VGT', 'variant_DIYMORE_F407VGT.h'],
+      ['GENERIC_F407VGTX', 'variant_generic.h'],
     ];
+
     for (const [selected, variantHeader] of variantsAndHeaders) {
       manifest.projectConfig = { pnum: selected };
+
       const menu = await service.getBoardConfigMenu();
       const variants = menu.find((item: any) => item.key === 'pnum').children;
+
       expect(variants.map((child: any) => child.data)).toEqual(variantsAndHeaders.map(([value]) => value));
       expect(variants.filter((child: any) => child.check).map((child: any) => child.data)).toEqual([selected]);
-      expect(service.currentBoardPinConfig).toEqual({
-        board: selected, variant: 'STM32F4xx/F407V(E-G)T_F417V(E-G)T',
+
+      expect(variants.find((child: any) => child.data === selected).extra.build).toEqual({
+        variant: 'STM32F4xx/F407V(E-G)T_F417V(E-G)T',
         variant_h: variantHeader,
       });
+
+      expect(service.currentBoardPinConfig).toEqual({ board: 'saved-board', variant: 'saved-variant', variant_h: null });
       expect(manifest.projectConfig).toEqual({ pnum: selected });
     }
+
     expect(window['fs'].readFileSync).toHaveBeenCalledWith('/app/sdk/stm32_3.0.0/boards.txt', 'utf8');
     expect(service.setPackageJson).not.toHaveBeenCalled();
     expect(service.syncBoardPinConfig).not.toHaveBeenCalled();

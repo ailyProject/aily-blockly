@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { captureBlocklyUploadInputs: capture, publishBlocklyUploadState: publish,
-    invalidateBlocklyUploadState: invalidate, canReuseBlocklyUpload: reusable } = require('./blockly-upload-state');
+    invalidateBlocklyUploadState: invalidate, canReuseBlocklyUpload: reusable,
+    materializeEspSrModel, readBlocklyUploadArtifacts } = require('./blockly-upload-state');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-upload-reuse-'));
@@ -64,6 +65,27 @@ test('result metadata and background caches do not invalidate successful firmwar
     f.write('package.json', JSON.stringify({ ...pkg, codeHash: 'new', buildInfo: { lastBuildStatus: 'success' } }));
     f.write('.temp/preprocess.json', '{"success":true}'); f.write('.build/aily-artifact-manifest.json', '{}');
     assert.equal(reusable(f.config), true);
+});
+
+test('shared firmware retains its exact recipe when transitive header evidence exceeds 128 MiB', t => {
+    const f = fixture(t), root = fs.realpathSync(f.root), directory = path.join(root, '.build');
+    const firmware = path.join(directory, 'sketch.ino.hex'), filename = path.join(root, '.temp', 'preprocess.json');
+    f.config.execution = { layout: 'shared', id: 'current-execution' };
+    const metadata = { success: true, envVars: { BUILD_PATH: directory }, upload: { command: `tool "${firmware}"` } };
+    f.write('.temp/preprocess.json', JSON.stringify(metadata).slice(0, -1) + ',"dependencies":[{"headerInputs":["');
+    const headerEvidence = Buffer.alloc(1024 * 1024, 'h');
+    for (let chunk = 0; chunk < 129; chunk++) fs.appendFileSync(filename, headerEvidence);
+    const trailer = '"]}]}';
+    fs.appendFileSync(filename, trailer);
+    materializeEspSrModel(filename, directory, { shared: true });
+    f.build();
+    assert.deepEqual(readBlocklyUploadArtifacts(directory), [firmware]);
+    assert.equal(reusable(f.config), true);
+    const fd = fs.openSync(filename, 'r+');
+    try { fs.writeSync(fd, Buffer.from('x'), 0, 1, fs.fstatSync(fd).size - trailer.length - 1); }
+    finally { fs.closeSync(fd); }
+    assert.equal(reusable(f.config), false);
+    assert.throws(() => readBlocklyUploadArtifacts(directory), /BUILD_ARTIFACT_STALE/);
 });
 
 test('failed or cancelled compilation cannot reuse the old success receipt', t => {

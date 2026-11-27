@@ -14,6 +14,23 @@ function physicalDirectory(directory) {
   if (!stat.isDirectory() || stat.isSymbolicLink() || normalized(fs.realpathSync(directory)) !== normalized(directory)) throw protocol.error('UNSAFE_PATH', 'Cloud artifact directory is linked.');
   return stat;
 }
+
+/** A cloud build may need its own lease while an interrupted local build still
+ * protects the project caches. Both components must be physical directories. */
+function cloudArtifactWorkspace(root, { isolated = false, create = false } = {}) {
+  if (!isolated) return root;
+  physicalDirectory(root);
+  let directory = root;
+  for (const name of ['.aily', 'cloud-build']) {
+    directory = path.join(directory, name);
+    if (create) {
+      try { fs.mkdirSync(directory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    }
+    physicalDirectory(directory);
+  }
+  return directory;
+}
+
 function ownedLocation(root, directory) {
   root = fs.realpathSync(root);
   const absolute = path.resolve(directory), relative = path.relative(root, absolute);
@@ -75,6 +92,9 @@ function collectCloudArtifacts(root, options = {}) {
   const retention = { maxDirectories: 2, maxBytes: 128 * 1024 * 1024, maxAgeMs: 30 * 86400000,
     stagingMaxAgeMs: 86400000, ...(options.retention || {}) };
   const now = options.now ?? Date.now();
+  if (options.lease && normalized(options.lease.projectRoot) !== normalized(fs.realpathSync(root))) {
+    throw protocol.error('UNSAFE_PATH', 'Cloud artifact cleanup requires its own workspace lease.');
+  }
   const lease = options.lease || acquireBuildWorkspace(root, 'clean');
   const removed = [];
   try {
@@ -126,4 +146,4 @@ function collectCloudArtifacts(root, options = {}) {
     return removed;
   } finally { if (!options.lease) lease.release(); }
 }
-module.exports = { collectCloudArtifacts, removeOwnedDirectory };
+module.exports = { cloudArtifactWorkspace, collectCloudArtifacts, removeOwnedDirectory };

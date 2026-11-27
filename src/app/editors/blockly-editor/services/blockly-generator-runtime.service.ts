@@ -8,6 +8,7 @@ import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import type { NativeCandidateBlock, NativeCandidateOptions } from './blockly-native-candidate-protocol';
 import * as Blockly from 'blockly';
+import { preserveLegacySerialChoices } from './blockly-board-dropdowns';
 import { installLegacyVariableHelpers, normalizeLegacyVariableToolboxSource } from '../utils/blockly-legacy-library-compat';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
@@ -18,7 +19,9 @@ import { registerCustomFunctionContract, clearCustomFunctionRegistration } from 
 import { registerVariableDeclarationContract, clearVariableDeclarationRegistration } from './blockly-variable-declaration-contract';
 import { createProjectGenerator, type BlocklyGeneratorMode, type ProjectGenerator } from './blockly-generator-factory';
 import { nativeFieldDependencies, registerNativeFieldInitializer } from './blockly-native-field-dependencies';
+
 export type { BlocklyGeneratorMode, ProjectGenerator } from './blockly-generator-factory';
+
 import {
   prepareBlocklyProjectDataForCodeGeneration,
   wrapProjectDataGeneratorFunctions,
@@ -26,10 +29,12 @@ import {
 
 export interface GeneratorRuntimeContext {
   mode: BlocklyGeneratorMode;
+
   projectPath?: string;
   boardConfig?: unknown;
   packageJson?: unknown;
   projectService?: unknown;
+
   getWorkspace: () => Blockly.WorkspaceSvg | null;
   onBlockDefinition?: (source: Record<string, any>, definition: object) => void;
 }
@@ -37,6 +42,7 @@ export interface GeneratorRuntimeContext {
 export interface GeneratorLoadResult {
   contractsReady?: Promise<void>;
   filePath: string;
+
   /** Handlers added or replaced by this script, excluding previous libraries. */
   registeredBlockTypes: string[];
   arduinoBlockTypes: string[];
@@ -52,7 +58,9 @@ interface PropertySurfaceSnapshot {
 
 interface RegistrySnapshot {
   extensionSurface?: PropertySurfaceSnapshot;
+
   propertySurfaces: PropertySurfaceSnapshot[];
+
   registryTypeMap?: Record<string, PropertyDescriptorMap>;
   contextMenuItems?: Map<string, unknown>;
 }
@@ -62,6 +70,7 @@ interface RuntimeResources {
   intervals: Set<number>;
   animationFrames: Set<number>;
   idleCallbacks: Set<number>;
+
   workspaceListeners: Map<Blockly.Workspace, Set<(event: any) => void>>;
   workspaceFacades: WeakMap<Blockly.Workspace, Blockly.Workspace>;
   fieldInitializers: Set<() => void>;
@@ -106,11 +115,13 @@ export async function runWithPreparedActiveProjectGenerator<T>(
 ): Promise<T> {
   const generator = activeProjectGenerator;
   const revision = activeProjectGeneratorRevision;
+
   if (!generator) {
     throw new Error('Blockly generator runtime is not active');
   }
 
   await prepareBlocklyProjectDataForCodeGeneration(workspace, projectValue);
+
   if (activeProjectGenerator !== generator || activeProjectGeneratorRevision !== revision) {
     throw new Error('Blockly generator runtime changed while Project Data was being prepared');
   }
@@ -122,12 +133,16 @@ export async function runWithPreparedActiveProjectGenerator<T>(
   if (activeProjectWorkspaceOverride) {
     throw new Error('A Blockly generator workspace operation is already active');
   }
+
   activeProjectWorkspaceOverride = workspace;
+
   try {
     const result = operation(generator);
+
     if (result && typeof (result as any)?.then === 'function') {
       throw new Error('Active Blockly generator operation must remain synchronous');
     }
+
     return result;
   } finally {
     activeProjectWorkspaceOverride = null;
@@ -138,6 +153,7 @@ function cloneRuntimeValue<T>(value: T): T {
   if (value === undefined || value === null) {
     return value;
   }
+
   if (typeof structuredClone === 'function') {
     try {
       return structuredClone(value);
@@ -145,6 +161,7 @@ function cloneRuntimeValue<T>(value: T): T {
       // Fall back for values containing functions or host objects.
     }
   }
+
   try {
     return JSON.parse(JSON.stringify(value));
   } catch {
@@ -156,10 +173,12 @@ function createSessionId(epoch: number): string {
   const randomPart = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
+
   return `blockly-runtime-${epoch}-${randomPart}`;
 }
 
 @Injectable({ providedIn: 'root' })
+
 export class BlocklyGeneratorRuntimeService {
   private epoch = 0;
   private session: RuntimeSession | null = null;
@@ -170,20 +189,25 @@ export class BlocklyGeneratorRuntimeService {
     const epoch = ++this.epoch;
     const sessionId = createSessionId(epoch);
     const iframe = document.createElement('iframe');
+
     iframe.hidden = true;
     iframe.tabIndex = -1;
+
     iframe.setAttribute('aria-hidden', 'true');
     iframe.setAttribute('data-blockly-generator-runtime', sessionId);
     document.body.appendChild(iframe);
 
     const realmWindow = iframe.contentWindow;
+
     if (!realmWindow) {
       iframe.remove();
+
       throw new Error('Unable to create Blockly generator runtime realm');
     }
 
     // 模式只在会话创建处决策一次，保证同一项目不会同时持有 Python 与 Arduino 生成器状态。
     const generator = createProjectGenerator(context.mode);
+
     const session: RuntimeSession = {
       id: sessionId,
       epoch,
@@ -209,16 +233,24 @@ export class BlocklyGeneratorRuntimeService {
 
     this.session = session;
     activeProjectGenerator = generator;
+
     activeProjectGeneratorRevision++;
+
     this.installRealmBridge(session);
+
     session.resources.fieldInitializers.add(registerNativeFieldInitializer(() => session.context.getWorkspace(), workspace => {
       if (!this.isCurrent(session)) throw new Error('Native field preparation belongs to an inactive runtime.');
+
       const RealmFunction = (session.realmWindow as any).Function;
+
       const listeners = new Set([...(session.resources.workspaceListeners.get(workspace) ?? []),
         ...((workspace as any).listeners ?? []).filter((listener: unknown) => RealmFunction && listener instanceof RealmFunction)]);
+
       const event = new Blockly.Events.FinishedLoading(workspace);
+
       for (const listener of listeners) listener(event);
     }));
+
     return generator;
   }
 
@@ -230,19 +262,23 @@ export class BlocklyGeneratorRuntimeService {
     const session = this.requireActiveSession(), revision = activeProjectGeneratorRevision;
     const workspace = session.context.getWorkspace();
     const graphics = captureNativeGraphicsContext(workspace), graphicsKey = absJson(graphics ?? null);
+
     const replay = session.replay.capture(() => {
       if (!this.isCurrent(session) || activeProjectGeneratorRevision !== revision) throw new Error('Native candidate runtime changed.');
+
       if (session.context.getWorkspace() !== workspace || absJson(graphics ?? null) !== graphicsKey
         || absJson(captureNativeGraphicsContext(workspace) ?? null) !== graphicsKey) {
         throw new AbsSyncError('ABS_RUNTIME_CAPTURE_CHANGED', 'Native candidate graphics changed. Validate the candidate again with the current renderer and theme.');
       }
     });
+
     return { ...replay, ...(graphics ? { graphics } : {}) };
   }
   /** Diagnostic preparation only: no ABS capability promotion or host workspace mutation. */
   async evaluateNativeCandidate(blocks: NativeCandidateBlock[], options: NativeCandidateOptions) {
     const replay = this.captureNativeReplay(), detached = structuredClone(blocks);
     const { evaluateNativeCandidate } = await import('./blockly-native-candidate');
+
     return evaluateNativeCandidate({ steps: replay.steps, graphics: replay.graphics, blocks: detached }, {
       ...options, assertCurrent: () => { options.assertCurrent(); replay.assertCurrent(); },
     });
@@ -259,7 +295,9 @@ export class BlocklyGeneratorRuntimeService {
     // A failed script can leave lexical bindings behind. Recovery must replace
     // that realm, using its context even after markFailed made it inactive.
     if (!this.session) throw new Error('Blockly generator runtime is not active');
+
     const currentContext = this.session.context;
+
     return this.activate({ ...currentContext, ...context });
   }
 
@@ -283,21 +321,25 @@ export class BlocklyGeneratorRuntimeService {
    */
   refreshBlocklyMessageSnapshot(): void {
     const session = this.session;
+
     if (!session?.active) {
       return;
     }
 
     activeProjectGeneratorRevision++;
+
     session.replay.append({ kind: 'messages', value: { ...Blockly.Msg } });
 
     const messageSurface = session.registrySnapshot.propertySurfaces
       .find((surface) => surface.target === Blockly.Msg);
+
     if (!messageSurface) {
       return;
     }
 
     for (const key of Object.keys(messageSurface.descriptors)) {
       const descriptor = Object.getOwnPropertyDescriptor(Blockly.Msg, key);
+
       if (descriptor) {
         messageSurface.descriptors[key] = descriptor;
       }
@@ -314,11 +356,14 @@ export class BlocklyGeneratorRuntimeService {
     registered: boolean,
   ): void {
     const checkpoint = this.session?.registrySnapshot.contextMenuItems;
+
     if (!checkpoint) return;
+
     if (registered) {
       if (Blockly.ContextMenuRegistry.registry.getItem(item.id) !== item) {
         throw new Error('Host context menu changed before checkpoint synchronization.');
       }
+
       checkpoint.set(item.id, item);
     } else if (checkpoint.get(item.id) === item) {
       checkpoint.delete(item.id);
@@ -327,8 +372,11 @@ export class BlocklyGeneratorRuntimeService {
 
   updateContext(context: Partial<Omit<GeneratorRuntimeContext, 'mode' | 'getWorkspace'>>): void {
     const session = this.requireActiveSession();
+
     activeProjectGeneratorRevision++;
+
     session.context = { ...session.context, ...context };
+
     this.publishContextToRealm(session);
   }
 
@@ -338,6 +386,7 @@ export class BlocklyGeneratorRuntimeService {
 
   markReady(projectPath?: string): void {
     const session = this.requireActiveSession();
+
     session.iframe.setAttribute('data-runtime-ready', 'true');
     session.iframe.setAttribute('data-runtime-project-path', projectPath || session.context.projectPath || '');
   }
@@ -345,39 +394,55 @@ export class BlocklyGeneratorRuntimeService {
   setLibraryI18n(packageName: string, value: unknown): void {
     const session = this.requireActiveSession();
     activeProjectGeneratorRevision++;
+
     const realm = session.realmWindow as unknown as Record<string, any>;
+
     realm['__BLOCKLY_LIB_I18N__'][packageName] = cloneRuntimeValue(value);
+
     session.replay.append({ kind: 'i18n', packageName, value });
   }
 
   loadGenerator(filePath: string, source: string): GeneratorLoadResult {
     const session = this.requireActiveSession();
+
     if (session.loadedPaths.has(filePath)) {
       return this.describeLoadedGenerator(session, filePath, []);
     }
 
     source = normalizeLegacyVariableToolboxSource(filePath, source);
+
     activeProjectGeneratorRevision++;
+
     session.replay.append({ kind: 'script', label: filePath, source });
+
     const previousTextHandler = session.generator.forBlock['text'];
     const previousHandlers = { ...session.generator.forBlock };
     const globalsBefore = new Set(Reflect.ownKeys(session.realmWindow).map(String));
     let scriptError: ErrorEvent | null = null;
+
     const errorHandler = (event: ErrorEvent) => {
       scriptError = event;
+
       event.preventDefault();
     };
+
     session.realmWindow.addEventListener('error', errorHandler);
 
     try {
       const script = session.realmWindow.document.createElement('script');
+
       script.type = 'text/javascript';
+
       script.setAttribute('data-generator-path', filePath);
+
       const normalizedPath = filePath.replace(/\\/g, '/').replace(/[\r\n]/g, '');
+
       const safeSourceUrl = normalizedPath.startsWith('/')
         ? `file://${normalizedPath}`
         : `file:///${normalizedPath}`;
+
       script.textContent = `${source}\n//# sourceURL=${safeSourceUrl}`;
+
       session.realmWindow.document.head.appendChild(script);
     } finally {
       session.realmWindow.removeEventListener('error', errorHandler);
@@ -385,16 +450,26 @@ export class BlocklyGeneratorRuntimeService {
 
     if (scriptError) {
       const captured = scriptError as ErrorEvent;
+
       this.markFailed(session);
+
       const detail = captured.error?.stack || captured.message || 'Unknown generator error';
+
       throw new Error(`Generator loading failed: ${filePath}\n${detail}`);
     }
 
     session.loadedPaths.add(filePath);
+
     const globalNames = Reflect.ownKeys(session.realmWindow)
       .map(String)
       .filter((name) => !globalsBefore.has(name));
+
     const result = this.describeLoadedGenerator(session, filePath, globalNames);
+
+    if (globalNames.includes('generateSerialPortOptionsWithCustom') && globalNames.includes('updateSerialCustomPorts')) {
+      preserveLegacySerialChoices(session.realmWindow, session.context.getWorkspace);
+    }
+
     result.registeredBlockTypes = Object.keys(session.generator.forBlock)
       .filter(type => session.generator.forBlock[type] !== previousHandlers[type]);
 
@@ -404,7 +479,9 @@ export class BlocklyGeneratorRuntimeService {
     if (session.context.mode === 'arduino' && session.generator.forBlock['text'] !== previousTextHandler) {
       adaptArduinoTextLiterals(session.generator);
     }
+
     wrapProjectDataGeneratorFunctions(session.generator, result.registeredBlockTypes);
+
     if (session.context.mode === 'arduino') {
       const realm = session.realmWindow as unknown as Record<string, any>;
 
@@ -414,41 +491,50 @@ export class BlocklyGeneratorRuntimeService {
       adaptXiaozhiDisplayContext(session.generator, session.realmWindow);
       session.projectEffects.wrap(session.generator);
     }
+
     if (session.context.mode === 'arduino') result.contractsReady = Promise.all([
       registerCustomFunctionContract(source, session.realmWindow, Blockly.Blocks, session, () => this.session === session && session.active),
       registerVariableDeclarationContract(source, session.realmWindow, session.generator, Blockly.Blocks, session, () => this.session === session && session.active),
     ]).then(() => undefined);
+
     return result;
   }
 
   invokeGlobal<T = unknown>(name: string, ...args: unknown[]): T | undefined {
     const session = this.requireActiveSession();
     const candidate = (session.realmWindow as unknown as Record<string, unknown>)[name];
+
     if (typeof candidate !== 'function') {
       return undefined;
     }
+
     const bridgedArgs = args.map((value) => value instanceof Blockly.Workspace
       ? this.getWorkspaceFacade(session, value)
       : value);
+
     return Reflect.apply(candidate as (...values: unknown[]) => T, session.realmWindow, bridgedArgs);
   }
 
   destroy(expectedGenerator?: ProjectGenerator | null): void {
     const session = this.session;
+
     if (!session || expectedGenerator !== undefined && session.generator !== expectedGenerator) {
       return;
     }
 
     session.active = false;
+
     clearCustomFunctionRegistration(Blockly.Blocks, session);
     clearVariableDeclarationRegistration(Blockly.Blocks, session);
     this.clearResources(session);
     this.restoreHostState(session.registrySnapshot);
     session.loadedPaths.clear();
     session.iframe.remove();
+
     if (activeProjectGenerator === session.generator) {
       activeProjectGenerator = null;
     }
+
     this.session = null;
   }
 
@@ -456,6 +542,7 @@ export class BlocklyGeneratorRuntimeService {
     if (!this.session?.active) {
       throw new Error('Blockly generator runtime is not active');
     }
+
     return this.session;
   }
 
@@ -465,67 +552,92 @@ export class BlocklyGeneratorRuntimeService {
 
   private markFailed(session: RuntimeSession): void {
     session.active = false;
+
     this.clearResources(session);
   }
 
   private installRealmBridge(session: RuntimeSession): void {
     const realm = session.realmWindow as unknown as Record<string, any>;
     const extensionFacade = createBlocklyExtensionFacade(realm, () => this.isCurrent(session));
+
     // JS-assigned definitions must be observed before their first normal init,
     // including newBlock calls made by the same script. Do not probe any blocks.
     const observeRegistered = (key: PropertyKey) => {
       const definition = Object.getOwnPropertyDescriptor(Blockly.Blocks, key)?.value;
+
       if (definition && typeof definition === 'object') observeNativeBlockDefinition(definition);
+
       activeProjectGeneratorRevision++;
     };
+
     const blocksFacade = new Proxy(Blockly.Blocks, {
       set: (target, key, value) => {
         if (!this.isCurrent(session)) throw new Error('Block registration belongs to an inactive runtime.');
+
         const written = Reflect.set(target, key, value, target);
+
         if (written) observeRegistered(key);
+
         return written;
       },
       defineProperty: (target, key, descriptor) => {
         if (!this.isCurrent(session)) throw new Error('Block registration belongs to an inactive runtime.');
+
         const written = Reflect.defineProperty(target, key, descriptor);
+
         if (written) observeRegistered(key);
+
         return written;
       },
       deleteProperty: (target, key) => {
         if (!this.isCurrent(session)) throw new Error('Block registration belongs to an inactive runtime.');
+
         const deleted = Reflect.deleteProperty(target, key);
+
         if (deleted) activeProjectGeneratorRevision++;
+
         return deleted;
       },
     });
+
     const defineBlocks = Blockly.defineBlocksWithJsonArray;
+
     const registerDeclarations = (definitions: any[]) => {
       if (!this.isCurrent(session)) throw new Error('Generator declaration belongs to an inactive runtime.');
+
       defineBlocks(definitions);
+
       activeProjectGeneratorRevision++;
+
       for (const source of definitions) session.context.onBlockDefinition?.(source, Blockly.Blocks[source.type]);
     };
+
     const blocklyFacade = new Proxy(Object.create(null), {
       get: (_target, key) => {
         if (!this.isCurrent(session)) {
           throw new Error(`Blockly generator session ${session.id} is inactive`);
         }
+
         if (key === 'getMainWorkspace') {
           return () => {
             const workspace = activeProjectWorkspaceOverride
               ?? session.context.getWorkspace();
+
             return workspace ? this.getWorkspaceFacade(session, workspace) : null;
           };
         }
+
         if (key === 'defineBlocksWithJsonArray') return registerDeclarations;
         if (key === 'Blocks') return blocksFacade;
         if (key === 'Extensions') return extensionFacade;
+
         return Reflect.get(Blockly, key);
       },
       has: (_target, key) => Reflect.has(Blockly, key),
       ownKeys: () => Reflect.ownKeys(Blockly),
       getOwnPropertyDescriptor: (_target, key) => {
         const descriptor = Reflect.getOwnPropertyDescriptor(Blockly, key);
+
         return descriptor ? { ...descriptor, configurable: true } : undefined;
       },
     });
@@ -539,6 +651,7 @@ export class BlocklyGeneratorRuntimeService {
     realm['Python'] = session.context.mode === 'python' ? session.generator : undefined;
     realm['pinyinPro'] = (globalThis as Record<string, unknown>)['pinyinPro'];
     realm['__BLOCKLY_LIB_I18N__'] = Object.create(null);
+
     installProjectDataImageCache(realm, session.context.getWorkspace, () => {
       if (!this.isCurrent(session)) throw new Error('Image cache belongs to an inactive generator runtime.');
     });
@@ -552,27 +665,34 @@ export class BlocklyGeneratorRuntimeService {
     realm['boardConfig'] = cloneRuntimeValue(session.context.boardConfig);
     realm['packageJson'] = cloneRuntimeValue(session.context.packageJson);
     realm['projectService'] = this.createProjectServiceFacade(session);
+
     session.replay.append({ kind: 'context', mode: session.context.mode, messages: { ...Blockly.Msg }, boardConfig: session.context.boardConfig, packageJson: session.context.packageJson });
   }
 
   private createProjectServiceFacade(session: RuntimeSession): unknown {
     const service = session.context.projectService as Record<string, unknown> | undefined;
+
     if (!service) {
       return undefined;
     }
+
     return new Proxy(Object.create(null), {
       get: (_target, key) => {
         if (!this.isCurrent(session)) {
           throw new Error(`Blockly generator session ${session.id} is inactive`);
         }
+
         const value = service[key as string];
+
         if (typeof value !== 'function') {
           return value;
         }
+
         return (...args: unknown[]) => {
           if (!this.isCurrent(session)) {
             return undefined;
           }
+
           return Reflect.apply(value as (...values: unknown[]) => unknown, service, args);
         };
       },
@@ -581,16 +701,22 @@ export class BlocklyGeneratorRuntimeService {
 
   private installTimerBridge(session: RuntimeSession, realm: Record<string, any>): void {
     const fieldTimers = new Map<number, () => void>();
+
     realm['setTimeout'] = (callback: (...args: unknown[]) => void, delay = 0, ...args: unknown[]) => {
       const initializing = this.initializationDepth > 0 || session.iframe.getAttribute('data-runtime-ready') !== 'true';
       let called = false;
+
       const invoke = () => {
         if (called) return;
+
         called = true;
+
         session.resources.timeouts.delete(id);
         fieldTimers.get(id)?.(); fieldTimers.delete(id);
+
         if (this.isCurrent(session)) {
           if (initializing) this.initializationDepth++;
+
           try {
             // Initialization timers from installed libraries often refresh many
             // dropdowns with render() in a loop. Flush their completed changes
@@ -599,53 +725,71 @@ export class BlocklyGeneratorRuntimeService {
             if (initializing && workspace?.rendered && workspace === session.context.getWorkspace()
               && !nativeFieldDependencies(workspace)) {
               const release = Blockly.renderManagement.beginWorkspaceRenderBatch(workspace);
+
               Blockly.utils.dom.startTextWidthCache();
+
               try { callback(...args); }
               finally { try { release(); } finally { Blockly.utils.dom.stopTextWidthCache(); } }
             } else callback(...args);
           } finally { if (initializing) this.initializationDepth--; }
         }
       };
+
       const id = window.setTimeout(invoke, delay);
+
       session.resources.timeouts.add(id);
+
       const workspace = session.context.getWorkspace();
       const dependencies = workspace && nativeFieldDependencies(workspace);
+
       if (dependencies) {
         const token = dependencies.trackTimer(invoke, delay, () => {
           window.clearTimeout(id); session.resources.timeouts.delete(id);
         }, () => fieldTimers.delete(id));
+
         fieldTimers.set(id, () => dependencies.cancelTimer(token));
       }
+
       return id;
     };
+
     realm['clearTimeout'] = (id: number) => {
       fieldTimers.get(id)?.(); fieldTimers.delete(id);
       session.resources.timeouts.delete(id);
       window.clearTimeout(id);
     };
+
     realm['setInterval'] = (callback: (...args: unknown[]) => void, delay = 0, ...args: unknown[]) => {
       const id = window.setInterval(() => {
         if (this.isCurrent(session)) {
           callback(...args);
         }
       }, delay);
+
       session.resources.intervals.add(id);
+
       return id;
     };
+
     realm['clearInterval'] = (id: number) => {
       session.resources.intervals.delete(id);
       window.clearInterval(id);
     };
+
     realm['requestAnimationFrame'] = (callback: FrameRequestCallback) => {
       const id = window.requestAnimationFrame((time) => {
         session.resources.animationFrames.delete(id);
+
         if (this.isCurrent(session)) {
           callback(time);
         }
       });
+
       session.resources.animationFrames.add(id);
+
       return id;
     };
+
     realm['cancelAnimationFrame'] = (id: number) => {
       session.resources.animationFrames.delete(id);
       window.cancelAnimationFrame(id);
@@ -653,22 +797,28 @@ export class BlocklyGeneratorRuntimeService {
 
     const requestIdle = (window as any).requestIdleCallback as ((callback: IdleRequestCallback) => number) | undefined;
     const cancelIdle = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
+
     if (requestIdle) {
       realm['requestIdleCallback'] = (callback: IdleRequestCallback) => {
         const id = requestIdle((deadline) => {
           session.resources.idleCallbacks.delete(id);
+
           if (this.isCurrent(session)) {
             callback(deadline);
           }
         });
+
         session.resources.idleCallbacks.add(id);
+
         return id;
       };
+
       realm['cancelIdleCallback'] = (id: number) => {
         session.resources.idleCallbacks.delete(id);
         cancelIdle?.(id);
       };
     }
+
     realm['queueMicrotask'] = (callback: () => void) => {
       window.queueMicrotask(() => {
         if (this.isCurrent(session)) {
@@ -682,11 +832,13 @@ export class BlocklyGeneratorRuntimeService {
 
   private getWorkspaceFacade(session: RuntimeSession, workspace: Blockly.Workspace): Blockly.Workspace {
     const existing = session.resources.workspaceFacades.get(workspace);
+
     if (existing) {
       return existing;
     }
 
     const wrappers = new Map<(event: any) => void, (event: any) => void>();
+
     const facade = new Proxy(workspace, {
       get: (target, key) => {
         if (key === 'addChangeListener') {
@@ -694,51 +846,68 @@ export class BlocklyGeneratorRuntimeService {
             if (!this.isCurrent(session)) {
               return listener;
             }
+
             let listeners = session.resources.workspaceListeners.get(target);
+
             if (!listeners) {
               listeners = new Set<(event: any) => void>();
+
               session.resources.workspaceListeners.set(target, listeners);
             }
+
             let wrapped = wrappers.get(listener);
+
             if (!wrapped) {
               wrapped = event => {
                 const loading = event.type === Blockly.Events.FINISHED_LOADING;
                 const previousGroup = Blockly.Events.getGroup();
+
                 // Declaration cleanup runs after the delete event is queued.
                 // Keep its variable removals in the same undo transaction.
                 const inheritDeleteGroup = event.type === Blockly.Events.BLOCK_DELETE &&
                   event.recordUndo && event.group && !previousGroup;
+
                 if (inheritDeleteGroup) Blockly.Events.setGroup(event.group);
                 if (loading) this.initializationDepth++;
+
                 try { listener(event); }
                 finally {
                   if (loading) this.initializationDepth--;
                   if (inheritDeleteGroup) Blockly.Events.setGroup(previousGroup);
                 }
               };
+
               wrappers.set(listener, wrapped);
             }
+
             listeners.add(wrapped);
             target.addChangeListener(wrapped);
+
             return listener;
           };
         }
+
         if (key === 'removeChangeListener') {
           return (listener: (event: any) => void) => {
             const wrapped = wrappers.get(listener) ?? listener;
+
             wrappers.delete(listener);
             session.resources.workspaceListeners.get(target)?.delete(wrapped);
+
             return target.removeChangeListener(wrapped);
           };
         }
 
         const value = Reflect.get(target, key, target);
+
         return typeof value === 'function' ? value.bind(target) : value;
       },
       set: (target, key, value) => Reflect.set(target, key, value, target),
     });
+
     session.resources.workspaceFacades.set(workspace, facade);
     session.resources.workspaceListeners.set(workspace, new Set());
+
     return facade;
   }
 
@@ -748,12 +917,15 @@ export class BlocklyGeneratorRuntimeService {
     session.resources.timeouts.forEach((id) => window.clearTimeout(id));
     session.resources.intervals.forEach((id) => window.clearInterval(id));
     session.resources.animationFrames.forEach((id) => window.cancelAnimationFrame(id));
+
     const cancelIdle = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
+
     session.resources.idleCallbacks.forEach((id) => cancelIdle?.(id));
     session.resources.timeouts.clear();
     session.resources.intervals.clear();
     session.resources.animationFrames.clear();
     session.resources.idleCallbacks.clear();
+
     session.resources.workspaceListeners.forEach((trackedListeners, workspace) => {
       trackedListeners.forEach((listener) => workspace.removeChangeListener(listener));
 
@@ -761,8 +933,10 @@ export class BlocklyGeneratorRuntimeService {
       // methods and bypass the facade. Remove any callback whose Function Realm
       // belongs to the retiring iframe before that Realm becomes inactive.
       const listeners = (workspace as any).listeners;
+
       if (Array.isArray(listeners)) {
         const RealmFunction = (session.realmWindow as any).Function;
+
         [...listeners].forEach((listener) => {
           if (typeof listener === 'function' && RealmFunction && listener instanceof RealmFunction) {
             workspace.removeChangeListener(listener);
@@ -770,6 +944,7 @@ export class BlocklyGeneratorRuntimeService {
         });
       }
     });
+
     session.resources.workspaceListeners.clear();
   }
 
@@ -777,6 +952,7 @@ export class BlocklyGeneratorRuntimeService {
     const extensions = (Blockly.Extensions as any).TEST_ONLY?.allExtensions as object | undefined;
     const typeMap = (Blockly.registry as any).TEST_ONLY?.typeMap as Record<string, object> | undefined;
     const registeredItems = (Blockly.ContextMenuRegistry as any).registry?.registeredItems as Map<string, unknown> | undefined;
+
     const prototypes = [
       (Blockly.Field as any)?.prototype,
       (Blockly.FieldDropdown as any)?.prototype,
@@ -806,24 +982,29 @@ export class BlocklyGeneratorRuntimeService {
     for (const surface of snapshot.propertySurfaces) {
       this.restoreSurface(surface);
     }
+
     if (snapshot.extensionSurface) {
       this.restoreSurface(snapshot.extensionSurface);
     }
 
     const typeMap = (Blockly.registry as any).TEST_ONLY?.typeMap as Record<string, object> | undefined;
+
     if (typeMap && snapshot.registryTypeMap) {
       for (const type of Object.keys(typeMap)) {
         if (!(type in snapshot.registryTypeMap)) {
           delete typeMap[type];
         }
       }
+
       for (const [type, descriptors] of Object.entries(snapshot.registryTypeMap)) {
         const bucket = typeMap[type] || (typeMap[type] = Object.create(null));
+
         this.restoreSurface({ target: bucket, descriptors });
       }
     }
 
     const registeredItems = (Blockly.ContextMenuRegistry as any).registry?.registeredItems as Map<string, unknown> | undefined;
+
     if (registeredItems && snapshot.contextMenuItems) {
       registeredItems.clear();
       snapshot.contextMenuItems.forEach((value, key) => registeredItems.set(key, value));
@@ -832,11 +1013,13 @@ export class BlocklyGeneratorRuntimeService {
 
   private restoreSurface(surface: PropertySurfaceSnapshot): void {
     const expectedKeys = new Set(Reflect.ownKeys(surface.descriptors));
+
     for (const key of Reflect.ownKeys(surface.target)) {
       if (!expectedKeys.has(key)) {
         Reflect.deleteProperty(surface.target, key);
       }
     }
+
     Object.defineProperties(surface.target, surface.descriptors);
   }
 
@@ -848,6 +1031,7 @@ export class BlocklyGeneratorRuntimeService {
     const arduino = (session.realmWindow as any).Arduino;
     const micropython = (session.realmWindow as any).MPY || (session.realmWindow as any).MicropPython;
     const python = (session.realmWindow as any).Python;
+
     return {
       filePath,
       registeredBlockTypes: [],

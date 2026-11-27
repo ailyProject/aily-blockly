@@ -1,11 +1,13 @@
 'use strict';
 const { test } = require('node:test');
+const { EventEmitter } = require('node:events');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { CloudBuildBroker } = require('../../electron/cloud-build/broker');
+const { registerCloudBuildHandlers } = require('../../electron/cloud-build/ipc');
 const protocol = require('../../electron/cloud-build/protocol');
 const { captureBuildSource } = require('../../child/scripts/build-source-capture');
 
@@ -61,6 +63,145 @@ function authenticated(f) {
   return f;
 }
 
+function uploadActivationFixture(f, mode) {
+  if (mode === 'coder') {
+    const source = path.join(f.root, 'sketch', 'src');
+    fs.mkdirSync(source, { recursive: true });
+    fs.writeFileSync(path.join(source, 'main.cpp'), f.config.code);
+    f.manifest(pkg => { pkg.type = 'coder'; pkg.entry = 'src/main.cpp'; });
+  }
+  f.activeProject = f.root;
+  f.capture = () => {
+    const workspace = mode === 'blockly' ? { documentText: 'saved blocks', pageId: 'main', revision: f.revision || 1, runtimeRevision: f.revision || 1 } : undefined;
+    f.config.sourceCapture = captureBuildSource(f.config, workspace);
+  };
+  f.capture();
+  f.broker.getGatewaySettings = () => f.settings;
+  f.broker.querySource = async () => f.activeProject === f.root
+    ? { ok: true, source: { projectPath: f.root, boardModule: f.config.boardModule, activationId: f.activationId,
+        mode, saved: f.saved !== false, workspace: f.config.sourceCapture.workspace } }
+    : { ok: false, sourceReason: 'project' };
+  return f;
+}
+
+for (const mode of ['blockly', 'coder']) {
+  test(`${mode} upload reactivates the original signed firmware after navigating away and back`, async t => {
+    const f = uploadActivationFixture(fixture(t), mode);
+    for (const name of ['capabilities', 'targets', 'request', 'uploadSnapshot']) {
+      t.mock.method(CloudBuildBroker.prototype, name, f.broker[name]);
+    }
+    t.mock.method(globalThis, 'fetch', f.broker.fetch);
+    const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: {}, isDestroyed: () => false, send() {} });
+    let handler, uploaded;
+    const controller = registerCloudBuildHandlers({
+      ipcMain: { handle: (_channel, callback) => { handler = callback; } },
+      getOwner: candidate => candidate === sender ? { generation: f.generation } : undefined,
+      getGatewaySettings: () => f.settings, getRegion: () => 'cn', buildFlavor: 'cn',
+      backend: 'cloud', getRuntimeRoot: () => f.root, querySource: f.broker.querySource,
+      uploadArtifact: async (record, _request, { assertCurrent }) => {
+        await assertCurrent();
+        uploaded = { jobId: record.manifest.jobId, directory: record.directory, activationId: record.activationId };
+        return true;
+      },
+    });
+    t.after(() => controller.shutdown());
+    const invoke = (action, args = {}) => handler({ sender, senderFrame: sender.mainFrame }, {
+      action, requestId: 'user-action', projectPath: f.root, config: f.config, profileDigest: f.profile.profileDigest, ...args,
+    });
+    const compiled = await invoke('compile');
+    assert.equal(compiled.ok, true, JSON.stringify(compiled));
+    const filename = path.join(compiled.result.artifactPath, 'sketch.bin');
+    const before = fs.statSync(filename);
+    if (mode === 'blockly') {
+      assert.deepEqual(await invoke('invalidate', { preserveCompleted: true }), { ok: true, result: true });
+      assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: false });
+    }
+    f.activeProject = undefined;
+    f.activationId = 'editor-away';
+    assert.deepEqual(await invoke('reusable', { forUpload: true }), { ok: true, result: false });
+    f.activeProject = f.root;
+    f.activationId = 'editor-2';
+    f.revision = 2;
+    f.capture();
+    f.settings.gatewayUrl += '/'; // Equivalent gateway spellings retain the same signing authority.
+    await controller.setBackend('local');
+    assert.deepEqual(await invoke('hasUploadCandidate'), { ok: true, result: true });
+    assert.deepEqual(await invoke('reusable'), { ok: true, result: false });
+    assert.equal((await invoke('upload')).error.code, 'BUILD_SOURCE_STALE');
+    assert.deepEqual(await invoke('reusable', { forUpload: true }), { ok: true, result: true });
+    assert.deepEqual(await invoke('upload'), { ok: true, result: true });
+    assert.deepEqual(uploaded, { jobId: compiled.result.jobId, directory: compiled.result.artifactPath, activationId: 'editor-2' });
+    assert.equal(fs.statSync(filename).mtimeMs, before.mtimeMs);
+    assert.equal(f.jobs, 1);
+    assert.equal(f.uploads, 1);
+  });
+}
+
+for (const [name, change] of [
+  ['modified source', f => fs.writeFileSync(path.join(f.root, 'src/header.h'), '#define VALUE 2')],
+  ['damaged firmware', (_f, initial) => fs.writeFileSync(path.join(initial.artifactPath, 'sketch.bin'), 'firmware bytes'.replace('b', 'x'))],
+  ['changed board option', f => f.manifest(pkg => { pkg.projectConfig = { FlashSize: '8M' }; })],
+  ['another account', f => { f.subject.id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'; }],
+  ['another gateway', f => { f.settings.gatewayUrl = 'https://api.aily.pro/new-gateway'; }],
+  ['another renderer generation', f => { f.generation++; }],
+  ['another window', f => { f.sender = {}; }],
+  ['explicit cache invalidation', f => f.broker.invalidate(f.root, f.sender)],
+]) {
+  test(`upload reactivation refuses ${name}`, async t => {
+    const f = uploadActivationFixture(authenticated(fixture(t)), 'blockly');
+    const first = await f.run();
+    f.broker.invalidate(f.root, f.sender, true);
+    f.activationId = 'editor-2';
+    change(f, first);
+    f.capture();
+    assert.equal(await f.broker.reusable(f.sender, f.config, f.profile.profileDigest, true), false);
+    await assert.rejects(f.broker.acquireCurrentArtifact(f.sender, f.root), { code: 'BUILD_SOURCE_STALE' });
+    assert.equal(f.jobs, 1);
+  });
+}
+
+test('a second navigation during upload revalidation cannot restore the departed grant', async t => {
+  const f = uploadActivationFixture(fixture(t), 'blockly');
+  await f.run();
+  f.broker.invalidate(f.root, f.sender, true);
+  f.activationId = 'editor-2';
+  const query = f.broker.querySource;
+  f.broker.querySource = async (...args) => {
+    const result = await query(...args);
+    f.broker.invalidate(f.root, f.sender, true);
+    return result;
+  };
+  assert.equal(await f.broker.reusable(f.sender, f.config, undefined, true), false);
+  assert.equal(f.broker.hasArtifact(f.sender, f.root), false);
+  assert.equal(f.broker.requests.size, 0);
+  assert.equal(f.jobs, 1);
+});
+
+for (const phase of ['inactive', 'reactivating', 'rebound']) {
+  test(`switch-to-local cancellation of the original request revokes ${phase} cloud firmware`, async t => {
+    const f = uploadActivationFixture(fixture(t), 'blockly');
+    await f.run();
+    f.broker.invalidate(f.root, f.sender, true);
+    f.activationId = 'editor-2';
+    const discard = () => f.broker.cancel(f.sender, 'run-1', { discardCompletedArtifact: true });
+    if (phase === 'reactivating') {
+      const query = f.broker.querySource;
+      f.broker.querySource = async (...args) => {
+        assert.equal(await discard(), true);
+        return query(...args);
+      };
+      assert.equal(await f.broker.reusable(f.sender, f.config, undefined, true), false);
+    } else {
+      if (phase === 'rebound') assert.equal(await f.broker.reusable(f.sender, f.config, undefined, true), true);
+      assert.equal(await discard(), true);
+    }
+    assert.equal(f.broker.hasUploadCandidate(f.sender, f.root), false);
+    await assert.rejects(f.broker.acquireCurrentArtifact(f.sender, f.root), { code: 'BUILD_SOURCE_STALE' });
+    assert.equal(f.broker.requests.size, 0);
+    assert.equal(f.jobs, 1);
+  });
+}
+
 test('identical current inputs reuse signed bytes without upload or a new cloud job', async t => {
   const f = fixture(t); const first = await f.run(), second = await f.run();
   assert.equal(first.reused, undefined); assert.equal(second.reused, true);
@@ -69,6 +210,123 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(await f.broker.reusable(f.sender, f.config, f.profile.profileDigest), true);
   assert.equal(f.events.at(-1).reused, true);
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
+});
+
+test('handed-off targets still negotiate compatible candidates and verify the result of the gateway-selected compiler', async t => {
+  const f = fixture(t), broker = f.broker;
+  f.profile.fqbn = 'test:board:test';
+  const alternative = { ...f.profile, profileDigest: 'b'.repeat(64), platform: 'win32' };
+  const wrongMetadata = { ...f.profile, profileDigest: 'c'.repeat(64), metadata: { ...f.profile.metadata, defaults: {} } };
+  const baseCapabilities = broker.capabilities, baseRequest = broker.request, baseFetch = broker.fetch;
+  broker.capabilities = async (...args) => ({ ...await baseCapabilities(...args), targetLookupByBoard: true,
+    targetSelection: { version: 1, policy: 'priority-idle-v1', maxCandidates: 64 } });
+  delete broker.targets;
+  let catalogs = 0;
+  broker.fetch = async (url, options) => {
+    if (!url.pathname.endsWith('/targets')) return baseFetch(url, options);
+    catalogs++;
+    return Response.json({ profiles: [f.profile, alternative, wrongMetadata] });
+  };
+  broker.request = async (settings, endpoint, body, ...rest) => {
+    if (endpoint.startsWith('/api/v1/build/targets')) return CloudBuildBroker.prototype.request.call(broker, settings, endpoint, body, ...rest);
+    const response = await baseRequest(settings, endpoint, body, ...rest);
+    if (endpoint === '/api/v1/build/jobs') {
+      assert.deepEqual(body.candidateProfileDigests, [f.profile.profileDigest, alternative.profileDigest]);
+      response.profileDigest = alternative.profileDigest;
+      f.profile = alternative; // The fixture signs its result with the admitted digest.
+    }
+    return response;
+  };
+  const initialDigest = f.profile.profileDigest;
+  const { catalogTicket } = await broker.targets(f.settings, undefined, undefined, { ...f.profile, forBuild: true }, { sender: f.sender, generation: f.generation });
+  assert.equal(typeof catalogTicket, 'string');
+  const result = await broker.run(f.sender, { requestId: 'ticket-signed', action: 'compile', catalogTicket,
+    profileDigest: initialDigest, config: f.config, settings: f.settings }, () => {});
+  assert.equal(result.success, true);
+  assert.equal(catalogs, 1);
+  assert.equal(broker.active.get(f.root).manifest.profileDigest, alternative.profileDigest);
+});
+
+for (const reuse of [false, true]) {
+  test(`a manual switch revokes only firmware granted by its completed cloud request (reuse=${reuse})`, async t => {
+    const f = fixture(t);
+    const first = await f.run();
+    const requestId = reuse ? 'run-2' : 'run-1';
+    if (reuse) {
+      const second = await f.run();
+      assert.equal(second.reused, true);
+      assert.equal(second.artifactPath, first.artifactPath);
+    }
+    assert.equal(f.broker.requests.size, 0);
+    assert.equal(await f.broker.cancel(f.sender, requestId), false);
+    const switchToLocal = { discardCompletedArtifact: true };
+    assert.equal(await f.broker.cancel({}, requestId, switchToLocal), false);
+    assert.equal(await f.broker.cancel(f.sender, reuse ? 'run-1' : 'not-submitted', switchToLocal), false);
+    f.generation++;
+    assert.equal(await f.broker.cancel(f.sender, requestId, switchToLocal), false);
+    f.generation--;
+    assert.equal(f.broker.hasArtifact(f.sender, f.root), true);
+    assert.equal(await f.broker.cancel(f.sender, requestId, switchToLocal), true);
+    assert.equal(f.broker.hasArtifact(f.sender, f.root), false);
+    assert.equal(await f.broker.artifactPath(f.sender, f.root, f.config), null);
+    assert.equal(f.jobs, 1);
+  });
+}
+
+test('backend switches and saved pan/zoom keep a verified download available for upload', async t => {
+  const f = fixture(t);
+  const abi = path.join(f.root, 'project.abi');
+  const page = { id: 'main', blocks: [{ type: 'example' }] };
+  const doc = { pages: [{ ...page, viewState: { scale: 1, scrollX: 0, scrollY: 0 } }] };
+  fs.writeFileSync(abi, JSON.stringify(doc));
+  // The live editor supplies its build snapshot with page viewState excluded.
+  f.config.sourceCapture = captureBuildSource(f.config, { documentText: JSON.stringify({ pages: [page] }),
+    pageId: 'main', revision: 1, runtimeRevision: 1 });
+  // Exercise the actual IPC backend transition and broker. Only the gateway
+  // fixture and final device operation are substituted.
+  for (const name of ['capabilities', 'targets', 'request', 'uploadSnapshot']) {
+    t.mock.method(CloudBuildBroker.prototype, name, f.broker[name]);
+  }
+  t.mock.method(globalThis, 'fetch', f.broker.fetch);
+  const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: {}, isDestroyed: () => false, send() {} });
+  let handler, uploadedDirectory;
+  const controller = registerCloudBuildHandlers({
+    ipcMain: { handle: (_channel, callback) => { handler = callback; } },
+    getOwner: () => ({ generation: 1 }), getGatewaySettings: () => f.settings,
+    getRegion: () => 'cn', buildFlavor: 'cn', backend: 'cloud', getRuntimeRoot: () => f.root,
+    querySource: async () => {
+      const result = await f.broker.querySource();
+      result.source.workspace = f.config.sourceCapture.workspace;
+      return result;
+    },
+    uploadArtifact: async (record, _request, { assertCurrent }) => {
+      await assertCurrent();
+      uploadedDirectory = record.directory;
+      return true;
+    },
+  });
+  t.after(() => controller.shutdown());
+  const invoke = action => handler({ sender, senderFrame: sender.mainFrame }, {
+    action, requestId: 'user-action', projectPath: f.root, config: f.config, profileDigest: f.profile.profileDigest,
+  });
+  assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: false });
+  const compiled = await invoke('compile');
+  assert.equal(compiled.ok, true, JSON.stringify(compiled));
+  await controller.setBackend('local');
+  doc.pages[0].viewState = { scale: 2, scrollX: -120, scrollY: 40 };
+  fs.writeFileSync(abi, JSON.stringify(doc, null, 2));
+  assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: true });
+  assert.deepEqual(await invoke('reusable'), { ok: true, result: true });
+  assert.deepEqual(await invoke('upload'), { ok: true, result: true });
+  assert.equal(uploadedDirectory, compiled.result.artifactPath);
+  assert.equal((await invoke('compile')).error.code, 'CLOUD_BUILD_DISABLED');
+  fs.writeFileSync(path.join(f.root, 'src/header.h'), '#define VALUE 2');
+  assert.deepEqual(await invoke('reusable'), { ok: true, result: false });
+  assert.equal((await invoke('upload')).error.code, 'BUILD_SOURCE_STALE');
+  await controller.invalidateAuthentication();
+  assert.deepEqual(await invoke('hasArtifact'), { ok: true, result: false });
+  assert.equal(f.jobs, 1);
+  assert.equal(f.uploads, 1);
 });
 
 test('cloud receipt distinguishes an unsaved capture and the next saved reuse of the same source', async t => {

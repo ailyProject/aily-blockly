@@ -2,25 +2,43 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 const { launchPrivateRuntime } = require('./subapp-private-runtime');
 const { bindSimulatorDebugRpc } = require('./simulator-debug-rpc');
 const { resolveInstalledPackagePath, resolveSubappRoot } = require('./subapp-manager');
 const { acquireInstallLock } = require('./subapp-install-lock');
+const { selectionLockPath } = require('./subapp-version-store');
 const { getChildNodeExecutable } = require('./tools/managed-npm-cli');
 const { resolveDebuggerRuntime } = require('./simulator-debug-runtime');
 const fault = (code, message) => Object.assign(new Error(message), { code });
 const TOOL_ID = 'simulator-debugger';
+const DEBUGGER = { id: TOOL_ID, package: '@aily-project/subapp-simulator-debugger' };
+const SIMULATOR = { id: 'aily-simulator', package: '@aily-project/aily-simulator' };
 
 /** Native configuration only. Both packages use the existing installed store. */
-function resolvePreviewConfiguration({ childRoot, appData, runtimeManifestPath, resourcesPath, subappRoot = resolveSubappRoot() }) {
-    const release = acquireInstallLock(path.join(subappRoot, 'store', '.locks'));
-    if (!release) throw fault('SUBAPP_BUSY', 'Subapp installation is in progress; retry after it completes.');
+function resolvePreviewConfiguration({ childRoot, appData, runtimeManifestPath, resourcesPath,
+    subappRoot = resolveSubappRoot(), operation }) {
+    const entries = [DEBUGGER];
+    if (operation !== 'evidence' && (runtimeManifestPath === undefined || runtimeManifestPath === '')) entries.push(SIMULATOR);
+    const locks = entries.map(entry => selectionLockPath(subappRoot, entry)).sort();
+    const releases = [];
+    const release = () => {
+        while (releases.length) {
+            try { releases.pop()(); }
+            catch (error) { console.warn('[build-debug-preview] selection lock release failed:', error.message); }
+        }
+    };
     try {
-        const selected = resolveInstalledPackagePath(subappRoot, { id: TOOL_ID, package: '@aily-project/subapp-simulator-debugger' });
+        for (const directory of locks) {
+            const unlock = acquireInstallLock(directory);
+            if (!unlock) throw fault('SUBAPP_BUSY', 'Simulator Debugger installation is in progress.');
+            releases.push(unlock);
+        }
+        const selected = resolveInstalledPackagePath(subappRoot, DEBUGGER);
         if (selected.disabled || selected.selectionError) throw fault('SUBAPP_UNAVAILABLE', 'Debugger package selection is unavailable.');
         const root = fs.realpathSync(selected.packagePath), manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
         const entry = fs.realpathSync(path.resolve(root, manifest.main || 'index.js')), relative = path.relative(root, entry);
-        if (manifest.name !== '@aily-project/subapp-simulator-debugger' || !relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        if (manifest.name !== DEBUGGER.package || !relative || relative.startsWith('..') || path.isAbsolute(relative)) {
             throw fault('SUBAPP_UNAVAILABLE', 'Invalid installed debugger package entry.');
         }
         let selectedRuntime;
@@ -55,12 +73,12 @@ function createBuildDebugPreview({ registry, configuration, launch = launchPriva
     return {
         async readEvidence(sender, input) {
             registry.supervisor.require(sender, input.owner?.generation);
-            const config = configuration();
+            const config = configuration({ operation: 'evidence' });
             try { return await config.readEvidence(input.params); }
             finally { config.release(); }
         },
         async describe() {
-            const config = configuration();
+            const config = configuration({ operation: 'describe' });
             try { return await config.describe(); }
             finally { config.release(); }
         },
@@ -83,22 +101,37 @@ function createBuildDebugPreview({ registry, configuration, launch = launchPriva
             signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
             const timer = setTimeout(() => controller.abort(fault('RUN_TIMEOUT', 'Native debug deadline exceeded.')), timeoutMs);
             let runtime, binding, unregister, config, observer, terminal, tracked = false, stopped = false;
+            let configurationReleased = false;
+            const releaseConfiguration = () => {
+                if (!config || configurationReleased) return;
+                configurationReleased = true;
+                config.release();
+            };
             const show = data => { try { observer?.update(data); } catch { /* UI is optional. */ } };
             const owner = { ...input.owner, toolId: TOOL_ID };
             try {
-                controller.signal.throwIfAborted();
-                config = configuration();
+                while (!config) {
+                    controller.signal.throwIfAborted();
+                    try { config = configuration({ operation: 'run' }); }
+                    catch (error) {
+                        if (error.code !== 'SUBAPP_BUSY') throw error;
+                        try { await delay(100, undefined, { signal: controller.signal }); }
+                        catch { controller.signal.throwIfAborted(); }
+                    }
+                }
                 try { observer = present?.(config.monitorPath, sender, abort, input.observer); } catch { /* UI failure cannot block firmware execution. */ }
-                runtime = await launch({ ...config, signal: controller.signal, timeoutMs: Math.min(15000, timeoutMs) });
+                const packageDependencies = config.packageDependencies || [];
+                runtime = await launch({ ...config, subappLaunchId: TOOL_ID, packageDependencies,
+                    onDispatched: releaseConfiguration, signal: controller.signal, timeoutMs: Math.min(15000, timeoutMs) });
                 controller.signal.throwIfAborted();
                 unregister = registry.register(sender, { toolId: TOOL_ID, streamId: runtime.streamId, publicInfo: runtime.publicInfo,
-                    packageDependencies: config.packageDependencies,
+                    packageDependencies,
                     stop: async () => {
                         abort(); await done.promise;
                         await runtime.stop(); unregister?.();
                         if (active === run) active = undefined;
                     } });
-                config.release(); config = undefined;
+                releaseConfiguration();
                 await registry.supervisor.track(sender, owner); tracked = true;
                 binding = await bindSimulatorDebugRpc({ connect: (_endpoint, handle, options) => runtime.connect(handle, options),
                     endpoint: runtime.publicInfo.wsUrl, supervisor: registry.supervisor,
@@ -132,7 +165,7 @@ function createBuildDebugPreview({ registry, configuration, launch = launchPriva
                     if (tracked) await registry.supervisor.release(sender, owner).catch(() => {});
                     unregister?.();
                 } finally {
-                    config?.release(); clearTimeout(timer);
+                    releaseConfiguration(); clearTimeout(timer);
                     signal?.removeEventListener('abort', abort); sender.removeListener('destroyed', destroyed);
                     sender.removeListener('render-process-gone', destroyed); sender.removeListener('did-start-navigation', navigate);
                     if (stopped || !runtime) active = undefined;

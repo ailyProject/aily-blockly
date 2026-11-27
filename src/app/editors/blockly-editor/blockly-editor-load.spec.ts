@@ -10,6 +10,39 @@ import { projectResourceGc } from './services/project-resource-gc.service';
 import { ProjectApplicationAdapter } from '../../integrations/project/project-application.adapter';
 
 describe('Blockly startup source and environment settlement', () => {
+  it('keeps a host-activated view revision while the editor accepts its route', async () => {
+    const route = new Subject<{ path: string }>();
+    const board = new Subject<never>();
+    let projectPath = '/activated';
+    const registerRoute = jasmine.createSpy('registerRoute').and.callFake((path: string) => { projectPath = path; });
+    const component: any = Object.create(BlocklyEditorComponent.prototype);
+    Object.assign(component, {
+      activatedRoute: { queryParams: route }, projectLoadSequence: 0,
+      _projectService: { init() {}, bindPreprocessSaveGuard: () => () => {} },
+      _builderService: { init() {} }, _uploadService: { init() {} },
+      projectService: {
+        get currentProjectPath() { return projectPath; }, set currentProjectPath(path: string) { registerRoute(path); },
+        boardConfigUpdatedSubject: board, cloudBoardHydratedSubject: new Subject(), beginBlocklyProjectLoad() {},
+      },
+      generatorRuntime: { isActive: () => false },
+      loadProject: async (_path: string, assertCurrent: () => void) => assertCurrent(),
+    });
+    spyOn(projectDataRuntime, 'configure');
+    spyOn(projectDataRuntime, 'getSessionToken').and.returnValue('session');
+    spyOn(window.history, 'replaceState'); spyOn(window.history, 'pushState');
+    component.ngOnInit();
+    try {
+      route.next({ path: '/activated' });
+      await Promise.resolve();
+      expect(component.loadedProjectPath).toBe('/activated');
+      expect(registerRoute).not.toHaveBeenCalled();
+      route.next({ path: '/route-only' });
+      await Promise.resolve();
+      expect(registerRoute).toHaveBeenCalledOnceWith('/route-only');
+      expect(component.loadedProjectPath).toBe('/route-only');
+    } finally { component.projectRouteSubscription.unsubscribe(); component.boardConfigUpdatedSubscription.unsubscribe(); }
+  });
+
   it('checks the original ABS journal before asking the dependency owner even without a linked environment', async () => {
     const originalStorage = window['fs'], originalLibraries = window['libraryDependencies'];
     const order: string[] = [];
@@ -21,7 +54,7 @@ describe('Blockly startup source and environment settlement', () => {
     window['libraryDependencies'] = { environmentVersion: 2, pendingEnvironment: async () => { order.push('dependencies'); return []; } };
     try {
       await adapter.settleEnvironmentBeforeOpen('D:/project', () => {});
-      expect(order).toEqual(['prepared.json', 'dependencies']);
+      expect(order).toEqual(['prepared.json', 'operation.json', 'dependencies']);
     } finally {
       window['fs'] = originalStorage;
       window['libraryDependencies'] = originalLibraries;
@@ -68,7 +101,7 @@ describe('failed Blockly open recovery', () => {
       Object.assign(component, {
         projectLoadSequence: 0, activatedRoute: { queryParams: route },
         _projectService: { init() {}, bindPreprocessSaveGuard: () => () => {} }, _builderService: { init() {} }, _uploadService: { init() {} },
-        projectService: { boardConfigUpdatedSubject: board, beginBlocklyProjectLoad() {},
+        projectService: { boardConfigUpdatedSubject: board, cloudBoardHydratedSubject: new Subject(), beginBlocklyProjectLoad() {},
           markBlocklyProjectLoadFailed: jasmine.createSpy('failed') },
         uiService: { updateFooterState: jasmine.createSpy('footer') },
         message: { error: jasmine.createSpy('error') },
@@ -131,17 +164,24 @@ describe('project load normalization context', () => {
   let current: boolean;
   let previousFs: any;
   let files: Map<string, string>;
+  let readFailures: Map<string, Error>;
+  let writerBusy: Error | undefined;
   let storageReplace: jasmine.Spy;
   const guard = () => { if (!current) throw new Error('stale load'); };
   beforeEach(() => {
     current = true;
     previousFs = window['fs']; files = new Map([['project.abi', '{}']]);
+    readFailures = new Map(); writerBusy = undefined;
     // Exercise the actual v2 open/restore boundary, including its explicit
     // contextBridge settlement protocol. These legacy-document fixtures have
     // no ABS generation; opening them must not invent one or write any cache.
     window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async (_project, assertCurrent) => {
       assertCurrent();
-      const read = async (key: string) => { assertCurrent(); return files.get(key) ?? null; };
+      const read = async (key: string) => {
+        assertCurrent();
+        if (readFailures.has(key)) throw readFailures.get(key);
+        return files.get(key) ?? null;
+      };
       storageReplace = jasmine.createSpy('storageReplace').and.callFake(async (key: string, expected: string | null, text: string | null) => {
         assertCurrent(); const before = await read(key);
         if ((before === null ? null : await hashAbsText(before)) !== expected) return false;
@@ -150,6 +190,7 @@ describe('project load normalization context', () => {
       });
       return { read, withLock: operation => new Promise((resolve, reject) => {
         assertCurrent();
+        if (writerBusy) { reject(writerBusy); return; }
         expect(operation({ read, replace: storageReplace }, result => result.ok === true ? resolve(result.value)
           : reject(Object.assign(new Error(result.error.message), { code: result.error.code })))).toBeUndefined();
       }) };
@@ -175,6 +216,75 @@ describe('project load normalization context', () => {
     component.parseProjectAbiContent.and.callFake(async () => { current = false; return {}; });
     await expectAsync(component.loadProjectAbiDocument('D:/old', guard)).toBeRejectedWithError('stale load');
     expect(component.projectService.ensureProjectDataSchemaForLoad).not.toHaveBeenCalled();
+  });
+  for (const [name, code] of [['prepared.json', 'ABS_BASELINE_CORRUPT'], ['operation.json', 'ABS_OPERATION_CORRUPT']]) {
+    it(`opens the saved ABI without publishing when ${name} is corrupt`, async () => {
+      const abi = '{"blocks":{"blocks":[{"type":"arduino_setup","id":"saved"}]}}';
+      const damaged = '{"version":';
+      files.set(name, damaged);
+      files.set('project.abi', abi);
+      const result = await component.loadProjectAbiDocument('D:/project', guard);
+      expect(result.document).toEqual(JSON.parse(abi));
+      expect(result.diskText).toBe(abi);
+      expect(result.completeAbs).toBeFalse();
+      expect(result.loadNormalization).toBeUndefined();
+      expect(result.deferredNormalization?.code).toBe(code);
+      expect(component.projectService.ensureProjectDataSchemaForLoad.calls.argsFor(0)[2]).toBeUndefined();
+      expect(files.get(name)).toBe(damaged);
+      expect(files.get('project.abi')).toBe(abi);
+    });
+  }
+  it('rechecks undecodable recovery pointers under the original writer lock', async () => {
+    const abi = '{"blocks":{"blocks":[{"type":"arduino_setup","id":"saved"}]}}';
+    files.set('project.abi', abi);
+    for (const [key, code] of [['prepared.json', 'ABS_BASELINE_CORRUPT'], ['operation.json', 'ABS_OPERATION_CORRUPT']]) {
+      readFailures.set(key, Object.assign(new Error('invalid UTF-8 journal'), { code }));
+      writerBusy = Object.assign(new Error('active writer'), { code: 'PROJECT_FILE_BUSY' });
+      await expectAsync(component.loadProjectAbiDocument('D:/project', guard))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_FILE_BUSY' }));
+      writerBusy = undefined;
+      const opened = await component.loadProjectAbiDocument('D:/project', guard);
+      expect(opened.diskText).toBe(abi);
+      expect(opened.deferredNormalization?.code).toBe(code);
+      readFailures.delete(key);
+    }
+    readFailures.set('project.abi', Object.assign(new Error('invalid UTF-8 ABI'), { code: 'ABS_STORAGE_ENCODING_INVALID' }));
+    await expectAsync(component.loadProjectAbiDocument('D:/project', guard))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STORAGE_ENCODING_INVALID' }));
+  });
+  it('keeps the original recovery error when there is no saved Blockly ABI to load', async () => {
+    files.set('prepared.json', '{"version":');
+    files.delete('project.abi');
+    await expectAsync(component.loadProjectAbiDocument('D:/project', guard))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+    expect(component.parseProjectAbiContent).not.toHaveBeenCalled();
+  });
+  it('passes the open preflight with a saved ABI and a corrupt prepare journal', async () => {
+    const adapter = Object.create(ProjectApplicationAdapter.prototype) as ProjectApplicationAdapter;
+    const previousLibraries = window['libraryDependencies'];
+    const pendingEnvironment = jasmine.createSpy('pendingEnvironment').and.resolveTo([]);
+    const damaged = '{"version":';
+    files.set('prepared.json', damaged);
+    window['libraryDependencies'] = { environmentVersion: 2, pendingEnvironment };
+    try {
+      await adapter.settleEnvironmentBeforeOpen('D:/project', guard);
+      expect(pendingEnvironment).toHaveBeenCalledOnceWith('D:/project');
+      expect(files.get('prepared.json')).toBe(damaged);
+    } finally { window['libraryDependencies'] = previousLibraries; }
+  });
+  it('defers cold-open dependency discard only when the pending ABS journal fails verification', async () => {
+    const damaged = '{"version":';
+    files.set('prepared.json', damaged);
+    const refusal = new Error("Error invoking remote method 'library-dependencies': Error: An ABS generation is pending. Recover or explicitly abandon it before publishing project files.");
+    component.projectService.discardLibraryChanges = jasmine.createSpy('discard').and.rejectWith(refusal);
+    expect(await component.restoreSavedLibrariesForOpen('D:/project', guard)).toBeTrue();
+    expect(component.projectService.discardLibraryChanges).toHaveBeenCalledOnceWith('D:/project');
+    expect(files.get('prepared.json')).toBe(damaged);
+    files.delete('project.abi');
+    await expectAsync(component.restoreSavedLibrariesForOpen('D:/project', guard))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+    component.projectService.discardLibraryChanges.and.rejectWith(new Error('disk unavailable'));
+    await expectAsync(component.restoreSavedLibrariesForOpen('D:/project', guard)).toBeRejectedWithError('disk unavailable');
   });
   it('passes the same guard to disk and in-memory template normalization', async () => {
     files.set('project.abi', '{"blocks":{"blocks":[]}}');
@@ -208,7 +318,7 @@ describe('project load normalization context', () => {
     component.projectLoadSequence = 0; component.loadedProjectPath = null;
     component.activatedRoute = { queryParams: route };
     component._projectService = { init: () => {}, bindPreprocessSaveGuard: () => () => {} }; component._builderService = { init: () => {} }; component._uploadService = { init: () => {} };
-    Object.assign(component.projectService, { boardConfigUpdatedSubject: board,
+    Object.assign(component.projectService, { boardConfigUpdatedSubject: board, cloudBoardHydratedSubject: new Subject(),
       beginBlocklyProjectLoad: () => {}, markBlocklyProjectLoadFailed: jasmine.createSpy('failed') });
     component.abortFailedProjectLoad = jasmine.createSpy('abort'); component.message = { error: jasmine.createSpy('error') };
     let rejectOld!: (error: Error) => void;
@@ -231,8 +341,10 @@ describe('project load normalization context', () => {
 });
 
 describe('Blockly dependency preparation cancellation', () => {
-  for (const retainedHistory of [false, true]) {
-    it(`${retainedHistory ? 'retains old baseline-only resources for a deferred plain-ABS load' : 'still collects an ordinary ABI-only project without history'}`, async () => {
+  for (const retained of ['none', 'history', 'companion', 'journal'] as const) {
+    it(retained === 'journal' ? 'opens a deferred journal from installed dependencies without preparing library sources'
+      : retained === 'none' ? 'still collects an ordinary ABI-only project without history'
+      : `retains old baseline-only resources for a plain-ABS load with ${retained}`, async () => {
       const component: any = Object.create(BlocklyEditorComponent.prototype);
       const resources = new Map([['old-baseline-only', 'immutable asset bytes']]);
       const gc = spyOn(projectResourceGc, 'cleanupUnreferencedFiles').and.callFake(() => {
@@ -242,12 +354,14 @@ describe('Blockly dependency preparation cancellation', () => {
       Object.assign(component, {
         stopPackageJsonDependencyWatch() {}, clearProjectLoadedCodeRefreshTimer() {},
         configService: { ensureLibraryListForProject: async () => {}, getApplicationName: () => 'isolated' },
-        electronService: { readFile: () => '{"name":"isolated","devmode":"arduino"}', setTitle() {} },
+        electronService: { readFile: () => '{"name":"isolated","devmode":"arduino"}', setTitle() {},
+          pathJoin: (...paths: string[]) => paths.join('/'), exists: (file: string) => retained === 'companion' && file.endsWith('/project.abs') },
         projectService: { discardLibraryChanges: async () => {}, addRecentlyProject() {},
           resolveBoardConfigForRuntime: async () => ({}), loadBoardMenuConfig: async () => {}, isCloudBuild: () => false,
           markBlocklyProjectLoaded() {}, markBlocklyLibraryRuntimeReady() {} },
         applyProjectPackageJson() {}, getDeclaredBlocklyLibraryDependencies: () => new Map(),
-        npmService: { ensureProjectDependenciesInstalled: async () => true, installedOk: async () => true,
+        npmService: { ensureProjectDependenciesInstalled: jasmine.createSpy('prepareSources').and.resolveTo(true),
+          installedOk: jasmine.createSpy('checkDependencies').and.resolveTo(true),
           getAllInstalledLibraries: async () => [], installBoardDeps: async () => {} },
         blocklyService: { waitForWorkspace: async () => {}, withToolboxRefreshBatch: async work => work(),
           getMissingBlockDefinitions: () => [], acquireWorkspaceEditLease: () => ({ assertCurrent() {}, release() {} }),
@@ -257,18 +371,24 @@ describe('Blockly dependency preparation cancellation', () => {
         translate: { instant: text => text }, getMissingProjectLibraries: () => [], waitForNextFrame: async () => {},
         loadProjectAbiDocument: async () => ({ document: { pages: [] }, usedBoardTemplate: false,
           diskText: 'original ABI', completeAbs: false,
-          ...(retainedHistory ? { deferredNormalization: { status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_DEFERRED',
+          ...(retained === 'history' || retained === 'journal' ? { deferredNormalization: { status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_DEFERRED',
             recovery: { tool: 'project_recover' } } } : {}) }),
         ngZone: { runOutsideAngular: work => work() },
-        _projectService: { rememberLoadedProject() {}, syncUsedLibraryManifest: () => false },
+        _projectService: { rememberLoadedProject() {}, syncUsedLibraryManifest: jasmine.createSpy('syncLibraryManifest').and.returnValue(false) },
         scheduleProjectLoadedCodeRefresh() {}, promptLoginForAuthRequiredBoard: async () => {},
         startPackageJsonDependencyWatch() {}, localLibrarySyncService: { start() {} }, checkBlocklyOnboarding() {},
       });
+      if (retained === 'journal') component.restoreSavedLibrariesForOpen = async () => true;
       spyOn(console, 'warn'); spyOn(console, 'info');
       try {
         await component.prepareProject('D:/isolated-load', { signal: new AbortController().signal }, () => {});
-        expect(gc.calls.count()).toBe(retainedHistory ? 0 : 1);
-        expect(resources.size).toBe(retainedHistory ? 1 : 0);
+        expect(gc.calls.count()).toBe(retained === 'none' ? 1 : 0);
+        expect(resources.size).toBe(retained === 'none' ? 0 : 1);
+        expect(component.npmService.installedOk.calls.count()).toBe(retained === 'journal' ? 1 : 0);
+        if (retained === 'journal') {
+          expect(component.npmService.ensureProjectDependenciesInstalled).not.toHaveBeenCalled();
+          expect(component._projectService.syncUsedLibraryManifest).not.toHaveBeenCalled();
+        }
       } finally { window['boardConfig'] = previousBoard; }
     });
   }
@@ -278,7 +398,7 @@ describe('Blockly dependency preparation cancellation', () => {
       const component: any = Object.create(BlocklyEditorComponent.prototype);
       let initialized!: () => void;
       const session = { signal: new AbortController().signal };
-      component.configService = { init: () => new Promise<void>(resolve => { initialized = resolve; }) };
+      component.configService = { initializeProjectCompileBackend: () => new Promise<void>(resolve => { initialized = resolve; }) };
       component.projectService = {
         getProjectDependencySession: jasmine.createSpy('session').and.returnValue(session),
         assertProjectDependencySession: () => {},

@@ -47,6 +47,9 @@ describe('Header custom partition menu', () => {
     header.requiredSubapps = new RequiredSubappService(manager);
     header.selectDebounceTimer = null;
     header.projectService = { currentProjectPath: 'D:\\Projects\\语音 project', setPackageJson: jasmine.createSpy('write') };
+    header.configService = { getCompileSettingsKey: () => 'local' };
+    header.portMenuContent = { project: header.projectService.currentProjectPath, board: undefined, connectors: '',
+      settings: 'local', currentProject: () => true, boardOptions: [{ key: 'PartitionScheme', children: [custom] }] };
     header.uiService = { openWindow: jasmine.createSpy('openWindow'), openToolWindow: jasmine.createSpy('openToolWindow').and.returnValue(true) };
     header.mainUiAutomation = { openChildApp: jasmine.createSpy('openChildApp').and.resolveTo({ ok: true }) };
     header.closePortList = jasmine.createSpy('closeMenu');
