@@ -8,7 +8,11 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const rxjs = require('rxjs');
 const root = path.resolve(__dirname, '..');
-const angular = { Component: () => value => value, Injectable: () => value => value, Input: () => () => {} };
+const angular = { Component: () => value => value, Injectable: () => value => value,
+  Input: () => () => {}, Output: () => () => {}, EventEmitter: rxjs.Subject };
+const zh = require('../public/i18n/zh_cn/zh_cn.json').NOTIFICATION;
+const en = require('../public/i18n/en/en.json').NOTIFICATION;
+const translate = labels => key => labels[key.split('.').pop()] ?? key;
 
 function compile(relative, imports = {}) {
   const file = path.join(root, relative), module = { exports: {} };
@@ -17,7 +21,7 @@ function compile(relative, imports = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, experimentalDecorators: true },
   });
   assert.equal(result.diagnostics.length, 0);
-  vm.runInNewContext(result.outputText, { module, exports: module.exports, console, setTimeout, clearTimeout,
+  vm.runInNewContext(result.outputText, { module, exports: module.exports, console, crypto: globalThis.crypto, setTimeout, clearTimeout,
     require(name) { return name === '@angular/core' ? angular : name === 'rxjs' ? rxjs : imports[name] || {}; },
   }, { filename: file });
   return module.exports;
@@ -44,11 +48,12 @@ function fixture(t, { stop } = {}) {
   const notification = new NotificationComponent(notices, { detectChanges() {} }, {});
   notification.ngOnInit();
   host.hostContextId = 'host'; host.aiOperationStateScope = 'scope';
+  host.translate = { instant: translate(zh) };
   host.resolvedToolId = 'aily-chat'; host.projectService = { currentProjectPath: '/project/A' };
   host.aiOperationRegistry = new AiOperationRegistryService(); host.noticeService = notices;
   host.ailyChatOperationActive = false; host.aiLegacyRunning = false; host.aiLegacyStopping = false;
   const registry = new Map(), calls = [], errors = [];
-  host.blocklyService = { aiWriting: false, aiWaitWriting: false, recoveryRequired: false,
+  host.blocklyService = { aiOperationWriting: false, aiWaitWriting: false, recoveryRequired: false,
     setAiExecutionActive(source, active) { if (active) registry.set(source, true); else registry.delete(source); },
     isWorkspaceRecoveryRequired() { return this.recoveryRequired; },
     clearAiWaitWriting() { this.aiWaitWriting = false; },
@@ -69,9 +74,37 @@ function rebuildNotification(t, f) {
   return notification;
 }
 
-test('an editor rebuild restores the current owned AI notice without rerunning or stopping its operation', async t => {
+test('a manual workspace lock stays silent when an unrelated AI turn ends', t => {
   const f = fixture(t);
   f.native({ aiWriting: true });
+  assert.equal(f.notification.data ?? null, null);
+  f.report(snapshot(1));
+  f.report(snapshot(2, []));
+  assert.equal(f.notification.data, null);
+  f.native({ aiOperationWriting: true });
+  assert.equal(f.notification.data.title, '正在应用画布更改');
+  assert.equal(f.notification.data.text, undefined);
+  f.native({ aiOperationWriting: false });
+  assert.equal(f.host.blocklyService.aiWriting, true);
+  assert.equal(f.notification.data, null);
+});
+
+test('active text follows the selected language without reviving a dismissed recovery warning', t => {
+  const f = fixture(t);
+  f.native({ recoveryRequired: true });
+  f.host.translate.instant = translate(en);
+  f.host.refreshAiOperationNotice(true);
+  assert.equal(f.notification.data.title, en.AI_RECOVERY);
+  assert.equal(f.notification.data.text, en.AI_RECOVERY_DETAIL);
+  f.notification.close();
+  f.host.translate.instant = translate(zh);
+  f.host.refreshAiOperationNotice(true);
+  assert.equal(f.notification.data, null);
+});
+
+test('an editor rebuild restores the current owned AI notice without rerunning or stopping its operation', async t => {
+  const f = fixture(t);
+  f.native({ aiOperationWriting: true });
   f.report(snapshot(1));
   const notice = f.notices.data;
   const next = rebuildNotification(t, f);
@@ -88,15 +121,15 @@ test('an editor rebuild restores the current owned AI notice without rerunning o
   assert.deepEqual(f.calls, [{ version: 2, bridgeInstanceId: 'bridge', sessionId: 'A', turnId: 'turn-A', scope: 'scope' }]);
   assert.equal(next.data.title, '正在停止 AI');
   f.report(snapshot(2, []));
-  assert.equal(next.data.title, '正在结束工作区操作');
-  f.native({ aiWriting: false });
+  assert.equal(next.data.title, '正在应用画布更改');
+  f.native({ aiOperationWriting: false });
   assert.equal(next.data, null);
   assert.equal(rebuildNotification(t, f).data ?? null, null, 'settled owners are not replayed');
 });
 
 test('an editor rebuild restores ownership after a load error covered the live AI operation, then Stop settles cleanly', async t => {
   const f = fixture(t);
-  f.native({ aiWriting: true });
+  f.native({ aiOperationWriting: true });
   f.report(snapshot(1));
   const running = f.notices.data;
   f.notices.update({ title: '加载项目失败', state: 'error' });
@@ -113,7 +146,7 @@ test('an editor rebuild restores ownership after a load error covered the live A
   assert.deepEqual(f.calls, [{ version: 2, bridgeInstanceId: 'bridge', sessionId: 'A', turnId: 'turn-A', scope: 'scope' }]);
   assert.equal(next.data.title, '正在停止 AI');
   f.report(snapshot(2, []));
-  f.native({ aiWriting: false });
+  f.native({ aiOperationWriting: false });
   assert.equal(next.data, null, 'the restored owner must be able to clear the view');
   assert.equal(f.notices.data, null);
   assert.equal(rebuildNotification(t, f).data ?? null, null);
@@ -231,23 +264,23 @@ test('malformed snapshots do not gain an owner or replace the current run', () =
 
 test('Stop acceptance does not retire a busy native writer, and quarantine becomes a dismissible warning', async t => {
   const f = fixture(t);
-  f.native({ aiWriting: true }); f.report(snapshot(1));
+  f.native({ aiOperationWriting: true }); f.report(snapshot(1));
   const stop = f.notification.data.stop;
   stop(); stop(); await turn();
   assert.equal(f.calls.length, 1, 'the same exact owner has one pending cancellation');
   assert.equal(f.notification.data.title, '正在停止 AI');
-  assert.equal(f.host.blocklyService.aiWriting, true);
+  assert.equal(f.host.blocklyService.aiOperationWriting, true);
   f.report(snapshot(2, []));
-  assert.equal(f.notification.data.title, '正在结束工作区操作');
+  assert.equal(f.notification.data.title, '正在应用画布更改');
   assert.equal(f.notification.data.stop, undefined);
-  f.native({ aiWriting: false, recoveryRequired: true });
+  f.native({ aiOperationWriting: false, recoveryRequired: true });
   assert.equal(f.notification.data.title, '工作区需要恢复');
   assert.equal(f.notification.data.state, 'warn'); assert.equal(f.notification.data.closable, true);
   assert.equal(f.notification.data.stop, undefined);
   f.notification.close();
   f.host.refreshAiOperationNotice();
   assert.equal(f.host.blocklyService.recoveryRequired, true, 'dismissing a notice never releases source protection');
-  assert.equal(f.host.blocklyService.aiWriting, false);
+  assert.equal(f.host.blocklyService.aiOperationWriting, false);
   await new Promise(resolve => setTimeout(resolve, 550));
   assert.equal(f.notification.data, null, 'the recovery warning can be dismissed');
   f.host.refreshAiOperationNotice();
@@ -353,14 +386,14 @@ test('actual host subscriptions turn a settled writer into a recovery warning wi
   notification.ngOnInit();
   const writing = new rxjs.BehaviorSubject(false), waiting = new rxjs.BehaviorSubject(false), recovery = new rxjs.BehaviorSubject(false);
   const subject = () => new rxjs.Subject();
-  const blockly = { aiWriting$: writing, aiWaitWriting$: waiting, workspaceRecoveryRequired$: recovery,
+  const blockly = { aiOperationWriting$: writing, aiWaitWriting$: waiting, workspaceRecoveryRequired$: recovery,
     selectedBlockIdsSubject: subject(), blockCodeMapSubject: subject(),
-    get aiWriting() { return writing.value; }, get aiWaitWriting() { return waiting.value; },
+    get aiOperationWriting() { return writing.value; }, get aiWaitWriting() { return waiting.value; },
     isWorkspaceRecoveryRequired: () => recovery.value, clearAiWaitWriting() { waiting.next(false); }, setAiExecutionActive() {},
   };
   const ports = { noticeService: notices, aiOperationRegistry: new AiOperationRegistryService(), blocklyService: blockly,
     projectService: { currentProjectPath: '/A', currentProjectPath$: subject(), coderWorkspace$: subject() },
-    platformService: { isWindows: () => false }, translate: { onLangChange: subject() }, themeService: { themeChanged$: subject() },
+    serialService: { selectedPort$: subject() }, platformService: { isWindows: () => false }, translate: { instant: translate(zh), onLangChange: subject() }, themeService: { themeChanged$: subject() },
     authService: { isLoggedIn$: subject(), authChanged$: subject() }, configService: { getCurrentApiServer: () => '', configReloaded$: subject() },
   };
   const file = path.join(root, 'src/app/tools/child-tool-host/child-tool-host.component.ts');
@@ -372,7 +405,7 @@ test('actual host subscriptions turn a settled writer into a recovery warning wi
   host.reportAiOperationState(snapshot(1, [run()], { scope: host.aiOperationStateScope }));
   writing.next(true);
   host.reportAiOperationState(snapshot(2, [], { scope: host.aiOperationStateScope }));
-  assert.equal(notification.data.title, '正在结束工作区操作');
+  assert.equal(notification.data.title, '正在应用画布更改');
   recovery.next(true); writing.next(false);
   assert.equal(notification.data.title, '工作区需要恢复'); assert.equal(notification.data.stop, undefined);
   recovery.next(false);

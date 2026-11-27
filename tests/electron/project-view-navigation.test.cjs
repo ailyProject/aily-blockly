@@ -15,17 +15,17 @@ function fixture() {
     normalizeProjectPathLoose: path => path,
     tryAcquireLock(path) {
       const alreadyHeld = records.has(path);
-      if (!alreadyHeld) records.set(path, { hash: randomUUID(), identity: { path }, owner: { pid: process.pid } });
-      return { ok: true, alreadyHeld, normalizedPath: path };
+      if (!alreadyHeld) records.set(path, { viewToken: randomUUID() });
+      return { ok: true, alreadyHeld, normalizedPath: path, viewToken: records.get(path).viewToken };
     },
-    readViewLockSnapshot: path => records.get(path),
+    captureHeldView: path => records.get(path),
     releaseLock(path, expected) {
-      if (expected && records.get(path) !== expected) return { ok: false, code: 'PROJECT_VIEW_CHANGED' };
+      if (expected && records.get(path)?.viewToken !== expected.viewToken) return { ok: false, code: 'PROJECT_VIEW_CHANGED' };
       records.delete(path);
       return { ok: true };
     },
     handoffViewLock(source, previous, target, reservation) {
-      if (records.get(target) !== reservation) return { ok: false, code: 'PROJECT_VIEW_CHANGED' };
+      if (records.get(target)?.viewToken !== reservation.viewToken) return { ok: false, code: 'PROJECT_VIEW_CHANGED' };
       return this.releaseLock(source, previous);
     },
   };
@@ -99,7 +99,7 @@ test('abandoning a dispatched handoff or replacing its target cannot clear anoth
   select('A');
   const original = request('A', 'B');
   navigation.reserve(original);
-  const replacement = { ...records.get('B') };
+  const replacement = { viewToken: randomUUID() };
   records.set('B', replacement);
   assert.equal(navigation.promote(original).ok, false);
   assert.equal(navigation.release(original, true).code, 'PROJECT_VIEW_CHANGED');
@@ -130,7 +130,9 @@ test('a revoked reservation that reaches Main late cannot recreate its original 
 test('the native handoff refuses replaced markers and keeps the live source lock', t => {
   const temporaryParent = fs.realpathSync(os.tmpdir());
   const fixturePath = fs.realpathSync(fs.mkdtempSync(path.join(temporaryParent, 'aily-view-handoff-')));
+  const lock = loadNativeLock();
   t.after(() => {
+    lock.releaseAll();
     assert.equal(path.dirname(fs.realpathSync(fixturePath)), temporaryParent);
     assert.match(path.basename(fixturePath), /^aily-view-handoff-/);
     fs.rmSync(fixturePath, { recursive: true });
@@ -138,7 +140,6 @@ test('the native handoff refuses replaced markers and keeps the live source lock
   const source = path.join(fixturePath, 'A'), target = path.join(fixturePath, 'B');
   fs.mkdirSync(source);
   fs.mkdirSync(target);
-  const lock = loadNativeLock();
   assert.equal(lock.tryAcquireLock(source).ok, true);
   const controller = createProjectViewNavigation(lock);
   controller.selectLegacy(source);
@@ -153,5 +154,6 @@ test('the native handoff refuses replaced markers and keeps the live source lock
   assert.equal(controller.release(request, true).code, 'PROJECT_VIEW_CHANGED');
   assert.equal(lock.readViewLockSnapshot(target).hash, replacement.hash);
   assert.ok(lock.readViewLockSnapshot(source));
+  assert.equal(lock.isHeld(source), true);
   assert.equal(controller.currentProject(), source);
 });

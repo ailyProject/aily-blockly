@@ -33,9 +33,11 @@ function fixture(t) {
     lstatSync: file => { const s = fs.lstatSync(file); return { _isDirectory: s.isDirectory(), _isFile: s.isFile() }; },
   };
   const pathApi = { ...path, getAppDataPath: () => root };
+  const window = { fs: fsApi, path: pathApi };
   const Project = sourceClass(`${domain}/project.service.ts`, 'ProjectService', {
     ...readPureModule(`${domain}/coder/coder-project-template.ts`),
-    ...templates, window: { fs: fsApi, path: pathApi },
+    ...readPureModule(`${domain}/aily-cloud-ignore-file.ts`, { window }),
+    ...templates, window,
     isAilyBoardPackageName: name => name === board.name,
     isAilyScopedPackageName: name => name.startsWith('@aily-project/'),
     ...readPureModule(`${domain}/project-package-name.ts`),
@@ -63,6 +65,7 @@ test('first and second Blockly creation reuse only the exact verified board and 
     assert.equal(manifest.dependencies[board.name], board.version);
     assert.equal(manifest.dependencies[library], '2.4.1');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(result.projectPath, 'project.abi'), 'utf8')), { blocks: { languageVersion: 0, blocks: [] } });
+    assert.equal(fs.readFileSync(path.join(result.projectPath, '.ailyignore'), 'utf8'), 'build/\n');
   }
   assert.deepEqual(f.calls.installs, []);
   assert.equal(f.calls.schema.length, 2);

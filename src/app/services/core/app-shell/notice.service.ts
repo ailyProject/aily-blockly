@@ -5,6 +5,22 @@ import type { NoticeOptions } from '@shared/public-api';
 
 export type { NoticeOptions } from '@shared/public-api';
 
+/** Let the renderer paint before synchronous toolchain or firmware checks.
+ * A minimized window may stop producing frames after the visibility check. */
+export function yieldForNoticePaint(): Promise<void> {
+  if (typeof document === 'undefined' || document.hidden || !document.querySelector('app-notification')) return Promise.resolve();
+  return new Promise(resolve => {
+    const fallback = window.setTimeout(() => {
+      window.cancelAnimationFrame(frame);
+      resolve();
+    }, 64);
+    const frame = window.requestAnimationFrame(() => {
+      window.clearTimeout(fallback);
+      window.setTimeout(resolve, 0);
+    });
+  });
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -43,10 +59,22 @@ export class NoticeService {
     this.publish(opts);
   }
 
+  /** Only retire this preparation notice if no progress, error or other task has replaced it. */
+  beginPreparation(opts: NoticeOptions, visible = true) {
+    if (this.data?.state === 'doing') return undefined;
+    const notice = { ...opts, preparationId: crypto.randomUUID() };
+    this.update(notice);
+    return {
+      painted: visible ? yieldForNoticePaint() : Promise.resolve(),
+      close: () => { if (this.data === notice) this.clear(); },
+    };
+  }
+
   updateOwned(owner: string, opts: NoticeOptions): boolean {
     if (!owner) return false;
     this.ownedNotices.set(owner, opts);
-    if (this.data?.state === 'doing' && this.owner !== owner) return false;
+    const keepsPanel = this.data?.state === 'doing' && (!this.data.preparationId || !!this.data.stop);
+    if (keepsPanel && this.owner !== owner) return false;
     this.owner = owner;
     this.publish(opts);
     return true;

@@ -86,11 +86,19 @@ describe('project conflict domain boundary', () => {
 
   it('preserves a typed save failure without changing the original dispatch or retrying it', async () => {
     const { service, application } = fixture();
-    const dispatch = jasmine.createSpy('save').and.resolveTo({ success: false, code: 'ABS_DUAL_EDIT_CONFLICT', error: 'conflict' });
-    Object.assign(application, { dispatchProjectSave: dispatch });
-    expect(await service.save()).toEqual({ success: false, code: 'ABS_DUAL_EDIT_CONFLICT', error: 'conflict', path: project,
-      saveReceipt: { version: 1, requestId: jasmine.any(String), project, operation: 'project_save', state: 'completed' } });
-    expect(dispatch).toHaveBeenCalledTimes(1); expect(application.resolveBlocklyConflict).not.toHaveBeenCalled();
+    const failure = { success: false, code: 'ABS_DUAL_EDIT_CONFLICT', error: 'conflict' };
+    const dispatch = jasmine.createSpy('save').and.resolveTo(failure);
+    Object.assign(application, { dispatchProjectSave: dispatch, observeProjectPublication: async (path, request) =>
+      dispatch.calls.any() ? { ok: true, saveReceipt: { version: request.version, requestId: request.requestId,
+        operation: request.operation, project: path, state: 'completed' }, result: failure } : null });
+    const originalFs = window['fs'];
+    window['fs'] = { projectProgramPublicationVersion: 1, nativeSaveReceiptVersion: 2,
+      projectSyncStorageVersion: 2, openProjectSyncStorage() {} };
+    try {
+      expect(await service.save()).toEqual({ ...failure, path: project,
+        saveReceipt: { version: 2, requestId: jasmine.any(String), project, operation: 'project_save', state: 'completed' } });
+      expect(dispatch).toHaveBeenCalledTimes(1); expect(application.resolveBlocklyConflict).not.toHaveBeenCalled();
+    } finally { window['fs'] = originalFs; }
   });
 });
 
@@ -109,6 +117,7 @@ describe('manual save and quit conflict choices', () => {
     };
     const view: any = Object.assign(Object.create(HeaderComponent.prototype), {
       projectService: service, ngZone: new NgZone({}),
+      configService: { isCoderProduct: () => false },
       message: { error: jasmine.createSpy('error'), success: jasmine.createSpy('success') },
       modal: { create: jasmine.createSpy('dialog').and.callFake(() => {
         const subject = new Subject<any>(); dialogs.push(subject); return { afterClose: subject };
@@ -158,6 +167,17 @@ describe('manual save and quit conflict choices', () => {
     const { service, view } = fixture(); service.save.and.resolveTo({ success: true });
     await view.process({ action: 'project-save' }, null, 'manual');
     expect(service.save).toHaveBeenCalledTimes(1); expect(service.inspectSaveConflict).not.toHaveBeenCalled();
+    expect(view.modal.create).not.toHaveBeenCalled();
+  });
+
+  it('shows the original directory warning without offering to overwrite a replacement', async () => {
+    const { service, view } = fixture();
+    service.captureCurrentProjectGuard = () => () => false;
+    service.save.and.resolveTo({ success: false, code: 'PROJECT_VIEW_ATTACHMENT_CHANGED', error: '原工程目录已移动' });
+    await view.process({ action: 'project-save' }, null, 'manual');
+    expect(view.message.error).toHaveBeenCalledOnceWith('原工程目录已移动');
+    expect(service.save).toHaveBeenCalledOnceWith(project);
+    expect(service.inspectSaveConflict).not.toHaveBeenCalled();
     expect(view.modal.create).not.toHaveBeenCalled();
   });
 

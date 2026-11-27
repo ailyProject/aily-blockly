@@ -119,7 +119,11 @@ export async function matchAbsIdentities(beforeText: string, afterText: string,
         const [before, after] = pending(...pair), old = group(before, node => node.type), current = group(after, node => node.type);
         for (const [type, nodes] of current) {
           const previous = old.get(type);
-          if (nodes.length === 1 && previous?.length === 1) match(previous[0], nodes[0]);
+          // A separately deleted call cannot supply the identity of a different
+          // same-type call. Exact relocation still uses its full signature.
+          if (nodes.length === 1 && previous?.length === 1 && !evidence.deleted.has(previous[0])) {
+            match(previous[0], nodes[0]);
+          }
         }
       }
     } while (matches.size !== size);

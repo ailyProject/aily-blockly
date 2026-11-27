@@ -9,10 +9,12 @@ const COORDINATION_FILES = new Set([
     '.aily/project-open.lock',
     '.aily/project-files.write.lock',
 ]);
+const VIEW_OWNER_STAGING = /^\.aily\/\.project-open\.lock\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/;
 
 /** The source walker supplies a slash-separated, project-relative path. */
 function isProjectCoordinationFile(relative) {
-    return COORDINATION_FILES.has(process.platform === 'win32' ? relative.toLowerCase() : relative);
+    const name = process.platform === 'win32' ? relative.toLowerCase() : relative;
+    return COORDINATION_FILES.has(name) || VIEW_OWNER_STAGING.test(name);
 }
 
 module.exports = { isProjectCoordinationFile };

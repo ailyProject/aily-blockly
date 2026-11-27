@@ -6,8 +6,9 @@ const fault = message => Object.assign(new Error(`BUILD_WORKSPACE_CHANGED: ${mes
 
 // The anchor is permanent: never unlink/rename it, or different processes could
 // lock different inodes. Its contents/existence do not represent ownership.
-function tryAcquireFileLock(filename) {
-    const descriptor = fs.openSync(filename, fs.constants.O_CREAT | fs.constants.O_RDWR | (fs.constants.O_NOFOLLOW || 0), 0o600);
+function tryAcquireFileLock(filename, { offset = 0, length = 0, readOnly = false } = {}) {
+    const access = readOnly ? fs.constants.O_RDONLY : fs.constants.O_RDWR;
+    const descriptor = fs.openSync(filename, fs.constants.O_CREAT | access | (fs.constants.O_NOFOLLOW || 0), 0o600);
     let closed = false;
     const close = () => { if (!closed) { closed = true; fs.closeSync(descriptor); } };
     try {
@@ -17,7 +18,7 @@ function tryAcquireFileLock(filename) {
             throw fault('Unsafe native lock anchor.');
         }
         let granted;
-        try { granted = tryLock(descriptor); }
+        try { granted = tryLock(descriptor, offset, length); }
         catch (error) {
             if (['EAGAIN', 'EACCES', 'EBUSY'].includes(error.code)) granted = false;
             else throw error;

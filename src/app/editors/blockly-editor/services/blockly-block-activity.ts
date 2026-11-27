@@ -38,8 +38,18 @@ export function createBlocklyBlockActivity(): (block: Blockly.Block) => boolean 
   };
 }
 
-/** Convenience for a single observation. Bulk readers should share a fresh
- * createBlocklyBlockActivity lookup within their synchronous read boundary. */
+/** During native loading each block may change its enclosing inputs. Walk the
+ * live parents once, without building a bulk lookup that cannot be reused. */
 export function isBlocklyBlockActive(block: Blockly.Block): boolean {
-  return createBlocklyBlockActivity()(block);
+  if (!block.isEnabled()) return false;
+  const seen = new Set<Blockly.Block>();
+  let current = block;
+  while (true) {
+    const parent = current.getParent?.();
+    if (!parent) return true;
+    if (seen.has(current)) throw new Error('Blockly activity requires acyclic block connections.');
+    seen.add(current);
+    if (parent.getNextBlock?.() !== current && !parent.isEnabled()) return false;
+    current = parent;
+  }
 }

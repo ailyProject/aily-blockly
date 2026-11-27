@@ -4,23 +4,23 @@ const { rootAttachment } = require('./project-file-lock-owner');
 
 const parameterScopedProjects = new Set([
   'project_fork_status', 'project_recovery_open', 'project_save_status', 'project_publication_status',
-  'project_board_environment_settle', 'project_navigation_status', 'abs_admission_status',
+  'project_board_environment_settle', 'project_navigation_status', 'abs_admission_status', 'abs_cancel_unstarted',
 ]);
 
 /** Recovery observation names its protected source in params.project. The
  * currently active canvas may already be the recovered target, so using it as
  * an implicit path would change the request rather than route it. Explicit
  * caller paths remain intact for the renderer's normal exact-project check. */
-function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve, params) {
+function routeLiveOperationProject(operation, requestedPath, currentProject, resolve = path.resolve, params, activeAttachment) {
   const stateObservation = operation === 'abs_recovery' && params?.action === 'observe_state';
   const retireLock = operation === 'abs_recovery' && ['retire_empty_project_lock', 'retire_project_file_lock'].includes(params?.action);
   const recoveryControl = retireLock || operation === 'abs_recovery' && params?.action === 'cancel_project';
   const parameterScoped = stateObservation || recoveryControl || parameterScopedProjects.has(operation);
-  const explicitPath = (stateObservation || recoveryControl || operation === 'abs_admission_status')
+  const explicitPath = (stateObservation || recoveryControl || ['abs_admission_status', 'abs_cancel_unstarted'].includes(operation))
     && !path.isAbsolute(requestedPath || '') ? '' : requestedPath;
   const project = explicitPath ? resolve(explicitPath) : parameterScoped ? '' : (currentProject || '');
   const originalPublication = isOriginalPublicationRequest(operation, params);
-  const attachment = originalPublication || retireLock ? originalPublicationAttachment(project, currentProject) : undefined;
+  const attachment = originalPublication || retireLock ? originalPublicationAttachment(project, currentProject, activeAttachment) : undefined;
   return {
     path: project,
     parameterScoped,
@@ -53,12 +53,12 @@ function projectLifecycleRequestRejection(snapshot, rendererGeneration) {
 
 /** The renderer may settle a refusal after navigation, but only on the
  * physical project the main process verified while routing the command. */
-function originalPublicationAttachment(requested, active) {
+function originalPublicationAttachment(requested, active, activeAttachment = rootAttachment) {
   if (!requested || !active) return undefined;
   try {
     const original = fs.realpathSync.native(requested), current = fs.realpathSync.native(active);
     const compare = value => process.platform === 'win32' ? value.toLowerCase() : value;
-    if (compare(original) === compare(current)) return rootAttachment(original);
+    if (compare(original) === compare(current)) return activeAttachment(current);
   } catch { /* No original attachment is proven. */ }
 }
 

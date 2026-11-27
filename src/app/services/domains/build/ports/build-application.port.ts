@@ -16,6 +16,7 @@ export interface BuildApplicationPort {
   startBuild(): boolean;
   finishBuild(success: boolean, errorMessage?: string): void;
   updateNotice(options: NoticeOptions): void;
+  captureCoderBuildBuffer?(projectPath: string): (() => Promise<boolean>) | undefined;
 }
 
 export const BUILD_APPLICATION_PORT = new InjectionToken<BuildApplicationPort>(

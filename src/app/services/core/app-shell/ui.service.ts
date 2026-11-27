@@ -3,7 +3,6 @@
 import { Injectable, Injector } from '@angular/core';
 import { filter, Observable, Subject } from 'rxjs';
 import { ElectronService, LogService } from '@core/platform/public-api';
-import { TerminalService } from '../../../tools/terminal/terminal.service';
 import { Router } from '@angular/router';
 import { FeedbackDialogComponent } from '../../../components/feedback-dialog/feedback-dialog.component';
 import { resolveAccountStatusCode } from '../../../components/feedback-dialog/feedback-diagnostics.utils';
@@ -62,7 +61,6 @@ export class UiService {
   private modalService: NzModalService | null = null;
   constructor(
     private electronService: ElectronService,
-    private terminalService: TerminalService,
     private router: Router,
     private authService: AuthService,
     private logService: LogService,
@@ -788,30 +786,18 @@ export class UiService {
   }
 
   openLog(target?: NoticeLogTarget): void {
-    // openBottomSider 的 Promise 等待终端 PID，日志定位不能依赖终端就绪。
     void this.openBottomSider('log');
     this.actionSubject.next({ action: 'reveal', type: 'log', data: target });
   }
 
-  async openBottomSider(data = 'default'): Promise<{ pid: number }> {
-    return new Promise(async (resolve, reject) => {
-      this.currentBottomTab = data;
-      if (this.isMainWindow) {
-        this.actionSubject.next({ action: 'open', type: 'bottom-sider', data });
-        this.terminalIsOpen = true;
-        const intervalId = setInterval(() => {
-          if (this.terminalService.currentPid) {
-            clearInterval(intervalId);
-            resolve({ pid: this.terminalService.currentPid });
-          }
-        }, 100);
-      } else {
-        // 其它窗口调用
-        let { pid } = await window['iWindow'].send({ to: 'main', data: { action: 'open-terminal' } });
-        // console.log('open-terminal', pid);
-        resolve({ pid });
-      }
-    });
+  private async openBottomSider(data: string): Promise<void> {
+    this.currentBottomTab = data;
+    if (this.isMainWindow) {
+      this.actionSubject.next({ action: 'open', type: 'bottom-sider', data });
+      this.terminalIsOpen = true;
+    } else {
+      await window['iWindow'].send({ to: 'main', data: { action: 'open-terminal' } });
+    }
   }
 
   closeTerminal() {

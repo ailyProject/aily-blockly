@@ -178,7 +178,9 @@ describe('complete ABS cache restoration',()=>{
    const current = await save('current');
    files.set('project.abs', first.projection.abs);
    const original = [...files];
+   const read = spyOn(port, 'read').and.callThrough();
    expect(await restoreAbsProjectCaches(port, 'project', () => {}, { preferSavedAbi: true })).toBe(current.abi);
+   expect(read.calls.allArgs().filter(([key]) => key === absBaselineKey(current.projection.map.generation)).length).toBe(1);
    expect([...files]).toEqual(original);
  });
  it('leaves an independent valid saved ABI available without legitimizing its disagreement with an accepted snapshot', async () => {

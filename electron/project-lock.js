@@ -1,13 +1,24 @@
-// 管理项目目录独占锁，防止多个应用实例重复打开同一项目。
-const fs = require("fs");
-const path = require("path");
-const { app } = require("electron");
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { app } = require('electron');
 const { createHash, randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { childScriptPath } = require('./child-script-path');
+const { rootAttachment } = require('./project-file-lock-owner');
 const { tryAcquireFileLock } = require(childScriptPath('native-file-lock.js'));
 const { getProcessState } = require(childScriptPath('process-state.js'));
+const { getSystemBootId, isSystemBootId } = require(childScriptPath('system-boot-id.js'));
+const { observeBuildProcessIdentity } = require(childScriptPath('build-process-identity.js'));
 
-const LOCK_SEGMENTS = [".aily", "project-open.lock"];
+const LOCK_SEGMENTS = ['.aily', 'project-open.lock'];
+const VIEW_LEASE_VERSION = 1;
+const WINDOWS_VIEW_LOCK_OFFSET = 0x100000000;
+const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const supportsFocus = process.platform === 'darwin' || process.platform === 'win32';
+const heldViews = new Map();
+let processIdentity;
 
 function getLockPath(normalizedRoot) {
   return path.join(normalizedRoot, ...LOCK_SEGMENTS);
@@ -27,7 +38,8 @@ function normalizeProjectPathStrict(projectPath) {
     throw err;
   }
   try {
-    return fs.realpathSync(resolved);
+    // Native resolution returns the physical casing of case-insensitive paths.
+    return fs.realpathSync.native(resolved);
   } catch {
     return resolved;
   }
@@ -40,271 +52,301 @@ function normalizeProjectPathLoose(projectPath) {
   }
   const resolved = path.resolve(projectPath);
   try {
-    return fs.realpathSync(resolved);
+    return fs.realpathSync.native(resolved);
   } catch {
     return resolved;
   }
 }
 
-function readLock(lockPath) {
+const validPid = pid => Number.isSafeInteger(pid) && pid > 0;
+const validToken = token => typeof token === 'string' && UUID.test(token);
+const viewRecordChanged = () => ({ ok: false, code: 'PROJECT_VIEW_CHANGED',
+  error: 'The project view no longer belongs to the original owner.' });
+const viewError = error => ({ ok: false, code: error.code, error: error.message });
+
+function safeViewDirectory(root, create = false) {
+  const directory = path.join(root, '.aily');
+  if (create) fs.mkdirSync(directory, { recursive: true });
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe project view coordination directory.');
+  return directory;
+}
+
+function takeGuard(root) {
+  const filename = path.join(safeViewDirectory(root, true), 'project-view.guard');
+  // LockFileEx blocks reads inside the locked range. A read handle and a byte
+  // beyond the contents allow shared readers and still overlap legacy locks.
+  return process.platform === 'win32'
+    ? tryAcquireFileLock(filename, { offset: WINDOWS_VIEW_LOCK_OFFSET, length: 1, readOnly: true })
+    : tryAcquireFileLock(filename);
+}
+
+function validRecord(owner) {
+  return validPid(owner?.pid) && typeof owner.execPath === 'string'
+    && (path.posix.isAbsolute(owner.execPath) || path.win32.isAbsolute(owner.execPath))
+    && Number.isFinite(owner.startedAt) && owner.startedAt > 0;
+}
+
+function isNativeViewOwner(owner) {
+  return owner?.viewLeaseVersion === VIEW_LEASE_VERSION && validRecord(owner) && validToken(owner.viewToken);
+}
+
+function legacyOwnership(owner) {
+  // Old records do not bind their PID to a host, so a missing local PID does
+  // not exclude a legacy editor on a shared mount or another PID namespace.
+  return { state: 'unknown', reason: validRecord(owner) && owner.viewLeaseVersion === undefined
+    ? 'legacy-owner-unverified' : 'invalid-owner-record' };
+}
+
+function scopeHash(root) {
   try {
-    const raw = fs.readFileSync(lockPath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
+    const attachment = rootAttachment(root);
+    return attachment ? createHash('sha256').update(JSON.stringify(attachment)).digest('hex') : null;
+  } catch { return null; }
+}
+
+function makeOwner(root, viewToken) {
+  const bootId = supportsFocus ? getSystemBootId() : null;
+  if (bootId && processIdentity === undefined) processIdentity = observeBuildProcessIdentity(process.pid);
+  return { viewLeaseVersion: VIEW_LEASE_VERSION, viewToken, pid: process.pid, execPath: process.execPath,
+    appVersion: app.getVersion(), startedAt: Date.now(), bootId, processIdentity: processIdentity ?? null,
+    scope: bootId && processIdentity ? scopeHash(root) : null };
+}
+
+function localOwnerMatches(root, owner, token = owner?.viewToken) {
+  return supportsFocus && isNativeViewOwner(owner) && owner.viewToken === token && isSystemBootId(owner.bootId)
+    && owner.bootId === getSystemBootId() && typeof owner.scope === 'string' && owner.scope === scopeHash(root)
+    && typeof owner.processIdentity === 'string' && getProcessState(owner.pid) === true
+    && owner.processIdentity === observeBuildProcessIdentity(owner.pid);
+}
+
+function describeConflict(root, owner, ownership, focus) {
+  const code = ownership.state === 'active' ? 'PROJECT_VIEW_OCCUPIED'
+    : ownership.state === 'busy' ? 'PROJECT_VIEW_BUSY' : 'PROJECT_VIEW_OWNER_UNKNOWN';
+  return { ok: false, conflict: true, code, normalizedPath: root, ownership,
+    ...(validPid(owner?.pid) ? { holder: { pid: owner.pid, appVersion: owner.appVersion } } : {}),
+    ...(focus ? { focus: { viewToken: owner.viewToken } } : {}),
+    error: ownership.state === 'active' ? 'Another process still owns the project view.'
+      : ownership.state === 'busy' ? 'Another project-view operation holds the native guard.'
+        : 'Project-view ownership is unconfirmed; its record was retained.' };
+}
+
+function busyView(root) {
+  let owner;
+  try { owner = readSnapshotAt(root)?.owner; } catch { /* The holder may still be publishing. */ }
+  if (isNativeViewOwner(owner)) {
+    return describeConflict(root, owner, { state: 'active', reason: 'native-view-guard-held' }, localOwnerMatches(root, owner));
   }
+  return describeConflict(root, owner, { state: 'busy', reason: 'native-view-guard-held' });
 }
 
-function isPidAlive(pid) {
-  return getProcessState(pid) === true;
+function sameSnapshot(a, b) {
+  return !!a && !!b && a.project === b.project && a.hash === b.hash
+    && Object.keys(a.identity).every(key => a.identity[key] === b.identity?.[key]);
 }
 
-/**
- * 在 Windows 上额外校验 PID 对应进程的可执行路径是否匹配锁中记录的 execPath，
- * 防止 PID 复用导致误判。
- */
-function isHolderProcessMatch(lockData) {
-  if (!lockData || !lockData.pid || !lockData.execPath) {
-    return 'unknown';
-  }
-  if (process.platform === "win32") {
-    try {
-      const { execFileSync } = require("child_process");
-      const out = execFileSync(
-        "wmic",
-        ["process", "where", `ProcessId=${lockData.pid}`, "get", "ExecutablePath", "/value"],
-        { encoding: "utf8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
-      );
-      const match = out.match(/ExecutablePath=(.+)/i);
-      if (match) {
-        const actual = match[1].trim().toLowerCase();
-        const expected = lockData.execPath.trim().toLowerCase();
-        if (!path.isAbsolute(actual)) return 'unknown';
-        return actual === expected;
-      }
-      return 'unknown';
-    } catch {
-      return 'unknown';
-    }
-  }
-  return true; // 非 Windows 平台回退到仅 PID 检查
+function matchesSnapshot(root, expected) {
+  const current = readSnapshotAt(root);
+  return expected ? sameSnapshot(current, expected) : !current;
 }
 
-function viewOwnerState(owner) {
-  if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1 || typeof owner.execPath !== 'string'
-    || !path.isAbsolute(owner.execPath) || !Number.isFinite(owner.startedAt) || owner.startedAt <= 0)
-    return { state: 'unknown', reason: 'invalid-owner-record' };
-  const state = getProcessState(owner.pid);
-  if (state !== true) return { state: state === false ? 'exited' : 'unknown',
-    reason: state === false ? 'process-exited' : 'process-query-unavailable' };
-  const match = isHolderProcessMatch(owner);
-  return match === false ? { state: 'exited', reason: 'pid-reused' }
-    : { state: match === true ? 'active' : 'unknown', reason: match === true ? 'process-matched' : 'executable-query-unavailable' };
-}
-
-function viewConflict(normalizedPath, holder, ownership) {
-  return { ok: false, conflict: true, code: ownership.state === 'unknown' ? 'PROJECT_VIEW_OWNER_UNKNOWN' : 'PROJECT_VIEW_OCCUPIED',
-    normalizedPath, ...(holder ? { holder } : {}), ownership,
-    error: ownership.state === 'unknown' ? 'Project-view ownership is unconfirmed; its record was retained.'
-      : 'Another process still owns the project view; its record was retained.' };
-}
-
-function writeLockPayload() {
-  return JSON.stringify(
-    {
-      pid: process.pid,
-      execPath: process.execPath,
-      appVersion: app.getVersion(),
-      startedAt: Date.now(),
-      viewToken: randomUUID(),
-    },
-    null,
-    2
-  );
-}
-
-/**
- * @returns {{ ok: true, normalizedPath: string, lockPath?: string, alreadyHeld?: boolean, recoveredStale?: boolean }
- *   | { ok: false, conflict?: boolean, holder?: object, normalizedPath?: string, error?: string }}
- */
-function withViewRecordGuard(projectPath, action) {
-  let guard;
+function publishOwner(root, guard, prior, owner) {
+  const marker = getLockPath(root);
+  const staging = path.join(path.dirname(marker), `.project-open.lock.${owner.viewToken}.tmp`);
+  let staged = false;
   try {
-    const root = normalizeProjectPathStrict(projectPath), directory = path.join(root, '.aily');
-    fs.mkdirSync(directory, { recursive: true });
-    const stat = fs.lstatSync(directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) return { ok: false, error: 'Unsafe project view coordination directory.' };
-    guard = tryAcquireFileLock(path.join(directory, 'project-view.guard'));
-    if (!guard) return { ok: false, code: 'PROJECT_VIEW_BUSY', error: 'Another project-view operation owns the record.' };
+    // A crash can leave a staging file, but never a partial diagnostic record.
+    const descriptor = fs.openSync(staging, 'wx', 0o600);
+    staged = true;
+    try { fs.writeFileSync(descriptor, JSON.stringify(owner, null, 2)); }
+    finally { fs.closeSync(descriptor); }
     guard.assertHeld();
-    return action(root);
-  } catch (error) { return { ok: false, code: error.code, error: error.message }; }
-  finally { guard?.close(); }
+    if (!matchesSnapshot(root, prior)) return false;
+    fs.renameSync(staging, marker);
+    staged = false;
+    return true;
+  } finally { if (staged) fs.unlinkSync(staging); }
 }
 
 function tryAcquireLock(projectPath, options = {}) {
-  const strict = options.strict === true;
-  // Dead-owner evidence is an internal handoff capability, never a forwarded
-  // public option or caller-supplied PID assertion.
-  return withViewRecordGuard(projectPath, () => tryAcquireLockUnlocked(projectPath,
-    { strict, force: strict ? false : !!options.force }));
+  let guard;
+  try {
+    const root = normalizeProjectPathStrict(projectPath);
+    const existing = heldViews.get(root);
+    if (existing) {
+      if (!isHeld(root, existing.viewToken) || !matchesSnapshot(root, existing.snapshot)) return viewRecordChanged();
+      return { ok: true, normalizedPath: root, lockPath: getLockPath(root), viewToken: existing.viewToken,
+        attachment: existing.attachment, alreadyHeld: true };
+    }
+    const attachment = rootAttachment(root);
+    if (!attachment) return viewRecordChanged();
+    guard = takeGuard(root);
+    if (!guard) return busyView(root);
+    if (!isDeepStrictEqual(rootAttachment(root), attachment)) return viewRecordChanged();
+    let snapshot;
+    try { snapshot = readSnapshotAt(root); }
+    catch { return describeConflict(root, undefined, { state: 'unknown', reason: 'invalid-owner-record' }); }
+
+    if (snapshot && !isNativeViewOwner(snapshot.owner)) {
+      if (options.strict) return { ok: false, code: 'PROJECT_REPAIR_TARGET_BUSY', normalizedPath: root,
+        error: 'A legacy project-view record remains; strict repair opening did not replace it.' };
+      return describeConflict(root, snapshot.owner, legacyOwnership(snapshot.owner));
+    }
+
+    const viewToken = randomUUID();
+    const owner = makeOwner(root, viewToken);
+    if (!publishOwner(root, guard, snapshot, owner)) return viewRecordChanged();
+    const published = readSnapshotAt(root);
+    if (published?.owner?.viewToken !== viewToken || !isDeepStrictEqual(rootAttachment(root), attachment)) return viewRecordChanged();
+    heldViews.set(root, { guard, viewToken, snapshot: published, attachment });
+    guard = undefined;
+    return { ok: true, normalizedPath: root, lockPath: getLockPath(root), viewToken, attachment,
+      ...(snapshot && { recoveredStale: true }) };
+  } catch (error) { return viewError(error); }
+  finally { guard?.close(); }
 }
 
-function tryAcquireLockUnlocked(projectPath, options = {}) {
-  const { force = false } = options;
-  let normalized;
+function isHeld(projectPath, viewToken) {
   try {
-    normalized = normalizeProjectPathStrict(projectPath);
-  } catch (e) {
-    return { ok: false, error: e.message || String(e) };
-  }
+    const root = normalizeProjectPathLoose(projectPath), owner = heldViews.get(root);
+    if (!owner || viewToken !== undefined && owner.viewToken !== viewToken) return false;
+    owner.guard.assertHeld();
+    return isDeepStrictEqual(rootAttachment(root), owner.attachment);
+  } catch { return false; }
+}
 
-  const lockPath = getLockPath(normalized);
-  const ailyDir = path.dirname(lockPath);
-  if (!fs.existsSync(ailyDir)) {
-    fs.mkdirSync(ailyDir, { recursive: true });
-  }
-
-  if (force) {
-    try {
-      if (fs.existsSync(lockPath)) {
-        const data = readLock(lockPath);
-        if (!data || data.pid !== process.pid) {
-          fs.unlinkSync(lockPath);
-        }
-      }
-    } catch (e) {
-      console.error("project-lock force unlink:", e);
+function captureHeldView(projectPath) {
+  try {
+    const root = normalizeProjectPathLoose(projectPath), current = heldViews.get(root);
+    if (current && isHeld(root, current.viewToken) && matchesSnapshot(root, current.snapshot)) {
+      return { viewToken: current.viewToken, attachment: current.attachment };
     }
-  }
+  } catch { /* The original handle or record changed. */ }
+}
 
-  try {
-    fs.writeFileSync(lockPath, writeLockPayload(), { flag: "wx" });
-    return { ok: true, normalizedPath: normalized, lockPath };
-  } catch (e) {
-    if (e.code !== "EEXIST") {
-      return { ok: false, error: e.message, normalizedPath: normalized };
-    }
-  }
-
-  let snapshot;
-  try { snapshot = readViewLockSnapshot(normalized); }
-  catch { return viewConflict(normalized, undefined, { state: 'unknown', reason: 'invalid-owner-record' }); }
-  const existing = snapshot?.owner;
-  if (existing && existing.pid === process.pid) {
-    return { ok: true, normalizedPath: normalized, lockPath, alreadyHeld: true };
-  }
-
-  // Repair bootstrap has already resolved any exact known-dead previous view.
-  // A new/unknown record is never treated as stale or offered force takeover.
-  if (options.strict) return { ok: false, code: 'PROJECT_REPAIR_TARGET_BUSY',
-    error: 'Another project-view record remains; strict repair opening did not replace it.', normalizedPath: normalized };
-
-  const ownership = existing?.pid === options.confirmedDeadPid && options.confirmedDeadPid
-    ? { state: 'exited', reason: 'exact-native-handoff' } : viewOwnerState(existing);
-  if (ownership.state !== 'exited') return viewConflict(normalized, existing, ownership);
-
-  try {
-    const current = readViewLockSnapshot(normalized);
-    if (!snapshot || !current || current.hash !== snapshot.hash
-      || JSON.stringify(current.identity) !== JSON.stringify(snapshot.identity))
-      return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'Project-view ownership changed before recovery; its record was retained.', normalizedPath: normalized };
-    fs.unlinkSync(lockPath);
-  } catch (e) {
-    return { ok: false, error: e.message, normalizedPath: normalized };
-  }
-
-  try {
-    fs.writeFileSync(lockPath, writeLockPayload(), { flag: "wx" });
-    return { ok: true, normalizedPath: normalized, lockPath, recoveredStale: true };
-  } catch (e2) {
-    if (e2.code === "EEXIST") {
-      return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'Project-view ownership changed during recovery; the newer record was retained.', normalizedPath: normalized };
-    }
-    return { ok: false, error: e2.message, normalizedPath: normalized };
-  }
+function matchesHeldView(root, expected) {
+  const current = heldViews.get(root);
+  return !!current && (!expected || (expected.viewToken !== undefined
+    ? current.viewToken === expected.viewToken : sameSnapshot(current.snapshot, expected)));
 }
 
 function releaseLock(projectPath, expected) {
-  if (!projectPath || !fs.existsSync(normalizeProjectPathLoose(projectPath))) return { ok: true };
-  return withViewRecordGuard(projectPath, () => {
-    if (expected && !matchesViewLock(projectPath, expected)) return viewRecordChanged();
-    return releaseLockUnlocked(projectPath);
-  });
+  let root = normalizeProjectPathLoose(projectPath);
+  if (projectPath && !heldViews.has(root)) root = path.resolve(projectPath);
+  if (!matchesHeldView(root, expected)) return expected ? viewRecordChanged() : { ok: true };
+  return releaseHeldView(root, heldViews.get(root));
 }
 
-function viewRecordChanged() {
-  return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The project-view record no longer belongs to the original owner.' };
+function releaseHeldView(root, current, retainOnFailure = false) {
+  let removed = false;
+  try {
+    current.guard.assertHeld();
+    if (!isDeepStrictEqual(rootAttachment(root), current.attachment) ||
+        !matchesSnapshot(root, current.snapshot)) return viewRecordChanged();
+    fs.unlinkSync(getLockPath(root));
+    removed = true;
+    return { ok: true };
+  } catch (error) { return viewError(error); }
+  finally {
+    if (removed || !retainOnFailure) {
+      heldViews.delete(root);
+      current.guard.close();
+    }
+  }
 }
 
-function matchesViewLock(projectPath, expected) {
-  const current = readViewLockSnapshot(projectPath);
-  return current?.owner?.pid === process.pid && current.hash === expected.hash
-    && JSON.stringify(current.identity) === JSON.stringify(expected.identity);
+function releaseAll() {
+  const results = Array.from(heldViews, ([root, current]) => releaseHeldView(root, current));
+  return { ok: results.every(result => result.ok), results };
 }
 
 function handoffViewLock(sourceProject, source, targetProject, target) {
-  return withViewRecordGuard(sourceProject, () => withViewRecordGuard(targetProject, () => {
-    if (!matchesViewLock(sourceProject, source) || !matchesViewLock(targetProject, target)) return viewRecordChanged();
-    return releaseLockUnlocked(sourceProject);
-  }));
+  try {
+    const sourceRoot = normalizeProjectPathStrict(sourceProject), targetRoot = normalizeProjectPathStrict(targetProject);
+    const matches = (root, expected) => expected && matchesHeldView(root, expected) && captureHeldView(root);
+    if (sourceRoot === targetRoot || !matches(sourceRoot, source) || !matches(targetRoot, target)) return viewRecordChanged();
+    return releaseHeldView(sourceRoot, heldViews.get(sourceRoot), true);
+  } catch (error) { return viewError(error); }
 }
 
-function releaseLockUnlocked(projectPath) {
-  if (!projectPath) {
-    return { ok: true };
-  }
-  const normalized = normalizeProjectPathLoose(projectPath);
-  const lockPath = getLockPath(normalized);
-  if (!fs.existsSync(lockPath)) {
-    return { ok: true };
-  }
-  const data = readLock(lockPath);
-  if (data && data.pid === process.pid) {
-    try {
-      fs.unlinkSync(lockPath);
-    } catch (e) {
-      console.error("project-lock release:", e);
-      return { ok: false, error: e.message };
+function readSnapshotAt(root) {
+  let before;
+  const filename = getLockPath(root);
+  try {
+    safeViewDirectory(root);
+    before = fs.lstatSync(filename, { bigint: true });
+  } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  const keys = ['dev', 'ino', 'size', 'birthtimeNs', 'mtimeNs'];
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > 64n * 1024n)
+    throw new Error('Unsafe project-view record.');
+  const descriptor = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  let bytes;
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    // Windows Electron path and handle stats may report different devices.
+    if (!opened.isFile() || opened.nlink !== before.nlink || keys.slice(1).some(key => opened[key] !== before[key])) {
+      throw new Error('Project-view record changed while opening.');
     }
-  }
-  return { ok: true };
+    bytes = fs.readFileSync(descriptor);
+  } finally { fs.closeSync(descriptor); }
+  const after = fs.lstatSync(filename, { bigint: true });
+  if (keys.some(key => before[key] !== after[key]) || after.nlink !== before.nlink)
+    throw new Error('Project-view record changed while reading.');
+  const contents = bytes.toString('utf8');
+  return { project: root, owner: JSON.parse(contents), contents,
+    hash: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+    identity: Object.fromEntries(keys.map(key => [key, String(before[key])])) };
 }
 
 function readViewLockSnapshot(projectPath) {
-  const root = normalizeProjectPathStrict(projectPath), filename = getLockPath(root);
-  let before;
-  try { before = fs.lstatSync(filename); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 64 * 1024) throw new Error('Unsafe project-view record.');
-  const bytes = fs.readFileSync(filename), after = fs.lstatSync(filename);
-  if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.size !== after.size) throw new Error('Project-view record changed while reading.');
-  return { project: root, owner: JSON.parse(bytes.toString('utf8')), contents: bytes.toString('utf8'),
-    hash: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
-    identity: { dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs } };
+  return readSnapshotAt(normalizeProjectPathStrict(projectPath));
 }
 
-/** Exact lineage-owned stale VIEW handoff only. File/npm/build leases are not
- * consulted or removed here; the caller must retain their independent guards. */
+function inspectViewLock(projectPath) {
+  let guard;
+  try {
+    const root = normalizeProjectPathStrict(projectPath);
+    const local = heldViews.has(root);
+    if (!local) guard = takeGuard(root);
+    let snapshot;
+    try { snapshot = readSnapshotAt(root); }
+    catch { return { ok: true, state: guard ? 'unknown' : 'busy', reason: 'invalid-owner-record' }; }
+    if (local) return { ok: true, state: isHeld(root) ? 'held' : 'unknown', snapshot };
+    if (!guard) return { ok: true, state: 'busy', snapshot };
+    guard.assertHeld();
+    return { ok: true, state: !snapshot || isNativeViewOwner(snapshot.owner) ? 'available' : 'unknown', snapshot };
+  } catch (error) { return { ...viewError(error), state: 'unknown' }; }
+  finally { guard?.close(); }
+}
+
+/** Exact, lineage-owned recovery. The caller continues to own its writer and build guards. */
 function recoverExitedViewLock(projectPath, expected, assertCurrent, isExited) {
-  return withViewRecordGuard(projectPath, () => {
+  let guard;
+  try {
+    const root = normalizeProjectPathStrict(projectPath);
+    if (heldViews.has(root) || !(guard = takeGuard(root))) return busyView(root);
     assertCurrent();
-    const current = readViewLockSnapshot(projectPath);
-    if (!expected || !current || current.project !== expected.project || current.hash !== expected.hash
-      || JSON.stringify(current.identity) !== JSON.stringify(expected.identity)
-      || !Number.isSafeInteger(current.owner?.pid) || current.owner.pid <= 0 || current.owner.pid !== expected.owner?.pid
-      || typeof current.owner.execPath !== 'string' || !path.isAbsolute(current.owner.execPath)
-      || !Number.isFinite(current.owner.startedAt) || current.owner.startedAt <= 0
-      || current.owner.execPath !== expected.owner.execPath || isExited(current.owner.pid) !== true)
-      return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The exact exited repair view was not confirmed; its record was retained.' };
+    const current = readSnapshotAt(root), owner = current?.owner;
+    if (!validRecord(owner) || !sameSnapshot(current, expected)
+      || !isNativeViewOwner(owner) && (!path.isAbsolute(owner.execPath) || isExited(owner.pid) !== true))
+      return viewRecordChanged();
     assertCurrent();
-    const final = readViewLockSnapshot(projectPath);
-    if (!final || final.hash !== expected.hash || JSON.stringify(final.identity) !== JSON.stringify(expected.identity)
-      || isExited(final.owner.pid) !== true) return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The repair view changed before its non-force handoff; retained the current record.' };
-    const acquired = tryAcquireLockUnlocked(projectPath, { force: false, confirmedDeadPid: current.owner.pid });
-    if (!acquired.ok) return acquired;
-    const released = releaseLockUnlocked(projectPath);
-    return released.ok ? { ok: true, recoveredStaleView: true, previousViewHash: current.hash } : released;
-  });
+    guard.assertHeld();
+    if (!matchesSnapshot(root, expected) || !isNativeViewOwner(owner) && isExited(owner.pid) !== true)
+      return viewRecordChanged();
+    fs.unlinkSync(getLockPath(root));
+    return { ok: true, recoveredStaleView: true, previousViewHash: expected.hash };
+  } catch (error) { return viewError(error); }
+  finally { guard?.close(); }
+}
+
+function focusProjectOwner(projectPath, viewToken) {
+  if (!validToken(viewToken)) return { ok: false, reason: 'unknown' };
+  const observed = inspectViewLock(projectPath);
+  const snapshot = observed.snapshot;
+  if (observed.state !== 'busy' || !localOwnerMatches(snapshot?.project, snapshot?.owner, viewToken))
+    return { ok: false, reason: 'unknown' };
+  return focusProcessByPid(snapshot.owner.pid);
 }
 
 function focusProcessByPid(pid) {
@@ -353,14 +395,7 @@ if ($null -ne $p -and $p.MainWindowHandle -ne [IntPtr]::Zero) { [W32]::SetForegr
 }
 
 module.exports = {
-  getLockPath,
-  normalizeProjectPathStrict,
-  normalizeProjectPathLoose,
-  tryAcquireLock,
-  releaseLock,
-  handoffViewLock,
-  focusProcessByPid,
-  isPidAlive,
-  readViewLockSnapshot,
-  recoverExitedViewLock,
+  getLockPath, normalizeProjectPathStrict, normalizeProjectPathLoose,
+  tryAcquireLock, isHeld, captureHeldView, releaseLock, releaseAll, handoffViewLock, focusProjectOwner,
+  readViewLockSnapshot, inspectViewLock, recoverExitedViewLock, isNativeViewOwner,
 };

@@ -521,6 +521,79 @@ describe('original project admission settlement', () => {
     expect(foreign.admission).toBeUndefined();
   });
 
+  const cancelApply = (candidateHash = hash) => ({ operation: 'abs_cancel_unstarted', path: project,
+    params: { version: 2, requestId, originalTargetPid: 101, candidateHash } });
+
+  const beginApply = (candidateHash = hash) => {
+    const { validation } = applyParams();
+    validation.candidate.hash = candidateHash;
+    return new AbsOperationJournal(port, project).begin({ kind: 'abs-apply', document: {},
+      disk: { abi: null, abs: null, map: null }, candidate: { hash: candidateHash, source: 'candidate', generation: 'base' },
+      application: { requestId, validation } }, guard);
+  };
+
+  it('withdraws a live pre-index ABS reservation and prevents both a late journal start and a duplicate submission', async () => {
+    const host = bridge(), cancel = cancelApply();
+    const admission = new OriginalRequestAdmissions(port, project);
+    await admission.reserveApplication(requestId, hash, guard);
+    const receipt = await host.execute(cancel);
+    expect(receipt).toEqual(jasmine.objectContaining({ code: 'ABS_APPLY_CANCELLED_BEFORE_START', operation: 'abs_apply', project,
+      application: { status: 'NOT_STARTED', requestId }, admission: { status: 'NOT_STARTED', requestId },
+      publication: { status: 'NOT_COMMITTED' }, candidateApplied: false,
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: true, current: false },
+      publicationObservation: jasmine.objectContaining({ requestId, attachment: port.attachment, executor: port.executor, durable: true }),
+    }));
+    const retained = [...files];
+    expect(await host.execute(cancel)).toEqual(receipt);
+    expect(await host.execute({ ...cancel, operation: 'abs_admission_status', params: { version: 2, requestId, originalTargetPid: 101 } }))
+      .toEqual(receipt);
+    await expectAsync(beginApply()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_APPLY_REQUEST_ALREADY_RECORDED' }));
+    expect(await host.execute({ operation: 'abs_apply', path: project, params: applyParams() }))
+      .toEqual(jasmine.objectContaining({ admission: { status: 'NOT_STARTED', requestId } }));
+    expect(host.executeAbsApply).not.toHaveBeenCalled();
+    expect(await port.read(await applicationRequestKey(requestId))).toBeNull();
+    expect(await port.read('operation.json')).toBeNull();
+    expect([...files]).toEqual(retained);
+  });
+
+  it('leaves a pending or finished ABS application unchanged if the apply wins admission', async () => {
+    const candidateHash = await hashAbsText('candidate');
+    const host = bridge(), cancel = cancelApply(candidateHash);
+    await new OriginalRequestAdmissions(port, project).reserveApplication(requestId, candidateHash, guard);
+    const started = await beginApply(candidateHash), before = [...files];
+    expect(await host.execute(cancel)).toEqual(jasmine.objectContaining({ code: 'ABS_APPLY_OBSERVATION_PENDING',
+      publication: { status: 'UNKNOWN' }, applicationObservation: jasmine.objectContaining({ resultKnown: false }) }));
+    expect([...files]).toEqual(before);
+    await new AbsOperationJournal(port, project).restored(started, guard);
+    const application = new AbsApplicationJournal(port, project);
+    await application.completeRolledBack(started, { code: 'ORIGINAL_ROLLBACK' }, guard, async () => {});
+    const after = [...files];
+    expect((await host.execute(cancel)).admission).toBeUndefined();
+    expect((await application.observe(requestId, guard, 101)).result).toEqual(jasmine.objectContaining({
+      application: { requestId, status: 'ROLLED_BACK' },
+    }));
+    expect([...files]).toEqual(after);
+  });
+
+  it('requires matching ABS request, candidate, project attachment and live executor for withdrawal', async () => {
+    const host = bridge(), cancel = cancelApply();
+    expect((await host.execute(cancel)).code).toBe('ABS_APPLY_REVOCATION_UNAVAILABLE');
+    expect([...files]).toEqual([]);
+    await new OriginalRequestAdmissions(port, project).reserveApplication(requestId, hash, guard);
+    const retained = [...files];
+    for (const params of [{ ...cancel.params, requestId: crypto.randomUUID() },
+      { ...cancel.params, candidateHash: 'sha256:' + '2'.repeat(64) }, { ...cancel.params, originalTargetPid: 102 }]) {
+      expect((await host.execute({ ...cancel, params })).code).toBe('ABS_APPLY_REVOCATION_UNAVAILABLE');
+    }
+    expect((await host.execute({ ...cancel, path: '/different-project' })).code).toBe('ABS_APPLY_REVOCATION_UNAVAILABLE');
+    const original = port;
+    port = open('9', 101);
+    expect((await host.execute(cancel)).code).toBe('ABS_APPLY_REVOCATION_UNAVAILABLE');
+    port = { ...original, executor: { ...original.executor!, storagePid: 103 } };
+    expect((await host.execute(cancel)).code).toBe('ABS_APPLY_REVOCATION_UNAVAILABLE');
+    expect([...files]).toEqual(retained);
+  });
+
   it('releases the original validated ABS writer after exit without a terminal result or a write', async () => {
     const admissions = new OriginalRequestAdmissions(port, project);
     const original = port.executor;
@@ -625,7 +698,8 @@ describe('original project admission settlement', () => {
       params: { version: 2, requestId, originalTargetPid: original.hostPid } };
     const reply = await cold.execute(payload);
     expect(reply).toEqual(jasmine.objectContaining({ ok: false, code: 'ABS_APPLY_WRITER_RELEASED',
-      publication: { status: 'UNKNOWN' }, applicationObservation: { version: 1, requestId, current: false },
+      publication: { status: 'UNKNOWN' },
+      applicationObservation: { version: 1, requestId, observationOnly: true, resultKnown: false, current: false },
       writerObservation: jasmine.objectContaining({ kind: 'indexed-application-retired', requestId, operationId: old,
         executor: original, observer: { hostPid: 222 } }),
     }));

@@ -1,12 +1,12 @@
 import { createAbsProjection, indexAbsAbi } from './abs-identity-map';
 import { reconcileAbs } from './abs-reconciler';
 import { assertAbsSourceEdits, type AbsSourceEdits } from './abs-edit-provenance';
-import type { AbsAbiWorkspace } from './abs-state';
+import type { AbsAbiWorkspace, AbsProjectionContracts } from './abs-state';
 import { serializeAbsFailure } from './abs-diagnostics';
 
 describe('batch ABS text-edit identity', () => {
-  const project = (workspace: AbsAbiWorkspace) => createAbsProjection(workspace, { document: workspace,
-    generation: 'batch', baselineRef: 'batch', scope: { projectKey: 'test', pageId: 'main' }, savedAbiHash: null });
+  const project = (workspace: AbsAbiWorkspace, contracts?: AbsProjectionContracts) => createAbsProjection(workspace, { document: workspace,
+    generation: 'batch', baselineRef: 'batch', scope: { projectKey: 'test', pageId: 'main' }, savedAbiHash: null, contracts });
   const setup = async () => project({ blocks: { blocks: [{ type: 'container', id: 'root', deletable: false,
     inputs: { BODY: { block: { type: 'thing', id: 'first', deletable: false, data: 'first metadata', fields: { VALUE: 'one' },
       next: { block: { type: 'thing', id: 'second', data: 'second metadata', fields: { VALUE: 'two' } } } } } } }] } });
@@ -52,6 +52,62 @@ describe('batch ABS text-edit identity', () => {
     const sourceEdits = [[{ start: at, end: at, text: 'new_kind()\n' + indent }, edit(base.abs, '"one"', '"new one"'), edit(base.abs, '"two"', '"new two"')]];
     const result = await reconcileAbs(base, apply(base.abs, sourceEdits), { sourceEdits, newId: () => 'new' });
     expect(result.added).toEqual(['new']); expect(result.retained).toContain('first'); expect(result.retained).toContain('second');
+  });
+
+  it('deletes the first identical comment, edits the second and creates a fresh comment in one owner', async () => {
+    const base = await project({ blocks: { blocks: [{ type: 'container', id: 'root', inputs: { BODY: { block: {
+      type: 'cpp_comment', id: 'first', fields: { TEXT: '相同😀' }, next: { block: {
+        type: 'cpp_comment', id: 'second', fields: { TEXT: '相同😀' }, next: { block: {
+          type: 'serial_begin', id: 'serial', fields: { BAUD: '9600' },
+        } },
+      } },
+    } } } }] } }, { fields: {
+      root: {}, first: { TEXT: { type: 'field_input' } }, second: { TEXT: { type: 'field_input' } },
+      serial: { BAUD: { type: 'field_input' } },
+    }, syntax: {
+      root: [{ kind: 'statementInput', name: 'BODY' }],
+      first: [{ kind: 'field', name: 'TEXT' }],
+      second: [{ kind: 'field', name: 'TEXT' }],
+      serial: [{ kind: 'field', name: 'BAUD' }],
+    } });
+    const first = base.abs.indexOf('cpp_comment(');
+    const lineStart = base.abs.lastIndexOf('\n', first) + 1;
+    const nextLine = base.abs.indexOf('\n', first) + 1;
+    const second = base.abs.indexOf('"相同😀"', nextLine);
+    const serial = base.abs.indexOf('serial_begin(');
+    const lineEnd = base.abs.indexOf('\n', serial);
+    const insertion = lineEnd < 0 ? base.abs.length : lineEnd;
+    const newComment = base.abs.slice(lineStart, nextLine - 1).replace('相同😀', '新说明');
+    const sourceEdits = [[{ start: lineStart, end: nextLine, text: '' },
+      { start: second, end: second + '"相同😀"'.length, text: '"保留并修改"' },
+      { start: insertion, end: insertion, text: '\n' + newComment }]];
+    const result = await reconcileAbs(base, apply(base.abs, sourceEdits), { sourceEdits, newId: () => 'new' });
+    const blocks = indexAbsAbi(result.workspace);
+    expect(result.removed).toEqual(['first']);
+    expect(result.added).toEqual(['new']);
+    expect(blocks.get('root')!.inputs!['BODY'].block!.id).toBe('second');
+    expect(blocks.get('second')!.fields!['TEXT']).toBe('保留并修改');
+    expect(blocks.get('second')!.next!.block.id).toBe('serial');
+    expect(blocks.get('serial')!.next!.block.id).toBe('new');
+    expect(blocks.get('new')!.fields!['TEXT']).toBe('新说明');
+  });
+
+  it('retains an exact moved call across a tracked line deletion and insertion', async () => {
+    const base = await project({ blocks: { blocks: [
+      { type: 'thing', id: 'moved', fields: { VALUE: 'move' }, data: 'retained metadata' },
+      { type: 'other', id: 'untouched' },
+    ] } });
+    const text = base.abs.split('\n').find(line => line.startsWith('thing('))!;
+    const deletion = edit(base.abs, text + '\n', '');
+    const other = base.abs.indexOf('other(');
+    const end = base.abs.indexOf('\n', other);
+    const insertion = end < 0 ? base.abs.length : end;
+    const sourceEdits = [[deletion, { start: insertion, end: insertion, text: '\n' + text }]];
+    const result = await reconcileAbs(base, apply(base.abs, sourceEdits), { sourceEdits });
+    expect(result.removed).toEqual([]);
+    expect(result.added).toEqual([]);
+    expect(result.workspace.blocks.blocks.map(block => block.id)).toEqual(['untouched', 'moved']);
+    expect(result.workspace.blocks.blocks[1]['data']).toBe('retained metadata');
   });
 
   it('never accepts stale or out-of-range provenance, even for unchanged source', async () => {

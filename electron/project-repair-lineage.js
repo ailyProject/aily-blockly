@@ -190,9 +190,17 @@ function createRepairContinuationController(options) {
     try {
       build = (options.inspectBuildIdle || inspectBuildWorkspaceIdle)(rootPath); assertNoPendingAbsGeneration(access);
       const views = options.projectViewLocks || require('./project-lock');
-      const view = views.readViewLockSnapshot(rootPath), open = view?.owner;
+      const inspection = views.inspectViewLock(rootPath);
+      const view = inspection.snapshot, open = view?.owner;
+      const authenticatedChildView = allowChildView && open?.pid === facts.current.hostPid
+        && same(open.execPath, facts.record.execPath);
       let projectViewRecovery;
-      if (open && !(allowChildView && open.pid === facts.current.hostPid)) {
+      if (!inspection.ok || !authenticatedChildView
+        && (inspection.state === 'busy' || inspection.state === 'held' || inspection.state === 'unknown' && !view)) {
+        throw fault('PROJECT_REPAIR_TARGET_BUSY', 'The target view is occupied or its ownership cannot be verified.',
+          { resource: 'project-open.lock', owner: open });
+      }
+      if (open && !authenticatedChildView) {
         if (open.pid !== facts.current.hostPid || !same(open.execPath, facts.record.execPath) || processState(open.pid) !== false)
           throw fault('PROJECT_REPAIR_TARGET_BUSY', 'The target still has an active or unknown project-view owner.', { resource: 'project-open.lock', owner: open });
         const archives = path.join(facts.directory, 'retired-views'); privateDirectory(archives);
@@ -384,8 +392,12 @@ function createRepairContinuationController(options) {
 function readOwner(file) { try { return legacy.readJson(file, 4 * 1024 * 1024); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } }
 function checkRepairProjectOpen(record, requestedProject, pid = process.pid) {
   if (!same(record.project, requestedProject)) return { ok: false, code: 'PROJECT_REPAIR_TARGET_MISMATCH', error: 'An independent repair host may open only its exact native target.' };
-  const owner = readOwner(path.join(record.project, '.aily', 'project-open.lock'));
-  if (owner && owner.pid !== pid) return { ok: false, code: 'PROJECT_REPAIR_TARGET_BUSY', error: 'Another project-view record remains; recovery never forces or deletes it.', owner: { pid: owner.pid } };
+  const inspection = require('./project-lock').inspectViewLock(record.project);
+  const owner = inspection.snapshot?.owner;
+  if (!inspection.ok || inspection.state !== 'available' && !(inspection.state === 'held' && owner?.pid === pid)) {
+    return { ok: false, code: 'PROJECT_REPAIR_TARGET_BUSY', error: 'The repair project view is occupied or its ownership cannot be verified.',
+      ...(owner ? { owner: { pid: owner.pid } } : {}) };
+  }
   return null;
 }
 module.exports = { createRepairContinuationController, registerRepairLineage, readChildLineageIdentity, checkRepairProjectOpen };

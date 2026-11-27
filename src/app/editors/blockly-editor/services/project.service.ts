@@ -7,6 +7,7 @@ import { ActionService, NoticeService } from '@core/app-shell/public-api';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
 import { ElectronService, publishProjectText } from '@core/platform/public-api';
 import {
+  ProjectService,
   projectDataRuntime,
   canonicalProjectJsonStringify,
   materializeGenericProjectDataValues,
@@ -135,7 +136,12 @@ export class _ProjectService {
     private actionService: ActionService,
     private electronService: ElectronService,
     @Optional() private noticeService?: NoticeService,
+    @Optional() private readonly projectDirectoryService?: ProjectService,
   ) { }
+
+  assertProjectDirectory(path: string): void {
+    this.projectDirectoryService?.assertActiveProjectDirectory(path);
+  }
 
   init() {
     if (this.initialized) {
@@ -852,6 +858,7 @@ export class _ProjectService {
       if (!isCurrent()) {
         throw new Error('Project, page or runtime changed; stopped the stale save.');
       }
+      this.assertProjectDirectory(path);
     } };
   }
 

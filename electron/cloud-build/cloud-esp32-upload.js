@@ -9,6 +9,7 @@ const BOOT_APP_SDK_PATH = 'tools/partitions/boot_app0.bin';
 const BOOTLOADER_OFFSETS = new Map([
   ['esp32', 0x1000], ['esp32s2', 0x1000], ['esp32s3', 0], ['esp32c3', 0], ['esp32c6', 0],
 ]);
+const MCU_BY_BOARD_ID = new Map([['XIAO_ESP32S3', 'esp32s3']]);
 const SERIAL_OPTIONS = new RegExp([
   '^--chip (?<chip>[a-z0-9]+) --port "\\$\\{serial\\}" --baud (?<baudRate>[0-9]{4,7})',
   '--before (?<before>[a-z-]+) --after (?<after>[a-z-]+) write-flash -z',
@@ -76,9 +77,11 @@ function macEsp32SerialPlan(manifest, recipe) {
   const options = SERIAL_OPTIONS.exec(command.slice(prefix.length + 1))?.groups;
   if (!options) return null;
   const { chip, before, after, flashMode, flashFreq, flashSize } = options;
+  const [vendor, architecture, board] = recipe.fqbn.split(':');
+  const boardChip = MCU_BY_BOARD_ID.get(board) ?? board;
   const baudRate = Number(options.baudRate);
-  if (!BOOTLOADER_OFFSETS.has(chip) || manifest.flashPlan.targetChip !== chip
-      || recipe.fqbn.split(':').slice(0, 3).join(':') !== 'esp32:esp32:' + chip
+  if (!BOOTLOADER_OFFSETS.has(chip) || vendor !== 'esp32' || architecture !== 'esp32'
+      || board !== manifest.flashPlan.targetChip || boardChip !== chip
       || baudRate < 1200 || baudRate > 2000000
       || !['default-reset', 'no-reset', 'usb-reset'].includes(before)
       || !['hard-reset', 'soft-reset', 'no-reset'].includes(after)

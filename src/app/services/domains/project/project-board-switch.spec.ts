@@ -2,6 +2,7 @@ import { ProjectDependencyLifecycle } from './project-dependency-lifecycle';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
 import { AiOperationRegistryService } from '@integration/automation/public-api';
+import { BehaviorSubject } from 'rxjs';
 
 describe('board switch project persistence', () => {
   let oldPath: any, oldFs: any;
@@ -15,6 +16,8 @@ describe('board switch project persistence', () => {
   });
   afterEach(() => { window['path'] = oldPath; window['fs'] = oldFs; });
   function fixture() {
+    let nextMessage = 0;
+    const message = () => ({ messageId: String(++nextMessage) });
     return {
       currentProjectPath: '/project', isBoardSwitchInProgress: false, boardSwitchReloadWaiter: null,
       isPackageJsonBoardWatcherActive: false,
@@ -26,7 +29,11 @@ describe('board switch project persistence', () => {
       isAilyCodeProject: () => false, normalizeAilyBoardPackageName: (name: string) => name,
       configService: { boardDict: { [target]: { name: target, mode: ['arduino'] } }, recordBoardUsage: () => {}, getNpmRegistryForBoard: () => 'registry' },
       save: jasmine.createSpy('save').and.resolveTo({ success: true }),
-      message: { loading: () => {}, success: () => {}, error: () => {} }, translate: { instant: (key: string) => key },
+      saveInBackground: jasmine.createSpy('saveInBackground').and.resolveTo({ success: true }),
+      clearBoardSwitchMessage: (ProjectService.prototype as any).clearBoardSwitchMessage,
+      message: { loading: jasmine.createSpy('loading').and.callFake(message), success: jasmine.createSpy('success').and.callFake(message),
+        error: jasmine.createSpy('error').and.callFake(message), remove: jasmine.createSpy('remove') },
+      translate: { instant: (key: string) => key },
       getBoardModule: async () => '@aily-project/board-old',
       buildNpmPackageSpec: (name: string) => name,
       application: { updateFooterState: () => {} },
@@ -36,6 +43,68 @@ describe('board switch project persistence', () => {
       rejectBoardSwitchReload: () => {}, waitForBoardSwitchReload: jasmine.createSpy('waiter').and.resolveTo(),
     };
   }
+  function noticeFixture() {
+    let entered!: () => void, finish!: () => void, fail!: (error: Error) => void;
+    const preparing = new Promise<void>(resolve => { entered = resolve; });
+    const publication = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
+    const service = Object.assign(fixture(), {
+      getProjectMode: () => 'blockly', isCoderProjectContext: true,
+      currentProjectPathSubject: new BehaviorSubject('/project'),
+      boardChangeSubject: { next() {} },
+      publishManifestEnvironment: () => { entered(); return publication; },
+    });
+    Object.defineProperty(service, 'currentProjectPath', Object.getOwnPropertyDescriptor(ProjectService.prototype, 'currentProjectPath')!);
+    const change = () => ProjectService.prototype.changeBoard.call(service, { name: target, version: '1' });
+    return { service, change, preparing, finish, fail };
+  }
+  it('keeps one board-switch progress message until publication, then replaces only that message', async () => {
+    const { service, change, preparing, finish } = noticeFixture();
+    const pending = change();
+    expect(service.message.loading).toHaveBeenCalledOnceWith('PROJECT.SWITCHING_BOARD', { nzDuration: 0 });
+    await preparing;
+    await expectAsync(change()).toBeRejectedWithError('开发板切换正在进行中');
+    expect(service.message.remove).not.toHaveBeenCalled();
+    service.currentProjectPath = '/project'; // Its own reload retains the notice.
+    finish();
+    await pending;
+    expect(service.message.remove.calls.allArgs()).toEqual([['1']]);
+    expect(service.message.success).toHaveBeenCalledOnceWith('PROJECT.BOARD_SWITCH_SUCCESS', { nzDuration: 4000, nzAnimate: false });
+    await change();
+    expect(service.message.remove.calls.allArgs()).toEqual([['1'], ['2'], ['3']]);
+    service.currentProjectPath = '/project'; // A later user reload starts a new view.
+    expect(service.message.remove.calls.mostRecent().args).toEqual(['4']);
+  });
+  it('removes board-switch progress before reporting an installation failure', async () => {
+    const { service, change, preparing, fail } = noticeFixture();
+    const pending = change();
+    await preparing;
+    fail(new Error('install failed'));
+    await expectAsync(pending).toBeRejectedWithError('install failed');
+    expect(service.message.remove).toHaveBeenCalledOnceWith('1');
+    expect(service.message.remove).toHaveBeenCalledBefore(service.message.error);
+    expect(service.message.error).toHaveBeenCalledOnceWith('PROJECT.BOARD_SWITCH_FAILEDinstall failed');
+    expect(service.message.success).not.toHaveBeenCalled();
+  });
+  it('clears the board-switch notice on departure and ignores its late result after returning to that path', async () => {
+    for (const cancelled of [false, true]) {
+      const { service, change, preparing, finish, fail } = noticeFixture();
+      const pending = change();
+      await preparing;
+      service.currentProjectPath = '/other';
+      expect(service.message.remove).toHaveBeenCalledOnceWith('1');
+      service.currentProjectPath = '/project';
+      if (cancelled) {
+        fail(new Error('cancelled'));
+        await expectAsync(pending).toBeRejectedWithError('cancelled');
+      } else {
+        finish();
+        await pending;
+      }
+      expect(service.message.success).not.toHaveBeenCalled();
+      expect(service.message.error).not.toHaveBeenCalled();
+      expect(service.message.remove).toHaveBeenCalledTimes(1);
+    }
+  });
   it('preserves user library dependencies and uses target template metadata in the same project', async () => {
     const service = fixture();
     await ProjectService.prototype.changeBoard.call(service, { name: target, version: '1' });
@@ -71,6 +140,9 @@ describe('board switch project persistence', () => {
     expect(writes.length).toBe(1);
     expect(writes[0][0]).toBe('/project/package.json');
     const manifest = JSON.parse(writes[0][1]);
+    expect(service.message.loading).toHaveBeenCalledBefore(service.saveInBackground);
+    expect(service.saveInBackground).toHaveBeenCalledOnceWith('/project');
+    expect(service.save).not.toHaveBeenCalled();
     expect(manifest.type).toBe('coder'); expect(manifest.entry).toBe('firmware/app.cpp');
     expect(manifest.dependencies[target]).toBe('^1');
     expect(manifest.dependencies['@aily-project/lib-user']).toBe('2');
@@ -223,14 +295,20 @@ describe('board switch project persistence', () => {
     const service = fixture(); service.isBoardSwitchInProgress = true;
     await expectAsync(ProjectService.prototype.changeBoard.call(service, { name: target, version: '1' })).toBeRejected();
     expect(service.save).not.toHaveBeenCalled();
+    expect(service.saveInBackground).not.toHaveBeenCalled();
     expect(service.cmdService.runAsyncChecked).not.toHaveBeenCalled();
   });
-  it('does not install a board when the initial save was rejected', async () => {
-    const service = fixture(); service.save.and.resolveTo({ success: false, error: 'save rejected' });
+  it('does not install a Coder board when the initial save was rejected', async () => {
+    const service = fixture();
+    service.isAilyCodeProject = () => true;
+    service.saveInBackground.and.resolveTo({ success: false, error: 'save rejected' });
     await expectAsync(ProjectService.prototype.changeBoard.call(service, { name: target, version: '1' })).toBeRejectedWithError(/save rejected/);
     expect(service.cmdService.runAsyncChecked).not.toHaveBeenCalled();
     expect(window['fs'].writeFileSync).not.toHaveBeenCalled();
     expect(service.isBoardSwitchInProgress).toBeFalse();
+    expect(service.message.loading).toHaveBeenCalledBefore(service.saveInBackground);
+    expect(service.message.remove).toHaveBeenCalledOnceWith('1');
+    expect(service.message.success).not.toHaveBeenCalled();
   });
 
   // Keep actual admission, nested ownership and reload implementation in this
@@ -246,7 +324,6 @@ describe('board switch project persistence', () => {
     service.getProjectMode = () => 'blockly';
     service.boardChangeSubject = { next: jasmine.createSpy('changed') };
     service.message.warning = jasmine.createSpy('warning');
-    service.message.success = jasmine.createSpy('success');
     for (const name of ['acquireProjectLifecycle', 'projectOpen', 'normalizeProjectPath', 'isSameProjectPath', 'reloadAfterBoardSwitch', 'finishBoardSwitchWithoutPackageWatcher']) {
       service[name] = (ProjectService.prototype as any)[name];
     }

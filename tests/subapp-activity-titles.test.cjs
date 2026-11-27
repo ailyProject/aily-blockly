@@ -24,12 +24,12 @@ function compile(relative, dependencies) {
     reportDiagnostics: true,
   });
   assert.equal(result.diagnostics.length, 0);
-  vm.runInNewContext(result.outputText, { module, exports: module.exports, require: dependencies, console }, { filename: file });
+  vm.runInNewContext(result.outputText, { module, exports: module.exports, require: dependencies, console, window: {} }, { filename: file });
   return module.exports;
 }
 
 function fixture(t, { pending = false } = {}) {
-  const angular = { Component: () => value => value, Injectable: () => value => value, Input: () => () => {} };
+  const angular = { Component: () => value => value, Injectable: () => value => value, Input: () => () => {}, Output: () => () => {}, EventEmitter: rxjs.Subject };
   const registry = compile('src/app/configs/tool.config.ts', () => ({}));
   const activityModule = compile('src/app/services/integrations/subapps/subapp-activity.service.ts', name => {
     if (name === '@angular/core') return angular;
@@ -57,7 +57,8 @@ function fixture(t, { pending = false } = {}) {
   const subject = () => new rxjs.Subject();
   const ports = {
     projectService: { currentProjectPath$: subject(), coderWorkspace$: subject() },
-    blocklyService: { selectedBlockIdsSubject: subject(), blockCodeMapSubject: subject(), aiWriting$: subject(), aiWaitWriting$: subject(), workspaceRecoveryRequired$: subject() },
+    serialService: { selectedPort$: subject() },
+    blocklyService: { selectedBlockIdsSubject: subject(), blockCodeMapSubject: subject(), aiOperationWriting$: subject(), workspaceRecoveryRequired$: subject() },
     authService: { isLoggedIn$: subject(), authChanged$: subject() },
     configService: { getCurrentApiServer: () => '', configReloaded$: subject() },
     themeService: { themeChanged$: theme }, translate, toolI18n: loader,
@@ -74,7 +75,7 @@ function fixture(t, { pending = false } = {}) {
   registry.replaceChildToolConfigs(configs);
   host.ngOnInit();
   t.after(() => {
-    for (const name of ['langSubscription', 'themeSubscription', 'projectPathSubscription', 'blockSelectionSubscription',
+    for (const name of ['serialPortSubscription', 'langSubscription', 'themeSubscription', 'projectPathSubscription', 'blockSelectionSubscription',
       'aiWritingStateSubscription', 'authStateSubscription', 'configReloadSubscription', 'subappCatalogSubscription',
       'subappProgressSubscription', 'toolSignalSubscription', 'subappActivitySubscription']) host[name]?.unsubscribe();
     host.remoteApi = null;
